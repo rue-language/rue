@@ -507,7 +507,7 @@ and diffs them against the committed copies.
 | `run_ne_returned` | `RueCore.Soundness` | `Quot.sound`, `propext` |
 | `run_safe` | `RueCore.Soundness` | `Quot.sound`, `propext` |
 | `ProgramTyped.run_safe` | `RueCore.Soundness` | `Quot.sound`, `propext` |
-| `no_violation` | `RueCore.Soundness` | `Quot.sound`, `propext` |
+| `no_refusal` | `RueCore.Soundness` | `Quot.sound`, `propext` |
 | `no_use_after_move` | `RueCore.Soundness` | `Quot.sound`, `propext` |
 | `no_use_after_drop` | `RueCore.Soundness` | `Quot.sound`, `propext` |
 | `no_linear_leak` | `RueCore.Soundness` | `Quot.sound`, `propext` |
@@ -686,7 +686,7 @@ and diffs them against the committed copies.
 | `sim_loop` | `RueCore.Adequacy` | `propext` |
 | `eval_sim` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
 | `run_sim` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
-| `eval_sound` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
+| `eval_big_to_small` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
 | `StepsN.toSteps` | `RueCore.Adequacy` | `propext` |
 | `Steps.toN` | `RueCore.Adequacy` | `propext` |
 | `StepsN.trans` | `RueCore.Adequacy` | `propext` |
@@ -733,18 +733,18 @@ and diffs them against the committed copies.
 | `EvalRes.bindCall_ne_broke` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
 | `run_ne_broke` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
 | `run_classify` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
-| `run_complete` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
-| `eval_complete` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
-| `run_stuck_of_step_stuck` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
+| `run_small_to_big` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
+| `eval_small_to_big` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
+| `run_refused_of_step_stuck` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
 | `step_never_stuck_of_run` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
-| `never_stuck_iff` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
+| `never_refused_iff` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
 | `eval_diverges_iff` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
 | `Config.SafeAt.progress` | `RueCore.Adequacy` | `propext` |
-| `Config.SafeAt.preservation` | `RueCore.Adequacy` | `propext` |
+| `Config.SafeAt.invariant` | `RueCore.Adequacy` | `propext` |
 | `Config.SafeAt.steps` | `RueCore.Adequacy` | `propext` |
 | `init_safeAt` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
 | `step_progress` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
-| `step_preservation` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
+| `step_safeAt` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
 | `step_value_typed` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
 | `step_type_safety` | `RueCore.Adequacy` | `Quot.sound`, `propext` |
 | `Nonvacuous.withTrace_nil` | `RueCore.Nonvacuous` | `propext` |
@@ -752,8 +752,8 @@ and diffs them against the committed copies.
 | `Nonvacuous.loopUnit_eval` | `RueCore.Nonvacuous` | `propext` |
 | `Nonvacuous.loopUnit_run` | `RueCore.Nonvacuous` | `propext` |
 | `Nonvacuous.exact_model` | `RueCore.Nonvacuous` | `Quot.sound`, `propext` |
-| `Nonvacuous.empty_frame` | `RueCore.Nonvacuous` | `propext` |
-| `Nonvacuous.open_frame` | `RueCore.Nonvacuous` | `Quot.sound`, `propext` |
+| `Nonvacuous.empty_activation` | `RueCore.Nonvacuous` | `propext` |
+| `Nonvacuous.open_activation` | `RueCore.Nonvacuous` | `Quot.sound`, `propext` |
 | `Nonvacuous.dtor` | `RueCore.Nonvacuous` | `Quot.sound`, `propext` |
 | `Nonvacuous.linear` | `RueCore.Nonvacuous` | `Quot.sound`, `propext` |
 | `Nonvacuous.loop` | `RueCore.Nonvacuous` | `Quot.sound`, `propext` |
@@ -766,7 +766,7 @@ and diffs them against the committed copies.
 | `Nonvacuous.dropTurn_eval` | `RueCore.Nonvacuous` | `Quot.sound`, `propext` |
 | `Nonvacuous.dropLoop_eval` | `RueCore.Nonvacuous` | `Quot.sound`, `propext` |
 | `Nonvacuous.diverges_drop` | `RueCore.Nonvacuous` | `Quot.sound`, `propext` |
-| `Nonvacuous.stuck` | `RueCore.Nonvacuous` | `Quot.sound`, `propext` |
+| `Nonvacuous.refused_stuck` | `RueCore.Nonvacuous` | `Quot.sound`, `propext` |
 | `Nonvacuous.whole_drops` | `RueCore.Nonvacuous` | `Quot.sound`, `propext` |
 | `Nonvacuous.whole_result` | `RueCore.Nonvacuous` | `Quot.sound`, `propext` |
 | `Expr.pendingSafeList_mem` | `RueCore.TraceExact` | `propext` |
@@ -1102,7 +1102,7 @@ and diffs them against the committed copies.
 | `Sharp.not_steps_of_final` | `RueCore.Sharp` | `propext` |
 | `Sharp.run_from` | `RueCore.Sharp` | `Quot.sound`, `propext` |
 | `Sharp.not_eventually` | `RueCore.Sharp` | `Quot.sound`, `propext` |
-| `Sharp.stuck_not_safe` | `RueCore.Sharp` | `propext` |
+| `Sharp.refused_not_safe` | `RueCore.Sharp` | `propext` |
 | `Sharp.not_exact_ok` | `RueCore.Sharp` | `propext` |
 | `Sharp.not_exact_returned` | `RueCore.Sharp` | `propext` |
 | `Sharp.not_exact_cc` | `RueCore.Sharp` | `propext` |
@@ -1112,10 +1112,10 @@ and diffs them against the committed copies.
 | `Sharp.loopTurn_step` | `RueCore.Sharp` | `Quot.sound`, `propext` |
 | `Sharp.loopTurn_forever` | `RueCore.Sharp` | `Quot.sound`, `propext` |
 | `Sharp.loop_forever` | `RueCore.Sharp` | `Quot.sound`, `propext` |
-| `Sharp.stuck` | `RueCore.Sharp` | `Quot.sound`, `propext` |
+| `Sharp.refused` | `RueCore.Sharp` | `Quot.sound`, `propext` |
 | `Sharp.stuck_step` | `RueCore.Sharp` | `Quot.sound`, `propext` |
 | `Sharp.typed` | `RueCore.Sharp` | `Quot.sound`, `propext` |
-| `Sharp.frame` | `RueCore.Sharp` | `Quot.sound`, `propext` |
+| `Sharp.activation` | `RueCore.Sharp` | `Quot.sound`, `propext` |
 | `Sharp.no_entry` | `RueCore.Sharp` | `Quot.sound`, `propext` |
 | `Sharp.entry_param` | `RueCore.Sharp` | `Quot.sound`, `propext` |
 | `Sharp.copy` | `RueCore.Sharp` | `Quot.sound`, `propext` |
@@ -1139,7 +1139,7 @@ and diffs them against the committed copies.
 | `Sharp.not_a_step` | `RueCore.Sharp` | `Quot.sound`, `propext` |
 | `Sharp.init_steps` | `RueCore.Sharp` | `Quot.sound`, `propext` |
 | `Sharp.unreachable_stuck` | `RueCore.Sharp` | `Quot.sound`, `propext` |
-| `Sharp.retired_cell` | `RueCore.Sharp` | `Quot.sound`, `propext` |
+| `Sharp.tombstoned_cell` | `RueCore.Sharp` | `Quot.sound`, `propext` |
 | `Sharp.unreached_double` | `RueCore.Sharp` | `Quot.sound`, `propext` |
 | `Sharp.uncut_drop` | `RueCore.Sharp` | `Quot.sound`, `propext` |
 | `Sharp.ill_typed_halt` | `RueCore.Sharp` | `Quot.sound`, `propext` |
@@ -1152,7 +1152,7 @@ and diffs them against the committed copies.
 | `Sharp.off_run` | `RueCore.Sharp` | `Quot.sound`, `propext` |
 | `Spine.soundness` | `RueCore.Spine` | `Quot.sound`, `propext` |
 | `Spine.run_safe` | `RueCore.Spine` | `Quot.sound`, `propext` |
-| `Spine.no_violation` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.no_refusal` | `RueCore.Spine` | `Quot.sound`, `propext` |
 | `Spine.no_use_after_move` | `RueCore.Spine` | `Quot.sound`, `propext` |
 | `Spine.no_use_after_drop` | `RueCore.Spine` | `Quot.sound`, `propext` |
 | `Spine.run_no_use_after_drop` | `RueCore.Spine` | `Quot.sound`, `propext` |
@@ -1180,20 +1180,20 @@ and diffs them against the committed copies.
 | `Spine.Config.stuck_iff` | `RueCore.Spine` | `Quot.sound`, `propext` |
 | `Spine.step_stuck_isStuckState` | `RueCore.Spine` | `Quot.sound`, `propext` |
 | `Spine.step_progress` | `RueCore.Spine` | `Quot.sound`, `propext` |
-| `Spine.step_preservation` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.step_safeAt` | `RueCore.Spine` | `Quot.sound`, `propext` |
 | `Spine.step_type_safety` | `RueCore.Spine` | `Quot.sound`, `propext` |
 | `Spine.step_no_use_after_drop` | `RueCore.Spine` | `Quot.sound`, `propext` |
-| `Spine.eval_sound` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.eval_big_to_small` | `RueCore.Spine` | `Quot.sound`, `propext` |
 | `Spine.run_sim` | `RueCore.Spine` | `Quot.sound`, `propext` |
-| `Spine.eval_complete` | `RueCore.Spine` | `Quot.sound`, `propext` |
-| `Spine.run_complete` | `RueCore.Spine` | `Quot.sound`, `propext` |
-| `Spine.never_stuck_iff` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.eval_small_to_big` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.run_small_to_big` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.never_refused_iff` | `RueCore.Spine` | `Quot.sound`, `propext` |
 | `Spine.step_never_stuck_of_run` | `RueCore.Spine` | `Quot.sound`, `propext` |
-| `Spine.run_stuck_of_step_stuck` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.run_refused_of_step_stuck` | `RueCore.Spine` | `Quot.sound`, `propext` |
 | `Spine.eval_diverges_iff` | `RueCore.Spine` | `Quot.sound`, `propext` |
 | `Spine.Nonvacuous.exact_model` | `RueCore.Spine` | `Quot.sound`, `propext` |
-| `Spine.Nonvacuous.empty_frame` | `RueCore.Spine` | `propext` |
-| `Spine.Nonvacuous.open_frame` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.Nonvacuous.empty_activation` | `RueCore.Spine` | `propext` |
+| `Spine.Nonvacuous.open_activation` | `RueCore.Spine` | `Quot.sound`, `propext` |
 | `Spine.Nonvacuous.dtor` | `RueCore.Spine` | `Quot.sound`, `propext` |
 | `Spine.Nonvacuous.linear` | `RueCore.Spine` | `Quot.sound`, `propext` |
 | `Spine.Nonvacuous.loop` | `RueCore.Spine` | `Quot.sound`, `propext` |
@@ -1206,11 +1206,11 @@ and diffs them against the committed copies.
 | `Spine.Nonvacuous.diverges_drop` | `RueCore.Spine` | `Quot.sound`, `propext` |
 | `Spine.Nonvacuous.whole_drops` | `RueCore.Spine` | `Quot.sound`, `propext` |
 | `Spine.Nonvacuous.whole_result` | `RueCore.Spine` | `Quot.sound`, `propext` |
-| `Spine.Nonvacuous.stuck` | `RueCore.Spine` | `Quot.sound`, `propext` |
-| `Spine.Sharp.stuck` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.Nonvacuous.refused_stuck` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.Sharp.refused` | `RueCore.Spine` | `Quot.sound`, `propext` |
 | `Spine.Sharp.stuck_step` | `RueCore.Spine` | `Quot.sound`, `propext` |
 | `Spine.Sharp.typed` | `RueCore.Spine` | `Quot.sound`, `propext` |
-| `Spine.Sharp.frame` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.Sharp.activation` | `RueCore.Spine` | `Quot.sound`, `propext` |
 | `Spine.Sharp.no_entry` | `RueCore.Spine` | `Quot.sound`, `propext` |
 | `Spine.Sharp.entry_param` | `RueCore.Spine` | `Quot.sound`, `propext` |
 | `Spine.Sharp.copy` | `RueCore.Spine` | `Quot.sound`, `propext` |
@@ -1234,7 +1234,7 @@ and diffs them against the committed copies.
 | `Spine.Sharp.not_a_step` | `RueCore.Spine` | `Quot.sound`, `propext` |
 | `Spine.Sharp.init_steps` | `RueCore.Spine` | `Quot.sound`, `propext` |
 | `Spine.Sharp.unreachable_stuck` | `RueCore.Spine` | `Quot.sound`, `propext` |
-| `Spine.Sharp.retired_cell` | `RueCore.Spine` | `Quot.sound`, `propext` |
+| `Spine.Sharp.tombstoned_cell` | `RueCore.Spine` | `Quot.sound`, `propext` |
 | `Spine.Sharp.unreached_double` | `RueCore.Spine` | `Quot.sound`, `propext` |
 | `Spine.Sharp.uncut_drop` | `RueCore.Spine` | `Quot.sound`, `propext` |
 | `Spine.Sharp.ill_typed_halt` | `RueCore.Spine` | `Quot.sound`, `propext` |
@@ -1252,7 +1252,7 @@ and diffs them against the committed copies.
 | `Nonvacuous.Glue.exact_model.whole_program_exactly_once` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.dtor.soundness` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.dtor.run_safe` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
-| `Nonvacuous.Glue.dtor.no_violation` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
+| `Nonvacuous.Glue.dtor.no_refusal` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.dtor.no_use_after_move` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.dtor.no_use_after_drop` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.dtor.run_no_use_after_drop` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
@@ -1265,17 +1265,17 @@ and diffs them against the committed copies.
 | `Nonvacuous.Glue.dtor.drop_order` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.dtor.drop_glue_order` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.dtor.step_progress` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
-| `Nonvacuous.Glue.dtor.step_preservation` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
+| `Nonvacuous.Glue.dtor.step_safeAt` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.dtor.step_type_safety` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.dtor.step_no_use_after_drop` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
-| `Nonvacuous.Glue.dtor.eval_sound` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
-| `Nonvacuous.Glue.dtor.never_stuck_iff` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
+| `Nonvacuous.Glue.dtor.eval_big_to_small` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
+| `Nonvacuous.Glue.dtor.never_refused_iff` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.dtor.eval_diverges_iff` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.dtor.fuel_mono` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.dtor.Step.terminal` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.dtor.run_sim` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
-| `Nonvacuous.Glue.dtor.eval_complete` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
-| `Nonvacuous.Glue.dtor.run_complete` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
+| `Nonvacuous.Glue.dtor.eval_small_to_big` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
+| `Nonvacuous.Glue.dtor.run_small_to_big` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.dtor.step_no_double_free` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.dtor.freed_once` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.dtor.dtor_once` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
@@ -1287,7 +1287,7 @@ and diffs them against the committed copies.
 | `Nonvacuous.Glue.dtor.step_never_stuck_of_run` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.linear.soundness` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.linear.run_safe` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
-| `Nonvacuous.Glue.linear.no_violation` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
+| `Nonvacuous.Glue.linear.no_refusal` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.linear.no_use_after_move` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.linear.no_use_after_drop` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.linear.no_linear_leak` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
@@ -1299,19 +1299,19 @@ and diffs them against the committed copies.
 | `Nonvacuous.Glue.linear.drop_order` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.linear.drop_glue_order` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.linear.step_progress` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
-| `Nonvacuous.Glue.linear.step_preservation` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
+| `Nonvacuous.Glue.linear.step_safeAt` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.linear.step_type_safety` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
-| `Nonvacuous.Glue.linear.eval_sound` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
-| `Nonvacuous.Glue.linear.never_stuck_iff` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
+| `Nonvacuous.Glue.linear.eval_big_to_small` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
+| `Nonvacuous.Glue.linear.never_refused_iff` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.linear.eval_diverges_iff` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.linear.fuel_mono` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.linear.Step.terminal` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.linear.run_sim` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
-| `Nonvacuous.Glue.linear.eval_complete` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
-| `Nonvacuous.Glue.linear.run_complete` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
+| `Nonvacuous.Glue.linear.eval_small_to_big` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
+| `Nonvacuous.Glue.linear.run_small_to_big` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.loop.soundness` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.loop.run_safe` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
-| `Nonvacuous.Glue.loop.no_violation` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
+| `Nonvacuous.Glue.loop.no_refusal` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.loop.no_use_after_move` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.loop.no_use_after_drop` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.loop.no_linear_leak` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
@@ -1323,20 +1323,20 @@ and diffs them against the committed copies.
 | `Nonvacuous.Glue.loop.drop_order` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.loop.drop_glue_order` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.loop.step_progress` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
-| `Nonvacuous.Glue.loop.step_preservation` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
+| `Nonvacuous.Glue.loop.step_safeAt` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.loop.step_type_safety` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
-| `Nonvacuous.Glue.loop.eval_sound` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
-| `Nonvacuous.Glue.loop.never_stuck_iff` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
+| `Nonvacuous.Glue.loop.eval_big_to_small` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
+| `Nonvacuous.Glue.loop.never_refused_iff` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.loop.eval_diverges_iff` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.loop.fuel_mono` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.loop.Step.terminal` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.loop.run_sim` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
-| `Nonvacuous.Glue.loop.eval_complete` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
-| `Nonvacuous.Glue.loop.run_complete` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
+| `Nonvacuous.Glue.loop.eval_small_to_big` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
+| `Nonvacuous.Glue.loop.run_small_to_big` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.loop.freed_once` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.array.soundness` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.array.run_safe` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
-| `Nonvacuous.Glue.array.no_violation` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
+| `Nonvacuous.Glue.array.no_refusal` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.array.no_use_after_move` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.array.no_use_after_drop` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.array.no_linear_leak` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
@@ -1348,19 +1348,19 @@ and diffs them against the committed copies.
 | `Nonvacuous.Glue.array.drop_order` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.array.drop_glue_order` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.array.step_progress` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
-| `Nonvacuous.Glue.array.step_preservation` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
+| `Nonvacuous.Glue.array.step_safeAt` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.array.step_type_safety` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
-| `Nonvacuous.Glue.array.eval_sound` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
-| `Nonvacuous.Glue.array.never_stuck_iff` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
+| `Nonvacuous.Glue.array.eval_big_to_small` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
+| `Nonvacuous.Glue.array.never_refused_iff` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.array.eval_diverges_iff` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.array.fuel_mono` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.array.Step.terminal` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.array.run_sim` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
-| `Nonvacuous.Glue.array.eval_complete` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
-| `Nonvacuous.Glue.array.run_complete` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
+| `Nonvacuous.Glue.array.eval_small_to_big` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
+| `Nonvacuous.Glue.array.run_small_to_big` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.enum_match.soundness` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.enum_match.run_safe` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
-| `Nonvacuous.Glue.enum_match.no_violation` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
+| `Nonvacuous.Glue.enum_match.no_refusal` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.enum_match.no_use_after_move` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.enum_match.no_use_after_drop` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.enum_match.no_linear_leak` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
@@ -1372,19 +1372,19 @@ and diffs them against the committed copies.
 | `Nonvacuous.Glue.enum_match.drop_order` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.enum_match.drop_glue_order` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.enum_match.step_progress` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
-| `Nonvacuous.Glue.enum_match.step_preservation` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
+| `Nonvacuous.Glue.enum_match.step_safeAt` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.enum_match.step_type_safety` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
-| `Nonvacuous.Glue.enum_match.eval_sound` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
-| `Nonvacuous.Glue.enum_match.never_stuck_iff` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
+| `Nonvacuous.Glue.enum_match.eval_big_to_small` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
+| `Nonvacuous.Glue.enum_match.never_refused_iff` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.enum_match.eval_diverges_iff` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.enum_match.fuel_mono` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.enum_match.Step.terminal` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.enum_match.run_sim` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
-| `Nonvacuous.Glue.enum_match.eval_complete` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
-| `Nonvacuous.Glue.enum_match.run_complete` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
+| `Nonvacuous.Glue.enum_match.eval_small_to_big` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
+| `Nonvacuous.Glue.enum_match.run_small_to_big` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.early_return.soundness` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.early_return.run_safe` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
-| `Nonvacuous.Glue.early_return.no_violation` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
+| `Nonvacuous.Glue.early_return.no_refusal` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.early_return.no_use_after_move` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.early_return.no_use_after_drop` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.early_return.no_linear_leak` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
@@ -1396,20 +1396,20 @@ and diffs them against the committed copies.
 | `Nonvacuous.Glue.early_return.drop_order` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.early_return.drop_glue_order` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.early_return.step_progress` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
-| `Nonvacuous.Glue.early_return.step_preservation` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
+| `Nonvacuous.Glue.early_return.step_safeAt` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.early_return.step_type_safety` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
-| `Nonvacuous.Glue.early_return.eval_sound` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
-| `Nonvacuous.Glue.early_return.never_stuck_iff` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
+| `Nonvacuous.Glue.early_return.eval_big_to_small` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
+| `Nonvacuous.Glue.early_return.never_refused_iff` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.early_return.eval_diverges_iff` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.early_return.fuel_mono` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.early_return.Step.terminal` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.early_return.run_sim` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
-| `Nonvacuous.Glue.early_return.eval_complete` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
-| `Nonvacuous.Glue.early_return.run_complete` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
+| `Nonvacuous.Glue.early_return.eval_small_to_big` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
+| `Nonvacuous.Glue.early_return.run_small_to_big` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.early_return.run_ne_returned` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.float.soundness` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.float.run_safe` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
-| `Nonvacuous.Glue.float.no_violation` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
+| `Nonvacuous.Glue.float.no_refusal` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.float.no_use_after_move` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.float.no_use_after_drop` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.float.no_linear_leak` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
@@ -1421,19 +1421,19 @@ and diffs them against the committed copies.
 | `Nonvacuous.Glue.float.drop_order` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.float.drop_glue_order` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.float.step_progress` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
-| `Nonvacuous.Glue.float.step_preservation` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
+| `Nonvacuous.Glue.float.step_safeAt` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.float.step_type_safety` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
-| `Nonvacuous.Glue.float.eval_sound` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
-| `Nonvacuous.Glue.float.never_stuck_iff` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
+| `Nonvacuous.Glue.float.eval_big_to_small` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
+| `Nonvacuous.Glue.float.never_refused_iff` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.float.eval_diverges_iff` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.float.fuel_mono` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.float.Step.terminal` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.float.run_sim` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
-| `Nonvacuous.Glue.float.eval_complete` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
-| `Nonvacuous.Glue.float.run_complete` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
+| `Nonvacuous.Glue.float.eval_small_to_big` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
+| `Nonvacuous.Glue.float.run_small_to_big` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.panic.soundness` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.panic.run_safe` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
-| `Nonvacuous.Glue.panic.no_violation` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
+| `Nonvacuous.Glue.panic.no_refusal` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.panic.no_use_after_move` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.panic.no_use_after_drop` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.panic.no_linear_leak` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
@@ -1445,19 +1445,19 @@ and diffs them against the committed copies.
 | `Nonvacuous.Glue.panic.drop_order` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.panic.drop_glue_order` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.panic.step_progress` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
-| `Nonvacuous.Glue.panic.step_preservation` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
+| `Nonvacuous.Glue.panic.step_safeAt` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.panic.step_type_safety` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
-| `Nonvacuous.Glue.panic.eval_sound` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
-| `Nonvacuous.Glue.panic.never_stuck_iff` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
+| `Nonvacuous.Glue.panic.eval_big_to_small` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
+| `Nonvacuous.Glue.panic.never_refused_iff` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.panic.eval_diverges_iff` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.panic.fuel_mono` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.panic.Step.terminal` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.panic.run_sim` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
-| `Nonvacuous.Glue.panic.eval_complete` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
-| `Nonvacuous.Glue.panic.run_complete` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
+| `Nonvacuous.Glue.panic.eval_small_to_big` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
+| `Nonvacuous.Glue.panic.run_small_to_big` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.exact_model.soundness` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.exact_model.run_safe` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
-| `Nonvacuous.Glue.exact_model.no_violation` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
+| `Nonvacuous.Glue.exact_model.no_refusal` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.exact_model.no_use_after_move` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.exact_model.no_use_after_drop` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.exact_model.no_linear_leak` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
@@ -1470,71 +1470,71 @@ and diffs them against the committed copies.
 | `Nonvacuous.Glue.exact_model.drop_order` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.exact_model.drop_glue_order` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.exact_model.step_progress` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
-| `Nonvacuous.Glue.exact_model.step_preservation` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
+| `Nonvacuous.Glue.exact_model.step_safeAt` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.exact_model.step_type_safety` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
-| `Nonvacuous.Glue.exact_model.eval_sound` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
-| `Nonvacuous.Glue.exact_model.eval_complete` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
-| `Nonvacuous.Glue.exact_model.never_stuck_iff` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
+| `Nonvacuous.Glue.exact_model.eval_big_to_small` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
+| `Nonvacuous.Glue.exact_model.eval_small_to_big` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
+| `Nonvacuous.Glue.exact_model.never_refused_iff` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.exact_model.eval_diverges_iff` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
-| `Nonvacuous.Glue.empty_frame.soundness` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
-| `Nonvacuous.Glue.empty_frame.drop_exactly_once` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
-| `Nonvacuous.Glue.empty_frame.rest_exactly_once` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
-| `Nonvacuous.Glue.open_frame.soundness` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
-| `Nonvacuous.Glue.open_frame.check_sound` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
-| `Nonvacuous.Glue.open_frame.drop_exactly_once` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
-| `Nonvacuous.Glue.open_frame.rest_exactly_once` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
+| `Nonvacuous.Glue.empty_activation.soundness` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
+| `Nonvacuous.Glue.empty_activation.drop_exactly_once` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
+| `Nonvacuous.Glue.empty_activation.rest_exactly_once` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
+| `Nonvacuous.Glue.open_activation.soundness` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
+| `Nonvacuous.Glue.open_activation.check_sound` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
+| `Nonvacuous.Glue.open_activation.drop_exactly_once` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
+| `Nonvacuous.Glue.open_activation.rest_exactly_once` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.diverges.checkProgram_sound` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.diverges.eval_diverges_iff` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.diverges_drop.checkProgram_sound` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.diverges_drop.no_double_free` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.diverges_drop.step_no_double_free` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
 | `Nonvacuous.Glue.diverges_drop.eval_diverges_iff` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
-| `Nonvacuous.Glue.stuck.fuel_mono` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
-| `Nonvacuous.Glue.stuck.no_masking` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
-| `Nonvacuous.Glue.stuck.Config.trichotomy` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
-| `Nonvacuous.Glue.stuck.Config.stuck_iff` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
-| `Nonvacuous.Glue.stuck.step_stuck_isStuckState` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
-| `Nonvacuous.Glue.stuck.run_stuck_of_step_stuck` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
-| `Sharp.Glue.stuck.soundness_1` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
-| `Sharp.Glue.stuck.run_safe_1` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
-| `Sharp.Glue.stuck.no_violation_1` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
-| `Sharp.Glue.stuck.no_use_after_move_1` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
-| `Sharp.Glue.stuck.no_masking_2` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
-| `Sharp.Glue.stuck.checkProgram_sound_1` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
-| `Sharp.Glue.stuck.drop_exactly_once_1` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
-| `Sharp.Glue.stuck.rest_exactly_once_1` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
-| `Sharp.Glue.stuck.eval_sound_1` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
+| `Nonvacuous.Glue.refused_stuck.fuel_mono` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
+| `Nonvacuous.Glue.refused_stuck.no_masking` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
+| `Nonvacuous.Glue.refused_stuck.Config.trichotomy` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
+| `Nonvacuous.Glue.refused_stuck.Config.stuck_iff` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
+| `Nonvacuous.Glue.refused_stuck.step_stuck_isStuckState` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
+| `Nonvacuous.Glue.refused_stuck.run_refused_of_step_stuck` | `RueCore.Nonvacuous.Glue` | `Quot.sound`, `propext` |
+| `Sharp.Glue.refused.soundness_1` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
+| `Sharp.Glue.refused.run_safe_1` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
+| `Sharp.Glue.refused.no_refusal_1` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
+| `Sharp.Glue.refused.no_use_after_move_1` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
+| `Sharp.Glue.refused.no_masking_2` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
+| `Sharp.Glue.refused.checkProgram_sound_1` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
+| `Sharp.Glue.refused.drop_exactly_once_1` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
+| `Sharp.Glue.refused.rest_exactly_once_1` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
+| `Sharp.Glue.refused.eval_big_to_small_1` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
 | `Sharp.Glue.stuck_step.step_progress_1` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
-| `Sharp.Glue.stuck_step.step_preservation_1` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
+| `Sharp.Glue.stuck_step.step_safeAt_1` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
 | `Sharp.Glue.stuck_step.step_type_safety_1` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
 | `Sharp.Glue.stuck_step.step_never_stuck_of_run_1` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
-| `Sharp.Glue.stuck_step.run_stuck_of_step_stuck_3` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
+| `Sharp.Glue.stuck_step.run_refused_of_step_stuck_3` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
 | `Sharp.Glue.typed.soundness_2` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
 | `Sharp.Glue.typed.check_sound_1` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
 | `Sharp.Glue.typed.drop_exactly_once_3` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
 | `Sharp.Glue.typed.rest_exactly_once_3` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
-| `Sharp.Glue.frame.soundness_3` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
-| `Sharp.Glue.frame.drop_exactly_once_4` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
-| `Sharp.Glue.frame.rest_exactly_once_4` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
+| `Sharp.Glue.activation.soundness_3` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
+| `Sharp.Glue.activation.drop_exactly_once_4` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
+| `Sharp.Glue.activation.rest_exactly_once_4` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
 | `Sharp.Glue.no_entry.run_safe_2` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
 | `Sharp.Glue.entry_param.run_safe_3` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
-| `Sharp.Glue.entry_param.no_violation_1` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
-| `Sharp.Glue.copy.no_violation_1` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
+| `Sharp.Glue.entry_param.no_refusal_1` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
+| `Sharp.Glue.copy.no_refusal_1` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
 | `Sharp.Glue.leak.no_linear_leak_1` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
-| `Sharp.Glue.leak.eval_complete_1` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
+| `Sharp.Glue.leak.eval_small_to_big_1` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
 | `Sharp.Glue.overwrite.no_linear_overwrite_1` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
 | `Sharp.Glue.discard.no_linear_discard_1` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
-| `Sharp.Glue.discard.eval_complete_1` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
+| `Sharp.Glue.discard.eval_small_to_big_1` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
 | `Sharp.Glue.discard_loop.no_linear_discard_1` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
-| `Sharp.Glue.discard_loop.never_stuck_iff_1` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
+| `Sharp.Glue.discard_loop.never_refused_iff_1` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
 | `Sharp.Glue.discard_loop.eval_diverges_iff_1` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
 | `Sharp.Glue.fuel.fuel_mono_1` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
 | `Sharp.Glue.fuel.fuel_mono_2` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
 | `Sharp.Glue.fuel.no_masking_1` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
-| `Sharp.Glue.fuel.eval_complete_3` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
-| `Sharp.Glue.fuel.run_complete_2` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
-| `Sharp.Glue.fuel_panic.eval_complete_5` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
-| `Sharp.Glue.fuel_panic.run_complete_4` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
+| `Sharp.Glue.fuel.eval_small_to_big_3` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
+| `Sharp.Glue.fuel.run_small_to_big_2` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
+| `Sharp.Glue.fuel_panic.eval_small_to_big_5` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
+| `Sharp.Glue.fuel_panic.run_small_to_big_4` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
 | `Sharp.Glue.not_fits.check_sound_2` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
 | `Sharp.Glue.double_drop.no_double_free_1` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
 | `Sharp.Glue.double_drop.step_no_double_free_1` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
@@ -1551,34 +1551,34 @@ and diffs them against the committed copies.
 | `Sharp.Glue.no_eval.rest_exactly_once_8` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
 | `Sharp.Glue.unreached.drop_order_2` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
 | `Sharp.Glue.unreached.drop_glue_order_2` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
-| `Sharp.Glue.unreached.eval_sound_2` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
+| `Sharp.Glue.unreached.eval_big_to_small_2` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
 | `Sharp.Glue.unreached.run_sim_1` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
-| `Sharp.Glue.unreached.eval_complete_2` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
-| `Sharp.Glue.unreached.run_complete_1` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
+| `Sharp.Glue.unreached.eval_small_to_big_2` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
+| `Sharp.Glue.unreached.run_small_to_big_1` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
 | `Sharp.Glue.unreached_panic.drop_order_3` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
 | `Sharp.Glue.unreached_panic.drop_glue_order_3` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
-| `Sharp.Glue.unreached_panic.eval_sound_3` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
+| `Sharp.Glue.unreached_panic.eval_big_to_small_3` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
 | `Sharp.Glue.unreached_panic.run_sim_2` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
-| `Sharp.Glue.unreached_panic.eval_complete_4` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
-| `Sharp.Glue.unreached_panic.run_complete_3` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
+| `Sharp.Glue.unreached_panic.eval_small_to_big_4` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
+| `Sharp.Glue.unreached_panic.run_small_to_big_3` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
 | `Sharp.Glue.unordered.drop_order_4` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
 | `Sharp.Glue.not_a_step.drop_order_5` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
 | `Sharp.Glue.init_steps.Step.det_1` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
 | `Sharp.Glue.init_steps.Step.det_2` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
 | `Sharp.Glue.init_steps.Step.terminal_1` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
 | `Sharp.Glue.init_steps.step_stuck_isStuckState_1` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
-| `Sharp.Glue.init_steps.run_stuck_of_step_stuck_2` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
+| `Sharp.Glue.init_steps.run_refused_of_step_stuck_2` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
 | `Sharp.Glue.unreachable_stuck.step_progress_2` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
-| `Sharp.Glue.unreachable_stuck.step_preservation_2` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
-| `Sharp.Glue.unreachable_stuck.never_stuck_iff_2` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
+| `Sharp.Glue.unreachable_stuck.step_safeAt_2` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
+| `Sharp.Glue.unreachable_stuck.never_refused_iff_2` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
 | `Sharp.Glue.unreachable_stuck.step_never_stuck_of_run_2` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
-| `Sharp.Glue.unreachable_stuck.run_stuck_of_step_stuck_1` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
-| `Sharp.Glue.retired_cell.step_no_use_after_drop_1` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
+| `Sharp.Glue.unreachable_stuck.run_refused_of_step_stuck_1` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
+| `Sharp.Glue.tombstoned_cell.step_no_use_after_drop_1` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
 | `Sharp.Glue.unreached_double.step_no_double_free_2` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
 | `Sharp.Glue.uncut_drop.drop_order_4` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
-| `Sharp.Glue.ill_typed_halt.step_preservation_2` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
-| `Sharp.Glue.out_of_range_halt.step_preservation_2` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
-| `Sharp.Glue.float_halt.step_preservation_2` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
+| `Sharp.Glue.ill_typed_halt.step_safeAt_2` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
+| `Sharp.Glue.out_of_range_halt.step_safeAt_2` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
+| `Sharp.Glue.float_halt.step_safeAt_2` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
 | `Sharp.Glue.copy_leak.whole_program_exactly_once_1` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
 | `Sharp.Glue.pending_leak.whole_program_exactly_once_2` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
 | `Sharp.Glue.unreached_held.whole_program_exactly_once_3` | `RueCore.Sharp.Glue` | `Quot.sound`, `propext` |
@@ -1708,7 +1708,7 @@ proof is not a claim, and is not a headline. The non-vacuity witnesses
 definitions outside this base (`Float.exactOps` and its `roundRat`, the
 witness programs): a witness can only fail to witness, never widen a claim.
 
-- Headline statements: 41 — `soundness`, `run_safe`, `no_violation`, `no_use_after_move`, `no_use_after_drop`, `run_no_use_after_drop`, `no_linear_leak`, `no_linear_overwrite`, `no_linear_discard`, `fuel_mono`, `no_masking`, `run_ne_returned`, `check_sound`, `checkProgram_sound`, `no_double_free`, `step_no_double_free`, `freed_once`, `dtor_once`, `drop_exactly_once`, `rest_exactly_once`, `whole_program_exactly_once`, `drop_order`, `drop_glue_order`, `Step.det`, `Step.terminal`, `Config.trichotomy`, `step_iff`, `Config.stuck_iff`, `step_stuck_isStuckState`, `step_progress`, `step_preservation`, `step_type_safety`, `step_no_use_after_drop`, `eval_sound`, `run_sim`, `eval_complete`, `run_complete`, `never_stuck_iff`, `step_never_stuck_of_run`, `run_stuck_of_step_stuck`, `eval_diverges_iff`.
+- Headline statements: 41 — `soundness`, `run_safe`, `no_refusal`, `no_use_after_move`, `no_use_after_drop`, `run_no_use_after_drop`, `no_linear_leak`, `no_linear_overwrite`, `no_linear_discard`, `fuel_mono`, `no_masking`, `run_ne_returned`, `check_sound`, `checkProgram_sound`, `no_double_free`, `step_no_double_free`, `freed_once`, `dtor_once`, `drop_exactly_once`, `rest_exactly_once`, `whole_program_exactly_once`, `drop_order`, `drop_glue_order`, `Step.det`, `Step.terminal`, `Config.trichotomy`, `step_iff`, `Config.stuck_iff`, `step_stuck_isStuckState`, `step_progress`, `step_safeAt`, `step_type_safety`, `step_no_use_after_drop`, `eval_big_to_small`, `run_sim`, `eval_small_to_big`, `run_small_to_big`, `never_refused_iff`, `step_never_stuck_of_run`, `run_refused_of_step_stuck`, `eval_diverges_iff`.
 - Definitions to read: **299**, in 9 modules (69 inductive, 227 def, 3 abbrev).
 - Instances they use: 12 — `instDecidableEqAttr`, `instDecidableEqEntry`, `instDecidableEqFloatWidth`, `instDecidableEqIntWidth`, `instDecidableEqOwnSt`, `instDecidableEqQual`, `instDecidableEqSign`, `instDecidableEqTy`, `instDecidableInBounds`, `instDecidableNoResidualLinear`, `instDecidableRoundsFinite`, `instDecidableWf_1`. A `deriving` image says nothing beyond its type; a hand-written one is read with the predicate it decides.
 - Lean-generated auxiliaries passed through (`isLeanAux`): 531. Each is

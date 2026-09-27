@@ -1982,7 +1982,7 @@ theorem RueCore.ProgramTyped.run_safe (M : FloatLaws) {P : Program}
               HasTy P.decls v fd.ret)
 ```
 
-### `no_violation`
+### `no_refusal`
 
 *theorem* · module `RueCore.Soundness`
 
@@ -2028,7 +2028,7 @@ payload locals (`StoreTyping.unwindPrefix`), a `break`'s unwind to its loop
 covered.
 
 ```lean
-theorem RueCore.no_violation (M : FloatLaws) {P : Program} (h : ProgramTyped P)
+theorem RueCore.no_refusal (M : FloatLaws) {P : Program} (h : ProgramTyped P)
   (fuel : Nat) (w : Refusal) : run M.toFloatSig P fuel ≠ EvalRes.refused w
 ```
 
@@ -2049,7 +2049,7 @@ theorem RueCore.no_use_after_move (M : FloatLaws) {P : Program} (h : ProgramType
 *theorem* · module `RueCore.Soundness`
 
 §7 "No use-after-drop": the machine never touches a retired (`†`) cell.
-Here it is `no_violation` at one tag, over checked programs, but typing is not
+Here it is `no_refusal` at one tag, over checked programs, but typing is not
 what makes it true: `run_no_use_after_drop` (`Retire.lean`, RUE-2496) proves
 it for every program. `run-all-scope-drops` (§6.9) walks the frame's scope
 record at every `return` and at every frame pop, and what keeps those walks
@@ -2298,7 +2298,7 @@ theorem RueCore.dtor_once (M : FloatSig) {P : Program} (hdt : DtorNotCopy P.decl
 *theorem* · module `RueCore.Trace`
 
 **No double free** (§7): a well-typed program's run is never refused, so
-its trace is the whole run's (`no_violation`), and in that trace no identity
+its trace is the whole run's (`no_refusal`), and in that trace no identity
 appears twice among the `drop`/`dropTemp` free events (`freedIds`) and no
 identity has its destructor run twice (`dtorIds`, §7's literal claim). The
 first conjunct is what makes the other two a statement about the program
@@ -2397,23 +2397,23 @@ theorem RueCore.run_sim (M : FloatSig) (P : Program) (fuel : Nat) :
         Steps M P Config.init (Config.panic k tr)
 ```
 
-### `eval_sound`
+### `eval_big_to_small`
 
 *theorem* · module `RueCore.Adequacy`
 
 **`eval` is sound with respect to §6's reduction** (RUE-2289 part 2;
 ADR-0097 decision 3: "a theorem about `eval` is a theorem about §6 only once
 the two are proved to agree"). For a program `check` accepts
-(`ProgramTyped`, RUE-2314's domain), `run` is never stuck (`no_violation`),
+(`ProgramTyped`, RUE-2314's domain), `run` is never stuck (`no_refusal`),
 so it answers a value, a panic or `outOfFuel`; a value is reached by §6's
 `→*` from the initial configuration as a terminal configuration with the same
 store and trace, and a panic as `↯κ` after the same trace (§6.2, §6.12).
 `.refused` is outside the correspondence and does not occur here; `outOfFuel`
 is not a state of §6's machine. The converse, completeness modulo fuel, is
-`eval_complete`.
+`eval_small_to_big`.
 
 ```lean
-theorem RueCore.eval_sound (M : FloatLaws) {P : Program} (h : ProgramTyped P)
+theorem RueCore.eval_big_to_small (M : FloatLaws) {P : Program} (h : ProgramTyped P)
   (fuel : Nat) :
   (∀ (w : Refusal), run M.toFloatSig P fuel ≠ EvalRes.refused w) ∧
     (∀ (H : Store) (v : Val) (tr : List Event),
@@ -2443,7 +2443,7 @@ theorem RueCore.eval_steps_of_outOfFuel (M : FloatSig) (P : Program) (fuel : Nat
   LongIH M P fuel
 ```
 
-### `run_complete`
+### `run_small_to_big`
 
 *theorem* · module `RueCore.Adequacy`
 
@@ -2452,11 +2452,11 @@ theorem RueCore.eval_steps_of_outOfFuel (M : FloatSig) (P : Program) (fuel : Nat
 configuration to `✓` — a value at an empty stack — then at every fuel past
 the number of steps, `run` answers that value with the same store and trace,
 or refuses; likewise for `↯κ`. The refusal disjunct is where `eval`'s
-monitors and its `@drop ⊘` refusal sit (RUE-2314); `eval_complete` removes it
+monitors and its `@drop ⊘` refusal sit (RUE-2314); `eval_small_to_big` removes it
 on checked programs.
 
 ```lean
-theorem RueCore.run_complete (M : FloatSig) (P : Program) :
+theorem RueCore.run_small_to_big (M : FloatSig) (P : Program) :
   (∀ (H : Store) (φ : Activation) (v : Val) (tr : List Event),
       Steps M P Config.init (Config.run H φ [] (Focus.ret v) tr) →
         ∃ n,
@@ -2473,7 +2473,7 @@ theorem RueCore.run_complete (M : FloatSig) (P : Program) :
                 ∃ w, run M P fuel = EvalRes.refused w
 ```
 
-### `eval_complete`
+### `eval_small_to_big`
 
 *theorem* · module `RueCore.Adequacy`
 
@@ -2483,13 +2483,13 @@ are proved to agree"). For a program `check` accepts (`ProgramTyped`,
 RUE-2314's domain): if §6's `→*` takes the initial configuration to a
 terminal configuration — `✓`, a value at an empty stack, or `↯κ` — then some
 fuel makes `run` answer that outcome with the same store, value and trace,
-and so does every larger fuel (§6.2, §6.12). With `eval_sound` this is
+and so does every larger fuel (§6.2, §6.12). With `eval_big_to_small` this is
 adequacy in both directions: on checked programs, `run`'s values and panics
 are exactly the ends of §6's runs, and `outOfFuel` at every fuel is exactly
 divergence (`eval_diverges_iff`).
 
 ```lean
-theorem RueCore.eval_complete (M : FloatLaws) {P : Program} (h : ProgramTyped P) :
+theorem RueCore.eval_small_to_big (M : FloatLaws) {P : Program} (h : ProgramTyped P) :
   (∀ (H : Store) (φ : Activation) (v : Val) (tr : List Event),
       Steps M.toFloatSig P Config.init (Config.run H φ [] (Focus.ret v) tr) →
         ∃ n,
@@ -2502,7 +2502,7 @@ theorem RueCore.eval_complete (M : FloatLaws) {P : Program} (h : ProgramTyped P)
             n < fuel → run M.toFloatSig P fuel = EvalRes.panic κ tr
 ```
 
-### `run_stuck_of_step_stuck`
+### `run_refused_of_step_stuck`
 
 *theorem* · module `RueCore.Adequacy`
 
@@ -2512,7 +2512,7 @@ the number of steps `run` refuses. The refusal need not name the same
 `Refusal`: `eval` inspects operand shapes in its own order (RUE-2314).
 
 ```lean
-theorem RueCore.run_stuck_of_step_stuck (M : FloatSig) (P : Program) {C : Config}
+theorem RueCore.run_refused_of_step_stuck (M : FloatSig) (P : Program) {C : Config}
   {w : Refusal} (hC : Steps M P Config.init C) (hs : Config.Stuck M P C w) :
   ∃ n, ∀ (fuel : Nat), n < fuel → ∃ w', run M P fuel = EvalRes.refused w'
 ```
@@ -2535,7 +2535,7 @@ theorem RueCore.step_never_stuck_of_run (M : FloatSig) (P : Program)
   (C : Config) : Steps M P Config.init C → C.Terminal ∨ ∃ C', Step M P C C'
 ```
 
-### `never_stuck_iff`
+### `never_refused_iff`
 
 *theorem* · module `RueCore.Adequacy`
 
@@ -2545,13 +2545,13 @@ type-safety bullet; ADR-0097 decision 3). For a program `check` accepts,
 configuration §6's `→*` reaches from the initial one reduces or has halted
 with a value or a panic". The forward direction holds on every program
 (`step_never_stuck_of_run`) and is the one with content; on this domain the
-backward one is `no_violation`, and off it the backward one fails
+backward one is `no_refusal`, and off it the backward one fails
 (RUE-2314's discriminators). `fuel_mono` and `no_masking` (`Soundness.lean`)
 say the same stability from `eval`'s side: its answer, once it is not
 `outOfFuel`, is the answer at every larger fuel.
 
 ```lean
-theorem RueCore.never_stuck_iff (M : FloatLaws) {P : Program} (h : ProgramTyped P) :
+theorem RueCore.never_refused_iff (M : FloatLaws) {P : Program} (h : ProgramTyped P) :
   (∀ (fuel : Nat) (w : Refusal),
       run M.toFloatSig P fuel ≠ EvalRes.refused w) ↔
     ∀ (C : Config),
@@ -2568,7 +2568,7 @@ decision 3). For a program `check` accepts, `run` is `outOfFuel` at every
 fuel exactly when §6's reduction has a run of every length from the initial
 configuration — by `Step.det`, one infinite run. So `outOfFuel` is never a
 premature stop on a checked program: past the length of §6's run, `eval`
-answers (`eval_complete`), and where it never answers §6 never halts.
+answers (`eval_small_to_big`), and where it never answers §6 never halts.
 
 ```lean
 theorem RueCore.eval_diverges_iff (M : FloatLaws) {P : Program} (h : ProgramTyped P) :
@@ -2589,7 +2589,7 @@ theorem RueCore.Config.SafeAt.progress {M : FloatSig} {P : Program} {T : Ty}
   {C : Config} (h : Config.SafeAt M P T C) : C.Terminal ∨ ∃ C', Step M P C C'
 ```
 
-### `Config.SafeAt.preservation`
+### `Config.SafeAt.invariant`
 
 *theorem* · module `RueCore.Adequacy`
 
@@ -2598,7 +2598,7 @@ preserved under reduction"): a step of §6's `→` from a configuration typed at
 `T` lands on one typed at `T`.
 
 ```lean
-theorem RueCore.Config.SafeAt.preservation {M : FloatSig} {P : Program} {T : Ty}
+theorem RueCore.Config.SafeAt.invariant {M : FloatSig} {P : Program} {T : Ty}
   {C C' : Config} (h : Config.SafeAt M P T C) (hs : Step M P C C') :
   Config.SafeAt M P T C'
 ```
@@ -2610,9 +2610,9 @@ theorem RueCore.Config.SafeAt.preservation {M : FloatSig} {P : Program} {T : Ty}
 **The fundamental lemma: a checked program starts typed** (§7, first
 bullet; §6.12's initial configuration). For a program `check` accepts, the
 initial configuration is safe at the entry point's declared return type. The
-"never stuck" half is `step_never_stuck_of_run` given `no_violation`; the
+"never stuck" half is `step_never_stuck_of_run` given `no_refusal`; the
 typing half takes a value §6 halts with to `run`'s answer at some fuel
-(`eval_complete`), where `run_safe` (`soundness` over a whole program) types
+(`eval_small_to_big`), where `run_safe` (`soundness` over a whole program) types
 it. This is the one place `soundness` enters the `Step` form.
 
 ```lean
@@ -2630,7 +2630,7 @@ a value, or halts with one of the defined panics"; ADR-0097 decision 3). For
 a program `check` accepts, every configuration `→*` reaches from §6.12's
 initial configuration is terminal or takes a step, so none is stuck
 (`Config.stuck_iff`). Derived: `soundness` gives "`run` is never `.refused`"
-(`no_violation`), and `step_never_stuck_of_run` — built from `run_sim` and
+(`no_refusal`), and `step_never_stuck_of_run` — built from `run_sim` and
 the step count `eval_steps_of_outOfFuel` — carries it to `Step`.
 
 ```lean
@@ -2640,7 +2640,7 @@ theorem RueCore.step_progress (M : FloatLaws) {P : Program} (h : ProgramTyped P)
     C.Terminal ∨ ∃ C', Step M.toFloatSig P C C'
 ```
 
-### `step_preservation`
+### `step_safeAt`
 
 *theorem* · module `RueCore.Adequacy`
 
@@ -2649,12 +2649,12 @@ preserved under reduction"; ADR-0097 decision 3). For a program `check`
 accepts, every configuration `→*` reaches from §6.12's initial configuration
 is typed at the entry point's declared return type, in the semantic sense of
 `Config.SafeAt`: it is never stuck from there on, and every value it halts
-with has that type. With `Config.SafeAt.preservation` this is the one-step
+with has that type. With `Config.SafeAt.invariant` this is the one-step
 form. The typing is semantic, not a syntactic `⊢ C : T`; this section's
 docstring says what that does and does not claim.
 
 ```lean
-theorem RueCore.step_preservation (M : FloatLaws) {P : Program} (h : ProgramTyped P) :
+theorem RueCore.step_safeAt (M : FloatLaws) {P : Program} (h : ProgramTyped P) :
   ∃ fd,
     P.fns[0]? = some fd ∧
       ∀ (C : Config),
@@ -2723,25 +2723,25 @@ theorem RueCore.step_type_safety (M : FloatLaws) {P : Program} (h : ProgramTyped
 theorem RueCore.Nonvacuous.exact_model : ∃ M, M.toFloatSig = Float.exactOps
 ```
 
-### `Nonvacuous.empty_frame`
+### `Nonvacuous.empty_activation`
 
 *theorem* · module `RueCore.Nonvacuous`
 
-`Spec.Nonvacuous.empty_frame_stmt`, proved: §7's hypotheses, satisfied (RUE-2469).
+`Spec.Nonvacuous.empty_activation_stmt`, proved: §7's hypotheses, satisfied (RUE-2469).
 
 ```lean
-theorem RueCore.Nonvacuous.empty_frame (D : Decls) :
+theorem RueCore.Nonvacuous.empty_activation (D : Decls) :
   ActivationTyping D [] Activation.empty [] ∧ StoreCC D []
 ```
 
-### `Nonvacuous.open_frame`
+### `Nonvacuous.open_activation`
 
 *theorem* · module `RueCore.Nonvacuous`
 
-`Spec.Nonvacuous.open_frame_stmt`, proved: §7's hypotheses, satisfied (RUE-2469).
+`Spec.Nonvacuous.open_activation_stmt`, proved: §7's hypotheses, satisfied (RUE-2469).
 
 ```lean
-theorem RueCore.Nonvacuous.open_frame (D : Decls) :
+theorem RueCore.Nonvacuous.open_activation (D : Decls) :
   D =
       {
         structs :=
@@ -3273,14 +3273,14 @@ theorem RueCore.Nonvacuous.diverges_drop (B : Expr) :
                     2 ≤ (freedIds P.decls C.trace).length
 ```
 
-### `Nonvacuous.stuck`
+### `Nonvacuous.refused_stuck`
 
 *theorem* · module `RueCore.Nonvacuous`
 
-`Spec.Nonvacuous.stuck_stmt`, proved: §7's hypotheses, satisfied (RUE-2469).
+`Spec.Nonvacuous.refused_stuck_stmt`, proved: §7's hypotheses, satisfied (RUE-2469).
 
 ```lean
-theorem RueCore.Nonvacuous.stuck (B : Expr) :
+theorem RueCore.Nonvacuous.refused_stuck (B : Expr) :
   B =
       Expr.letIn false
         (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
@@ -3961,7 +3961,7 @@ checker accepts:
   order (`reachable_stackDiscipline`, `StackDiscipline.newer`). So across all its exit steps a
   scope's cells drop newest first, and before any older scope's.
 
-Only the first half reads the typing hypothesis, through `eval_complete` and
+Only the first half reads the typing hypothesis, through `eval_small_to_big` and
 `DtorNotCopy`.
 
 ```lean
@@ -4078,7 +4078,7 @@ The proof is lossless simulation: `eval_msim` follows `eval_sim` form by
 form and shows each step of the run moves an owned identity between the
 store, the focus, the stack and the trace without losing it (`MSteps`); by
 determinism every configuration the run reaches lies on that run
-(`MSteps.of_steps`). `eval_complete` places the run's end at `run`'s answer,
+(`MSteps.of_steps`). `eval_small_to_big` places the run's end at `run`'s answer,
 where `eval_tidy` has retired every cell and `eval_conserves` bounds each
 count by one.
 
@@ -4092,14 +4092,14 @@ theorem RueCore.whole_program_exactly_once (M : FloatLaws) {P : Program}
   List.count a (Val.own P.decls v) + List.count a (freedIds P.decls tr) = 1
 ```
 
-### `Sharp.stuck`
+### `Sharp.refused`
 
 *theorem* · module `RueCore.Sharp`
 
-`Spec.Sharp.stuck_stmt`, proved: a §7 hypothesis needed (RUE-2485).
+`Spec.Sharp.refused_stmt`, proved: a §7 hypothesis needed (RUE-2485).
 
 ```lean
-theorem RueCore.Sharp.stuck (B : Expr) :
+theorem RueCore.Sharp.refused (B : Expr) :
   B =
       Expr.letIn false
         (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
@@ -4311,14 +4311,14 @@ theorem RueCore.Sharp.typed (B : Expr) :
                                               Activation.empty e)
 ```
 
-### `Sharp.frame`
+### `Sharp.activation`
 
 *theorem* · module `RueCore.Sharp`
 
-`Spec.Sharp.frame_stmt`, proved: a §7 hypothesis needed (RUE-2485).
+`Spec.Sharp.activation_stmt`, proved: a §7 hypothesis needed (RUE-2485).
 
 ```lean
-theorem RueCore.Sharp.frame (B : Expr) :
+theorem RueCore.Sharp.activation (B : Expr) :
   B =
       Expr.letIn false
         (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
@@ -5687,14 +5687,14 @@ theorem RueCore.Sharp.unreachable_stuck (B : Expr) :
                                 run Float.exactOps P fuel = EvalRes.refused w'
 ```
 
-### `Sharp.retired_cell`
+### `Sharp.tombstoned_cell`
 
 *theorem* · module `RueCore.Sharp`
 
-`Spec.Sharp.retired_cell_stmt`, proved: a §7 hypothesis needed (RUE-2496).
+`Spec.Sharp.tombstoned_cell_stmt`, proved: a §7 hypothesis needed (RUE-2496).
 
 ```lean
-theorem RueCore.Sharp.retired_cell (B : Expr) :
+theorem RueCore.Sharp.tombstoned_cell (B : Expr) :
   B =
       Expr.letIn false
         (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
@@ -6954,7 +6954,7 @@ theorem RueCore.demo_loopIter_drops (M : FloatSig) (e : Expr) :
 `let s = S{}; let t = s; @drop(s); 0`, §6's `→*` reaches `✓0`, because §6.11
 makes `@drop` of a `⊘` place a no-op (`demo_dropMoved_runs`, above).
 `run` refuses it with `useAfterMove` instead. That refusal is the one disjunct
-`run_complete` allows, and `check` rejects the program.
+`run_small_to_big` allows, and `check` rejects the program.
 
 ```lean
 theorem RueCore.dropMoved_refused (M : FloatSig) :
@@ -16199,7 +16199,7 @@ theorem RueCore.StackDiscipline.cut {A m ls : List Nat} (h : ls.Sublist m.revers
 *theorem* · module `RueCore.TraceOrder`
 
 `Blocks` on §6's terminal configurations: a finished `Step` run's trace
-is the one `eval` answers (`eval_complete`), so it is in the block grammar
+is the one `eval` answers (`eval_small_to_big`), so it is in the block grammar
 (helper).
 
 ```lean
@@ -17413,7 +17413,7 @@ theorem RueCore.steps_trace_once (M : FloatSig) {P : Program} {F : Event → Lis
 *theorem* · module `RueCore.TracePrefix`
 
 `no_double_free` for a finished run is a corollary (RUE-2477): a value or a
-panic `run` answers is reached by §6's relation (`eval_sound`), so its trace is
+panic `run` answers is reached by §6's relation (`eval_big_to_small`), so its trace is
 a reachable configuration's; exhausted fuel carries the empty trace; and a
 checked run is never refused (helper).
 
@@ -18564,14 +18564,14 @@ theorem RueCore.Sharp.not_eventually {M : FloatSig} {P : Program} {n : Nat}
   ¬∃ k, ∀ (fuel : Nat), k < fuel → Q (run M P fuel)
 ```
 
-### `Sharp.stuck_not_safe`
+### `Sharp.refused_not_safe`
 
 *theorem* · module `RueCore.Sharp`
 
 A refusal is none of `run_safe`'s outcomes, for any entry point (helper).
 
 ```lean
-theorem RueCore.Sharp.stuck_not_safe {M : FloatSig} {P : Program} {n : Nat}
+theorem RueCore.Sharp.refused_not_safe {M : FloatSig} {P : Program} {n : Nat}
   {w : Refusal} (h : run M P n = EvalRes.refused w) (fd : FnDef) :
   ¬(run M P n = EvalRes.outOfFuel ∨
       (∃ k tr, run M P n = EvalRes.panic k tr) ∨
@@ -18723,14 +18723,14 @@ theorem RueCore.Spine.soundness : Spec.soundness_stmt
 theorem RueCore.Spine.run_safe : Spec.run_safe_stmt
 ```
 
-### `Spine.no_violation`
+### `Spine.no_refusal`
 
 *theorem* · module `RueCore.Spine`
 
-`Spec.no_violation_stmt`, by `RueCore.no_violation` (helper).
+`Spec.no_refusal_stmt`, by `RueCore.no_refusal` (helper).
 
 ```lean
-theorem RueCore.Spine.no_violation : Spec.no_violation_stmt
+theorem RueCore.Spine.no_refusal : Spec.no_refusal_stmt
 ```
 
 ### `Spine.no_use_after_move`
@@ -19004,14 +19004,14 @@ theorem RueCore.Spine.step_stuck_isStuckState : Spec.step_stuck_isStuckState_stm
 theorem RueCore.Spine.step_progress : Spec.step_progress_stmt
 ```
 
-### `Spine.step_preservation`
+### `Spine.step_safeAt`
 
 *theorem* · module `RueCore.Spine`
 
-`Spec.step_preservation_stmt`, by `RueCore.step_preservation` (helper).
+`Spec.step_safeAt_stmt`, by `RueCore.step_safeAt` (helper).
 
 ```lean
-theorem RueCore.Spine.step_preservation : Spec.step_preservation_stmt
+theorem RueCore.Spine.step_safeAt : Spec.step_safeAt_stmt
 ```
 
 ### `Spine.step_type_safety`
@@ -19034,14 +19034,14 @@ theorem RueCore.Spine.step_type_safety : Spec.step_type_safety_stmt
 theorem RueCore.Spine.step_no_use_after_drop : Spec.step_no_use_after_drop_stmt
 ```
 
-### `Spine.eval_sound`
+### `Spine.eval_big_to_small`
 
 *theorem* · module `RueCore.Spine`
 
-`Spec.eval_sound_stmt`, by `RueCore.eval_sound` (helper).
+`Spec.eval_big_to_small_stmt`, by `RueCore.eval_big_to_small` (helper).
 
 ```lean
-theorem RueCore.Spine.eval_sound : Spec.eval_sound_stmt
+theorem RueCore.Spine.eval_big_to_small : Spec.eval_big_to_small_stmt
 ```
 
 ### `Spine.run_sim`
@@ -19054,34 +19054,34 @@ theorem RueCore.Spine.eval_sound : Spec.eval_sound_stmt
 theorem RueCore.Spine.run_sim : Spec.run_sim_stmt
 ```
 
-### `Spine.eval_complete`
+### `Spine.eval_small_to_big`
 
 *theorem* · module `RueCore.Spine`
 
-`Spec.eval_complete_stmt`, by `RueCore.eval_complete` (helper).
+`Spec.eval_small_to_big_stmt`, by `RueCore.eval_small_to_big` (helper).
 
 ```lean
-theorem RueCore.Spine.eval_complete : Spec.eval_complete_stmt
+theorem RueCore.Spine.eval_small_to_big : Spec.eval_small_to_big_stmt
 ```
 
-### `Spine.run_complete`
+### `Spine.run_small_to_big`
 
 *theorem* · module `RueCore.Spine`
 
-`Spec.run_complete_stmt`, by `RueCore.run_complete` (helper).
+`Spec.run_small_to_big_stmt`, by `RueCore.run_small_to_big` (helper).
 
 ```lean
-theorem RueCore.Spine.run_complete : Spec.run_complete_stmt
+theorem RueCore.Spine.run_small_to_big : Spec.run_small_to_big_stmt
 ```
 
-### `Spine.never_stuck_iff`
+### `Spine.never_refused_iff`
 
 *theorem* · module `RueCore.Spine`
 
-`Spec.never_stuck_iff_stmt`, by `RueCore.never_stuck_iff` (helper).
+`Spec.never_refused_iff_stmt`, by `RueCore.never_refused_iff` (helper).
 
 ```lean
-theorem RueCore.Spine.never_stuck_iff : Spec.never_stuck_iff_stmt
+theorem RueCore.Spine.never_refused_iff : Spec.never_refused_iff_stmt
 ```
 
 ### `Spine.step_never_stuck_of_run`
@@ -19094,14 +19094,14 @@ theorem RueCore.Spine.never_stuck_iff : Spec.never_stuck_iff_stmt
 theorem RueCore.Spine.step_never_stuck_of_run : Spec.step_never_stuck_of_run_stmt
 ```
 
-### `Spine.run_stuck_of_step_stuck`
+### `Spine.run_refused_of_step_stuck`
 
 *theorem* · module `RueCore.Spine`
 
-`Spec.run_stuck_of_step_stuck_stmt`, by `RueCore.run_stuck_of_step_stuck` (helper).
+`Spec.run_refused_of_step_stuck_stmt`, by `RueCore.run_refused_of_step_stuck` (helper).
 
 ```lean
-theorem RueCore.Spine.run_stuck_of_step_stuck : Spec.run_stuck_of_step_stuck_stmt
+theorem RueCore.Spine.run_refused_of_step_stuck : Spec.run_refused_of_step_stuck_stmt
 ```
 
 ### `Spine.eval_diverges_iff`
@@ -19124,24 +19124,26 @@ theorem RueCore.Spine.eval_diverges_iff : Spec.eval_diverges_iff_stmt
 theorem RueCore.Spine.Nonvacuous.exact_model : Spec.Nonvacuous.exact_model_stmt
 ```
 
-### `Spine.Nonvacuous.empty_frame`
+### `Spine.Nonvacuous.empty_activation`
 
 *theorem* · module `RueCore.Spine`
 
-`Spec.Nonvacuous.empty_frame_stmt`, by `RueCore.Nonvacuous.empty_frame` (helper).
+`Spec.Nonvacuous.empty_activation_stmt`, by `RueCore.Nonvacuous.empty_activation` (helper).
 
 ```lean
-theorem RueCore.Spine.Nonvacuous.empty_frame : Spec.Nonvacuous.empty_frame_stmt
+theorem RueCore.Spine.Nonvacuous.empty_activation :
+  Spec.Nonvacuous.empty_activation_stmt
 ```
 
-### `Spine.Nonvacuous.open_frame`
+### `Spine.Nonvacuous.open_activation`
 
 *theorem* · module `RueCore.Spine`
 
-`Spec.Nonvacuous.open_frame_stmt`, by `RueCore.Nonvacuous.open_frame` (helper).
+`Spec.Nonvacuous.open_activation_stmt`, by `RueCore.Nonvacuous.open_activation` (helper).
 
 ```lean
-theorem RueCore.Spine.Nonvacuous.open_frame : Spec.Nonvacuous.open_frame_stmt
+theorem RueCore.Spine.Nonvacuous.open_activation :
+  Spec.Nonvacuous.open_activation_stmt
 ```
 
 ### `Spine.Nonvacuous.dtor`
@@ -19264,24 +19266,24 @@ theorem RueCore.Spine.Nonvacuous.whole_drops : Spec.Nonvacuous.whole_drops_stmt
 theorem RueCore.Spine.Nonvacuous.whole_result : Spec.Nonvacuous.whole_result_stmt
 ```
 
-### `Spine.Nonvacuous.stuck`
+### `Spine.Nonvacuous.refused_stuck`
 
 *theorem* · module `RueCore.Spine`
 
-`Spec.Nonvacuous.stuck_stmt`, by `RueCore.Nonvacuous.stuck` (helper).
+`Spec.Nonvacuous.refused_stuck_stmt`, by `RueCore.Nonvacuous.refused_stuck` (helper).
 
 ```lean
-theorem RueCore.Spine.Nonvacuous.stuck : Spec.Nonvacuous.stuck_stmt
+theorem RueCore.Spine.Nonvacuous.refused_stuck : Spec.Nonvacuous.refused_stuck_stmt
 ```
 
-### `Spine.Sharp.stuck`
+### `Spine.Sharp.refused`
 
 *theorem* · module `RueCore.Spine`
 
-`Spec.Sharp.stuck_stmt`, by `RueCore.Sharp.stuck` (helper).
+`Spec.Sharp.refused_stmt`, by `RueCore.Sharp.refused` (helper).
 
 ```lean
-theorem RueCore.Spine.Sharp.stuck : Spec.Sharp.stuck_stmt
+theorem RueCore.Spine.Sharp.refused : Spec.Sharp.refused_stmt
 ```
 
 ### `Spine.Sharp.stuck_step`
@@ -19304,14 +19306,14 @@ theorem RueCore.Spine.Sharp.stuck_step : Spec.Sharp.stuck_step_stmt
 theorem RueCore.Spine.Sharp.typed : Spec.Sharp.typed_stmt
 ```
 
-### `Spine.Sharp.frame`
+### `Spine.Sharp.activation`
 
 *theorem* · module `RueCore.Spine`
 
-`Spec.Sharp.frame_stmt`, by `RueCore.Sharp.frame` (helper).
+`Spec.Sharp.activation_stmt`, by `RueCore.Sharp.activation` (helper).
 
 ```lean
-theorem RueCore.Spine.Sharp.frame : Spec.Sharp.frame_stmt
+theorem RueCore.Spine.Sharp.activation : Spec.Sharp.activation_stmt
 ```
 
 ### `Spine.Sharp.no_entry`
@@ -19544,14 +19546,14 @@ theorem RueCore.Spine.Sharp.init_steps : Spec.Sharp.init_steps_stmt
 theorem RueCore.Spine.Sharp.unreachable_stuck : Spec.Sharp.unreachable_stuck_stmt
 ```
 
-### `Spine.Sharp.retired_cell`
+### `Spine.Sharp.tombstoned_cell`
 
 *theorem* · module `RueCore.Spine`
 
-`Spec.Sharp.retired_cell_stmt`, by `RueCore.Sharp.retired_cell` (helper).
+`Spec.Sharp.tombstoned_cell_stmt`, by `RueCore.Sharp.tombstoned_cell` (helper).
 
 ```lean
-theorem RueCore.Spine.Sharp.retired_cell : Spec.Sharp.retired_cell_stmt
+theorem RueCore.Spine.Sharp.tombstoned_cell : Spec.Sharp.tombstoned_cell_stmt
 ```
 
 ### `Spine.Sharp.unreached_double`
@@ -19726,14 +19728,14 @@ theorem RueCore.Nonvacuous.Glue.dtor.soundness : True
 theorem RueCore.Nonvacuous.Glue.dtor.run_safe : True
 ```
 
-### `Nonvacuous.Glue.dtor.no_violation`
+### `Nonvacuous.Glue.dtor.no_refusal`
 
 *theorem* · module `RueCore.Nonvacuous.Glue`
 
-`dtor` applied to `no_violation` (helper).
+`dtor` applied to `no_refusal` (helper).
 
 ```lean
-theorem RueCore.Nonvacuous.Glue.dtor.no_violation : True
+theorem RueCore.Nonvacuous.Glue.dtor.no_refusal : True
 ```
 
 ### `Nonvacuous.Glue.dtor.no_use_after_move`
@@ -19856,14 +19858,14 @@ theorem RueCore.Nonvacuous.Glue.dtor.drop_glue_order : True
 theorem RueCore.Nonvacuous.Glue.dtor.step_progress : True
 ```
 
-### `Nonvacuous.Glue.dtor.step_preservation`
+### `Nonvacuous.Glue.dtor.step_safeAt`
 
 *theorem* · module `RueCore.Nonvacuous.Glue`
 
-`dtor` applied to `step_preservation` (helper).
+`dtor` applied to `step_safeAt` (helper).
 
 ```lean
-theorem RueCore.Nonvacuous.Glue.dtor.step_preservation : True
+theorem RueCore.Nonvacuous.Glue.dtor.step_safeAt : True
 ```
 
 ### `Nonvacuous.Glue.dtor.step_type_safety`
@@ -19886,24 +19888,24 @@ theorem RueCore.Nonvacuous.Glue.dtor.step_type_safety : True
 theorem RueCore.Nonvacuous.Glue.dtor.step_no_use_after_drop : True
 ```
 
-### `Nonvacuous.Glue.dtor.eval_sound`
+### `Nonvacuous.Glue.dtor.eval_big_to_small`
 
 *theorem* · module `RueCore.Nonvacuous.Glue`
 
-`dtor` applied to `eval_sound` (helper).
+`dtor` applied to `eval_big_to_small` (helper).
 
 ```lean
-theorem RueCore.Nonvacuous.Glue.dtor.eval_sound : True
+theorem RueCore.Nonvacuous.Glue.dtor.eval_big_to_small : True
 ```
 
-### `Nonvacuous.Glue.dtor.never_stuck_iff`
+### `Nonvacuous.Glue.dtor.never_refused_iff`
 
 *theorem* · module `RueCore.Nonvacuous.Glue`
 
-`dtor` applied to `never_stuck_iff` (helper).
+`dtor` applied to `never_refused_iff` (helper).
 
 ```lean
-theorem RueCore.Nonvacuous.Glue.dtor.never_stuck_iff : True
+theorem RueCore.Nonvacuous.Glue.dtor.never_refused_iff : True
 ```
 
 ### `Nonvacuous.Glue.dtor.eval_diverges_iff`
@@ -19946,24 +19948,24 @@ theorem RueCore.Nonvacuous.Glue.dtor.Step.terminal : True
 theorem RueCore.Nonvacuous.Glue.dtor.run_sim : True
 ```
 
-### `Nonvacuous.Glue.dtor.eval_complete`
+### `Nonvacuous.Glue.dtor.eval_small_to_big`
 
 *theorem* · module `RueCore.Nonvacuous.Glue`
 
-`dtor` applied to `eval_complete` (helper).
+`dtor` applied to `eval_small_to_big` (helper).
 
 ```lean
-theorem RueCore.Nonvacuous.Glue.dtor.eval_complete : True
+theorem RueCore.Nonvacuous.Glue.dtor.eval_small_to_big : True
 ```
 
-### `Nonvacuous.Glue.dtor.run_complete`
+### `Nonvacuous.Glue.dtor.run_small_to_big`
 
 *theorem* · module `RueCore.Nonvacuous.Glue`
 
-`dtor` applied to `run_complete` (helper).
+`dtor` applied to `run_small_to_big` (helper).
 
 ```lean
-theorem RueCore.Nonvacuous.Glue.dtor.run_complete : True
+theorem RueCore.Nonvacuous.Glue.dtor.run_small_to_big : True
 ```
 
 ### `Nonvacuous.Glue.dtor.step_no_double_free`
@@ -20076,14 +20078,14 @@ theorem RueCore.Nonvacuous.Glue.linear.soundness : True
 theorem RueCore.Nonvacuous.Glue.linear.run_safe : True
 ```
 
-### `Nonvacuous.Glue.linear.no_violation`
+### `Nonvacuous.Glue.linear.no_refusal`
 
 *theorem* · module `RueCore.Nonvacuous.Glue`
 
-`linear` applied to `no_violation` (helper).
+`linear` applied to `no_refusal` (helper).
 
 ```lean
-theorem RueCore.Nonvacuous.Glue.linear.no_violation : True
+theorem RueCore.Nonvacuous.Glue.linear.no_refusal : True
 ```
 
 ### `Nonvacuous.Glue.linear.no_use_after_move`
@@ -20196,14 +20198,14 @@ theorem RueCore.Nonvacuous.Glue.linear.drop_glue_order : True
 theorem RueCore.Nonvacuous.Glue.linear.step_progress : True
 ```
 
-### `Nonvacuous.Glue.linear.step_preservation`
+### `Nonvacuous.Glue.linear.step_safeAt`
 
 *theorem* · module `RueCore.Nonvacuous.Glue`
 
-`linear` applied to `step_preservation` (helper).
+`linear` applied to `step_safeAt` (helper).
 
 ```lean
-theorem RueCore.Nonvacuous.Glue.linear.step_preservation : True
+theorem RueCore.Nonvacuous.Glue.linear.step_safeAt : True
 ```
 
 ### `Nonvacuous.Glue.linear.step_type_safety`
@@ -20216,24 +20218,24 @@ theorem RueCore.Nonvacuous.Glue.linear.step_preservation : True
 theorem RueCore.Nonvacuous.Glue.linear.step_type_safety : True
 ```
 
-### `Nonvacuous.Glue.linear.eval_sound`
+### `Nonvacuous.Glue.linear.eval_big_to_small`
 
 *theorem* · module `RueCore.Nonvacuous.Glue`
 
-`linear` applied to `eval_sound` (helper).
+`linear` applied to `eval_big_to_small` (helper).
 
 ```lean
-theorem RueCore.Nonvacuous.Glue.linear.eval_sound : True
+theorem RueCore.Nonvacuous.Glue.linear.eval_big_to_small : True
 ```
 
-### `Nonvacuous.Glue.linear.never_stuck_iff`
+### `Nonvacuous.Glue.linear.never_refused_iff`
 
 *theorem* · module `RueCore.Nonvacuous.Glue`
 
-`linear` applied to `never_stuck_iff` (helper).
+`linear` applied to `never_refused_iff` (helper).
 
 ```lean
-theorem RueCore.Nonvacuous.Glue.linear.never_stuck_iff : True
+theorem RueCore.Nonvacuous.Glue.linear.never_refused_iff : True
 ```
 
 ### `Nonvacuous.Glue.linear.eval_diverges_iff`
@@ -20276,24 +20278,24 @@ theorem RueCore.Nonvacuous.Glue.linear.Step.terminal : True
 theorem RueCore.Nonvacuous.Glue.linear.run_sim : True
 ```
 
-### `Nonvacuous.Glue.linear.eval_complete`
+### `Nonvacuous.Glue.linear.eval_small_to_big`
 
 *theorem* · module `RueCore.Nonvacuous.Glue`
 
-`linear` applied to `eval_complete` (helper).
+`linear` applied to `eval_small_to_big` (helper).
 
 ```lean
-theorem RueCore.Nonvacuous.Glue.linear.eval_complete : True
+theorem RueCore.Nonvacuous.Glue.linear.eval_small_to_big : True
 ```
 
-### `Nonvacuous.Glue.linear.run_complete`
+### `Nonvacuous.Glue.linear.run_small_to_big`
 
 *theorem* · module `RueCore.Nonvacuous.Glue`
 
-`linear` applied to `run_complete` (helper).
+`linear` applied to `run_small_to_big` (helper).
 
 ```lean
-theorem RueCore.Nonvacuous.Glue.linear.run_complete : True
+theorem RueCore.Nonvacuous.Glue.linear.run_small_to_big : True
 ```
 
 ### `Nonvacuous.Glue.loop.soundness`
@@ -20316,14 +20318,14 @@ theorem RueCore.Nonvacuous.Glue.loop.soundness : True
 theorem RueCore.Nonvacuous.Glue.loop.run_safe : True
 ```
 
-### `Nonvacuous.Glue.loop.no_violation`
+### `Nonvacuous.Glue.loop.no_refusal`
 
 *theorem* · module `RueCore.Nonvacuous.Glue`
 
-`loop` applied to `no_violation` (helper).
+`loop` applied to `no_refusal` (helper).
 
 ```lean
-theorem RueCore.Nonvacuous.Glue.loop.no_violation : True
+theorem RueCore.Nonvacuous.Glue.loop.no_refusal : True
 ```
 
 ### `Nonvacuous.Glue.loop.no_use_after_move`
@@ -20436,14 +20438,14 @@ theorem RueCore.Nonvacuous.Glue.loop.drop_glue_order : True
 theorem RueCore.Nonvacuous.Glue.loop.step_progress : True
 ```
 
-### `Nonvacuous.Glue.loop.step_preservation`
+### `Nonvacuous.Glue.loop.step_safeAt`
 
 *theorem* · module `RueCore.Nonvacuous.Glue`
 
-`loop` applied to `step_preservation` (helper).
+`loop` applied to `step_safeAt` (helper).
 
 ```lean
-theorem RueCore.Nonvacuous.Glue.loop.step_preservation : True
+theorem RueCore.Nonvacuous.Glue.loop.step_safeAt : True
 ```
 
 ### `Nonvacuous.Glue.loop.step_type_safety`
@@ -20456,24 +20458,24 @@ theorem RueCore.Nonvacuous.Glue.loop.step_preservation : True
 theorem RueCore.Nonvacuous.Glue.loop.step_type_safety : True
 ```
 
-### `Nonvacuous.Glue.loop.eval_sound`
+### `Nonvacuous.Glue.loop.eval_big_to_small`
 
 *theorem* · module `RueCore.Nonvacuous.Glue`
 
-`loop` applied to `eval_sound` (helper).
+`loop` applied to `eval_big_to_small` (helper).
 
 ```lean
-theorem RueCore.Nonvacuous.Glue.loop.eval_sound : True
+theorem RueCore.Nonvacuous.Glue.loop.eval_big_to_small : True
 ```
 
-### `Nonvacuous.Glue.loop.never_stuck_iff`
+### `Nonvacuous.Glue.loop.never_refused_iff`
 
 *theorem* · module `RueCore.Nonvacuous.Glue`
 
-`loop` applied to `never_stuck_iff` (helper).
+`loop` applied to `never_refused_iff` (helper).
 
 ```lean
-theorem RueCore.Nonvacuous.Glue.loop.never_stuck_iff : True
+theorem RueCore.Nonvacuous.Glue.loop.never_refused_iff : True
 ```
 
 ### `Nonvacuous.Glue.loop.eval_diverges_iff`
@@ -20516,24 +20518,24 @@ theorem RueCore.Nonvacuous.Glue.loop.Step.terminal : True
 theorem RueCore.Nonvacuous.Glue.loop.run_sim : True
 ```
 
-### `Nonvacuous.Glue.loop.eval_complete`
+### `Nonvacuous.Glue.loop.eval_small_to_big`
 
 *theorem* · module `RueCore.Nonvacuous.Glue`
 
-`loop` applied to `eval_complete` (helper).
+`loop` applied to `eval_small_to_big` (helper).
 
 ```lean
-theorem RueCore.Nonvacuous.Glue.loop.eval_complete : True
+theorem RueCore.Nonvacuous.Glue.loop.eval_small_to_big : True
 ```
 
-### `Nonvacuous.Glue.loop.run_complete`
+### `Nonvacuous.Glue.loop.run_small_to_big`
 
 *theorem* · module `RueCore.Nonvacuous.Glue`
 
-`loop` applied to `run_complete` (helper).
+`loop` applied to `run_small_to_big` (helper).
 
 ```lean
-theorem RueCore.Nonvacuous.Glue.loop.run_complete : True
+theorem RueCore.Nonvacuous.Glue.loop.run_small_to_big : True
 ```
 
 ### `Nonvacuous.Glue.loop.freed_once`
@@ -20566,14 +20568,14 @@ theorem RueCore.Nonvacuous.Glue.array.soundness : True
 theorem RueCore.Nonvacuous.Glue.array.run_safe : True
 ```
 
-### `Nonvacuous.Glue.array.no_violation`
+### `Nonvacuous.Glue.array.no_refusal`
 
 *theorem* · module `RueCore.Nonvacuous.Glue`
 
-`array` applied to `no_violation` (helper).
+`array` applied to `no_refusal` (helper).
 
 ```lean
-theorem RueCore.Nonvacuous.Glue.array.no_violation : True
+theorem RueCore.Nonvacuous.Glue.array.no_refusal : True
 ```
 
 ### `Nonvacuous.Glue.array.no_use_after_move`
@@ -20686,14 +20688,14 @@ theorem RueCore.Nonvacuous.Glue.array.drop_glue_order : True
 theorem RueCore.Nonvacuous.Glue.array.step_progress : True
 ```
 
-### `Nonvacuous.Glue.array.step_preservation`
+### `Nonvacuous.Glue.array.step_safeAt`
 
 *theorem* · module `RueCore.Nonvacuous.Glue`
 
-`array` applied to `step_preservation` (helper).
+`array` applied to `step_safeAt` (helper).
 
 ```lean
-theorem RueCore.Nonvacuous.Glue.array.step_preservation : True
+theorem RueCore.Nonvacuous.Glue.array.step_safeAt : True
 ```
 
 ### `Nonvacuous.Glue.array.step_type_safety`
@@ -20706,24 +20708,24 @@ theorem RueCore.Nonvacuous.Glue.array.step_preservation : True
 theorem RueCore.Nonvacuous.Glue.array.step_type_safety : True
 ```
 
-### `Nonvacuous.Glue.array.eval_sound`
+### `Nonvacuous.Glue.array.eval_big_to_small`
 
 *theorem* · module `RueCore.Nonvacuous.Glue`
 
-`array` applied to `eval_sound` (helper).
+`array` applied to `eval_big_to_small` (helper).
 
 ```lean
-theorem RueCore.Nonvacuous.Glue.array.eval_sound : True
+theorem RueCore.Nonvacuous.Glue.array.eval_big_to_small : True
 ```
 
-### `Nonvacuous.Glue.array.never_stuck_iff`
+### `Nonvacuous.Glue.array.never_refused_iff`
 
 *theorem* · module `RueCore.Nonvacuous.Glue`
 
-`array` applied to `never_stuck_iff` (helper).
+`array` applied to `never_refused_iff` (helper).
 
 ```lean
-theorem RueCore.Nonvacuous.Glue.array.never_stuck_iff : True
+theorem RueCore.Nonvacuous.Glue.array.never_refused_iff : True
 ```
 
 ### `Nonvacuous.Glue.array.eval_diverges_iff`
@@ -20766,24 +20768,24 @@ theorem RueCore.Nonvacuous.Glue.array.Step.terminal : True
 theorem RueCore.Nonvacuous.Glue.array.run_sim : True
 ```
 
-### `Nonvacuous.Glue.array.eval_complete`
+### `Nonvacuous.Glue.array.eval_small_to_big`
 
 *theorem* · module `RueCore.Nonvacuous.Glue`
 
-`array` applied to `eval_complete` (helper).
+`array` applied to `eval_small_to_big` (helper).
 
 ```lean
-theorem RueCore.Nonvacuous.Glue.array.eval_complete : True
+theorem RueCore.Nonvacuous.Glue.array.eval_small_to_big : True
 ```
 
-### `Nonvacuous.Glue.array.run_complete`
+### `Nonvacuous.Glue.array.run_small_to_big`
 
 *theorem* · module `RueCore.Nonvacuous.Glue`
 
-`array` applied to `run_complete` (helper).
+`array` applied to `run_small_to_big` (helper).
 
 ```lean
-theorem RueCore.Nonvacuous.Glue.array.run_complete : True
+theorem RueCore.Nonvacuous.Glue.array.run_small_to_big : True
 ```
 
 ### `Nonvacuous.Glue.enum_match.soundness`
@@ -20806,14 +20808,14 @@ theorem RueCore.Nonvacuous.Glue.enum_match.soundness : True
 theorem RueCore.Nonvacuous.Glue.enum_match.run_safe : True
 ```
 
-### `Nonvacuous.Glue.enum_match.no_violation`
+### `Nonvacuous.Glue.enum_match.no_refusal`
 
 *theorem* · module `RueCore.Nonvacuous.Glue`
 
-`enum_match` applied to `no_violation` (helper).
+`enum_match` applied to `no_refusal` (helper).
 
 ```lean
-theorem RueCore.Nonvacuous.Glue.enum_match.no_violation : True
+theorem RueCore.Nonvacuous.Glue.enum_match.no_refusal : True
 ```
 
 ### `Nonvacuous.Glue.enum_match.no_use_after_move`
@@ -20926,14 +20928,14 @@ theorem RueCore.Nonvacuous.Glue.enum_match.drop_glue_order : True
 theorem RueCore.Nonvacuous.Glue.enum_match.step_progress : True
 ```
 
-### `Nonvacuous.Glue.enum_match.step_preservation`
+### `Nonvacuous.Glue.enum_match.step_safeAt`
 
 *theorem* · module `RueCore.Nonvacuous.Glue`
 
-`enum_match` applied to `step_preservation` (helper).
+`enum_match` applied to `step_safeAt` (helper).
 
 ```lean
-theorem RueCore.Nonvacuous.Glue.enum_match.step_preservation : True
+theorem RueCore.Nonvacuous.Glue.enum_match.step_safeAt : True
 ```
 
 ### `Nonvacuous.Glue.enum_match.step_type_safety`
@@ -20946,24 +20948,24 @@ theorem RueCore.Nonvacuous.Glue.enum_match.step_preservation : True
 theorem RueCore.Nonvacuous.Glue.enum_match.step_type_safety : True
 ```
 
-### `Nonvacuous.Glue.enum_match.eval_sound`
+### `Nonvacuous.Glue.enum_match.eval_big_to_small`
 
 *theorem* · module `RueCore.Nonvacuous.Glue`
 
-`enum_match` applied to `eval_sound` (helper).
+`enum_match` applied to `eval_big_to_small` (helper).
 
 ```lean
-theorem RueCore.Nonvacuous.Glue.enum_match.eval_sound : True
+theorem RueCore.Nonvacuous.Glue.enum_match.eval_big_to_small : True
 ```
 
-### `Nonvacuous.Glue.enum_match.never_stuck_iff`
+### `Nonvacuous.Glue.enum_match.never_refused_iff`
 
 *theorem* · module `RueCore.Nonvacuous.Glue`
 
-`enum_match` applied to `never_stuck_iff` (helper).
+`enum_match` applied to `never_refused_iff` (helper).
 
 ```lean
-theorem RueCore.Nonvacuous.Glue.enum_match.never_stuck_iff : True
+theorem RueCore.Nonvacuous.Glue.enum_match.never_refused_iff : True
 ```
 
 ### `Nonvacuous.Glue.enum_match.eval_diverges_iff`
@@ -21006,24 +21008,24 @@ theorem RueCore.Nonvacuous.Glue.enum_match.Step.terminal : True
 theorem RueCore.Nonvacuous.Glue.enum_match.run_sim : True
 ```
 
-### `Nonvacuous.Glue.enum_match.eval_complete`
+### `Nonvacuous.Glue.enum_match.eval_small_to_big`
 
 *theorem* · module `RueCore.Nonvacuous.Glue`
 
-`enum_match` applied to `eval_complete` (helper).
+`enum_match` applied to `eval_small_to_big` (helper).
 
 ```lean
-theorem RueCore.Nonvacuous.Glue.enum_match.eval_complete : True
+theorem RueCore.Nonvacuous.Glue.enum_match.eval_small_to_big : True
 ```
 
-### `Nonvacuous.Glue.enum_match.run_complete`
+### `Nonvacuous.Glue.enum_match.run_small_to_big`
 
 *theorem* · module `RueCore.Nonvacuous.Glue`
 
-`enum_match` applied to `run_complete` (helper).
+`enum_match` applied to `run_small_to_big` (helper).
 
 ```lean
-theorem RueCore.Nonvacuous.Glue.enum_match.run_complete : True
+theorem RueCore.Nonvacuous.Glue.enum_match.run_small_to_big : True
 ```
 
 ### `Nonvacuous.Glue.early_return.soundness`
@@ -21046,14 +21048,14 @@ theorem RueCore.Nonvacuous.Glue.early_return.soundness : True
 theorem RueCore.Nonvacuous.Glue.early_return.run_safe : True
 ```
 
-### `Nonvacuous.Glue.early_return.no_violation`
+### `Nonvacuous.Glue.early_return.no_refusal`
 
 *theorem* · module `RueCore.Nonvacuous.Glue`
 
-`early_return` applied to `no_violation` (helper).
+`early_return` applied to `no_refusal` (helper).
 
 ```lean
-theorem RueCore.Nonvacuous.Glue.early_return.no_violation : True
+theorem RueCore.Nonvacuous.Glue.early_return.no_refusal : True
 ```
 
 ### `Nonvacuous.Glue.early_return.no_use_after_move`
@@ -21166,14 +21168,14 @@ theorem RueCore.Nonvacuous.Glue.early_return.drop_glue_order : True
 theorem RueCore.Nonvacuous.Glue.early_return.step_progress : True
 ```
 
-### `Nonvacuous.Glue.early_return.step_preservation`
+### `Nonvacuous.Glue.early_return.step_safeAt`
 
 *theorem* · module `RueCore.Nonvacuous.Glue`
 
-`early_return` applied to `step_preservation` (helper).
+`early_return` applied to `step_safeAt` (helper).
 
 ```lean
-theorem RueCore.Nonvacuous.Glue.early_return.step_preservation : True
+theorem RueCore.Nonvacuous.Glue.early_return.step_safeAt : True
 ```
 
 ### `Nonvacuous.Glue.early_return.step_type_safety`
@@ -21186,24 +21188,24 @@ theorem RueCore.Nonvacuous.Glue.early_return.step_preservation : True
 theorem RueCore.Nonvacuous.Glue.early_return.step_type_safety : True
 ```
 
-### `Nonvacuous.Glue.early_return.eval_sound`
+### `Nonvacuous.Glue.early_return.eval_big_to_small`
 
 *theorem* · module `RueCore.Nonvacuous.Glue`
 
-`early_return` applied to `eval_sound` (helper).
+`early_return` applied to `eval_big_to_small` (helper).
 
 ```lean
-theorem RueCore.Nonvacuous.Glue.early_return.eval_sound : True
+theorem RueCore.Nonvacuous.Glue.early_return.eval_big_to_small : True
 ```
 
-### `Nonvacuous.Glue.early_return.never_stuck_iff`
+### `Nonvacuous.Glue.early_return.never_refused_iff`
 
 *theorem* · module `RueCore.Nonvacuous.Glue`
 
-`early_return` applied to `never_stuck_iff` (helper).
+`early_return` applied to `never_refused_iff` (helper).
 
 ```lean
-theorem RueCore.Nonvacuous.Glue.early_return.never_stuck_iff : True
+theorem RueCore.Nonvacuous.Glue.early_return.never_refused_iff : True
 ```
 
 ### `Nonvacuous.Glue.early_return.eval_diverges_iff`
@@ -21246,24 +21248,24 @@ theorem RueCore.Nonvacuous.Glue.early_return.Step.terminal : True
 theorem RueCore.Nonvacuous.Glue.early_return.run_sim : True
 ```
 
-### `Nonvacuous.Glue.early_return.eval_complete`
+### `Nonvacuous.Glue.early_return.eval_small_to_big`
 
 *theorem* · module `RueCore.Nonvacuous.Glue`
 
-`early_return` applied to `eval_complete` (helper).
+`early_return` applied to `eval_small_to_big` (helper).
 
 ```lean
-theorem RueCore.Nonvacuous.Glue.early_return.eval_complete : True
+theorem RueCore.Nonvacuous.Glue.early_return.eval_small_to_big : True
 ```
 
-### `Nonvacuous.Glue.early_return.run_complete`
+### `Nonvacuous.Glue.early_return.run_small_to_big`
 
 *theorem* · module `RueCore.Nonvacuous.Glue`
 
-`early_return` applied to `run_complete` (helper).
+`early_return` applied to `run_small_to_big` (helper).
 
 ```lean
-theorem RueCore.Nonvacuous.Glue.early_return.run_complete : True
+theorem RueCore.Nonvacuous.Glue.early_return.run_small_to_big : True
 ```
 
 ### `Nonvacuous.Glue.early_return.run_ne_returned`
@@ -21296,14 +21298,14 @@ theorem RueCore.Nonvacuous.Glue.float.soundness : True
 theorem RueCore.Nonvacuous.Glue.float.run_safe : True
 ```
 
-### `Nonvacuous.Glue.float.no_violation`
+### `Nonvacuous.Glue.float.no_refusal`
 
 *theorem* · module `RueCore.Nonvacuous.Glue`
 
-`float` applied to `no_violation` (helper).
+`float` applied to `no_refusal` (helper).
 
 ```lean
-theorem RueCore.Nonvacuous.Glue.float.no_violation : True
+theorem RueCore.Nonvacuous.Glue.float.no_refusal : True
 ```
 
 ### `Nonvacuous.Glue.float.no_use_after_move`
@@ -21416,14 +21418,14 @@ theorem RueCore.Nonvacuous.Glue.float.drop_glue_order : True
 theorem RueCore.Nonvacuous.Glue.float.step_progress : True
 ```
 
-### `Nonvacuous.Glue.float.step_preservation`
+### `Nonvacuous.Glue.float.step_safeAt`
 
 *theorem* · module `RueCore.Nonvacuous.Glue`
 
-`float` applied to `step_preservation` (helper).
+`float` applied to `step_safeAt` (helper).
 
 ```lean
-theorem RueCore.Nonvacuous.Glue.float.step_preservation : True
+theorem RueCore.Nonvacuous.Glue.float.step_safeAt : True
 ```
 
 ### `Nonvacuous.Glue.float.step_type_safety`
@@ -21436,24 +21438,24 @@ theorem RueCore.Nonvacuous.Glue.float.step_preservation : True
 theorem RueCore.Nonvacuous.Glue.float.step_type_safety : True
 ```
 
-### `Nonvacuous.Glue.float.eval_sound`
+### `Nonvacuous.Glue.float.eval_big_to_small`
 
 *theorem* · module `RueCore.Nonvacuous.Glue`
 
-`float` applied to `eval_sound` (helper).
+`float` applied to `eval_big_to_small` (helper).
 
 ```lean
-theorem RueCore.Nonvacuous.Glue.float.eval_sound : True
+theorem RueCore.Nonvacuous.Glue.float.eval_big_to_small : True
 ```
 
-### `Nonvacuous.Glue.float.never_stuck_iff`
+### `Nonvacuous.Glue.float.never_refused_iff`
 
 *theorem* · module `RueCore.Nonvacuous.Glue`
 
-`float` applied to `never_stuck_iff` (helper).
+`float` applied to `never_refused_iff` (helper).
 
 ```lean
-theorem RueCore.Nonvacuous.Glue.float.never_stuck_iff : True
+theorem RueCore.Nonvacuous.Glue.float.never_refused_iff : True
 ```
 
 ### `Nonvacuous.Glue.float.eval_diverges_iff`
@@ -21496,24 +21498,24 @@ theorem RueCore.Nonvacuous.Glue.float.Step.terminal : True
 theorem RueCore.Nonvacuous.Glue.float.run_sim : True
 ```
 
-### `Nonvacuous.Glue.float.eval_complete`
+### `Nonvacuous.Glue.float.eval_small_to_big`
 
 *theorem* · module `RueCore.Nonvacuous.Glue`
 
-`float` applied to `eval_complete` (helper).
+`float` applied to `eval_small_to_big` (helper).
 
 ```lean
-theorem RueCore.Nonvacuous.Glue.float.eval_complete : True
+theorem RueCore.Nonvacuous.Glue.float.eval_small_to_big : True
 ```
 
-### `Nonvacuous.Glue.float.run_complete`
+### `Nonvacuous.Glue.float.run_small_to_big`
 
 *theorem* · module `RueCore.Nonvacuous.Glue`
 
-`float` applied to `run_complete` (helper).
+`float` applied to `run_small_to_big` (helper).
 
 ```lean
-theorem RueCore.Nonvacuous.Glue.float.run_complete : True
+theorem RueCore.Nonvacuous.Glue.float.run_small_to_big : True
 ```
 
 ### `Nonvacuous.Glue.panic.soundness`
@@ -21536,14 +21538,14 @@ theorem RueCore.Nonvacuous.Glue.panic.soundness : True
 theorem RueCore.Nonvacuous.Glue.panic.run_safe : True
 ```
 
-### `Nonvacuous.Glue.panic.no_violation`
+### `Nonvacuous.Glue.panic.no_refusal`
 
 *theorem* · module `RueCore.Nonvacuous.Glue`
 
-`panic` applied to `no_violation` (helper).
+`panic` applied to `no_refusal` (helper).
 
 ```lean
-theorem RueCore.Nonvacuous.Glue.panic.no_violation : True
+theorem RueCore.Nonvacuous.Glue.panic.no_refusal : True
 ```
 
 ### `Nonvacuous.Glue.panic.no_use_after_move`
@@ -21656,14 +21658,14 @@ theorem RueCore.Nonvacuous.Glue.panic.drop_glue_order : True
 theorem RueCore.Nonvacuous.Glue.panic.step_progress : True
 ```
 
-### `Nonvacuous.Glue.panic.step_preservation`
+### `Nonvacuous.Glue.panic.step_safeAt`
 
 *theorem* · module `RueCore.Nonvacuous.Glue`
 
-`panic` applied to `step_preservation` (helper).
+`panic` applied to `step_safeAt` (helper).
 
 ```lean
-theorem RueCore.Nonvacuous.Glue.panic.step_preservation : True
+theorem RueCore.Nonvacuous.Glue.panic.step_safeAt : True
 ```
 
 ### `Nonvacuous.Glue.panic.step_type_safety`
@@ -21676,24 +21678,24 @@ theorem RueCore.Nonvacuous.Glue.panic.step_preservation : True
 theorem RueCore.Nonvacuous.Glue.panic.step_type_safety : True
 ```
 
-### `Nonvacuous.Glue.panic.eval_sound`
+### `Nonvacuous.Glue.panic.eval_big_to_small`
 
 *theorem* · module `RueCore.Nonvacuous.Glue`
 
-`panic` applied to `eval_sound` (helper).
+`panic` applied to `eval_big_to_small` (helper).
 
 ```lean
-theorem RueCore.Nonvacuous.Glue.panic.eval_sound : True
+theorem RueCore.Nonvacuous.Glue.panic.eval_big_to_small : True
 ```
 
-### `Nonvacuous.Glue.panic.never_stuck_iff`
+### `Nonvacuous.Glue.panic.never_refused_iff`
 
 *theorem* · module `RueCore.Nonvacuous.Glue`
 
-`panic` applied to `never_stuck_iff` (helper).
+`panic` applied to `never_refused_iff` (helper).
 
 ```lean
-theorem RueCore.Nonvacuous.Glue.panic.never_stuck_iff : True
+theorem RueCore.Nonvacuous.Glue.panic.never_refused_iff : True
 ```
 
 ### `Nonvacuous.Glue.panic.eval_diverges_iff`
@@ -21736,24 +21738,24 @@ theorem RueCore.Nonvacuous.Glue.panic.Step.terminal : True
 theorem RueCore.Nonvacuous.Glue.panic.run_sim : True
 ```
 
-### `Nonvacuous.Glue.panic.eval_complete`
+### `Nonvacuous.Glue.panic.eval_small_to_big`
 
 *theorem* · module `RueCore.Nonvacuous.Glue`
 
-`panic` applied to `eval_complete` (helper).
+`panic` applied to `eval_small_to_big` (helper).
 
 ```lean
-theorem RueCore.Nonvacuous.Glue.panic.eval_complete : True
+theorem RueCore.Nonvacuous.Glue.panic.eval_small_to_big : True
 ```
 
-### `Nonvacuous.Glue.panic.run_complete`
+### `Nonvacuous.Glue.panic.run_small_to_big`
 
 *theorem* · module `RueCore.Nonvacuous.Glue`
 
-`panic` applied to `run_complete` (helper).
+`panic` applied to `run_small_to_big` (helper).
 
 ```lean
-theorem RueCore.Nonvacuous.Glue.panic.run_complete : True
+theorem RueCore.Nonvacuous.Glue.panic.run_small_to_big : True
 ```
 
 ### `Nonvacuous.Glue.exact_model.soundness`
@@ -21776,14 +21778,14 @@ theorem RueCore.Nonvacuous.Glue.exact_model.soundness : True
 theorem RueCore.Nonvacuous.Glue.exact_model.run_safe : True
 ```
 
-### `Nonvacuous.Glue.exact_model.no_violation`
+### `Nonvacuous.Glue.exact_model.no_refusal`
 
 *theorem* · module `RueCore.Nonvacuous.Glue`
 
-`exact_model` applied to `no_violation`, through the `dtor` program (helper).
+`exact_model` applied to `no_refusal`, through the `dtor` program (helper).
 
 ```lean
-theorem RueCore.Nonvacuous.Glue.exact_model.no_violation : True
+theorem RueCore.Nonvacuous.Glue.exact_model.no_refusal : True
 ```
 
 ### `Nonvacuous.Glue.exact_model.no_use_after_move`
@@ -21906,14 +21908,14 @@ theorem RueCore.Nonvacuous.Glue.exact_model.drop_glue_order : True
 theorem RueCore.Nonvacuous.Glue.exact_model.step_progress : True
 ```
 
-### `Nonvacuous.Glue.exact_model.step_preservation`
+### `Nonvacuous.Glue.exact_model.step_safeAt`
 
 *theorem* · module `RueCore.Nonvacuous.Glue`
 
-`exact_model` applied to `step_preservation`, through the `dtor` program (helper).
+`exact_model` applied to `step_safeAt`, through the `dtor` program (helper).
 
 ```lean
-theorem RueCore.Nonvacuous.Glue.exact_model.step_preservation : True
+theorem RueCore.Nonvacuous.Glue.exact_model.step_safeAt : True
 ```
 
 ### `Nonvacuous.Glue.exact_model.step_type_safety`
@@ -21926,34 +21928,34 @@ theorem RueCore.Nonvacuous.Glue.exact_model.step_preservation : True
 theorem RueCore.Nonvacuous.Glue.exact_model.step_type_safety : True
 ```
 
-### `Nonvacuous.Glue.exact_model.eval_sound`
+### `Nonvacuous.Glue.exact_model.eval_big_to_small`
 
 *theorem* · module `RueCore.Nonvacuous.Glue`
 
-`exact_model` applied to `eval_sound`, through the `dtor` program (helper).
+`exact_model` applied to `eval_big_to_small`, through the `dtor` program (helper).
 
 ```lean
-theorem RueCore.Nonvacuous.Glue.exact_model.eval_sound : True
+theorem RueCore.Nonvacuous.Glue.exact_model.eval_big_to_small : True
 ```
 
-### `Nonvacuous.Glue.exact_model.eval_complete`
+### `Nonvacuous.Glue.exact_model.eval_small_to_big`
 
 *theorem* · module `RueCore.Nonvacuous.Glue`
 
-`exact_model` applied to `eval_complete`, through the `dtor` program (helper).
+`exact_model` applied to `eval_small_to_big`, through the `dtor` program (helper).
 
 ```lean
-theorem RueCore.Nonvacuous.Glue.exact_model.eval_complete : True
+theorem RueCore.Nonvacuous.Glue.exact_model.eval_small_to_big : True
 ```
 
-### `Nonvacuous.Glue.exact_model.never_stuck_iff`
+### `Nonvacuous.Glue.exact_model.never_refused_iff`
 
 *theorem* · module `RueCore.Nonvacuous.Glue`
 
-`exact_model` applied to `never_stuck_iff`, through the `dtor` program (helper).
+`exact_model` applied to `never_refused_iff`, through the `dtor` program (helper).
 
 ```lean
-theorem RueCore.Nonvacuous.Glue.exact_model.never_stuck_iff : True
+theorem RueCore.Nonvacuous.Glue.exact_model.never_refused_iff : True
 ```
 
 ### `Nonvacuous.Glue.exact_model.eval_diverges_iff`
@@ -21966,74 +21968,74 @@ theorem RueCore.Nonvacuous.Glue.exact_model.never_stuck_iff : True
 theorem RueCore.Nonvacuous.Glue.exact_model.eval_diverges_iff : True
 ```
 
-### `Nonvacuous.Glue.empty_frame.soundness`
+### `Nonvacuous.Glue.empty_activation.soundness`
 
 *theorem* · module `RueCore.Nonvacuous.Glue`
 
-`empty_frame` applied to `soundness`, through the `dtor` program (helper).
+`empty_activation` applied to `soundness`, through the `dtor` program (helper).
 
 ```lean
-theorem RueCore.Nonvacuous.Glue.empty_frame.soundness : True
+theorem RueCore.Nonvacuous.Glue.empty_activation.soundness : True
 ```
 
-### `Nonvacuous.Glue.empty_frame.drop_exactly_once`
+### `Nonvacuous.Glue.empty_activation.drop_exactly_once`
 
 *theorem* · module `RueCore.Nonvacuous.Glue`
 
-`empty_frame` applied to `drop_exactly_once`, through the `dtor` program (helper).
+`empty_activation` applied to `drop_exactly_once`, through the `dtor` program (helper).
 
 ```lean
-theorem RueCore.Nonvacuous.Glue.empty_frame.drop_exactly_once : True
+theorem RueCore.Nonvacuous.Glue.empty_activation.drop_exactly_once : True
 ```
 
-### `Nonvacuous.Glue.empty_frame.rest_exactly_once`
+### `Nonvacuous.Glue.empty_activation.rest_exactly_once`
 
 *theorem* · module `RueCore.Nonvacuous.Glue`
 
-`empty_frame` applied to `rest_exactly_once`, through the `dtor` program (helper).
+`empty_activation` applied to `rest_exactly_once`, through the `dtor` program (helper).
 
 ```lean
-theorem RueCore.Nonvacuous.Glue.empty_frame.rest_exactly_once : True
+theorem RueCore.Nonvacuous.Glue.empty_activation.rest_exactly_once : True
 ```
 
-### `Nonvacuous.Glue.open_frame.soundness`
+### `Nonvacuous.Glue.open_activation.soundness`
 
 *theorem* · module `RueCore.Nonvacuous.Glue`
 
-`open_frame` applied to `soundness` (helper).
+`open_activation` applied to `soundness` (helper).
 
 ```lean
-theorem RueCore.Nonvacuous.Glue.open_frame.soundness : True
+theorem RueCore.Nonvacuous.Glue.open_activation.soundness : True
 ```
 
-### `Nonvacuous.Glue.open_frame.check_sound`
+### `Nonvacuous.Glue.open_activation.check_sound`
 
 *theorem* · module `RueCore.Nonvacuous.Glue`
 
-`open_frame` applied to `check_sound` (helper).
+`open_activation` applied to `check_sound` (helper).
 
 ```lean
-theorem RueCore.Nonvacuous.Glue.open_frame.check_sound : True
+theorem RueCore.Nonvacuous.Glue.open_activation.check_sound : True
 ```
 
-### `Nonvacuous.Glue.open_frame.drop_exactly_once`
+### `Nonvacuous.Glue.open_activation.drop_exactly_once`
 
 *theorem* · module `RueCore.Nonvacuous.Glue`
 
-`open_frame` applied to `drop_exactly_once` (helper).
+`open_activation` applied to `drop_exactly_once` (helper).
 
 ```lean
-theorem RueCore.Nonvacuous.Glue.open_frame.drop_exactly_once : True
+theorem RueCore.Nonvacuous.Glue.open_activation.drop_exactly_once : True
 ```
 
-### `Nonvacuous.Glue.open_frame.rest_exactly_once`
+### `Nonvacuous.Glue.open_activation.rest_exactly_once`
 
 *theorem* · module `RueCore.Nonvacuous.Glue`
 
-`open_frame` applied to `rest_exactly_once` (helper).
+`open_activation` applied to `rest_exactly_once` (helper).
 
 ```lean
-theorem RueCore.Nonvacuous.Glue.open_frame.rest_exactly_once : True
+theorem RueCore.Nonvacuous.Glue.open_activation.rest_exactly_once : True
 ```
 
 ### `Nonvacuous.Glue.diverges.checkProgram_sound`
@@ -22096,74 +22098,74 @@ theorem RueCore.Nonvacuous.Glue.diverges_drop.step_no_double_free : True
 theorem RueCore.Nonvacuous.Glue.diverges_drop.eval_diverges_iff : True
 ```
 
-### `Nonvacuous.Glue.stuck.fuel_mono`
+### `Nonvacuous.Glue.refused_stuck.fuel_mono`
 
 *theorem* · module `RueCore.Nonvacuous.Glue`
 
-`stuck` applied to `fuel_mono` (helper).
+`refused_stuck` applied to `fuel_mono` (helper).
 
 ```lean
-theorem RueCore.Nonvacuous.Glue.stuck.fuel_mono : True
+theorem RueCore.Nonvacuous.Glue.refused_stuck.fuel_mono : True
 ```
 
-### `Nonvacuous.Glue.stuck.no_masking`
+### `Nonvacuous.Glue.refused_stuck.no_masking`
 
 *theorem* · module `RueCore.Nonvacuous.Glue`
 
-`stuck` applied to `no_masking` (helper).
+`refused_stuck` applied to `no_masking` (helper).
 
 ```lean
-theorem RueCore.Nonvacuous.Glue.stuck.no_masking : True
+theorem RueCore.Nonvacuous.Glue.refused_stuck.no_masking : True
 ```
 
-### `Nonvacuous.Glue.stuck.Config.trichotomy`
+### `Nonvacuous.Glue.refused_stuck.Config.trichotomy`
 
 *theorem* · module `RueCore.Nonvacuous.Glue`
 
-`stuck` applied to `Config.trichotomy` (helper).
+`refused_stuck` applied to `Config.trichotomy` (helper).
 
 ```lean
-theorem RueCore.Nonvacuous.Glue.stuck.Config.trichotomy : True
+theorem RueCore.Nonvacuous.Glue.refused_stuck.Config.trichotomy : True
 ```
 
-### `Nonvacuous.Glue.stuck.Config.stuck_iff`
+### `Nonvacuous.Glue.refused_stuck.Config.stuck_iff`
 
 *theorem* · module `RueCore.Nonvacuous.Glue`
 
-`stuck` applied to `Config.stuck_iff` (helper).
+`refused_stuck` applied to `Config.stuck_iff` (helper).
 
 ```lean
-theorem RueCore.Nonvacuous.Glue.stuck.Config.stuck_iff : True
+theorem RueCore.Nonvacuous.Glue.refused_stuck.Config.stuck_iff : True
 ```
 
-### `Nonvacuous.Glue.stuck.step_stuck_isStuckState`
+### `Nonvacuous.Glue.refused_stuck.step_stuck_isStuckState`
 
 *theorem* · module `RueCore.Nonvacuous.Glue`
 
-`stuck` applied to `step_stuck_isStuckState` (helper).
+`refused_stuck` applied to `step_stuck_isStuckState` (helper).
 
 ```lean
-theorem RueCore.Nonvacuous.Glue.stuck.step_stuck_isStuckState : True
+theorem RueCore.Nonvacuous.Glue.refused_stuck.step_stuck_isStuckState : True
 ```
 
-### `Nonvacuous.Glue.stuck.run_stuck_of_step_stuck`
+### `Nonvacuous.Glue.refused_stuck.run_refused_of_step_stuck`
 
 *theorem* · module `RueCore.Nonvacuous.Glue`
 
-`stuck` applied to `run_stuck_of_step_stuck` (helper).
+`refused_stuck` applied to `run_refused_of_step_stuck` (helper).
 
 ```lean
-theorem RueCore.Nonvacuous.Glue.stuck.run_stuck_of_step_stuck : True
+theorem RueCore.Nonvacuous.Glue.refused_stuck.run_refused_of_step_stuck : True
 ```
 
-### `Sharp.Glue.stuck.soundness_1`
+### `Sharp.Glue.refused.soundness_1`
 
 *theorem* · module `RueCore.Sharp.Glue`
 
-`Sharp.stuck` refutes `soundness` without hypothesis 1 (helper).
+`Sharp.refused` refutes `soundness` without hypothesis 1 (helper).
 
 ```lean
-theorem RueCore.Sharp.Glue.stuck.soundness_1 :
+theorem RueCore.Sharp.Glue.refused.soundness_1 :
   ¬∀ (M : FloatLaws) {P : Program} (fuel : Nat) {R : Ty} {Γ : Ctx} {Ω : Out}
       {e : Expr} {T : Ty},
       Typed P R Γ e T Ω →
@@ -22173,14 +22175,14 @@ theorem RueCore.Sharp.Glue.stuck.soundness_1 :
               (eval M.toFloatSig fuel P H φ e)
 ```
 
-### `Sharp.Glue.stuck.run_safe_1`
+### `Sharp.Glue.refused.run_safe_1`
 
 *theorem* · module `RueCore.Sharp.Glue`
 
-`Sharp.stuck` refutes `run_safe` without hypothesis 1 (helper).
+`Sharp.refused` refutes `run_safe` without hypothesis 1 (helper).
 
 ```lean
-theorem RueCore.Sharp.Glue.stuck.run_safe_1 :
+theorem RueCore.Sharp.Glue.refused.run_safe_1 :
   ¬∀ (M : FloatLaws) {P : Program} {fd : FnDef},
       P.fns[0]? = some fd →
         fd.params = [] →
@@ -22192,63 +22194,63 @@ theorem RueCore.Sharp.Glue.stuck.run_safe_1 :
                     HasTy P.decls v fd.ret
 ```
 
-### `Sharp.Glue.stuck.no_violation_1`
+### `Sharp.Glue.refused.no_refusal_1`
 
 *theorem* · module `RueCore.Sharp.Glue`
 
-`Sharp.stuck` refutes `no_violation` without hypothesis 1 (helper).
+`Sharp.refused` refutes `no_refusal` without hypothesis 1 (helper).
 
 ```lean
-theorem RueCore.Sharp.Glue.stuck.no_violation_1 :
+theorem RueCore.Sharp.Glue.refused.no_refusal_1 :
   ¬∀ (M : FloatLaws) {P : Program} (fuel : Nat) (w : Refusal),
       run M.toFloatSig P fuel ≠ EvalRes.refused w
 ```
 
-### `Sharp.Glue.stuck.no_use_after_move_1`
+### `Sharp.Glue.refused.no_use_after_move_1`
 
 *theorem* · module `RueCore.Sharp.Glue`
 
-`Sharp.stuck` refutes `no_use_after_move` without hypothesis 1 (helper).
+`Sharp.refused` refutes `no_use_after_move` without hypothesis 1 (helper).
 
 ```lean
-theorem RueCore.Sharp.Glue.stuck.no_use_after_move_1 :
+theorem RueCore.Sharp.Glue.refused.no_use_after_move_1 :
   ¬∀ (M : FloatLaws) {P : Program} (fuel : Nat),
       run M.toFloatSig P fuel ≠ EvalRes.refused Refusal.useAfterMove
 ```
 
-### `Sharp.Glue.stuck.no_masking_2`
+### `Sharp.Glue.refused.no_masking_2`
 
 *theorem* · module `RueCore.Sharp.Glue`
 
-`Sharp.stuck` refutes `no_masking` without hypothesis 2 (helper).
+`Sharp.refused` refutes `no_masking` without hypothesis 2 (helper).
 
 ```lean
-theorem RueCore.Sharp.Glue.stuck.no_masking_2 :
+theorem RueCore.Sharp.Glue.refused.no_masking_2 :
   ¬∀ (M : FloatSig) {P : Program} {H : Store} {φ : Activation} {e : Expr}
       {n m : Nat} {w : Refusal},
       eval M n P H φ e = EvalRes.refused w →
         eval M m P H φ e = EvalRes.refused w
 ```
 
-### `Sharp.Glue.stuck.checkProgram_sound_1`
+### `Sharp.Glue.refused.checkProgram_sound_1`
 
 *theorem* · module `RueCore.Sharp.Glue`
 
-`Sharp.stuck` refutes `checkProgram_sound` without hypothesis 1 (helper).
+`Sharp.refused` refutes `checkProgram_sound` without hypothesis 1 (helper).
 
 ```lean
-theorem RueCore.Sharp.Glue.stuck.checkProgram_sound_1 :
+theorem RueCore.Sharp.Glue.refused.checkProgram_sound_1 :
   ¬∀ {P : Program}, ProgramTyped P
 ```
 
-### `Sharp.Glue.stuck.drop_exactly_once_1`
+### `Sharp.Glue.refused.drop_exactly_once_1`
 
 *theorem* · module `RueCore.Sharp.Glue`
 
-`Sharp.stuck` refutes `drop_exactly_once` without hypothesis 1 (helper).
+`Sharp.refused` refutes `drop_exactly_once` without hypothesis 1 (helper).
 
 ```lean
-theorem RueCore.Sharp.Glue.stuck.drop_exactly_once_1 :
+theorem RueCore.Sharp.Glue.refused.drop_exactly_once_1 :
   ¬∀ (M : FloatLaws) {P : Program},
       P.pendingSafe = true →
         ∀ {fuel : Nat} {R : Ty} {Γ : Ctx} {e : Expr} {T : Ty} {Ω : Out}
@@ -22263,14 +22265,14 @@ theorem RueCore.Sharp.Glue.stuck.drop_exactly_once_1 :
                       Tidy φ H (eval M.toFloatSig fuel P H φ e)
 ```
 
-### `Sharp.Glue.stuck.rest_exactly_once_1`
+### `Sharp.Glue.refused.rest_exactly_once_1`
 
 *theorem* · module `RueCore.Sharp.Glue`
 
-`Sharp.stuck` refutes `rest_exactly_once` without hypothesis 1 (helper).
+`Sharp.refused` refutes `rest_exactly_once` without hypothesis 1 (helper).
 
 ```lean
-theorem RueCore.Sharp.Glue.stuck.rest_exactly_once_1 :
+theorem RueCore.Sharp.Glue.refused.rest_exactly_once_1 :
   ¬∀ (M : FloatLaws) {P : Program},
       P.pendingSafe = true →
         ∀ {fuel : Nat} {R : Ty} {Γ : Ctx} {e : Expr} {T : Ty} {Ω : Out}
@@ -22292,14 +22294,14 @@ theorem RueCore.Sharp.Glue.stuck.rest_exactly_once_1 :
                               Settled φ H₁ r
 ```
 
-### `Sharp.Glue.stuck.eval_sound_1`
+### `Sharp.Glue.refused.eval_big_to_small_1`
 
 *theorem* · module `RueCore.Sharp.Glue`
 
-`Sharp.stuck` refutes `eval_sound` without hypothesis 1 (helper).
+`Sharp.refused` refutes `eval_big_to_small` without hypothesis 1 (helper).
 
 ```lean
-theorem RueCore.Sharp.Glue.stuck.eval_sound_1 :
+theorem RueCore.Sharp.Glue.refused.eval_big_to_small_1 :
   ¬∀ (M : FloatLaws) {P : Program} (fuel : Nat),
       (∀ (w : Refusal), run M.toFloatSig P fuel ≠ EvalRes.refused w) ∧
         (∀ (H : Store) (v : Val) (tr : List Event),
@@ -22324,14 +22326,14 @@ theorem RueCore.Sharp.Glue.stuck_step.step_progress_1 :
         C.Terminal ∨ ∃ C', Step M.toFloatSig P C C'
 ```
 
-### `Sharp.Glue.stuck_step.step_preservation_1`
+### `Sharp.Glue.stuck_step.step_safeAt_1`
 
 *theorem* · module `RueCore.Sharp.Glue`
 
-`Sharp.stuck_step` refutes `step_preservation` without hypothesis 1 (helper).
+`Sharp.stuck_step` refutes `step_safeAt` without hypothesis 1 (helper).
 
 ```lean
-theorem RueCore.Sharp.Glue.stuck_step.step_preservation_1 :
+theorem RueCore.Sharp.Glue.stuck_step.step_safeAt_1 :
   ¬∀ (M : FloatLaws) {P : Program},
       ∃ fd,
         P.fns[0]? = some fd ∧
@@ -22372,14 +22374,14 @@ theorem RueCore.Sharp.Glue.stuck_step.step_never_stuck_of_run_1 :
       Steps M P Config.init C → C.Terminal ∨ ∃ C', Step M P C C'
 ```
 
-### `Sharp.Glue.stuck_step.run_stuck_of_step_stuck_3`
+### `Sharp.Glue.stuck_step.run_refused_of_step_stuck_3`
 
 *theorem* · module `RueCore.Sharp.Glue`
 
-`Sharp.stuck_step` refutes `run_stuck_of_step_stuck` without hypothesis 3 (helper).
+`Sharp.stuck_step` refutes `run_refused_of_step_stuck` without hypothesis 3 (helper).
 
 ```lean
-theorem RueCore.Sharp.Glue.stuck_step.run_stuck_of_step_stuck_3 :
+theorem RueCore.Sharp.Glue.stuck_step.run_refused_of_step_stuck_3 :
   ¬∀ (M : FloatSig) (P : Program) {C : Config} {w : Refusal},
       Steps M P Config.init C →
         Config.Stuck M P C w →
@@ -22466,14 +22468,14 @@ theorem RueCore.Sharp.Glue.typed.rest_exactly_once_3 :
                               Settled φ H₁ r
 ```
 
-### `Sharp.Glue.frame.soundness_3`
+### `Sharp.Glue.activation.soundness_3`
 
 *theorem* · module `RueCore.Sharp.Glue`
 
-`Sharp.frame` refutes `soundness` without hypothesis 3 (helper).
+`Sharp.activation` refutes `soundness` without hypothesis 3 (helper).
 
 ```lean
-theorem RueCore.Sharp.Glue.frame.soundness_3 :
+theorem RueCore.Sharp.Glue.activation.soundness_3 :
   ¬∀ (M : FloatLaws) {P : Program},
       WfProgram P →
         ∀ (fuel : Nat) {R : Ty} {Γ : Ctx} {Ω : Out} {e : Expr} {T : Ty},
@@ -22483,14 +22485,14 @@ theorem RueCore.Sharp.Glue.frame.soundness_3 :
                 (eval M.toFloatSig fuel P H φ e)
 ```
 
-### `Sharp.Glue.frame.drop_exactly_once_4`
+### `Sharp.Glue.activation.drop_exactly_once_4`
 
 *theorem* · module `RueCore.Sharp.Glue`
 
-`Sharp.frame` refutes `drop_exactly_once` without hypothesis 4 (helper).
+`Sharp.activation` refutes `drop_exactly_once` without hypothesis 4 (helper).
 
 ```lean
-theorem RueCore.Sharp.Glue.frame.drop_exactly_once_4 :
+theorem RueCore.Sharp.Glue.activation.drop_exactly_once_4 :
   ¬∀ (M : FloatLaws) {P : Program},
       ProgramTyped P →
         P.pendingSafe = true →
@@ -22505,14 +22507,14 @@ theorem RueCore.Sharp.Glue.frame.drop_exactly_once_4 :
                       Tidy φ H (eval M.toFloatSig fuel P H φ e)
 ```
 
-### `Sharp.Glue.frame.rest_exactly_once_4`
+### `Sharp.Glue.activation.rest_exactly_once_4`
 
 *theorem* · module `RueCore.Sharp.Glue`
 
-`Sharp.frame` refutes `rest_exactly_once` without hypothesis 4 (helper).
+`Sharp.activation` refutes `rest_exactly_once` without hypothesis 4 (helper).
 
 ```lean
-theorem RueCore.Sharp.Glue.frame.rest_exactly_once_4 :
+theorem RueCore.Sharp.Glue.activation.rest_exactly_once_4 :
   ¬∀ (M : FloatLaws) {P : Program},
       ProgramTyped P →
         P.pendingSafe = true →
@@ -22572,26 +22574,26 @@ theorem RueCore.Sharp.Glue.entry_param.run_safe_3 :
                     HasTy P.decls v fd.ret
 ```
 
-### `Sharp.Glue.entry_param.no_violation_1`
+### `Sharp.Glue.entry_param.no_refusal_1`
 
 *theorem* · module `RueCore.Sharp.Glue`
 
-`Sharp.entry_param` refutes `no_violation` without hypothesis 1 (helper).
+`Sharp.entry_param` refutes `no_refusal` without hypothesis 1 (helper).
 
 ```lean
-theorem RueCore.Sharp.Glue.entry_param.no_violation_1 :
+theorem RueCore.Sharp.Glue.entry_param.no_refusal_1 :
   ¬∀ (M : FloatLaws) {P : Program} (fuel : Nat) (w : Refusal),
       run M.toFloatSig P fuel ≠ EvalRes.refused w
 ```
 
-### `Sharp.Glue.copy.no_violation_1`
+### `Sharp.Glue.copy.no_refusal_1`
 
 *theorem* · module `RueCore.Sharp.Glue`
 
-`Sharp.copy` refutes `no_violation` without hypothesis 1 (helper).
+`Sharp.copy` refutes `no_refusal` without hypothesis 1 (helper).
 
 ```lean
-theorem RueCore.Sharp.Glue.copy.no_violation_1 :
+theorem RueCore.Sharp.Glue.copy.no_refusal_1 :
   ¬∀ (M : FloatLaws) {P : Program} (fuel : Nat) (w : Refusal),
       run M.toFloatSig P fuel ≠ EvalRes.refused w
 ```
@@ -22608,14 +22610,14 @@ theorem RueCore.Sharp.Glue.leak.no_linear_leak_1 :
       run M.toFloatSig P fuel ≠ EvalRes.refused Refusal.linearLeak
 ```
 
-### `Sharp.Glue.leak.eval_complete_1`
+### `Sharp.Glue.leak.eval_small_to_big_1`
 
 *theorem* · module `RueCore.Sharp.Glue`
 
-`Sharp.leak` refutes `eval_complete` without hypothesis 1 (helper).
+`Sharp.leak` refutes `eval_small_to_big` without hypothesis 1 (helper).
 
 ```lean
-theorem RueCore.Sharp.Glue.leak.eval_complete_1 :
+theorem RueCore.Sharp.Glue.leak.eval_small_to_big_1 :
   ¬∀ (M : FloatLaws) {P : Program},
       (∀ (H : Store) (φ : Activation) (v : Val) (tr : List Event),
           Steps M.toFloatSig P Config.init
@@ -22654,14 +22656,14 @@ theorem RueCore.Sharp.Glue.discard.no_linear_discard_1 :
       run M.toFloatSig P fuel ≠ EvalRes.refused Refusal.linearDiscard
 ```
 
-### `Sharp.Glue.discard.eval_complete_1`
+### `Sharp.Glue.discard.eval_small_to_big_1`
 
 *theorem* · module `RueCore.Sharp.Glue`
 
-`Sharp.discard` refutes `eval_complete` without hypothesis 1 (helper).
+`Sharp.discard` refutes `eval_small_to_big` without hypothesis 1 (helper).
 
 ```lean
-theorem RueCore.Sharp.Glue.discard.eval_complete_1 :
+theorem RueCore.Sharp.Glue.discard.eval_small_to_big_1 :
   ¬∀ (M : FloatLaws) {P : Program},
       (∀ (H : Store) (φ : Activation) (v : Val) (tr : List Event),
           Steps M.toFloatSig P Config.init
@@ -22688,14 +22690,14 @@ theorem RueCore.Sharp.Glue.discard_loop.no_linear_discard_1 :
       run M.toFloatSig P fuel ≠ EvalRes.refused Refusal.linearDiscard
 ```
 
-### `Sharp.Glue.discard_loop.never_stuck_iff_1`
+### `Sharp.Glue.discard_loop.never_refused_iff_1`
 
 *theorem* · module `RueCore.Sharp.Glue`
 
-`Sharp.discard_loop` refutes `never_stuck_iff` without hypothesis 1 (helper).
+`Sharp.discard_loop` refutes `never_refused_iff` without hypothesis 1 (helper).
 
 ```lean
-theorem RueCore.Sharp.Glue.discard_loop.never_stuck_iff_1 :
+theorem RueCore.Sharp.Glue.discard_loop.never_refused_iff_1 :
   ¬∀ (M : FloatLaws) {P : Program},
       (∀ (fuel : Nat) (w : Refusal),
           run M.toFloatSig P fuel ≠ EvalRes.refused w) ↔
@@ -22757,14 +22759,14 @@ theorem RueCore.Sharp.Glue.fuel.no_masking_1 :
         eval M m P H φ e = EvalRes.refused w
 ```
 
-### `Sharp.Glue.fuel.eval_complete_3`
+### `Sharp.Glue.fuel.eval_small_to_big_3`
 
 *theorem* · module `RueCore.Sharp.Glue`
 
-`Sharp.fuel` refutes `eval_complete` without hypothesis 3 (helper).
+`Sharp.fuel` refutes `eval_small_to_big` without hypothesis 3 (helper).
 
 ```lean
-theorem RueCore.Sharp.Glue.fuel.eval_complete_3 :
+theorem RueCore.Sharp.Glue.fuel.eval_small_to_big_3 :
   ¬∀ (M : FloatLaws) {P : Program},
       ProgramTyped P →
         (∀ (H : Store) (φ : Activation) (v : Val) (tr : List Event),
@@ -22779,14 +22781,14 @@ theorem RueCore.Sharp.Glue.fuel.eval_complete_3 :
                   n < fuel → run M.toFloatSig P fuel = EvalRes.panic κ tr
 ```
 
-### `Sharp.Glue.fuel.run_complete_2`
+### `Sharp.Glue.fuel.run_small_to_big_2`
 
 *theorem* · module `RueCore.Sharp.Glue`
 
-`Sharp.fuel` refutes `run_complete` without hypothesis 2 (helper).
+`Sharp.fuel` refutes `run_small_to_big` without hypothesis 2 (helper).
 
 ```lean
-theorem RueCore.Sharp.Glue.fuel.run_complete_2 :
+theorem RueCore.Sharp.Glue.fuel.run_small_to_big_2 :
   ¬∀ (M : FloatSig) (P : Program),
       (∀ (H : Store) (φ : Activation) (v : Val) (tr : List Event),
           Steps M P Config.init (Config.run H φ [] (Focus.ret v) tr) →
@@ -22803,14 +22805,14 @@ theorem RueCore.Sharp.Glue.fuel.run_complete_2 :
                     ∃ w, run M P fuel = EvalRes.refused w
 ```
 
-### `Sharp.Glue.fuel_panic.eval_complete_5`
+### `Sharp.Glue.fuel_panic.eval_small_to_big_5`
 
 *theorem* · module `RueCore.Sharp.Glue`
 
-`Sharp.fuel_panic` refutes `eval_complete` without hypothesis 5 (helper).
+`Sharp.fuel_panic` refutes `eval_small_to_big` without hypothesis 5 (helper).
 
 ```lean
-theorem RueCore.Sharp.Glue.fuel_panic.eval_complete_5 :
+theorem RueCore.Sharp.Glue.fuel_panic.eval_small_to_big_5 :
   ¬∀ (M : FloatLaws) {P : Program},
       ProgramTyped P →
         (∀ (H : Store) (φ : Activation) (v : Val) (tr : List Event),
@@ -22825,14 +22827,14 @@ theorem RueCore.Sharp.Glue.fuel_panic.eval_complete_5 :
                 ∀ (fuel : Nat), run M.toFloatSig P fuel = EvalRes.panic κ tr
 ```
 
-### `Sharp.Glue.fuel_panic.run_complete_4`
+### `Sharp.Glue.fuel_panic.run_small_to_big_4`
 
 *theorem* · module `RueCore.Sharp.Glue`
 
-`Sharp.fuel_panic` refutes `run_complete` without hypothesis 4 (helper).
+`Sharp.fuel_panic` refutes `run_small_to_big` without hypothesis 4 (helper).
 
 ```lean
-theorem RueCore.Sharp.Glue.fuel_panic.run_complete_4 :
+theorem RueCore.Sharp.Glue.fuel_panic.run_small_to_big_4 :
   ¬∀ (M : FloatSig) (P : Program),
       (∀ (H : Store) (φ : Activation) (v : Val) (tr : List Event),
           Steps M P Config.init (Config.run H φ [] (Focus.ret v) tr) →
@@ -23200,14 +23202,14 @@ theorem RueCore.Sharp.Glue.unreached.drop_glue_order_2 :
               DropGlueBlocks P.decls tr
 ```
 
-### `Sharp.Glue.unreached.eval_sound_2`
+### `Sharp.Glue.unreached.eval_big_to_small_2`
 
 *theorem* · module `RueCore.Sharp.Glue`
 
-`Sharp.unreached` refutes `eval_sound` without hypothesis 2 (helper).
+`Sharp.unreached` refutes `eval_big_to_small` without hypothesis 2 (helper).
 
 ```lean
-theorem RueCore.Sharp.Glue.unreached.eval_sound_2 :
+theorem RueCore.Sharp.Glue.unreached.eval_big_to_small_2 :
   ¬∀ (M : FloatLaws) {P : Program},
       ProgramTyped P →
         ∀ (fuel : Nat),
@@ -23237,14 +23239,14 @@ theorem RueCore.Sharp.Glue.unreached.run_sim_1 :
             Steps M P Config.init (Config.panic k tr)
 ```
 
-### `Sharp.Glue.unreached.eval_complete_2`
+### `Sharp.Glue.unreached.eval_small_to_big_2`
 
 *theorem* · module `RueCore.Sharp.Glue`
 
-`Sharp.unreached` refutes `eval_complete` without hypothesis 2 (helper).
+`Sharp.unreached` refutes `eval_small_to_big` without hypothesis 2 (helper).
 
 ```lean
-theorem RueCore.Sharp.Glue.unreached.eval_complete_2 :
+theorem RueCore.Sharp.Glue.unreached.eval_small_to_big_2 :
   ¬∀ (M : FloatLaws) {P : Program},
       ProgramTyped P →
         (∀ (H : Store) (_φ : Activation) (v : Val) (tr : List Event),
@@ -23258,14 +23260,14 @@ theorem RueCore.Sharp.Glue.unreached.eval_complete_2 :
                   n < fuel → run M.toFloatSig P fuel = EvalRes.panic κ tr
 ```
 
-### `Sharp.Glue.unreached.run_complete_1`
+### `Sharp.Glue.unreached.run_small_to_big_1`
 
 *theorem* · module `RueCore.Sharp.Glue`
 
-`Sharp.unreached` refutes `run_complete` without hypothesis 1 (helper).
+`Sharp.unreached` refutes `run_small_to_big` without hypothesis 1 (helper).
 
 ```lean
-theorem RueCore.Sharp.Glue.unreached.run_complete_1 :
+theorem RueCore.Sharp.Glue.unreached.run_small_to_big_1 :
   ¬∀ (M : FloatSig) (P : Program),
       (∀ (H : Store) (_φ : Activation) (v : Val) (tr : List Event),
           ∃ n,
@@ -23324,14 +23326,14 @@ theorem RueCore.Sharp.Glue.unreached_panic.drop_glue_order_3 :
           ∀ (_κ : PanicKind) (tr : List Event), DropGlueBlocks P.decls tr
 ```
 
-### `Sharp.Glue.unreached_panic.eval_sound_3`
+### `Sharp.Glue.unreached_panic.eval_big_to_small_3`
 
 *theorem* · module `RueCore.Sharp.Glue`
 
-`Sharp.unreached_panic` refutes `eval_sound` without hypothesis 3 (helper).
+`Sharp.unreached_panic` refutes `eval_big_to_small` without hypothesis 3 (helper).
 
 ```lean
-theorem RueCore.Sharp.Glue.unreached_panic.eval_sound_3 :
+theorem RueCore.Sharp.Glue.unreached_panic.eval_big_to_small_3 :
   ¬∀ (M : FloatLaws) {P : Program},
       ProgramTyped P →
         ∀ (fuel : Nat),
@@ -23361,14 +23363,14 @@ theorem RueCore.Sharp.Glue.unreached_panic.run_sim_2 :
           Steps M P Config.init (Config.panic k tr)
 ```
 
-### `Sharp.Glue.unreached_panic.eval_complete_4`
+### `Sharp.Glue.unreached_panic.eval_small_to_big_4`
 
 *theorem* · module `RueCore.Sharp.Glue`
 
-`Sharp.unreached_panic` refutes `eval_complete` without hypothesis 4 (helper).
+`Sharp.unreached_panic` refutes `eval_small_to_big` without hypothesis 4 (helper).
 
 ```lean
-theorem RueCore.Sharp.Glue.unreached_panic.eval_complete_4 :
+theorem RueCore.Sharp.Glue.unreached_panic.eval_small_to_big_4 :
   ¬∀ (M : FloatLaws) {P : Program},
       ProgramTyped P →
         (∀ (H : Store) (φ : Activation) (v : Val) (tr : List Event),
@@ -23383,14 +23385,14 @@ theorem RueCore.Sharp.Glue.unreached_panic.eval_complete_4 :
                 n < fuel → run M.toFloatSig P fuel = EvalRes.panic κ tr
 ```
 
-### `Sharp.Glue.unreached_panic.run_complete_3`
+### `Sharp.Glue.unreached_panic.run_small_to_big_3`
 
 *theorem* · module `RueCore.Sharp.Glue`
 
-`Sharp.unreached_panic` refutes `run_complete` without hypothesis 3 (helper).
+`Sharp.unreached_panic` refutes `run_small_to_big` without hypothesis 3 (helper).
 
 ```lean
-theorem RueCore.Sharp.Glue.unreached_panic.run_complete_3 :
+theorem RueCore.Sharp.Glue.unreached_panic.run_small_to_big_3 :
   ¬∀ (M : FloatSig) (P : Program),
       (∀ (H : Store) (φ : Activation) (v : Val) (tr : List Event),
           Steps M P Config.init (Config.run H φ [] (Focus.ret v) tr) →
@@ -23504,14 +23506,14 @@ theorem RueCore.Sharp.Glue.init_steps.step_stuck_isStuckState_1 :
       w.isStuckState = true
 ```
 
-### `Sharp.Glue.init_steps.run_stuck_of_step_stuck_2`
+### `Sharp.Glue.init_steps.run_refused_of_step_stuck_2`
 
 *theorem* · module `RueCore.Sharp.Glue`
 
-`Sharp.init_steps` refutes `run_stuck_of_step_stuck` without hypothesis 2 (helper).
+`Sharp.init_steps` refutes `run_refused_of_step_stuck` without hypothesis 2 (helper).
 
 ```lean
-theorem RueCore.Sharp.Glue.init_steps.run_stuck_of_step_stuck_2 :
+theorem RueCore.Sharp.Glue.init_steps.run_refused_of_step_stuck_2 :
   ¬∀ (M : FloatSig) (P : Program) {C : Config} {_w : Refusal},
       Steps M P Config.init C →
         ∃ n,
@@ -23531,14 +23533,14 @@ theorem RueCore.Sharp.Glue.unreachable_stuck.step_progress_2 :
         ∀ (C : Config), C.Terminal ∨ ∃ C', Step M.toFloatSig P C C'
 ```
 
-### `Sharp.Glue.unreachable_stuck.step_preservation_2`
+### `Sharp.Glue.unreachable_stuck.step_safeAt_2`
 
 *theorem* · module `RueCore.Sharp.Glue`
 
-`Sharp.unreachable_stuck` refutes `step_preservation` without hypothesis 2 (helper).
+`Sharp.unreachable_stuck` refutes `step_safeAt` without hypothesis 2 (helper).
 
 ```lean
-theorem RueCore.Sharp.Glue.unreachable_stuck.step_preservation_2 :
+theorem RueCore.Sharp.Glue.unreachable_stuck.step_safeAt_2 :
   ¬∀ (M : FloatLaws) {P : Program},
       ProgramTyped P →
         ∃ fd,
@@ -23546,14 +23548,14 @@ theorem RueCore.Sharp.Glue.unreachable_stuck.step_preservation_2 :
             ∀ (C : Config), Config.SafeAt M.toFloatSig P fd.ret C
 ```
 
-### `Sharp.Glue.unreachable_stuck.never_stuck_iff_2`
+### `Sharp.Glue.unreachable_stuck.never_refused_iff_2`
 
 *theorem* · module `RueCore.Sharp.Glue`
 
-`Sharp.unreachable_stuck` refutes `never_stuck_iff` without hypothesis 2 (helper).
+`Sharp.unreachable_stuck` refutes `never_refused_iff` without hypothesis 2 (helper).
 
 ```lean
-theorem RueCore.Sharp.Glue.unreachable_stuck.never_stuck_iff_2 :
+theorem RueCore.Sharp.Glue.unreachable_stuck.never_refused_iff_2 :
   ¬∀ (M : FloatLaws) {P : Program},
       ProgramTyped P →
         ((∀ (fuel : Nat) (w : Refusal),
@@ -23574,28 +23576,28 @@ theorem RueCore.Sharp.Glue.unreachable_stuck.step_never_stuck_of_run_2 :
         ∀ (C : Config), C.Terminal ∨ ∃ C', Step M P C C'
 ```
 
-### `Sharp.Glue.unreachable_stuck.run_stuck_of_step_stuck_1`
+### `Sharp.Glue.unreachable_stuck.run_refused_of_step_stuck_1`
 
 *theorem* · module `RueCore.Sharp.Glue`
 
-`Sharp.unreachable_stuck` refutes `run_stuck_of_step_stuck` without hypothesis 1 (helper).
+`Sharp.unreachable_stuck` refutes `run_refused_of_step_stuck` without hypothesis 1 (helper).
 
 ```lean
-theorem RueCore.Sharp.Glue.unreachable_stuck.run_stuck_of_step_stuck_1 :
+theorem RueCore.Sharp.Glue.unreachable_stuck.run_refused_of_step_stuck_1 :
   ¬∀ (M : FloatSig) (P : Program) {C : Config} {w : Refusal},
       Config.Stuck M P C w →
         ∃ n,
           ∀ (fuel : Nat), n < fuel → ∃ w', run M P fuel = EvalRes.refused w'
 ```
 
-### `Sharp.Glue.retired_cell.step_no_use_after_drop_1`
+### `Sharp.Glue.tombstoned_cell.step_no_use_after_drop_1`
 
 *theorem* · module `RueCore.Sharp.Glue`
 
-`Sharp.retired_cell` refutes `step_no_use_after_drop` without hypothesis 1 (helper).
+`Sharp.tombstoned_cell` refutes `step_no_use_after_drop` without hypothesis 1 (helper).
 
 ```lean
-theorem RueCore.Sharp.Glue.retired_cell.step_no_use_after_drop_1 :
+theorem RueCore.Sharp.Glue.tombstoned_cell.step_no_use_after_drop_1 :
   ¬∀ (M : FloatSig) (P : Program) {C : Config},
       ¬Config.Stuck M P C Refusal.useAfterDrop
 ```
@@ -23641,14 +23643,14 @@ theorem RueCore.Sharp.Glue.uncut_drop.drop_order_4 :
                         List.Pairwise (fun x1 x2 => x1 < x2) C.stack
 ```
 
-### `Sharp.Glue.ill_typed_halt.step_preservation_2`
+### `Sharp.Glue.ill_typed_halt.step_safeAt_2`
 
 *theorem* · module `RueCore.Sharp.Glue`
 
-`Sharp.ill_typed_halt` refutes `step_preservation` without hypothesis 2 (helper).
+`Sharp.ill_typed_halt` refutes `step_safeAt` without hypothesis 2 (helper).
 
 ```lean
-theorem RueCore.Sharp.Glue.ill_typed_halt.step_preservation_2 :
+theorem RueCore.Sharp.Glue.ill_typed_halt.step_safeAt_2 :
   ¬∀ (M : FloatLaws) {P : Program},
       ProgramTyped P →
         ∃ fd,
@@ -23656,14 +23658,14 @@ theorem RueCore.Sharp.Glue.ill_typed_halt.step_preservation_2 :
             ∀ (C : Config), Config.SafeAt M.toFloatSig P fd.ret C
 ```
 
-### `Sharp.Glue.out_of_range_halt.step_preservation_2`
+### `Sharp.Glue.out_of_range_halt.step_safeAt_2`
 
 *theorem* · module `RueCore.Sharp.Glue`
 
-`Sharp.out_of_range_halt` refutes `step_preservation` without hypothesis 2 (helper).
+`Sharp.out_of_range_halt` refutes `step_safeAt` without hypothesis 2 (helper).
 
 ```lean
-theorem RueCore.Sharp.Glue.out_of_range_halt.step_preservation_2 :
+theorem RueCore.Sharp.Glue.out_of_range_halt.step_safeAt_2 :
   ¬∀ (M : FloatLaws) {P : Program},
       ProgramTyped P →
         ∃ fd,
@@ -23671,14 +23673,14 @@ theorem RueCore.Sharp.Glue.out_of_range_halt.step_preservation_2 :
             ∀ (C : Config), Config.SafeAt M.toFloatSig P fd.ret C
 ```
 
-### `Sharp.Glue.float_halt.step_preservation_2`
+### `Sharp.Glue.float_halt.step_safeAt_2`
 
 *theorem* · module `RueCore.Sharp.Glue`
 
-`Sharp.float_halt` refutes `step_preservation` without hypothesis 2 (helper).
+`Sharp.float_halt` refutes `step_safeAt` without hypothesis 2 (helper).
 
 ```lean
-theorem RueCore.Sharp.Glue.float_halt.step_preservation_2 :
+theorem RueCore.Sharp.Glue.float_halt.step_safeAt_2 :
   ¬∀ (M : FloatLaws) {P : Program},
       ProgramTyped P →
         ∃ fd,
@@ -32404,7 +32406,7 @@ binding's cell is minted fresh and retired only when the scope that bound it
 ends, after which nothing names it, and a scope record owes each cell once.
 So `no_use_after_drop`'s `ProgramTyped` is redundant for a run from the
 start. The guard is not dead code: from an open configuration, a frame that
-names a cell already retired, `eval` does refuse (`Sharp.retired_cell`). Like
+names a cell already retired, `eval` does refuse (`Sharp.tombstoned_cell`). Like
 `no_use_after_drop`, it says no retired cell is accessed only as far as
 `eval` checks every access and labels it so (R3 of `REDTEAM-LOG.md`).
 
@@ -33232,7 +33234,7 @@ def RueCore.StoreCC (D : Decls) (H : Store) : Prop :=
     H[ℓ]? = some (Cell.full c) → Contents.copyContained D c = true
 ```
 
-### `Spec.Nonvacuous.empty_frame_stmt`
+### `Spec.Nonvacuous.empty_activation_stmt`
 
 *def* · module `RueCore.Spec.Nonvacuous`
 
@@ -33244,7 +33246,7 @@ store the evaluation statements (`soundness`, `drop_exactly_once`,
 `rest_exactly_once`) are applied at by the witnesses below.
 
 ```lean
-def RueCore.Spec.Nonvacuous.empty_frame_stmt : Prop :=
+def RueCore.Spec.Nonvacuous.empty_activation_stmt : Prop :=
   ∀ (D : Decls), ActivationTyping D [] Activation.empty [] ∧ StoreCC D []
 ```
 
@@ -35076,7 +35078,7 @@ trace `tr` produced before it, §6.2's `⟨H ; φ ; K ; E[e]⟩`: a value reache
 `E[v]` in the frame `φ` (§6.2's (Search)), a panic reaches `↯κ` from every
 context ((Panic-Lift) §6.2), an unwinding `return` reaches the nearest caller
 ((D-Return) §6.9), and an unwinding `break` reaches the nearest loop's context
-((D-Break) §6.10). Part 3's completeness (`eval_complete`) takes its runs
+((D-Break) §6.10). Part 3's completeness (`eval_small_to_big`) takes its runs
 through already-reduced operands from this relation's `ok` clause.
 
 ```lean
@@ -35105,31 +35107,20 @@ def RueCore.Sim (M : FloatSig) (P : Program) (φ : Activation)
   | EvalRes.outOfFuel => True
 ```
 
-### `Spec.run_complete_stmt`
+### `Spec.run_refused_of_step_stuck_stmt`
 
 *def* · module `RueCore.Spec.Adequacy`
 
-**Completeness on every program** (§6.12): the same, up to a refusal of
-`run`'s (RUE-2314). With no typing hypothesis the escape is wide: a `run` that
-is `.refused` past some fuel satisfies it, whatever `→*` reaches.
+**A stuck `Step` run is a refusal of `run`** (§6), at every large enough
+fuel, perhaps with another `Refusal`.
 
 ```lean
-def RueCore.Spec.run_complete_stmt : Prop :=
-  ∀ (M : FloatSig) (P : Program),
-    (∀ (H : Store) (φ : Activation) (v : Val) (tr : List Event),
-        Steps M P Config.init (Config.run H φ [] (Focus.ret v) tr) →
-          ∃ n,
-            ∀ (fuel : Nat),
-              n < fuel →
-                run M P fuel = EvalRes.ok H v tr ∨
-                  ∃ w, run M P fuel = EvalRes.refused w) ∧
-      ∀ (κ : PanicKind) (tr : List Event),
-        Steps M P Config.init (Config.panic κ tr) →
-          ∃ n,
-            ∀ (fuel : Nat),
-              n < fuel →
-                run M P fuel = EvalRes.panic κ tr ∨
-                  ∃ w, run M P fuel = EvalRes.refused w
+def RueCore.Spec.run_refused_of_step_stuck_stmt : Prop :=
+  ∀ (M : FloatSig) (P : Program) {C : Config} {w : Refusal},
+    Steps M P Config.init C →
+      Config.Stuck M P C w →
+        ∃ n,
+          ∀ (fuel : Nat), n < fuel → ∃ w', run M P fuel = EvalRes.refused w'
 ```
 
 ### `Spec.run_sim_stmt`
@@ -35151,20 +35142,31 @@ def RueCore.Spec.run_sim_stmt : Prop :=
           Steps M P Config.init (Config.panic k tr)
 ```
 
-### `Spec.run_stuck_of_step_stuck_stmt`
+### `Spec.run_small_to_big_stmt`
 
 *def* · module `RueCore.Spec.Adequacy`
 
-**A stuck `Step` run is a refusal of `run`** (§6), at every large enough
-fuel, perhaps with another `Refusal`.
+**Completeness on every program** (§6.12): the same, up to a refusal of
+`run`'s (RUE-2314). With no typing hypothesis the escape is wide: a `run` that
+is `.refused` past some fuel satisfies it, whatever `→*` reaches.
 
 ```lean
-def RueCore.Spec.run_stuck_of_step_stuck_stmt : Prop :=
-  ∀ (M : FloatSig) (P : Program) {C : Config} {w : Refusal},
-    Steps M P Config.init C →
-      Config.Stuck M P C w →
-        ∃ n,
-          ∀ (fuel : Nat), n < fuel → ∃ w', run M P fuel = EvalRes.refused w'
+def RueCore.Spec.run_small_to_big_stmt : Prop :=
+  ∀ (M : FloatSig) (P : Program),
+    (∀ (H : Store) (φ : Activation) (v : Val) (tr : List Event),
+        Steps M P Config.init (Config.run H φ [] (Focus.ret v) tr) →
+          ∃ n,
+            ∀ (fuel : Nat),
+              n < fuel →
+                run M P fuel = EvalRes.ok H v tr ∨
+                  ∃ w, run M P fuel = EvalRes.refused w) ∧
+      ∀ (κ : PanicKind) (tr : List Event),
+        Steps M P Config.init (Config.panic κ tr) →
+          ∃ n,
+            ∀ (fuel : Nat),
+              n < fuel →
+                run M P fuel = EvalRes.panic κ tr ∨
+                  ∃ w, run M P fuel = EvalRes.refused w
 ```
 
 ### `Spec.step_never_stuck_of_run_stmt`
@@ -35192,7 +35194,7 @@ no leak of drops"; §6.1's retired cell; RUE-2496). No configuration reachable
 from `Config.init` is stuck on a retired (`†`) cell, whether or not the
 program is checked. The hypothesis that the configuration is reached is
 needed: a configuration whose frame names a retired cell is stuck so
-(`Sharp.retired_cell`).
+(`Sharp.tombstoned_cell`).
 
 ```lean
 def RueCore.Spec.step_no_use_after_drop_stmt : Prop :=
@@ -36374,7 +36376,7 @@ Defining equations, as Lean derived them from the body:
       | none => false)
 ```
 
-### `Spec.Nonvacuous.stuck_stmt`
+### `Spec.Nonvacuous.refused_stuck_stmt`
 
 *def* · module `RueCore.Spec.Nonvacuous`
 
@@ -36387,7 +36389,7 @@ statements whose hypothesis is a stuck run or a stuck configuration are not
 vacuous either.
 
 ```lean
-def RueCore.Spec.Nonvacuous.stuck_stmt : Prop :=
+def RueCore.Spec.Nonvacuous.refused_stuck_stmt : Prop :=
   ∀ (B : Expr),
     B =
         Expr.letIn false
@@ -36967,7 +36969,7 @@ would duplicate an owner through: over `S0 = @copy struct { x0: i64 }` and
 `S1`, affine with a destructor, `let p = S0 { x0: S1 { 1 } }; let q = p;
 @drop(p.x0); @drop(q.x0); 0` (`Trace.lean`'s `dupProgram`). It is not
 `ProgramTyped`, and `eval` refuses it with `ownedUnderCopy`, at the literal:
-`no_violation`'s conclusion fails once `ProgramTyped` is dropped, and a machine
+`no_refusal`'s conclusion fails once `ProgramTyped` is dropped, and a machine
 without the copy-closure monitor (`Contents.copyContained` in `introVal`) makes
 this statement false.
 
@@ -37012,7 +37014,7 @@ def RueCore.Spec.Sharp.copy_stmt : Prop :=
 `loop { S1 { 3 }; () }` is not `ProgramTyped`. `eval` refuses its first turn
 with `linearDiscard`, while §6's relation, which has no monitor, turns forever:
 it has runs of every length from `Config.init`, and every configuration they
-reach steps. So `eval_diverges_iff` and `never_stuck_iff` fail once
+reach steps. So `eval_diverges_iff` and `never_refused_iff` fail once
 `ProgramTyped` is dropped: one side of each holds and the other does not. A
 machine without the discard monitor makes this statement false.
 
@@ -37066,7 +37068,7 @@ def RueCore.Spec.Sharp.discard_loop_stmt : Prop :=
 `S1 { 3 }; @panic("boom")` discards a linear value. It is not `ProgramTyped`,
 and `eval` refuses the sequence with `linearDiscard`: `no_linear_discard`'s
 conclusion fails once `ProgramTyped` is dropped. §6's relation drops the
-value and reaches the panic, which `run` never answers: `eval_complete`'s
+value and reaches the panic, which `run` never answers: `eval_small_to_big`'s
 panic half needs `ProgramTyped` too. A machine without the discard monitor
 makes this statement false.
 
@@ -37175,7 +37177,7 @@ datum `15 · 2^-1`, two data that are not in `𝔽_f64` are not `Wf`: `30 · 2^-
 the same number with an even significand (not canonical), and `1 · 2^-1075`,
 half the least subnormal (below the floor `eMin`). The configurations that
 have halted with them are terminal, not `SafeAt` the entry type, and not
-reached from `Config.init`. So `step_preservation` fails without the
+reached from `Config.init`. So `step_safeAt` fails without the
 hypothesis that the configuration is reached, at a float value whose only
 fault is its datum.
 
@@ -37265,7 +37267,7 @@ def RueCore.Spec.Sharp.float_halt_stmt : Prop :=
 
 **Fuel bounds, dropped, at a panic** (§7 sharpness, RUE-2485). The checked
 program of `Nonvacuous.panic` panics, and §6's relation reaches the panic, but
-fuel `0` is exhausted: `eval_complete`'s and `run_complete`'s panic halves
+fuel `0` is exhausted: `eval_small_to_big`'s and `run_small_to_big`'s panic halves
 fail without `n < fuel`.
 
 ```lean
@@ -37315,7 +37317,7 @@ def RueCore.Spec.Sharp.fuel_panic_stmt : Prop :=
 relation reaches. So `fuel_mono` fails without `n ≤ m` (`n = 200`, `m = 0`) and
 without `eval n ≠ outOfFuel` (`n = 0`, `m = 200`); `no_masking` fails without
 its first hypothesis (`eval n` is a value, not a refusal); and
-`eval_complete`'s and `run_complete`'s value halves fail without `n < fuel`:
+`eval_small_to_big`'s and `run_small_to_big`'s value halves fail without `n < fuel`:
 no `n` makes the value, or a refusal, the answer at every fuel. `run P fuel`
 is `eval` at `main()` (`run`'s definition). `fuel_mono` and `no_masking` are
 stated over `eval`; the statement gives `run P n` and `eval` at `main()` as
@@ -37384,7 +37386,7 @@ sharpness, RUE-2500). For the checked program of `Nonvacuous.dtor`, whose entry
 point returns `i64`, the configuration that has halted with `true` is terminal,
 so nothing it reaches is stuck; but its value is not an `i64`, so it is not
 `SafeAt` the entry type, and `Config.init` does not reach it. So
-`step_preservation` fails without the hypothesis that the configuration is
+`step_safeAt` fails without the hypothesis that the configuration is
 reached, through `SafeAt`'s typing half, where `unreachable_stuck` fails it
 through the progress half.
 
@@ -37437,7 +37439,7 @@ list of `main()`, and not to itself; it is not terminal and not stuck (with
 `linearLeak`, a monitor's tag, not one of §6's stuck states); and `run` is
 never stuck. So `Step.det` fails without either of its step hypotheses,
 `Step.terminal` without `C.Terminal`, `step_stuck_isStuckState` without
-`C.Stuck`, and `run_stuck_of_step_stuck` without `C.Stuck`.
+`C.Stuck`, and `run_refused_of_step_stuck` without `C.Stuck`.
 
 ```lean
 def RueCore.Spec.Sharp.init_steps_stmt : Prop :=
@@ -37496,7 +37498,7 @@ def RueCore.Spec.Sharp.init_steps_stmt : Prop :=
 value at the scope's end. It is not `ProgramTyped`, and `eval` refuses it with
 `linearLeak`: `no_linear_leak`'s conclusion fails once `ProgramTyped` is
 dropped. §6's relation, which has no monitor, runs it to a value, which `run`
-never returns at any fuel: `eval_complete` needs `ProgramTyped` too. A machine
+never returns at any fuel: `eval_small_to_big` needs `ProgramTyped` too. A machine
 whose leak monitor is off, or does not read a declared-`linear` struct's own
 obligation (`Contents.residualLinear`), makes this statement false.
 
@@ -37663,7 +37665,7 @@ sharpness, RUE-2500; §6.1's `n_T`). For the same program, the configuration
 that has halted with `2^63`, one past `i64`'s maximum, is terminal, but the
 value is not well typed at `i64` (`HasTy` carries the bounds), so the
 configuration is not `SafeAt` the entry type, and `Config.init` does not reach
-it. So `step_preservation` fails without the hypothesis that the configuration
+it. So `step_safeAt` fails without the hypothesis that the configuration
 is reached, at a value of the right form whose only fault is its range.
 
 ```lean
@@ -37824,59 +37826,6 @@ def RueCore.Spec.Sharp.pending_leak_stmt : Prop :=
                         0
 ```
 
-### `Spec.Sharp.retired_cell_stmt`
-
-*def* · module `RueCore.Spec.Sharp`
-
-**A configuration that reads a retired cell, not reached** (§7 sharpness,
-RUE-2496). For the checked program of `Nonvacuous.dtor`, a configuration whose
-frame names a cell already retired (`†`) is stuck with `useAfterDrop`, and
-`eval` from the same store and frame refuses the same way; the configuration
-is not reached from `Config.init` (shown through `step_no_use_after_drop`
-itself). So `step_no_use_after_drop` fails without the hypothesis that the
-configuration is reached: the refusal is live from an open configuration, and
-what keeps it away is the start, not the program's typing.
-
-```lean
-def RueCore.Spec.Sharp.retired_cell_stmt : Prop :=
-  ∀ (B : Expr),
-    B =
-        Expr.letIn false
-          (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
-          (Expr.letIn false
-            (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 2])
-            (Expr.intLit IntWidth.w64 Sign.signed 3)) →
-      ∀ (P : Program),
-        P =
-            {
-              decls :=
-                {
-                  structs :=
-                    [{ attr := Attr.none,
-                        fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine },
-                      { attr := Attr.linear,
-                        fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.linear }],
-                  enums :=
-                    [{ variants := [[Ty.struct 0], []],
-                        cls := Qual.affine }] },
-              fns :=
-                [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
-                    body := B }] } →
-          ProgramTyped P ∧
-            eval Float.exactOps 1 P [Cell.dead] { env := [0], scope := [] }
-                  (Expr.use (Place.var 0)) =
-                EvalRes.refused Refusal.useAfterDrop ∧
-              Config.Stuck Float.exactOps P
-                  (Config.run [Cell.dead] { env := [0], scope := [] } []
-                    (Focus.eval (Expr.use (Place.var 0))) [])
-                  Refusal.useAfterDrop ∧
-                ¬Steps Float.exactOps P Config.init
-                    (Config.run [Cell.dead] { env := [0], scope := [] } []
-                      (Focus.eval (Expr.use (Place.var 0))) [])
-```
-
 ### `Spec.Sharp.stuck_step_stmt`
 
 *def* · module `RueCore.Spec.Sharp`
@@ -37884,10 +37833,10 @@ def RueCore.Spec.Sharp.retired_cell_stmt : Prop :=
 **The same program, run by §6's relation** (§7 sharpness, RUE-2485). `Step`
 reaches a configuration stuck with `useAfterMove` from `Config.init`, and
 `run` refuses at fuel `200` and exhausts fuel `0`. So once `ProgramTyped` is
-dropped, `step_progress`, `step_preservation` and `step_type_safety` fail
+dropped, `step_progress`, `step_safeAt` and `step_type_safety` fail
 (no horizon passes the stuck configuration, which is not a value or a
 panic); once `step_never_stuck_of_run`'s hypothesis that `run` is never stuck
-is dropped, its conclusion fails; and once `run_stuck_of_step_stuck`'s bound
+is dropped, its conclusion fails; and once `run_refused_of_step_stuck`'s bound
 `n < fuel` is dropped, no `n` makes `run` stuck at every fuel.
 
 ```lean
@@ -37948,6 +37897,59 @@ def RueCore.Spec.Sharp.stuck_step_stmt : Prop :=
                         ¬∀ (fuel : Nat),
                             ∃ w',
                               run Float.exactOps P fuel = EvalRes.refused w'
+```
+
+### `Spec.Sharp.tombstoned_cell_stmt`
+
+*def* · module `RueCore.Spec.Sharp`
+
+**A configuration that reads a retired cell, not reached** (§7 sharpness,
+RUE-2496). For the checked program of `Nonvacuous.dtor`, a configuration whose
+frame names a cell already retired (`†`) is stuck with `useAfterDrop`, and
+`eval` from the same store and frame refuses the same way; the configuration
+is not reached from `Config.init` (shown through `step_no_use_after_drop`
+itself). So `step_no_use_after_drop` fails without the hypothesis that the
+configuration is reached: the refusal is live from an open configuration, and
+what keeps it away is the start, not the program's typing.
+
+```lean
+def RueCore.Spec.Sharp.tombstoned_cell_stmt : Prop :=
+  ∀ (B : Expr),
+    B =
+        Expr.letIn false
+          (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+          (Expr.letIn false
+            (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 2])
+            (Expr.intLit IntWidth.w64 Sign.signed 3)) →
+      ∀ (P : Program),
+        P =
+            {
+              decls :=
+                {
+                  structs :=
+                    [{ attr := Attr.none,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := true, cls := Qual.affine },
+                      { attr := Attr.linear,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := false, cls := Qual.linear }],
+                  enums :=
+                    [{ variants := [[Ty.struct 0], []],
+                        cls := Qual.affine }] },
+              fns :=
+                [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                    body := B }] } →
+          ProgramTyped P ∧
+            eval Float.exactOps 1 P [Cell.dead] { env := [0], scope := [] }
+                  (Expr.use (Place.var 0)) =
+                EvalRes.refused Refusal.useAfterDrop ∧
+              Config.Stuck Float.exactOps P
+                  (Config.run [Cell.dead] { env := [0], scope := [] } []
+                    (Focus.eval (Expr.use (Place.var 0))) [])
+                  Refusal.useAfterDrop ∧
+                ¬Steps Float.exactOps P Config.init
+                    (Config.run [Cell.dead] { env := [0], scope := [] } []
+                      (Focus.eval (Expr.use (Place.var 0))) [])
 ```
 
 ### `Spec.Sharp.uncut_drop_stmt`
@@ -38248,9 +38250,9 @@ def RueCore.Spec.Sharp.unordered_stmt : Prop :=
 **A stuck configuration that is not reached** (§7 sharpness, RUE-2485). For the
 checked program of `Nonvacuous.dtor`, whose `run` is never stuck, a
 configuration reading an unbound name is stuck and is not reached from
-`Config.init`. So `step_progress`, `step_preservation`,
-`step_never_stuck_of_run` and `run_stuck_of_step_stuck` fail without the
-hypothesis that the configuration is reached, and so does `never_stuck_iff`:
+`Config.init`. So `step_progress`, `step_safeAt`,
+`step_never_stuck_of_run` and `run_refused_of_step_stuck` fail without the
+hypothesis that the configuration is reached, and so does `never_refused_iff`:
 its left side holds and its right side, over every configuration, does not.
 
 ```lean
@@ -38445,8 +38447,8 @@ def RueCore.Spec.Sharp.unreached_held_stmt : Prop :=
 **A panic §6's relation does not reach** (§7 sharpness, RUE-2485). The same, for
 the panic whose trace opens with a destructor event: not reached, not `run`'s
 answer past any bound (the program returns), not in the block grammar. So
-`eval_sound`'s and `run_sim`'s `run … = .panic k tr`, `eval_complete`'s and
-`run_complete`'s `Steps … (.panic κ tr)`, and `drop_order`'s and
+`eval_big_to_small`'s and `run_sim`'s `run … = .panic k tr`, `eval_small_to_big`'s and
+`run_small_to_big`'s `Steps … (.panic κ tr)`, and `drop_order`'s and
 `drop_glue_order`'s are needed.
 
 ```lean
@@ -38514,8 +38516,8 @@ value `8`, the empty store and a trace that opens with a destructor event is
 not reached from `Config.init`, is not `run`'s answer at any fuel past any
 bound, and its trace is not in §6.11's block grammar. So each statement
 whose conclusion claims something of a reached or answered value fails once
-the hypothesis naming that value is dropped: `eval_sound`'s and `run_sim`'s
-`run … = .ok H v tr`, `eval_complete`'s and `run_complete`'s `Steps … (.ret
+the hypothesis naming that value is dropped: `eval_big_to_small`'s and `run_sim`'s
+`run … = .ok H v tr`, `eval_small_to_big`'s and `run_small_to_big`'s `Steps … (.ret
 v)`, and `drop_order`'s and `drop_glue_order`'s (a trace outside `Blocks` is
 outside `DropGlueBlocks`, RUE-2487).
 
@@ -38650,30 +38652,28 @@ def RueCore.Spec.drop_order_stmt : Prop :=
                         List.Pairwise (fun x1 x2 => x1 < x2) C.stack
 ```
 
-### `Spec.eval_complete_stmt`
+### `Spec.eval_big_to_small_stmt`
 
 *def* · module `RueCore.Spec.Adequacy`
 
-**`eval` is complete for `Step`, modulo fuel**, the small-step-to-interpreter
-direction of the semantic equivalence (§7's adequacy sentence).
-For a checked program, a value or panic `→*` reaches is `run`'s answer at
-every large enough fuel.
+**`eval` is sound for `Step`**, the interpreter-to-small-step direction of
+the semantic equivalence (§7's adequacy sentence; ADR-0097). For a
+checked program, `run` is never stuck, and its values and panics are reached
+by `→*` from `Config.init` with the same store and trace.
 
 ```lean
-def RueCore.Spec.eval_complete_stmt : Prop :=
+def RueCore.Spec.eval_big_to_small_stmt : Prop :=
   ∀ (M : FloatLaws) {P : Program},
     ProgramTyped P →
-      (∀ (H : Store) (φ : Activation) (v : Val) (tr : List Event),
-          Steps M.toFloatSig P Config.init
-              (Config.run H φ [] (Focus.ret v) tr) →
-            ∃ n,
-              ∀ (fuel : Nat),
-                n < fuel → run M.toFloatSig P fuel = EvalRes.ok H v tr) ∧
-        ∀ (κ : PanicKind) (tr : List Event),
-          Steps M.toFloatSig P Config.init (Config.panic κ tr) →
-            ∃ n,
-              ∀ (fuel : Nat),
-                n < fuel → run M.toFloatSig P fuel = EvalRes.panic κ tr
+      ∀ (fuel : Nat),
+        (∀ (w : Refusal), run M.toFloatSig P fuel ≠ EvalRes.refused w) ∧
+          (∀ (H : Store) (v : Val) (tr : List Event),
+              run M.toFloatSig P fuel = EvalRes.ok H v tr →
+                Steps M.toFloatSig P Config.init
+                  (Config.run H Activation.empty [] (Focus.ret v) tr)) ∧
+            ∀ (k : PanicKind) (tr : List Event),
+              run M.toFloatSig P fuel = EvalRes.panic k tr →
+                Steps M.toFloatSig P Config.init (Config.panic k tr)
 ```
 
 ### `Spec.eval_diverges_iff_stmt`
@@ -38692,31 +38692,33 @@ def RueCore.Spec.eval_diverges_iff_stmt : Prop :=
         ∀ (n : Nat), ∃ D, StepsN M.toFloatSig P n Config.init D)
 ```
 
-### `Spec.eval_sound_stmt`
+### `Spec.eval_small_to_big_stmt`
 
 *def* · module `RueCore.Spec.Adequacy`
 
-**`eval` is sound for `Step`**, the interpreter-to-small-step direction of
-the semantic equivalence (§7's adequacy sentence; ADR-0097). For a
-checked program, `run` is never stuck, and its values and panics are reached
-by `→*` from `Config.init` with the same store and trace.
+**`eval` is complete for `Step`, modulo fuel**, the small-step-to-interpreter
+direction of the semantic equivalence (§7's adequacy sentence).
+For a checked program, a value or panic `→*` reaches is `run`'s answer at
+every large enough fuel.
 
 ```lean
-def RueCore.Spec.eval_sound_stmt : Prop :=
+def RueCore.Spec.eval_small_to_big_stmt : Prop :=
   ∀ (M : FloatLaws) {P : Program},
     ProgramTyped P →
-      ∀ (fuel : Nat),
-        (∀ (w : Refusal), run M.toFloatSig P fuel ≠ EvalRes.refused w) ∧
-          (∀ (H : Store) (v : Val) (tr : List Event),
-              run M.toFloatSig P fuel = EvalRes.ok H v tr →
-                Steps M.toFloatSig P Config.init
-                  (Config.run H Activation.empty [] (Focus.ret v) tr)) ∧
-            ∀ (k : PanicKind) (tr : List Event),
-              run M.toFloatSig P fuel = EvalRes.panic k tr →
-                Steps M.toFloatSig P Config.init (Config.panic k tr)
+      (∀ (H : Store) (φ : Activation) (v : Val) (tr : List Event),
+          Steps M.toFloatSig P Config.init
+              (Config.run H φ [] (Focus.ret v) tr) →
+            ∃ n,
+              ∀ (fuel : Nat),
+                n < fuel → run M.toFloatSig P fuel = EvalRes.ok H v tr) ∧
+        ∀ (κ : PanicKind) (tr : List Event),
+          Steps M.toFloatSig P Config.init (Config.panic κ tr) →
+            ∃ n,
+              ∀ (fuel : Nat),
+                n < fuel → run M.toFloatSig P fuel = EvalRes.panic κ tr
 ```
 
-### `Spec.never_stuck_iff_stmt`
+### `Spec.never_refused_iff_stmt`
 
 *def* · module `RueCore.Spec.Adequacy`
 
@@ -38726,7 +38728,7 @@ sides hold outright, so the equivalence adds nothing; cite
 `step_never_stuck_of_run` (R5 of `REDTEAM-LOG.md`).
 
 ```lean
-def RueCore.Spec.never_stuck_iff_stmt : Prop :=
+def RueCore.Spec.never_refused_iff_stmt : Prop :=
   ∀ (M : FloatLaws) {P : Program},
     ProgramTyped P →
       ((∀ (fuel : Nat) (w : Refusal),
@@ -38816,13 +38818,33 @@ def RueCore.Spec.no_linear_overwrite_stmt : Prop :=
         run M.toFloatSig P fuel ≠ EvalRes.refused Refusal.linearOverwrite
 ```
 
+### `Spec.no_refusal_stmt`
+
+*def* · module `RueCore.Spec.Safety`
+
+**No refusal of any kind** (§7's memory-safety bullets). A checked
+program's run is never `.refused`. Narrower than the bullets: a value built for
+a sibling operand that a later one abandons by `return` or `break` is dropped
+by nobody (RUE-2316), and a `@panic` runs no drop (§5.7's `⊥_panic`). Like
+every "never `.refused`" statement, it holds because `eval`'s checks and
+monitors never fire: what it rules out is what they watch (R3 of
+`REDTEAM-LOG.md`; RUE-2469).
+
+```lean
+def RueCore.Spec.no_refusal_stmt : Prop :=
+  ∀ (M : FloatLaws) {P : Program},
+    ProgramTyped P →
+      ∀ (fuel : Nat) (w : Refusal),
+        run M.toFloatSig P fuel ≠ EvalRes.refused w
+```
+
 ### `Spec.no_use_after_drop_stmt`
 
 *def* · module `RueCore.Spec.Safety`
 
 **No use-after-drop** (§7 "No use-after-drop / no leak of drops", "never
 read afterward"): `run` never refuses with `useAfterDrop`, the tag `eval`
-raises when it reaches a retired cell. It is `no_violation` at one tag, so it
+raises when it reaches a retired cell. It is `no_refusal` at one tag, so it
 says no retired cell is accessed only as far as `eval` checks every access
 and labels it so: what it rules out is what that monitor watches (R3 of
 `REDTEAM-LOG.md`; RUE-2469). The buffer half of the bullet, use-after-free,
@@ -38846,7 +38868,7 @@ def RueCore.Spec.no_use_after_drop_stmt : Prop :=
 
 **No use-after-move** (§7 "No use-after-move"): `run` never refuses with
 `useAfterMove`, the tag `eval` raises when it reads a `⊘`. It is
-`no_violation` at one tag, so it says no read of a moved-out place happens
+`no_refusal` at one tag, so it says no read of a moved-out place happens
 only as far as `eval` checks every read and labels it so: what it rules out is
 what that monitor watches (R3 of `REDTEAM-LOG.md`; RUE-2469).
 
@@ -38856,26 +38878,6 @@ def RueCore.Spec.no_use_after_move_stmt : Prop :=
     ProgramTyped P →
       ∀ (fuel : Nat),
         run M.toFloatSig P fuel ≠ EvalRes.refused Refusal.useAfterMove
-```
-
-### `Spec.no_violation_stmt`
-
-*def* · module `RueCore.Spec.Safety`
-
-**No refusal of any kind** (§7's memory-safety bullets). A checked
-program's run is never `.refused`. Narrower than the bullets: a value built for
-a sibling operand that a later one abandons by `return` or `break` is dropped
-by nobody (RUE-2316), and a `@panic` runs no drop (§5.7's `⊥_panic`). Like
-every "never `.refused`" statement, it holds because `eval`'s checks and
-monitors never fire: what it rules out is what they watch (R3 of
-`REDTEAM-LOG.md`; RUE-2469).
-
-```lean
-def RueCore.Spec.no_violation_stmt : Prop :=
-  ∀ (M : FloatLaws) {P : Program},
-    ProgramTyped P →
-      ∀ (fuel : Nat) (w : Refusal),
-        run M.toFloatSig P fuel ≠ EvalRes.refused w
 ```
 
 ### `Spec.step_no_double_free_stmt`
@@ -38902,32 +38904,6 @@ def RueCore.Spec.step_no_double_free_stmt : Prop :=
             ∀ (a : Nat), List.count a (dtorIds C.trace) ≤ 1
 ```
 
-### `Spec.step_preservation_stmt`
-
-*def* · module `RueCore.Spec.Step`
-
-**The invariant `SafeAt` along every run** (§7 "Type safety"; *not* its
-sentence "types are preserved under reduction"). For a checked program, every
-`C` with `Config.init →* C` is `SafeAt` the entry type: nothing reachable from
-it is stuck, and every value it halts with has that type.
-`SafeAt` is closed under `→*` by definition, so this is `SafeAt` at
-`Config.init` (R4 of `REDTEAM-LOG.md`), a semantic invariant; no
-configuration typing `⊢ C : T` is defined or preserved (RUE-2423). In the
-field's terms it is not preservation (subject reduction, PFPL's Thm 6.2) but
-the conclusion of Timany et al.'s Cor. 2.3, `safe`, with typed halting values
-(`FIELD.md`, section 2); the name is §7's, and RUE-2423 decides whether it stays.
-
-```lean
-def RueCore.Spec.step_preservation_stmt : Prop :=
-  ∀ (M : FloatLaws) {P : Program},
-    ProgramTyped P →
-      ∃ fd,
-        P.fns[0]? = some fd ∧
-          ∀ (C : Config),
-            Steps M.toFloatSig P Config.init C →
-              Config.SafeAt M.toFloatSig P fd.ret C
-```
-
 ### `Spec.step_progress_stmt`
 
 *def* · module `RueCore.Spec.Step`
@@ -38945,6 +38921,32 @@ def RueCore.Spec.step_progress_stmt : Prop :=
       ∀ (C : Config),
         Steps M.toFloatSig P Config.init C →
           C.Terminal ∨ ∃ C', Step M.toFloatSig P C C'
+```
+
+### `Spec.step_safeAt_stmt`
+
+*def* · module `RueCore.Spec.Step`
+
+**The invariant `SafeAt` along every run** (§7 "Type safety"; *not* its
+sentence "types are preserved under reduction"). For a checked program, every
+`C` with `Config.init →* C` is `SafeAt` the entry type: nothing reachable from
+it is stuck, and every value it halts with has that type.
+`SafeAt` is closed under `→*` by definition, so this is `SafeAt` at
+`Config.init` (R4 of `REDTEAM-LOG.md`), a semantic invariant; no
+configuration typing `⊢ C : T` is defined or preserved (RUE-2423). In the
+field's terms it is not preservation (subject reduction, PFPL's Thm 6.2) but
+the conclusion of Timany et al.'s Cor. 2.3, `safe`, with typed halting values
+(`FIELD.md`, section 2); the name is §7's, and RUE-2423 decides whether it stays.
+
+```lean
+def RueCore.Spec.step_safeAt_stmt : Prop :=
+  ∀ (M : FloatLaws) {P : Program},
+    ProgramTyped P →
+      ∃ fd,
+        P.fns[0]? = some fd ∧
+          ∀ (C : Config),
+            Steps M.toFloatSig P Config.init C →
+              Config.SafeAt M.toFloatSig P fd.ret C
 ```
 
 ### `Spec.step_type_safety_stmt`
@@ -39428,7 +39430,7 @@ def RueCore.Spec.Nonvacuous.loop_stmt : Prop :=
                         3 ≤ (dtorIds tr).length
 ```
 
-### `Spec.Nonvacuous.open_frame_stmt`
+### `Spec.Nonvacuous.open_activation_stmt`
 
 *def* · module `RueCore.Spec.Nonvacuous`
 
@@ -39443,7 +39445,7 @@ its leading operand has a `Lead`, so `soundness`, `drop_exactly_once` and
 not empty.
 
 ```lean
-def RueCore.Spec.Nonvacuous.open_frame_stmt : Prop :=
+def RueCore.Spec.Nonvacuous.open_activation_stmt : Prop :=
   ∀ (D : Decls),
     D =
         {
@@ -39573,55 +39575,7 @@ def RueCore.Spec.Nonvacuous.panic_stmt : Prop :=
                         [Event.dbg (Val.int IntWidth.w64 Sign.signed 5)])
 ```
 
-### `Spec.Sharp.entry_param_stmt`
-
-*def* · module `RueCore.Spec.Sharp`
-
-**A well-formed program whose entry point takes a parameter** (§7 sharpness,
-RUE-2485). `fn main(x: i64) -> i64 { x }` is `WfProgram`, but its entry point
-has a parameter, so it is not `ProgramTyped`; `run` calls it with no
-arguments, and `eval` refuses the call with `typeConfusion`. So `run_safe`
-needs its hypothesis `fd.params = []`, and `no_violation` needs the entry
-clause of `ProgramTyped`, not only `WfProgram`. `¬ ProgramTyped` is shown
-directly, from that clause.
-
-```lean
-def RueCore.Spec.Sharp.entry_param_stmt : Prop :=
-  ∀ (P : Program),
-    P =
-        {
-          decls :=
-            {
-              structs :=
-                [{ attr := Attr.none,
-                    fields := [Ty.int IntWidth.w64 Sign.signed],
-                    dtor := true, cls := Qual.affine },
-                  { attr := Attr.linear,
-                    fields := [Ty.int IntWidth.w64 Sign.signed],
-                    dtor := false, cls := Qual.linear }],
-              enums :=
-                [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
-          fns :=
-            [{
-                params :=
-                  [{ ty := Ty.int IntWidth.w64 Sign.signed, mu := false }],
-                ret := Ty.int IntWidth.w64 Sign.signed,
-                body := Expr.use (Place.var 0) }] } →
-      WfProgram P ∧
-        ¬ProgramTyped P ∧
-          (∃ fd,
-              P.fns[0]? = some fd ∧
-                fd.params ≠ [] ∧
-                  ¬(run Float.exactOps P 200 = EvalRes.outOfFuel ∨
-                      (∃ k tr,
-                          run Float.exactOps P 200 = EvalRes.panic k tr) ∨
-                        ∃ H v tr,
-                          run Float.exactOps P 200 = EvalRes.ok H v tr ∧
-                            HasTy P.decls v fd.ret)) ∧
-            run Float.exactOps P 200 = EvalRes.refused Refusal.typeConfusion
-```
-
-### `Spec.Sharp.frame_stmt`
+### `Spec.Sharp.activation_stmt`
 
 *def* · module `RueCore.Spec.Sharp`
 
@@ -39637,7 +39591,7 @@ refusal. The pairing is kernel-checked (`Sharp/Glue.lean`, RUE-2495);
 `¬ ActivationTyping` is proved through `soundness`.
 
 ```lean
-def RueCore.Spec.Sharp.frame_stmt : Prop :=
+def RueCore.Spec.Sharp.activation_stmt : Prop :=
   ∀ (B : Expr),
     B =
         Expr.letIn false
@@ -39708,6 +39662,54 @@ def RueCore.Spec.Sharp.frame_stmt : Prop :=
                                       Activation.empty e =
                                     EvalRes.withTrace []
                                       (EvalRes.refused Refusal.unbound)
+```
+
+### `Spec.Sharp.entry_param_stmt`
+
+*def* · module `RueCore.Spec.Sharp`
+
+**A well-formed program whose entry point takes a parameter** (§7 sharpness,
+RUE-2485). `fn main(x: i64) -> i64 { x }` is `WfProgram`, but its entry point
+has a parameter, so it is not `ProgramTyped`; `run` calls it with no
+arguments, and `eval` refuses the call with `typeConfusion`. So `run_safe`
+needs its hypothesis `fd.params = []`, and `no_refusal` needs the entry
+clause of `ProgramTyped`, not only `WfProgram`. `¬ ProgramTyped` is shown
+directly, from that clause.
+
+```lean
+def RueCore.Spec.Sharp.entry_param_stmt : Prop :=
+  ∀ (P : Program),
+    P =
+        {
+          decls :=
+            {
+              structs :=
+                [{ attr := Attr.none,
+                    fields := [Ty.int IntWidth.w64 Sign.signed],
+                    dtor := true, cls := Qual.affine },
+                  { attr := Attr.linear,
+                    fields := [Ty.int IntWidth.w64 Sign.signed],
+                    dtor := false, cls := Qual.linear }],
+              enums :=
+                [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+          fns :=
+            [{
+                params :=
+                  [{ ty := Ty.int IntWidth.w64 Sign.signed, mu := false }],
+                ret := Ty.int IntWidth.w64 Sign.signed,
+                body := Expr.use (Place.var 0) }] } →
+      WfProgram P ∧
+        ¬ProgramTyped P ∧
+          (∃ fd,
+              P.fns[0]? = some fd ∧
+                fd.params ≠ [] ∧
+                  ¬(run Float.exactOps P 200 = EvalRes.outOfFuel ∨
+                      (∃ k tr,
+                          run Float.exactOps P 200 = EvalRes.panic k tr) ∨
+                        ∃ H v tr,
+                          run Float.exactOps P 200 = EvalRes.ok H v tr ∧
+                            HasTy P.decls v fd.ret)) ∧
+            run Float.exactOps P 200 = EvalRes.refused Refusal.typeConfusion
 ```
 
 ### `Spec.Sharp.no_entry_stmt`
@@ -40165,6 +40167,116 @@ def RueCore.Spec.Sharp.pending_program_stmt : Prop :=
                                   { env := [0], scope := [0] } e)
 ```
 
+### `Spec.Sharp.refused_stmt`
+
+*def* · module `RueCore.Spec.Sharp`
+
+**An unchecked program that reads a moved-out value, run by `eval`**
+(§7 sharpness, RUE-2485; the program is `Nonvacuous.refused_stuck`'s). `let a = S0 { 1 };
+@drop(a); a.x0` as the entry point: the checker rejects it and it is neither
+`ProgramTyped` nor `WfProgram`, while its entry point exists and takes no
+parameters, and its body is `pendingSafe`; `main()`, the call `run` makes, is
+typed by `check` from the empty frame and store, which agree with the empty
+context, and has a `Lead` (its empty argument list). `eval` refuses it with
+`useAfterMove`, and at fuel `0` it answers `outOfFuel`. So each of these
+conclusions fails once its program hypothesis is dropped: `soundness`
+(`WfProgram`), `run_safe` (`WfProgram`), `no_refusal`, `no_use_after_move`,
+`checkProgram_sound` (`checkProgram P = true`), `eval_big_to_small`,
+`drop_exactly_once` and `rest_exactly_once` (`ProgramTyped`), and `no_masking`
+(its second hypothesis, `eval m ≠ outOfFuel`, at `m = 0`). Where the spine theorem is stated over `eval`
+(`no_masking`, `drop_exactly_once`, `rest_exactly_once`), the statement gives
+`run P n` and `eval` at `main()` as the same term (`run`'s definition), and
+`rest_exactly_once`'s hypothesis 8 as `eval … = r.withTrace []` with `r` the
+refusal. The pairing is kernel-checked (`Sharp/Glue.lean`, RUE-2495). The negations `¬ ProgramTyped`
+and `¬ WfProgram` are proved through the spine theorems themselves
+(`no_use_after_move`, `soundness`), not by inverting the definitions.
+
+```lean
+def RueCore.Spec.Sharp.refused_stmt : Prop :=
+  ∀ (B : Expr),
+    B =
+        Expr.letIn false
+          (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
+          ((Expr.drop (Place.var 0)).seq
+            (Expr.use ((Place.var 0).proj 0))) →
+      ∀ (P : Program),
+        P =
+            {
+              decls :=
+                {
+                  structs :=
+                    [{ attr := Attr.none,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := true, cls := Qual.affine },
+                      { attr := Attr.linear,
+                        fields := [Ty.int IntWidth.w64 Sign.signed],
+                        dtor := false, cls := Qual.linear }],
+                  enums :=
+                    [{ variants := [[Ty.struct 0], []],
+                        cls := Qual.affine }] },
+              fns :=
+                [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
+                    body := B }] } →
+          checkProgram P = false ∧
+            ¬ProgramTyped P ∧
+              ¬WfProgram P ∧
+                (∃ fd, P.fns[0]? = some fd ∧ fd.params = []) ∧
+                  P.pendingSafe = true ∧
+                    (Expr.call 0 []).pendingSafe = true ∧
+                      ActivationTyping P.decls [] Activation.empty [] ∧
+                        StoreCC P.decls [] ∧
+                          (∃ c Ω,
+                              check P (Ty.int IntWidth.w64 Sign.signed) []
+                                    (Expr.call 0 []) =
+                                  some (c, Ω) ∧
+                                c.fits (Ty.int IntWidth.w64 Sign.signed) =
+                                    true ∧
+                                  Typed P (Ty.int IntWidth.w64 Sign.signed)
+                                      [] (Expr.call 0 [])
+                                      (Ty.int IntWidth.w64 Sign.signed) Ω ∧
+                                    ¬EvalOk P.decls
+                                        (Ty.int IntWidth.w64 Sign.signed)
+                                        (Ty.int IntWidth.w64 Sign.signed)
+                                        Ω.norm Ω.brk Activation.empty []
+                                        (eval Float.exactOps 200 P []
+                                          Activation.empty
+                                          (Expr.call 0 []))) ∧
+                            Lead Float.exactOps P 200 [] Activation.empty []
+                                [] [] (Expr.call 0 []) ∧
+                              eval Float.exactOps 200 P [] Activation.empty
+                                    (Expr.call 0 []) =
+                                  EvalRes.refused Refusal.useAfterMove ∧
+                                eval Float.exactOps 201 P []
+                                      Activation.empty (Expr.call 0 []) =
+                                    EvalRes.refused Refusal.useAfterMove ∧
+                                  eval Float.exactOps 201 P []
+                                        Activation.empty (Expr.call 0 []) =
+                                      EvalRes.withTrace []
+                                        (EvalRes.refused
+                                          Refusal.useAfterMove) ∧
+                                    (∀ (n : Nat),
+                                        run Float.exactOps P n =
+                                          eval Float.exactOps n P []
+                                            Activation.empty
+                                            (Expr.call 0 [])) ∧
+                                      run Float.exactOps P 200 =
+                                          EvalRes.refused
+                                            Refusal.useAfterMove ∧
+                                        run Float.exactOps P 0 =
+                                            EvalRes.outOfFuel ∧
+                                          ¬(run Float.exactOps P 200 =
+                                                EvalRes.outOfFuel ∨
+                                              (∃ k tr,
+                                                  run Float.exactOps P 200 =
+                                                    EvalRes.panic k tr) ∨
+                                                ∃ H v tr,
+                                                  run Float.exactOps P 200 =
+                                                      EvalRes.ok H v tr ∧
+                                                    HasTy P.decls v
+                                                      (Ty.int IntWidth.w64
+                                                        Sign.signed))
+```
+
 ### `Spec.Sharp.store_cc_stmt`
 
 *def* · module `RueCore.Spec.Sharp`
@@ -40306,116 +40418,6 @@ def RueCore.Spec.Sharp.store_cc_stmt : Prop :=
                                                 [Contents.int IntWidth.w64
                                                     Sign.signed 1]])]
                                       Activation.empty e)
-```
-
-### `Spec.Sharp.stuck_stmt`
-
-*def* · module `RueCore.Spec.Sharp`
-
-**An unchecked program that reads a moved-out value, run by `eval`**
-(§7 sharpness, RUE-2485; the program is `Nonvacuous.stuck`'s). `let a = S0 { 1 };
-@drop(a); a.x0` as the entry point: the checker rejects it and it is neither
-`ProgramTyped` nor `WfProgram`, while its entry point exists and takes no
-parameters, and its body is `pendingSafe`; `main()`, the call `run` makes, is
-typed by `check` from the empty frame and store, which agree with the empty
-context, and has a `Lead` (its empty argument list). `eval` refuses it with
-`useAfterMove`, and at fuel `0` it answers `outOfFuel`. So each of these
-conclusions fails once its program hypothesis is dropped: `soundness`
-(`WfProgram`), `run_safe` (`WfProgram`), `no_violation`, `no_use_after_move`,
-`checkProgram_sound` (`checkProgram P = true`), `eval_sound`,
-`drop_exactly_once` and `rest_exactly_once` (`ProgramTyped`), and `no_masking`
-(its second hypothesis, `eval m ≠ outOfFuel`, at `m = 0`). Where the spine theorem is stated over `eval`
-(`no_masking`, `drop_exactly_once`, `rest_exactly_once`), the statement gives
-`run P n` and `eval` at `main()` as the same term (`run`'s definition), and
-`rest_exactly_once`'s hypothesis 8 as `eval … = r.withTrace []` with `r` the
-refusal. The pairing is kernel-checked (`Sharp/Glue.lean`, RUE-2495). The negations `¬ ProgramTyped`
-and `¬ WfProgram` are proved through the spine theorems themselves
-(`no_use_after_move`, `soundness`), not by inverting the definitions.
-
-```lean
-def RueCore.Spec.Sharp.stuck_stmt : Prop :=
-  ∀ (B : Expr),
-    B =
-        Expr.letIn false
-          (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
-          ((Expr.drop (Place.var 0)).seq
-            (Expr.use ((Place.var 0).proj 0))) →
-      ∀ (P : Program),
-        P =
-            {
-              decls :=
-                {
-                  structs :=
-                    [{ attr := Attr.none,
-                        fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine },
-                      { attr := Attr.linear,
-                        fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.linear }],
-                  enums :=
-                    [{ variants := [[Ty.struct 0], []],
-                        cls := Qual.affine }] },
-              fns :=
-                [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
-                    body := B }] } →
-          checkProgram P = false ∧
-            ¬ProgramTyped P ∧
-              ¬WfProgram P ∧
-                (∃ fd, P.fns[0]? = some fd ∧ fd.params = []) ∧
-                  P.pendingSafe = true ∧
-                    (Expr.call 0 []).pendingSafe = true ∧
-                      ActivationTyping P.decls [] Activation.empty [] ∧
-                        StoreCC P.decls [] ∧
-                          (∃ c Ω,
-                              check P (Ty.int IntWidth.w64 Sign.signed) []
-                                    (Expr.call 0 []) =
-                                  some (c, Ω) ∧
-                                c.fits (Ty.int IntWidth.w64 Sign.signed) =
-                                    true ∧
-                                  Typed P (Ty.int IntWidth.w64 Sign.signed)
-                                      [] (Expr.call 0 [])
-                                      (Ty.int IntWidth.w64 Sign.signed) Ω ∧
-                                    ¬EvalOk P.decls
-                                        (Ty.int IntWidth.w64 Sign.signed)
-                                        (Ty.int IntWidth.w64 Sign.signed)
-                                        Ω.norm Ω.brk Activation.empty []
-                                        (eval Float.exactOps 200 P []
-                                          Activation.empty
-                                          (Expr.call 0 []))) ∧
-                            Lead Float.exactOps P 200 [] Activation.empty []
-                                [] [] (Expr.call 0 []) ∧
-                              eval Float.exactOps 200 P [] Activation.empty
-                                    (Expr.call 0 []) =
-                                  EvalRes.refused Refusal.useAfterMove ∧
-                                eval Float.exactOps 201 P []
-                                      Activation.empty (Expr.call 0 []) =
-                                    EvalRes.refused Refusal.useAfterMove ∧
-                                  eval Float.exactOps 201 P []
-                                        Activation.empty (Expr.call 0 []) =
-                                      EvalRes.withTrace []
-                                        (EvalRes.refused
-                                          Refusal.useAfterMove) ∧
-                                    (∀ (n : Nat),
-                                        run Float.exactOps P n =
-                                          eval Float.exactOps n P []
-                                            Activation.empty
-                                            (Expr.call 0 [])) ∧
-                                      run Float.exactOps P 200 =
-                                          EvalRes.refused
-                                            Refusal.useAfterMove ∧
-                                        run Float.exactOps P 0 =
-                                            EvalRes.outOfFuel ∧
-                                          ¬(run Float.exactOps P 200 =
-                                                EvalRes.outOfFuel ∨
-                                              (∃ k tr,
-                                                  run Float.exactOps P 200 =
-                                                    EvalRes.panic k tr) ∨
-                                                ∃ H v tr,
-                                                  run Float.exactOps P 200 =
-                                                      EvalRes.ok H v tr ∧
-                                                    HasTy P.decls v
-                                                      (Ty.int IntWidth.w64
-                                                        Sign.signed))
 ```
 
 ### `Spec.Sharp.typed_stmt`
