@@ -103,7 +103,7 @@ each raw finding is accounted for here.
 | **Docs M7** (MEDIUM): "a property proven once about the core holds for all ten" needs elaboration correctness, which is unspecified (`02-elaboration.md` is planned). | The same overclaim shape as R9 (whole-core vs. fragment); not separately counted. Route with R9's citation, RUE-2476. |
 | **Docs M8** (MEDIUM): "kernel-checked" checks the proofs; it does not check that `Typed`/`Step`/`ProgramTyped` faithfully transcribe §5/§6. Faithfulness rests on review and the INDEX cross-reference. | Not a claim about what is proved so much as what "kernel-checked" can be read to promise; route to RUE-2476. |
 | **Docs H4** in full (HIGH): the exactly-once guarantee is expression-level and needs `ActivationTyping`/`StoreCC` at every intermediate state, not only `pendingSafe`; no statement instantiates it at `Config.init`. | R9 cites only the `pendingSafe` half. The rest is R2's and R7's territory (RUE-2478, RUE-2467); not separately filed. (Since closed for exactly-once, by RUE-2478: `whole_program_exactly_once` is instantiated at `Config.init` and needs no hypothesis at an intermediate state; see the entry below.) |
-| **L1, L3, L5, L8–L11** (statement, LOW): `@drop` of a moved place is a no-op on a hole, not stuck (L1); `WfProgram.fns` requires unreachable functions well typed too, stronger than §7's scope (L3); the dynamic copy/move-vs-declared-plan equivalence (L5, see F13); `step_type_safety` is derivable from `step_progress` + `step_safeAt` (L8); the residue-before-leaf drop order for a declared-linear projection is unstated (L9, see F14); `Typed.indexRead`'s `fullyOwned` is stronger than (Use-Untrackable-Dynamic-Copy), rejecting some §5-admitted programs (L10); no (Call-Bottom): a call to a divergent function types as continuing (L11). | Harmless or conservative on inspection. No action. |
+| **L1, L3, L5, L8–L11** (statement, LOW): `@drop` of a moved place is a no-op on a moved-out part, not stuck (L1); `WfProgram.fns` requires unreachable functions well typed too, stronger than §7's scope (L3); the dynamic copy/move-vs-declared-plan equivalence (L5, see F13); `step_type_safety` is derivable from `step_progress` + `step_safeAt` (L8); the residue-before-leaf drop order for a declared-linear projection is unstated (L9, see F14); `Typed.indexRead`'s `fullyOwned` is stronger than (Use-Untrackable-Dynamic-Copy), rejecting some §5-admitted programs (L10); no (Call-Bottom): a call to a divergent function types as continuing (L11). | Harmless or conservative on inspection. No action. |
 | **Docs Lo1, Lo2, Lo6–Lo8** (LOW): `rue-oracle`'s fuel-bounded outcomes not distinguished from divergence (Lo1); the fixed-fuel corpus outcome is honest for accepted programs but unverified for rejected ones, overlapping H3 (Lo2); "everything hard … lives here and only here" is a design claim outside what predicates cover (Lo6); "precise, mechanizable" / "in time, mechanically proven" are hedged intent (Lo7); "the complete small-step dynamic semantics" is about the paper, not the Lean fragment (Lo8). | Process or hedge claims the statements cannot speak to and the docs do not present as theorems. No action. |
 
 ### Attacked and survived
@@ -113,7 +113,7 @@ Read the same way by the red agent and by us, with no gap either found:
 - `Step.det`: determinism, unconditional; the red agent checked the rules'
   premises are pairwise exclusive and fresh identities deterministic.
 - `step_progress`: progress for every configuration reachable from a checked
-  program. It excludes use-after-move and use-after-drop redexes (a hole fails
+  program. It excludes use-after-move and use-after-drop redexes (a moved-out part fails
   `Contents.toVal`, a dead cell fails `rootCell`), operand confusion (no rule
   for `OpRes.confused`) and an uncovered `match` tag.
 - `step_type_safety`: equal to §7's type-safety bullet on the fragment
@@ -127,7 +127,7 @@ Read the same way by the red agent and by us, with no gap either found:
 - `check_sound`, read as expression-level soundness, with (Sub-Never) folded
   into `TyOrNever.fits` correctly.
 - `no_double_free` on runs that finish or trap: identities are never reused
-  and holes carry no identity.
+  and moved-out parts carry no identity.
 - `drop_order`'s `Blocks` conjuncts: within a drop, the destructor first,
   fields in declaration order, elements ascending, an enum's active payload
   only (§6.11).

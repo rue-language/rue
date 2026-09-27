@@ -382,7 +382,7 @@ declared type.
   `qual(T) = Linear`, because §3's qualifier *is* the join that reaches `Linear`
   through a declared-`linear` struct at some depth (`struct_carriesLinear_iff`)
   — so the type-level test is the fixed point of §5.6's own recursion on a
-  subtree with no holes in it;
+  subtree with no moved-out parts in it;
 * a **declared**-`linear` struct still `Owned` carries the obligation itself,
   whatever its fields do (`3.8:74`; `3.8:75`'s empty `linear struct MustUse` is
   the motivating case);
@@ -466,8 +466,8 @@ deviation from the calculus as written is recorded in §5.2 itself.
 The premise applies to an array anywhere in the place tree (`3.8:71`), and
 the compiler follows it there too: its E0480 check keys on the outermost array
 the write steps into, wherever it sits (RUE-2341; it used to fire only when the
-root binding was an array). Once a declared-linear destructure has holed
-`h.arr[0]` through a struct root, a write *to* the element (`h.arr[0] = …`),
+root binding was an array). Once a declared-linear destructure has left a moved-out
+part in `h.arr[0]` through a struct root, a write *to* the element (`h.arr[0] = …`),
 one *through* it (`h.arr[0].x0 = …`, `array_write_after_destructure_via_field`)
 and one below a dynamic index (`h.arr[i].x0 = …`,
 `array_dyn_write_after_destructure_via_field`) are all E0480.
@@ -953,7 +953,7 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Out → Prop wh
   projection, the **partial move** of `3.8:22`, which marks exactly `p` and
   removes every path under it while leaving `p`'s siblings alone.
   `fully-owned(Σ, p)` is the premise (`3.8:26`: handing an aggregate with a
-  hole to a new owner is ill-formed), and `noDtorPrefix` is `3.9:34`'s
+  moved-out part to a new owner is ill-formed), and `noDtorPrefix` is `3.9:34`'s
   restriction (E0456). `rootIdxOnly` is §4.2's third restriction, `3.8:68`'s
   "element moves only at the root" (E0904): the move may take one element out
   of the **root binding**'s array, and out of no array reached through a

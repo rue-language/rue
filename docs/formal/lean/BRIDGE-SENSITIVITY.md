@@ -481,7 +481,7 @@ not fixed:
   `[[S0; 3]; 2]` (an array of arrays of a destructor-bearing struct) and then
   writes `v0[0] = v0[0]` — the same shape as the `array_elem_self_assign`
   seed (RUE-2346, RUE-228: the model refuses the write into the
-  self-move-holed array, `3.8:72`/E0480, and the compiler accepts on
+  array its self-move left with a moved-out element, `3.8:72`/E0480, and the compiler accepts on
   purpose). Not a new bug: README.md's "Generated programs" section already
   documents this shape reaching these settings, masked by an unrelated E0406
   until now; RUE-2480's reordered draw is what unmasks it here.

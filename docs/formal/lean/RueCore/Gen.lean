@@ -2361,7 +2361,7 @@ def ancestorDroppedStmt (leaf c b : Nat) : Expr :=
 innermost declared-`linear` level `y.x0.x0` (`S_c`); `@drop(y.x0)` then
 reaches the *middle* ancestor through the declared-`linear` root `y`, which
 (Use-Declared-Linear-Destructure) §5.1's `fully-owned(Σ, y)` premise refuses
-because of the hole two levels below (`3.8:26`) — one level further from the
+because of the moved-out part two levels below (`3.8:26`) — one level further from the
 root than `ancestorDroppedStmt` needs, and one field step further than this
 module's path draws ever reach on their own (module docstring, "How deep a
 place goes": `paths2` tops out at two steps, one short of `y.x0.x0.x0`'s

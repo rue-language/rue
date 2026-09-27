@@ -29,7 +29,7 @@ theorem Contents.toVals_length : ∀ (cs : List Contents) (vs : List Val),
         simp [Contents.toVals_length cs vs' hvs]
       · cases h
 
-/-- `Contents.qual` agrees with `Val.qual` on a hole-free contents: §6's
+/-- `Contents.qual` agrees with `Val.qual` on a moved-out-free contents: §6's
 `Step.indexDrop` reads `leaf.qual` on the store's `Contents`, while `eval`'s
 dynamic checks (RUE-2400) read `v.qual` on the `Val` a successful read
 produces; this is what lets the two land on the same refusal. Serves

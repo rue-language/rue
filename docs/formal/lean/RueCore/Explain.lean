@@ -498,7 +498,7 @@ def usePartiallyMoved (T : Ty) : String :=
 def moveUnderDtor : String :=
   "a proper prefix of the path has a type that declares a destructor, so the field " ++
   "may not be moved out of it — the destructor runs on the whole value and would " ++
-  "observe the hole ((Use-Move)/(@Drop) premise, §5.1, §5.3; 3.9:34; the compiler " ++
+  "observe the moved-out part ((Use-Move)/(@Drop) premise, §5.1, §5.3; 3.9:34; the compiler " ++
   "reports E0456)"
 
 /-- (Use-Declared-Linear-Destructure) §5.1's `fully-owned(Σ, d)` premise,
@@ -507,7 +507,7 @@ declared-`linear` place — rather than at the projected leaf (`3.8:26`).
 
 Two states fail it and both are reachable. `Σ(d) = MovedOut` is the second
 read of a place its own first destructure consumed, and the compiler reports
-E0205 there. A hole *strictly under* `d` needs an inner declared-`linear`
+E0205 there. A moved-out part *strictly under* `d` needs an inner declared-`linear`
 place `d'`, because that is the only thing a destructure writes `⊘` at below
 `d`; a later access at `d` then also retains `d'`, so the compiler reaches the
 program through its residue check and reports E0474 on that field instead.

@@ -63,7 +63,7 @@ Design commitments carried over from §6:
   use after scope exit is `useAfterDrop`, distinct from `useAfterMove`.
 * A read that reaches a `⊘` — at the place itself or anywhere inside the
   aggregate it names — is `useAfterMove`. The second case is the one
-  `fully-owned(Σ, p)` (§5.1) excludes: handing an aggregate with a hole in it
+  `fully-owned(Σ, p)` (§5.1) excludes: handing an aggregate with a moved-out part in it
   to a new owner (`3.8:26`).
 * `@drop` and overwrite-drop do **not** retire (§6.8/§6.11): the binding
   stays reinitializable.
@@ -336,9 +336,9 @@ def Val.qual (D : Decls) : Val → Qual
 
 /-- Cell contents (§6.1's `c ::= v | ⊘`), as a **tree**: `⊘` may sit at any
 node, not only at the root, because (D-Use-Move) §6.3 writes `H[ℓ@π ↦ ⊘]` at
-exactly the sub-position a partial move takes (§4.2, `3.8:22`). A hole-free
+exactly the sub-position a partial move takes (§4.2, `3.8:22`). A moved-out-free
 contents is a value (`toVal`), and a value written into a cell becomes the
-hole-free tree of the same shape (`ofVal`); the two are inverse, which is what
+moved-out-free tree of the same shape (`ofVal`); the two are inverse, which is what
 lets §6.11's walk and §6.3's navigation share one representation. An aggregate
 node keeps its value's identity, so a stored value and the value read back
 out of it are the same value. -/
@@ -402,7 +402,7 @@ def Contents.isMovedOut : Contents → Bool
   | .int _ _ _ | .float _ _ | .bool _ | .unit | .struct _ _ _ | .enum _ _ _ _
   | .array _ _ _ => false
 
-/-- The dynamic image of `qual(T)` (§3) on cell contents: a hole has nothing
+/-- The dynamic image of `qual(T)` (§3) on cell contents: a moved-out part has nothing
 to drop, and a struct has the qualifier its declaration records (helper). -/
 def Contents.qual (D : Decls) : Contents → Qual
   | .struct s _ _ => D.classOf s
@@ -516,7 +516,7 @@ def Contents.setAt : Contents → List Nat → Contents → Option Contents
 
 /-- The store `H` (§6.1) holds one cell per binding allocation; the cell is
 live contents or the retired marker `†`. §6.1's whole-cell `⊘` is
-`full .movedOut` — a hole at the root of the tree, which is what a whole-place
+`full .movedOut` — a moved-out part at the root of the tree, which is what a whole-place
 move writes. -/
 inductive Cell where
   | full (c : Contents)
@@ -549,7 +549,7 @@ a Rue program can *observe*: the user destructor `S` declares (`3.9`), which
 §6.11 runs before the value's fields. The events a drop emits follow each other
 in §6.11's order: the destructor, then the fields in declaration order, each
 recursively, with every `⊘` skipped. A binding's drop carries the *contents*
-it ran on, because after a partial move what is dropped is a tree with holes in
+it ran on, because after a partial move what is dropped is a tree with moved-out parts in
 it rather than a value; a discarded temporary is always a whole value. Every
 aggregate in what an event carries has its identity, so the trace records
 *which* values were dropped and destroyed; `no_double_free` (`Trace.lean`) is
@@ -1677,7 +1677,7 @@ def eval (M : FloatSig) : Nat → Program → Store → Activation → Expr → 
       -- refuses through `toVal`: `Contents.qual ⊘ = .copy`, so without the
       -- guard `dropCell` would report `.ok []` and the redex would complete in
       -- silence. Unreachable for a checked program — `fully-owned(Σ, d)` makes
-      -- the whole of `d` hole-free — which is why `soundness`'s `dropDeclared`
+      -- the whole of `d` moved-out-free — which is why `soundness`'s `dropDeclared`
       -- case discharges it from `destructure_ok`'s `leaf.noMovedOut`. Otherwise
       -- it runs the drop of whatever the sub-position holds — the walk skips
       -- every already-`⊘` sub-place — and writes `⊘` back at that position,

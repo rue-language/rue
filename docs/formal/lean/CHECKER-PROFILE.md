@@ -73,8 +73,8 @@ module docstring already names:
    element a runtime index names: `Use-Untrackable-Dynamic-Copy` §5.1 and
    (Assign)/(@Drop-Copy) below a dynamic index (`3.8:33`, `3.8:70`,
    `7.1:45`) reject the *shape*, not the specific index a run draws, so a
-   generated program whose random index happens to miss the moved-out or
-   holed element still runs to a value.
+   generated program whose random index happens to miss the moved-out element
+   (or the element with a moved-out part) still runs to a value.
 4. **A static discipline with no dynamic monitor at all** —
    `Corpus.lean`'s own list: `3.9:34`'s restriction on moving a field out of
    a destructor-bearing value (E0456), (@Drop) §5.3's residual side

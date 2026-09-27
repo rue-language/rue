@@ -627,7 +627,7 @@ def arrayPrefix (D : Decls) : Ty → List Nat → Option (List Nat)
 destructor: (Use-Move) §5.1's and (@Drop) §5.3's `3.9:34` premise (E0456).
 Moving or dropping the whole value is fine — the empty path has no proper
 prefix — because the restriction exists so that a destructor never observes a
-hole in the value it runs on.
+moved-out part in the value it runs on.
 
 An **array** step declares no destructor of its own: `3.9:14` gives `[T; n]` a
 destructor exactly when `T` has one, and `3.9:34` speaks of a type that

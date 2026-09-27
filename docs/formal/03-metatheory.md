@@ -299,7 +299,7 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
 - **In words:** no evaluation of a well-typed program touches a `⊘` — at the
   root of a cell, or at any node inside it.
 - **Covers:** whole bindings **and paths**. The premise that carries the
-  second is `fully-owned(Σ, p)` (§5.1, `3.8:26`): a read that reaches a hole
+  second is `fully-owned(Σ, p)` (§5.1, `3.8:26`): a read that reaches a moved-out part
   anywhere inside the aggregate it names is `useAfterMove`, and the rule
   forbids handing such an aggregate to a new owner — which is the compiler's
   E0205 "use of partially moved value" (`RueCore.Examples.partialThenWhole`).
@@ -311,13 +311,13 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
   array for exactly that reason (`3.8:70`, `7.1:45`). A place **below** a
   dynamic index reads the same way: the premise is at the array `p` the first
   dynamic step indexes, so every element under it and every place below one is
-  hole-free, and each dynamic step either traps on its bound or lands on an
+  moved-out-free, and each dynamic step either traps on its bound or lands on an
   element the invariant covers (`RueCore.Contents.resolveDyn_ok`). It is `p`,
   not the root: `a[0][i].x1` after a move of `a[1]` reads a whole `a[0]`, and
   the compiler accepts it too (`RueCore.Examples.dynReadAfterSiblingMove`).
   A declared-linear destructure reads the same way, one place up: the rule's
   `fully-owned(Σ, d)` is asked of the **consumed** place, so the leaf it hands
-  on and the residue it destroys are both hole-free
+  on and the residue it destroys are both moved-out-free
   (`RueCore.splitResidue_ok`).
   The constant-index element **move** is in, with the `MovedOut` element state
   it leaves (`RueCore.Examples.arrayElemMove`), so a use of the array as a
