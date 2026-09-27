@@ -1566,6 +1566,7 @@ pass is):
 | `SPINE.md` | (generated) every Spec statement in Lean, its English reading, its §7 paragraph and the definitions it names — the first page a reviewer reads | §7's claims, stated |
 | `DIGEST.md`, `TRUST.md` | (generated) every theorem's statement with the definitions it is written in terms of; every theorem's axioms, `sorry` count, and declared assumptions | §7's claims, stated |
 | `GUIDE.md`, `INDEX.md` | the reader's guide, including the thirty-minute validation procedure, and the generated form ↔ rule ↔ declaration ↔ paragraph index (`scripts/validate-lean-xref-index.py`) | §2, §5, §6 coverage |
+| [SIMPLIFY.md](SIMPLIFY.md), `bin/simplify-metrics.py` | the proof-simplification strategy (RUE-2471): the invariants every simplification keeps, the metrics recorded before and after each pass and their baseline, the ranked structural, detour and local candidates, and the clean-room protocol | — |
 
 The fragment: integers at every width and signedness, `float(w)` at both
 widths, `bool`, `unit`,
