@@ -69,16 +69,16 @@ end
 mutual
 /-- Whether a contents tree has no `⊘` anywhere in it — the tree of a value
 (helper). -/
-def Contents.holeFree : Contents → Bool
-  | .hole => false
+def Contents.noMovedOut : Contents → Bool
+  | .movedOut => false
   | .int _ _ _ | .float _ _ | .bool _ | .unit => true
-  | .struct _ _ cs | .array _ _ cs => Contents.holeFreeList cs
-  | .enum _ _ _ cs => Contents.holeFreeList cs
+  | .struct _ _ cs | .array _ _ cs => Contents.noMovedOutList cs
+  | .enum _ _ _ cs => Contents.noMovedOutList cs
 
 /-- The same over a field list (helper). -/
-def Contents.holeFreeList : List Contents → Bool
+def Contents.noMovedOutList : List Contents → Bool
   | [] => true
-  | c :: cs => Contents.holeFree c && Contents.holeFreeList cs
+  | c :: cs => Contents.noMovedOut c && Contents.noMovedOutList cs
 end
 
 mutual
@@ -87,7 +87,7 @@ node. A moved-out position claims nothing, so it is well typed at every type;
 every other node types as the corresponding value form does (§5.8's
 (Struct-Intro), read on stored contents). -/
 inductive ContentsTy (D : Decls) : Contents → Ty → Prop where
-  | hole {T} : ContentsTy D .hole T
+  | movedOut {T} : ContentsTy D .movedOut T
   | int {w s n} : InBounds w s n → ContentsTy D (.int w s n) (.int w s)
   /-- §6.1's `f_T` stored in a cell, with the same `𝔽_w` side condition
   `HasTy.float` carries. -/
@@ -100,7 +100,7 @@ inductive ContentsTy (D : Decls) : Contents → Ty → Prop where
   /-- §6.1's tagged value stored in a cell, typed the way `HasTy.enum` types
   the value. A payload position is never `⊘` in a reachable state (no path
   reaches one — `Dynamics.lean`), but nothing here needs that: `ContentsTy`
-  admits `⊘` at every node and `holeFree` is what the rules that want a value
+  admits `⊘` at every node and `noMovedOut` is what the rules that want a value
   ask for. -/
   | enum {e k ed Ts i cs} :
       D.enums[e]? = some ed → ed.variants[k]? = some Ts → ContentsTys D cs Ts →
@@ -129,7 +129,7 @@ residue the machine drops path-specifically (`3.8:60`) — and `fields` holds th
 struct its type names, matched field by field. -/
 inductive ContentsOwnTyping (D : Decls) : Contents → OwnSt → Ty → Prop where
   /-- An `Owned` path holds a value: well-typed contents with no `⊘` in it. -/
-  | owned {c T} : ContentsTy D c T → c.holeFree = true → ContentsOwnTyping D c .owned T
+  | owned {c T} : ContentsTy D c T → c.noMovedOut = true → ContentsOwnTyping D c .owned T
   /-- A `MovedOut` path may still hold live contents — the §5.5 join's
   asymmetry (`3.8:60`) — but never a live linear sub-value (`3.8:50`). -/
   | moved {c T} :

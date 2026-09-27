@@ -31,7 +31,7 @@ mutual
 in it, `⊘` skipped (§6.11's skip) and nothing below a `Copy` node, since a
 `Copy` value is duplicated freely and has no drop glue. -/
 def Contents.own (D : Decls) : Contents → List Nat
-  | .hole | .int _ _ _ | .float _ _ | .bool _ | .unit => []
+  | .movedOut | .int _ _ _ | .float _ _ | .bool _ | .unit => []
   | .struct s i cs => if D.classOf s = .copy then [] else i :: Contents.ownList D cs
   | .enum e _ i cs => if D.enumClassOf e = .copy then [] else i :: Contents.ownList D cs
   | .array T i cs =>
@@ -331,7 +331,7 @@ A struct's `k`-th member is its declaration's `k`-th field (`3.9:13`,
 `StructDecl.fields`), so list order is declaration order. A struct index the
 declarations do not have has no rule: §6.11 drops only declared types. -/
 inductive DropGlue (D : Decls) : Contents → List Event → Prop
-  | hole : DropGlue D .hole []
+  | movedOut : DropGlue D .movedOut []
   | int {w : IntWidth} {s : Sign} {n : Int} : DropGlue D (.int w s n) []
   | float {w : FloatWidth} {f : FloatDatum} : DropGlue D (.float w f) []
   | bool {b : Bool} : DropGlue D (.bool b) []

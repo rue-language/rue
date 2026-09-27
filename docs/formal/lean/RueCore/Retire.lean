@@ -203,7 +203,7 @@ theorem Contents.readAt_ne_uad : ∀ (π : List Nat) {c : Contents} {w : Refusal
   | [], c, w, h => by simp [Contents.readAt] at h
   | f :: π, c, w, h => by
       cases c with
-      | hole => simp [Contents.readAt] at h; subst h; simp
+      | movedOut => simp [Contents.readAt] at h; subst h; simp
       | struct s i cs =>
           simp only [Contents.readAt] at h
           split at h
@@ -260,7 +260,7 @@ mutual
 /-- §6.11's walk refuses only with `unbound` (helper). -/
 theorem dropContents_ne_uad {D : Decls} : ∀ {c : Contents} {w : Refusal},
     dropContents D c = .error w → w ≠ .useAfterDrop
-  | .hole, _, h | .int _ _ _, _, h | .float _ _, _, h | .bool _, _, h | .unit, _, h => by
+  | .movedOut, _, h | .int _ _ _, _, h | .float _ _, _, h | .bool _, _, h | .unit, _, h => by
       simp [dropContents] at h
   | .struct s i cs, w, h => by
       simp only [dropContents] at h
@@ -304,7 +304,7 @@ theorem Contents.splitResidue_ne_uad {D : Decls} : ∀ {c : Contents} {π : List
       simp only [Contents.splitResidue] at h; exact Contents.splitFields_ne_uad h
   | .array _ _ cs, f :: π, _, h => by
       simp only [Contents.splitResidue] at h; exact Contents.splitFields_ne_uad h
-  | .hole, _ :: _, _, h => by simp [Contents.splitResidue] at h; subst h; simp
+  | .movedOut, _ :: _, _, h => by simp [Contents.splitResidue] at h; subst h; simp
   | .int _ _ _, _ :: _, _, h | .float _ _, _ :: _, _, h | .bool _, _ :: _, _, h
   | .unit, _ :: _, _, h | .enum _ _ _ _, _ :: _, _, h => by
       simp [Contents.splitResidue] at h; subst h; simp

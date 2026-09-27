@@ -106,7 +106,7 @@ redex `r`) is folklore. No fetched source names it as a theorem.
 | `Statics.lean` / `Dynamics.lean` | statics / dynamics (PFPL) | clear |
 | trap `↯κ` (§6.1, §6.12), "defined panic" (§7) | checked error `e err` (PFPL §6.3) | partial: the same role, but a different name and symbol |
 | `EvalRes.refused w`: "stuck" also covers the interpreter's four monitors (GUIDE §2) | stuck = no rule applies. On statically invalid input, a monitored case is a step §6 does take | partial |
-| "hole" for the `⊘` cell content (`Contents.hole`; GUIDE §§2–3; 01 §5.1 and §6.11; the metatheory's "No use-after-move" section) | "hole" is the empty position of a context. The accepted words for a moved-out cell are in §5 below | partial: a second meaning of an accepted term, and both meanings appear in GUIDE §2 |
+| "hole" for the `⊘` cell content (`Contents.movedOut`; GUIDE §§2–3; 01 §5.1 and §6.11; the metatheory's "No use-after-move" section) | "hole" is the empty position of a context. The accepted words for a moved-out cell are in §5 below | partial: a second meaning of an accepted term, and both meanings appear in GUIDE §2 |
 | control stack `K`, `Kont`, `Focus` (§6.1, `Step.lean`) | control stack (PFPL ch. 28). `Focus.eval` / `Focus.ret` play the roles of PFPL's evaluation state `k ▷ e` and return state `k ◁ e` | clear: the same machine shape; the frames are language-specific |
 
 ---
@@ -405,7 +405,7 @@ in the Rust Reference, the Book, the Rustonomicon and the rustc-dev-guide
 
 | Our term | Accepted term | Confidence |
 |---|---|---|
-| "hole", `⊘`, `Contents.hole` (an uninitialised or moved-out cell, §6.1) | moved from / deinitialized / uninitialized (Rust Reference); dead (Oxide) | partial: the accepted words exist, and "hole" already means something else (§1) |
+| "hole", `⊘`, `Contents.movedOut` (an uninitialised or moved-out cell, §6.1) | moved from / deinitialized / uninitialized (Rust Reference); dead (Oxide) | partial: the accepted words exist, and "hole" already means something else (§1) |
 | `MovedOut` (`OwnSt.movedOut`) | moved from; `τ†` (Oxide) | clear |
 | `OwnSt.fields` ("a partially moved value") | partial move / partially initialized (Ref.); maybe-dead type (Oxide); the move-path tree (rustc) | clear |
 | "residue": first (§4) `residue(T, π)`, the places a declared-linear destructure leaves unselected, which are dropped at once; also (Dynamics, GUIDE) what remains of a partially moved cell | the initialized fields of a partially moved value. There is no accepted noun | partial |

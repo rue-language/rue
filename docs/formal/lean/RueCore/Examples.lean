@@ -518,7 +518,7 @@ assigning a whole new `S7` to `v.x0` runs §6.8's overwrite-drop over the old
 `v.x0`, whose §6.11 walk skips the `⊘` and drops only `v.x0.x0`; the new
 fields drop at scope exit. The compiler dropped the moved-out leaf again here
 (RUE-2319). -/
-def overwriteAboveHole : Expr :=
+def overwriteAboveMovedOut : Expr :=
   letIn true (mkStruct sNested [mkStruct sTwoAffine [resA (lit 1), resA (lit 2)], lit 3])
     (seq (drop (.proj (.proj (.var 0) 0) 1))
       (seq (assign (.proj (.var 0) 0) (mkStruct sTwoAffine [resA (lit 5), resA (lit 6)]))
@@ -1124,7 +1124,7 @@ example : checkProgram (prog tI64 arrayElemMove) = true := by rfl
 example : run demoOps (prog tI64 arrayElemMove) demoFuel
     = .ok (List.replicate 6 .dead) (v64 7)
         [.drop 5 (cA 1 2), .dtor sAffine (cA 1 2), .dbg (v64 20),
-         .drop 4 (.array (.struct sAffine) 3 [cA 0 1, .hole, cA 2 3]), .dtor sAffine (cA 0 1),
+         .drop 4 (.array (.struct sAffine) 3 [cA 0 1, .movedOut, cA 2 3]), .dtor sAffine (cA 0 1),
          .dtor sAffine (cA 2 3)] := by rfl
 
 /-- **The red case** (RUE-2346): `a[0] = a[0]` on an `[S1; 2]`. (Assign) §5.2
@@ -1163,7 +1163,7 @@ example : checkProgram (prog tI64 arrayElemMoveFirst) = true := by rfl
 example : run demoOps (prog tI64 arrayElemMoveFirst) demoFuel
     = .ok (List.replicate 6 .dead) (v64 7)
         [.drop 5 (cA 0 1), .dtor sAffine (cA 0 1), .dbg (v64 20),
-         .drop 4 (.array (.struct sAffine) 3 [.hole, cA 1 2, cA 2 3]), .dtor sAffine (cA 1 2),
+         .drop 4 (.array (.struct sAffine) 3 [.movedOut, cA 1 2, cA 2 3]), .dtor sAffine (cA 1 2),
          .dtor sAffine (cA 2 3)] := by rfl
 
 /-- **The self-assignment is refused** (RUE-2346's red case). -/
@@ -1191,9 +1191,9 @@ still there to move out ordinarily. -/
 example : checkProgram (prog tI64 arrayDeclaredElemDestructure) = true := by rfl
 example : run demoOps (prog tI64 arrayDeclaredElemDestructure) demoFuel
     = .ok (List.replicate 5 .dead) (v64 7)
-        [.dbg (v64 10), .consume (.struct sLinear 0 [.hole]), .dbg (v64 1),
+        [.dbg (v64 10), .consume (.struct sLinear 0 [.movedOut]), .dbg (v64 1),
          .drop 4 (.struct sLinear 1 [c64 2]),
-         .drop 3 (.array (.struct sLinear) 2 [.hole, .hole])] := by rfl
+         .drop 3 (.array (.struct sLinear) 2 [.movedOut, .movedOut])] := by rfl
 
 /-- **The element move in one arm** (probe `a4`): the join leaves the element
 `MovedOut`, and the scope exit drops only the sibling. -/
@@ -1201,7 +1201,7 @@ example : checkProgram (prog tI64 arrayElemMoveOneArm) = true := by rfl
 example : run demoOps (prog tI64 arrayElemMoveOneArm) demoFuel
     = .ok (List.replicate 5 .dead) (v64 7)
         [.drop 4 (cA 0 1), .dtor sAffine (cA 0 1), .dbg (v64 20),
-         .drop 3 (.array (.struct sAffine) 2 [.hole, cA 1 2]), .dtor sAffine (cA 1 2)] := by rfl
+         .drop 3 (.array (.struct sAffine) 2 [.movedOut, cA 1 2]), .dtor sAffine (cA 1 2)] := by rfl
 
 /-- **`@drop` at a constant index** (probe `a8`): the element's destructor runs
 where the `@drop` is, and the scope exit skips it. -/
@@ -1209,7 +1209,7 @@ example : checkProgram (prog tI64 arrayElemDrop) = true := by rfl
 example : run demoOps (prog tI64 arrayElemDrop) demoFuel
     = .ok (List.replicate 5 .dead) (v64 7)
         [.dbg (v64 10), .drop 4 (cA 1 2), .dtor sAffine (cA 1 2), .dbg (v64 20),
-         .drop 4 (.array (.struct sAffine) 3 [cA 0 1, .hole, cA 2 3]), .dtor sAffine (cA 0 1),
+         .drop 4 (.array (.struct sAffine) 3 [cA 0 1, .movedOut, cA 2 3]), .dtor sAffine (cA 0 1),
          .dtor sAffine (cA 2 3)] := by rfl
 
 /-- **A move below a constant index** (probe `a10`): the hole is at `a[0].x0`,
@@ -1220,7 +1220,7 @@ example : run demoOps (prog tI64 arrayElemFieldMove) demoFuel
     = .ok (List.replicate 7 .dead) (v64 7)
         [.dbg (v64 10), .drop 6 (cA 0 1), .dtor sAffine (cA 0 1), .dbg (v64 20),
          .drop 5 (.array (.struct sAffineInt) 4
-           [.struct sAffineInt 1 [.hole, c64 5], .struct sAffineInt 3 [cA 2 2, c64 6]]),
+           [.struct sAffineInt 1 [.movedOut, c64 5], .struct sAffineInt 3 [cA 2 2, c64 6]]),
          .dtor sAffine (cA 2 2)] := by rfl
 
 /-- **A linear element consumed on one path only** (probe `a7`, E0443): the
@@ -1236,7 +1236,7 @@ example : checkProgram (prog tI64 arrayWholeReinit) = true := by rfl
 example : run demoOps (prog tI64 arrayWholeReinit) demoFuel
     = .ok (List.replicate 8 .dead) (v64 7)
         [.drop 4 (cA 0 1), .dtor sAffine (cA 0 1),
-         .drop 3 (.array (.struct sAffine) 2 [.hole, cA 1 2]), .dtor sAffine (cA 1 2),
+         .drop 3 (.array (.struct sAffine) 2 [.movedOut, cA 1 2]), .dtor sAffine (cA 1 2),
          .dbg (v64 20), .drop 3 (.array (.struct sAffine) 7 [cA 5 8, cA 6 9]),
          .dtor sAffine (cA 5 8), .dtor sAffine (cA 6 9)] := by rfl
 
@@ -1719,7 +1719,7 @@ example : run demoOps dynReadAfterSiblingMove demoFuel
         [.drop 13 (.array (.struct sAffineInt) 10 [cAI 7 6 5 6, cAI 9 8 7 8]),
          .dtor sAffine (cA 6 5), .dtor sAffine (cA 8 7),
          .drop 12 (.array (.array (.struct sAffineInt) 2) 11
-           [.array (.struct sAffineInt) 5 [cAI 2 1 1 2, cAI 4 3 3 4], .hole]),
+           [.array (.struct sAffineInt) 5 [cAI 2 1 1 2, cAI 4 3 3 4], .movedOut]),
          .dtor sAffine (cA 1 1), .dtor sAffine (cA 3 3)] := by rfl
 example : checkProgram dynWriteAfterSiblingMove = false := by rfl
 
@@ -1728,8 +1728,8 @@ element is admitted, as the compiler admits it. -/
 example : checkProgram dynWriteDeclaredLinearElem = true := by rfl
 example : run demoOps dynWriteDeclaredLinearElem demoFuel
     = .ok (List.replicate 7 .dead) (v64 6)
-        [.consume (.struct sLinear 1 [.hole]), .consume (.struct sLinear 2 [.hole]),
-         .drop 4 (.array (.struct sLinear) 3 [.hole, .hole])] := by rfl
+        [.consume (.struct sLinear 1 [.movedOut]), .consume (.struct sLinear 2 [.movedOut]),
+         .drop 4 (.array (.struct sLinear) 3 [.movedOut, .movedOut])] := by rfl
 
 /-- Review probes d1/d3: `@drop` of a `Copy` place below a dynamic index is
 admitted, does nothing in range, and traps on bounds exactly as the read. -/
@@ -2468,7 +2468,7 @@ checker refuses the program (the second read of `y.x0` is E0205), and the
 machine refuses the redex with `useAfterMove` — the guard the ordinary `@drop`
 branch makes at the named place, made here at the leaf. Without it
 `Contents.mult ⊘ = .copy` would let the drop complete in silence. -/
-def dropDeclaredHoleLeaf : Expr :=
+def dropDeclaredMovedOutLeaf : Expr :=
   letIn false (mkStruct sDestrOuter [mkStruct sDestrPair [lit 1, resA (lit 2)], resA (lit 3)])
     (seq (dbg (lit 10))
       (letIn false (use (.proj (.proj (.var 0) 0) 0))
@@ -2797,7 +2797,7 @@ def loopDivBackedge : Program :=
 #eval run demoOps (prog tI64 partialMoveOtherArm) demoFuel      -- ok: 9, dtors 1 then 2
 #eval run demoOps (prog tI64 deepPath) demoFuel                 -- ok: 9, dtors 2 then 1
 #eval run demoOps (prog tI64 reinitDeepPath) demoFuel           -- ok: 9, dtors 2, 1, 5
-#eval run demoOps (prog tI64 overwriteAboveHole) demoFuel       -- ok: 9, dtors 2, 1, 5, 6
+#eval run demoOps (prog tI64 overwriteAboveMovedOut) demoFuel       -- ok: 9, dtors 2, 1, 5, 6
 #eval run demoOps (prog tI64 linearFieldResidue) demoFuel       -- ok: 9, dtors 1 then 2
 #eval run demoOps (prog tI64 joinWholeAgainstPartial) demoFuel  -- ok: 9, dtors 1 then 2
 #eval run demoOps linearLostAtCallArg demoFuel                  -- ok: 0, EMPTY trace
@@ -2855,7 +2855,7 @@ example : ProgramTyped (prog tI64 partialMoveOneArm) := checkProgram_sound (by r
 example : ProgramTyped (prog tI64 partialMoveOtherArm) := checkProgram_sound (by rfl)
 example : ProgramTyped (prog tI64 deepPath) := checkProgram_sound (by rfl)
 example : ProgramTyped (prog tI64 reinitDeepPath) := checkProgram_sound (by rfl)
-example : ProgramTyped (prog tI64 overwriteAboveHole) := checkProgram_sound (by rfl)
+example : ProgramTyped (prog tI64 overwriteAboveMovedOut) := checkProgram_sound (by rfl)
 example : ProgramTyped (prog tI64 linearFieldResidue) := checkProgram_sound (by rfl)
 example : ProgramTyped (prog tI64 joinWholeAgainstPartial) := checkProgram_sound (by rfl)
 
@@ -2944,7 +2944,7 @@ for the moved-out first binding. The compiler ICEd on it (RUE-2347). -/
 example : checkProgram (enumProg tI64 enumMatchOneArmAffine) = true := by rfl
 example : run demoOps (enumProg tI64 enumMatchOneArmAffine) demoFuel
     = .ok (List.replicate 7 .dead) (v64 9)
-        [.consume (.enum eAffineIdx 0 1 [.hole]), .drop 6 (cA 0 1), .dtor sAffine (cA 0 1),
+        [.consume (.enum eAffineIdx 0 1 [.movedOut]), .drop 6 (cA 0 1), .dtor sAffine (cA 0 1),
          .drop 5 (.enum eAffineIdx 0 4 [cA 3 2]), .dtor sAffine (cA 3 2)] := by rfl
 
 /-- (Match) §5.5's per-arm §5.6 obligation: an arm that binds a `Linear`
@@ -3044,7 +3044,7 @@ example : run demoOps (destrProg tI64 destructureThroughIndex) demoFuel
     = .ok (List.replicate 7 .dead) (v64 4)
         [.dbg (v64 10), .drop 5 (cA 1 2), .dtor sAffine (cA 1 2), .drop 5 (cA 3 3),
          .dtor sAffine (cA 3 3),
-         .consume (.struct sDestrArrIdx 4 [.array (.struct sAffine) 2 [.hole, .hole], .hole]),
+         .consume (.struct sDestrArrIdx 4 [.array (.struct sAffine) 2 [.movedOut, .movedOut], .movedOut]),
          .dbg (v64 20), .drop 6 (cA 0 1), .dtor sAffine (cA 0 1)] := by rfl
 
 /-- **A dynamic-index write under a declared-`linear` prefix is admitted**
@@ -3089,12 +3089,12 @@ example : run demoOps (destrProg tI64 destructureLinearResidue) demoFuel
 
 /-- The machine's hole guard at the **selected leaf** of a declared plan: an
 already-`⊘` leaf is a refusal, not a silent no-op, exactly as it is at the named
-place of an ordinary `@drop` (`dropDeclaredHoleLeaf`). The checker refuses the
+place of an ordinary `@drop` (`dropDeclaredMovedOutLeaf`). The checker refuses the
 program too, so the state is unreachable from a §5 derivation; the monitor is
 what makes that visible rather than assumed. -/
-example : checkProgram (destrProg tI64 dropDeclaredHoleLeaf) = false := by rfl
+example : checkProgram (destrProg tI64 dropDeclaredMovedOutLeaf) = false := by rfl
 
-example : run demoOps (destrProg tI64 dropDeclaredHoleLeaf) demoFuel
+example : run demoOps (destrProg tI64 dropDeclaredMovedOutLeaf) demoFuel
     = .refused .useAfterMove := by rfl
 
 /-! The RUE-2316 witnesses are accepted — which is the point: the §7
@@ -3624,7 +3624,7 @@ dropped a second time (`3.8:60`). -/
 example : run demoOps (prog tI64 partialMoveResidue) demoFuel
     = .ok (List.replicate 5 .dead) (v64 9)
         [.drop 4 (cA 0 1), .dtor sAffine (cA 0 1),
-         .drop 3 (.struct sTwoAffine 2 [.hole, cA 1 2]), .dtor sAffine (cA 1 2)] := by rfl
+         .drop 3 (.struct sTwoAffine 2 [.movedOut, cA 1 2]), .dtor sAffine (cA 1 2)] := by rfl
 
 /-- The same at a path two field steps deep: `@drop(v.x0.x1)` writes `⊘` at
 exactly that leaf, and the scope exit drops the rest of the tree in
@@ -3632,7 +3632,7 @@ declaration order (`3.9:13`). -/
 example : run demoOps (prog tI64 deepPath) demoFuel
     = .ok (List.replicate 5 .dead) (v64 9)
         [.drop 4 (cA 1 2), .dtor sAffine (cA 1 2),
-         .drop 4 (.struct sNested 3 [.struct sTwoAffine 2 [cA 0 1, .hole], c64 3]),
+         .drop 4 (.struct sNested 3 [.struct sTwoAffine 2 [cA 0 1, .movedOut], c64 3]),
          .dtor sAffine (cA 0 1)] := by rfl
 
 /-- A reinitialising assignment at that `⊘` two steps deep drops nothing
@@ -3647,10 +3647,10 @@ example : run demoOps (prog tI64 reinitDeepPath) demoFuel
 /-- The overwrite-drop of the hole's **parent** walks the old value with the
 same `⊘`-skip: only `v.x0.x0` is destroyed at the assignment, and the moved-out
 leaf is not dropped a second time (§6.8 runs §6.11, RUE-2319). -/
-example : run demoOps (prog tI64 overwriteAboveHole) demoFuel
+example : run demoOps (prog tI64 overwriteAboveMovedOut) demoFuel
     = .ok (List.replicate 8 .dead) (v64 9)
         [.drop 4 (cA 1 2), .dtor sAffine (cA 1 2),
-         .drop 4 (.struct sTwoAffine 2 [cA 0 1, .hole]), .dtor sAffine (cA 0 1),
+         .drop 4 (.struct sTwoAffine 2 [cA 0 1, .movedOut]), .dtor sAffine (cA 0 1),
          .drop 4 (.struct sNested 3 [.struct sTwoAffine 7 [cA 5 5, cA 6 6], c64 3]),
          .dtor sAffine (cA 5 5), .dtor sAffine (cA 6 6)] := by rfl
 
@@ -3790,14 +3790,14 @@ in an open state. -/
 
 /-- Reading through a `⊘`: the base was moved out as a whole, so the path has
 nowhere to go (`3.8:53`). -/
-example : eval demoOps demoFuel (prog tI64 unitLit) [.full .hole] { env := [0], scope := [] }
+example : eval demoOps demoFuel (prog tI64 unitLit) [.full .movedOut] { env := [0], scope := [] }
     (use (.proj (.var 0) 0)) = .refused .useAfterMove := by rfl
 
 /-- Reading a value **with** a `⊘` in it: the place itself is there, but
 handing it on would hand on an aggregate with a hole, which `fully-owned`
 (§5.1, `3.8:26`) is exactly the premise against. -/
 example : eval demoOps demoFuel (prog tI64 unitLit)
-    [.full (.struct sTwoAffine 1 [.hole, .struct sAffine 0 [c64 2]])]
+    [.full (.struct sTwoAffine 1 [.movedOut, .struct sAffine 0 [c64 2]])]
     { env := [0], scope := [] } (use (.var 0)) = .refused .useAfterMove := by rfl
 
 /-- A path step that is not a field of what is stored: no elaborated program
@@ -3808,7 +3808,7 @@ example : eval demoOps demoFuel (prog tI64 unitLit) [.full (c64 7)] { env := [0]
 /-- `@drop` of a place that is already `⊘`: §5.3 demands `Σ(p) = Owned`, so
 the machine refuses rather than treating the drop as a silent no-op. -/
 example : eval demoOps demoFuel (prog tI64 unitLit)
-    [.full (.struct sTwoAffine 1 [.hole, .struct sAffine 0 [c64 2]])]
+    [.full (.struct sTwoAffine 1 [.movedOut, .struct sAffine 0 [c64 2]])]
     { env := [0], scope := [] } (drop (.proj (.var 0) 0)) = .refused .useAfterMove := by rfl
 
 /-- The same guard on the unwind path: a frame whose scope record names a

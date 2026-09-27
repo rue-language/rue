@@ -212,7 +212,7 @@ partial def valLine : Val → String
 /-- (helper) Cell contents (§6.1's `c ::= v | ⊘`), as a tree: a `⊘` may sit
 at any node after a partial move (§4.2). -/
 partial def contentsLine : Contents → String
-  | .hole => "⊘"
+  | .movedOut => "⊘"
   | .int _ _ n => toString n
   | .float w f => f.render w
   | .bool b => if b then "true" else "false"
@@ -2466,7 +2466,7 @@ def traceEval (M : FloatSig) (P : Program) :
                  | none =>
                      refused [] d Θ R (.use pl) "(D-Use-Declared-Linear) §6.3" H .useAfterMove
                  | some v =>
-                   match c.writeAt πd .hole with
+                   match c.writeAt πd .movedOut with
                    | none =>
                        refused [] d Θ R (.use pl) "(D-Use-Declared-Linear) §6.3" H .typeConfusion
                    | some c' =>
@@ -2483,7 +2483,7 @@ def traceEval (M : FloatSig) (P : Program) :
                   if v.mult P.decls = .copy then
                     traced [] d Θ R (.use pl) "(D-Use-Copy) §6.3" H H [] (.value v) (.ok H v [])
                   else
-                    match c.writeAt pl.path .hole with
+                    match c.writeAt pl.path .movedOut with
                     | none =>
                         refused [] d Θ R (.use pl) "(D-Use-Move) §6.3" H .typeConfusion
                     | some c' =>
@@ -2507,7 +2507,7 @@ def traceEval (M : FloatSig) (P : Program) :
                | .error w =>
                    refused [] d Θ R (.drop pl) "@drop §6.11 at a declared-linear plan (§6.3)" H w
                | .ok (leaf, evs) =>
-                 if leaf.isHole then
+                 if leaf.isMovedOut then
                    refused [] d Θ R (.drop pl) "@drop §6.11 at a declared-linear plan (§6.3)"
                      H .useAfterMove
                  else
@@ -2515,7 +2515,7 @@ def traceEval (M : FloatSig) (P : Program) :
                  | .error w =>
                      refused [] d Θ R (.drop pl) "@drop §6.11 at a declared-linear plan (§6.3)" H w
                  | .ok levs =>
-                   match c.writeAt πd .hole with
+                   match c.writeAt πd .movedOut with
                    | none =>
                        refused [] d Θ R (.drop pl) "@drop §6.11 at a declared-linear plan (§6.3)"
                          H .typeConfusion
@@ -2527,7 +2527,7 @@ def traceEval (M : FloatSig) (P : Program) :
             match c.readAt pl.path with
             | .error w => refused [] d Θ R (.drop pl) "@drop §6.11" H w
             | .ok sub =>
-              if sub.isHole then refused [] d Θ R (.drop pl) "@drop §6.11" H .useAfterMove else
+              if sub.isMovedOut then refused [] d Θ R (.drop pl) "@drop §6.11" H .useAfterMove else
               (match dropCell P.decls ℓ sub with
                | .error w => refused [] d Θ R (.drop pl) "@drop §6.11" H w
                | .ok evs =>
@@ -2535,7 +2535,7 @@ def traceEval (M : FloatSig) (P : Program) :
                      traced [] d Θ R (.drop pl) "@drop §6.11 (Copy: no glue)" H H [] (.value .unit)
                        (.ok H .unit [])
                    else
-                     match c.writeAt pl.path .hole with
+                     match c.writeAt pl.path .movedOut with
                      | none => refused [] d Θ R (.drop pl) "@drop §6.11" H .typeConfusion
                      | some c' =>
                          traced [] d Θ R (.drop pl) "@drop §6.11" H (H.set ℓ (.full c'))
@@ -2768,7 +2768,7 @@ def traceEval (M : FloatSig) (P : Program) :
                        | some c' =>
                          if c'.copyClosed P.decls then
                            traced (t₁.steps ++ ta.steps) d Θ R (.indexWrite pl idx πs e)
-                             (if old.isHole then
+                             (if old.isMovedOut then
                                 rule ++ " (reinitialization, 3.8:55)"
                               else rule ++ " (overwrite-drop)")
                              H (H₂.set ℓ (.full c')) evs (.value .unit)
@@ -2834,7 +2834,7 @@ def traceEval (M : FloatSig) (P : Program) :
                          | some c' =>
                            if c'.copyClosed P.decls then
                              traced t.steps d Θ R (.assign pl e)
-                               (if old.isHole then "(D-Assign) §6.8 (reinitialization, 3.8:55)"
+                               (if old.isMovedOut then "(D-Assign) §6.8 (reinitialization, 3.8:55)"
                                 else "(D-Assign) §6.8 (overwrite-drop)")
                                H (H₁.set ℓ (.full c')) evs (.value .unit)
                                (.ok (H₁.set ℓ (.full c')) .unit (tr ++ evs))

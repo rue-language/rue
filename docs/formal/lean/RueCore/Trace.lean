@@ -113,7 +113,7 @@ mutual
 /-- All-`Copy` contents is copy-closed (helper). -/
 theorem Contents.allCopy_copyClosed {D : Decls} :
     ∀ {c : Contents}, c.allCopy D = true → c.copyClosed D = true
-  | .hole, _ | .int _ _ _, _ | .float _ _, _ | .bool _, _ | .unit, _ => rfl
+  | .movedOut, _ | .int _ _ _, _ | .float _ _, _ | .bool _, _ | .unit, _ => rfl
   | .struct s i cs, h => by
       simp only [Contents.allCopy, Bool.and_eq_true, decide_eq_true_eq] at h
       simp [Contents.copyClosed, h.1, h.2]
@@ -211,7 +211,7 @@ theorem Contents.ownList_set_count {D : Decls} (a : Nat) :
 mutual
 /-- A value's stored image read back is the value (helper). -/
 theorem Contents.ofVal_toVal : ∀ {c : Contents} {v : Val}, c.toVal = some v → Contents.ofVal v = c
-  | .hole, _, h => by simp [Contents.toVal] at h
+  | .movedOut, _, h => by simp [Contents.toVal] at h
   | .int _ _ _, _, h | .float _ _, _, h | .bool _, _, h | .unit, _, h => by
       simp [Contents.toVal] at h; subst h; rfl
   | .struct s i cs, v, h => by
@@ -514,7 +514,7 @@ mutual
 would count (helper). -/
 theorem dropContents_freed {D : Decls} : ∀ {c : Contents} {evs : List Event},
     dropContents D c = .ok evs → evs.flatMap (Event.freed D) = []
-  | .hole, _, h | .int _ _ _, _, h | .float _ _, _, h | .bool _, _, h | .unit, _, h => by
+  | .movedOut, _, h | .int _ _ _, _, h | .float _ _, _, h | .bool _, _, h | .unit, _, h => by
       simp [dropContents] at h; subst h; rfl
   | .struct s i cs, evs, h => by
       simp only [dropContents] at h
@@ -549,7 +549,7 @@ mutual
 theorem dropContents_allCopy_dtor {D : Decls} (hdt : DtorNotCopy D) :
     ∀ {c : Contents} {evs : List Event},
       c.allCopy D = true → dropContents D c = .ok evs → dtorIds evs = []
-  | .hole, _, _, h | .int _ _ _, _, _, h | .float _ _, _, _, h | .bool _, _, _, h
+  | .movedOut, _, _, h | .int _ _ _, _, _, h | .float _ _, _, _, h | .bool _, _, _, h
   | .unit, _, _, h => by
       simp [dropContents] at h; subst h; rfl
   | .struct s i cs, evs, hac, h => by
@@ -604,7 +604,7 @@ theorem dropContents_dtor {D : Decls} (hdt : DtorNotCopy D) (a : Nat) :
     ∀ {c : Contents} {evs : List Event},
       c.copyClosed D = true → dropContents D c = .ok evs →
         (dtorIds evs).count a ≤ (c.own D).count a
-  | .hole, _, _, h | .int _ _ _, _, _, h | .float _ _, _, _, h | .bool _, _, _, h
+  | .movedOut, _, _, h | .int _ _ _, _, _, h | .float _ _, _, _, h | .bool _, _, _, h
   | .unit, _, _, h => by
       simp [dropContents] at h; subst h; simp [dtorIds]
   | .struct s i cs, evs, hcc, h => by
@@ -949,10 +949,10 @@ theorem Contents.pathOnlyFields_length : ∀ (cs : List Contents) (f : Nat) (π 
   | c :: cs, f + 1, π => by simp [Contents.pathOnlyFields, Contents.pathOnlyFields_length cs f π]
 
 /-- A list of `⊘`s owns nothing (helper). -/
-theorem Contents.ownList_holes {α : Type} (D : Decls) :
-    ∀ cs : List α, Contents.ownList D (cs.map fun _ => .hole) = []
+theorem Contents.ownList_movedOuts {α : Type} (D : Decls) :
+    ∀ cs : List α, Contents.ownList D (cs.map fun _ => .movedOut) = []
   | [] => rfl
-  | _ :: cs => by simp [Contents.ownList, Contents.own, Contents.ownList_holes D cs]
+  | _ :: cs => by simp [Contents.ownList, Contents.own, Contents.ownList_movedOuts D cs]
 
 mutual
 /-- **`split` and the consumed shell, counted exactly** (§6.3, RUE-2427): the
@@ -1012,7 +1012,7 @@ theorem Contents.pathOnlyFields_own {D : Decls} (a : Nat) : ∀ (cs : List Conte
         cases hs
         have := Contents.pathOnly_own a π h.1 hsr
         simp only [Contents.pathOnlyFields, Contents.ownList, Contents.ownList_append,
-          Contents.ownList_holes, List.count_append, List.count_nil]
+          Contents.ownList_movedOuts, List.count_append, List.count_nil]
         omega
   | c :: cs, f + 1, π, leaf, rs, h, hs => by
       simp only [Contents.copyClosedList, Bool.and_eq_true] at h
@@ -1365,8 +1365,8 @@ theorem matchConsume_measure {D : Decls} {F : Event → List Nat} (hF : TraceMea
     rw [if_pos hc] at h
     simp [Contents.allCopyList_own h]
   · rename_i hc
-    have := hF.consume (.enum e k i (vs.map fun _ => .hole)) a
-    simp only [Contents.own, if_neg hc, Contents.ownList_holes, List.count_cons,
+    have := hF.consume (.enum e k i (vs.map fun _ => .movedOut)) a
+    simp only [Contents.own, if_neg hc, Contents.ownList_movedOuts, List.count_cons,
       List.count_nil] at this ⊢
     simp only [List.flatMap_cons, List.flatMap_nil, List.append_nil]
     omega
@@ -1472,7 +1472,7 @@ multiply (helper). -/
 theorem Cons.move {D : Decls} {F : Event → List Nat} {H : Store} {X : List Nat} {ℓ : Nat}
     {c c' sub : Contents} {π : List Nat} {v : Val} (hcc : StoreCC D H)
     (hc : H[ℓ]? = some (.full c)) (hr : c.readAt π = .ok sub)
-    (hw : c.writeAt π .hole = some c') (hv : sub.toVal = some v) :
+    (hw : c.writeAt π .movedOut = some c') (hv : sub.toVal = some v) :
     Cons D F H X (.ok (H.set ℓ (.full c')) v []) := by
   have hccc := hcc ℓ c hc
   have hsub : Contents.ofVal v = sub := Contents.ofVal_toVal hv
@@ -1491,7 +1491,7 @@ theorem Cons.destructure {D : Decls} {F : Event → List Nat} (hF : TraceMeasure
     {H : Store} {X : List Nat} {ℓ : Nat} {c c' cd leaf : Contents} {πd πs : List Nat}
     {v : Val} {evs : List Event} (hcc : StoreCC D H) (hc : H[ℓ]? = some (.full c))
     (hr : c.readAt πd = .ok cd) (hd : cd.destructure D ℓ πs = .ok (leaf, evs))
-    (hv : leaf.toVal = some v) (hw : c.writeAt πd .hole = some c') :
+    (hv : leaf.toVal = some v) (hw : c.writeAt πd .movedOut = some c') :
     Cons D F H X (.ok (H.set ℓ (.full c')) v evs) := by
   have hccc := hcc ℓ c hc
   have hcd := Contents.readAt_copyClosed πd hccc hr
@@ -1512,7 +1512,7 @@ theorem Cons.dropPlace {D : Decls} {F : Event → List Nat} (hF : TraceMeasure D
     {H : Store} {X : List Nat} {ℓ : Nat} {c c' sub : Contents} {π : List Nat}
     {evs : List Event} (hcc : StoreCC D H) (hc : H[ℓ]? = some (.full c))
     (hr : c.readAt π = .ok sub) (hd : dropCell D ℓ sub = .ok evs)
-    (hw : c.writeAt π .hole = some c') :
+    (hw : c.writeAt π .movedOut = some c') :
     Cons D F H X (.ok (H.set ℓ (.full c')) .unit evs) := by
   have hccc := hcc ℓ c hc
   have hsub := Contents.readAt_copyClosed π hccc hr
@@ -1530,7 +1530,7 @@ theorem Cons.dropDeclared {D : Decls} {F : Event → List Nat} (hF : TraceMeasur
     {H : Store} {X : List Nat} {ℓ : Nat} {c c' cd leaf : Contents} {πd πs : List Nat}
     {evs levs : List Event} (hcc : StoreCC D H) (hc : H[ℓ]? = some (.full c))
     (hr : c.readAt πd = .ok cd) (hd : cd.destructure D ℓ πs = .ok (leaf, evs))
-    (hl : dropCell D ℓ leaf = .ok levs) (hw : c.writeAt πd .hole = some c') :
+    (hl : dropCell D ℓ leaf = .ok levs) (hw : c.writeAt πd .movedOut = some c') :
     Cons D F H X (.ok (H.set ℓ (.full c')) .unit (evs ++ levs)) := by
   have hccc := hcc ℓ c hc
   have hcd := Contents.readAt_copyClosed πd hccc hr

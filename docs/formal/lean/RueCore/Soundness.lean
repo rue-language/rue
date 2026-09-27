@@ -73,7 +73,7 @@ declaration has, `exhaustive_arm_exists` turns that into an arm, and (D-Match) �
 fires (§7's exhaustiveness bullet). `ContentsTy D` is the same for
 what a cell holds, with §6.1's `⊘` admitted at every node and well typed at
 every type, because a moved-out position claims nothing about what used to be
-there. `Contents.holeFree` is what says a contents *is* a value, and
+there. `Contents.noMovedOut` is what says a contents *is* a value, and
 `ContentsTy.toVal` is the bridge: that is the half (D-Use-Copy)/(D-Use-Move)
 §6.3 need, since they hand the context a value and `fully-owned(Σ, p)` §5.1 is
 what says the contents they read has no hole in it.
@@ -202,7 +202,7 @@ holds `Contents` — the same trees with §6.1's `⊘` admitted at any node, whi
 is what a partial move leaves (§4.2, `3.8:22`) — so the invariant needs the
 analogous relation. `ContentsTy` is it: a `⊘` is well typed at **every** type,
 because a moved-out position makes no claim about what used to be there, and
-everything else types as its value would. `holeFree` says the tree has no `⊘`
+everything else types as its value would. `noMovedOut` says the tree has no `⊘`
 in it, and a hole-free well-typed contents is exactly (the image of) a
 well-typed value.
 -/
@@ -228,10 +228,10 @@ theorem ContentsTy.array_inv {D T i cs T₀} (h : ContentsTy D (.array T i cs) T
 elements: the shape (D-Index) §6.5 needs before it can bounds-check an index
 against `cs.length` (helper). -/
 theorem ContentsTy.array_shape {D : Decls} {c : Contents} {T : Ty} {n : Nat}
-    (h : ContentsTy D c (.array T n)) (hf : c.holeFree = true) :
+    (h : ContentsTy D c (.array T n)) (hf : c.noMovedOut = true) :
     ∃ i cs, c = .array T i cs ∧ ContentsTys D cs (List.replicate n T) := by
   cases h with
-  | hole => simp [Contents.holeFree] at hf
+  | movedOut => simp [Contents.noMovedOut] at hf
   | array hcs => exact ⟨_, _, rfl, hcs⟩
 
 /-- A field of a well-typed contents is well typed at its declared type
@@ -282,60 +282,60 @@ end
 
 mutual
 /-- The image of a value has no hole in it (helper). -/
-theorem Contents.holeFree_ofVal (v : Val) : (Contents.ofVal v).holeFree = true := by
+theorem Contents.noMovedOut_ofVal (v : Val) : (Contents.ofVal v).noMovedOut = true := by
   cases v with
   | int => rfl
   | float => rfl
   | bool => rfl
   | unit => rfl
-  | struct s i vs => exact Contents.holeFreeList_ofVals vs
-  | enum e k i vs => exact Contents.holeFreeList_ofVals vs
-  | array T i vs => exact Contents.holeFreeList_ofVals vs
+  | struct s i vs => exact Contents.noMovedOutList_ofVals vs
+  | enum e k i vs => exact Contents.noMovedOutList_ofVals vs
+  | array T i vs => exact Contents.noMovedOutList_ofVals vs
 
 /-- The same over a field or element list (helper). -/
-theorem Contents.holeFreeList_ofVals : ∀ vs : List Val,
-    Contents.holeFreeList (Contents.ofVals vs) = true
+theorem Contents.noMovedOutList_ofVals : ∀ vs : List Val,
+    Contents.noMovedOutList (Contents.ofVals vs) = true
   | [] => rfl
   | v :: vs => by
-      show (Contents.holeFree (Contents.ofVal v) && _) = true
-      rw [Contents.holeFree_ofVal v, Contents.holeFreeList_ofVals vs]
+      show (Contents.noMovedOut (Contents.ofVal v) && _) = true
+      rw [Contents.noMovedOut_ofVal v, Contents.noMovedOutList_ofVals vs]
       rfl
 end
 
 /-- A member of a hole-free list is hole-free: what an element read needs
 before it can hand the context a value (helper). -/
-theorem Contents.holeFreeList_index : ∀ {cs : List Contents} {k : Nat} {c : Contents},
-    Contents.holeFreeList cs = true → cs[k]? = some c → c.holeFree = true
+theorem Contents.noMovedOutList_index : ∀ {cs : List Contents} {k : Nat} {c : Contents},
+    Contents.noMovedOutList cs = true → cs[k]? = some c → c.noMovedOut = true
   | [], _, _, _, hg => by simp at hg
   | c₀ :: cs, 0, c, hf, hg => by
       simp only [List.getElem?_cons_zero, Option.some_inj] at hg
       subst hg
-      have hf' : Contents.holeFree c₀ = true ∧ Contents.holeFreeList cs = true := by
-        simpa only [Contents.holeFreeList, Bool.and_eq_true] using hf
+      have hf' : Contents.noMovedOut c₀ = true ∧ Contents.noMovedOutList cs = true := by
+        simpa only [Contents.noMovedOutList, Bool.and_eq_true] using hf
       exact hf'.1
   | c₀ :: cs, k + 1, c, hf, hg => by
       simp only [List.getElem?_cons_succ] at hg
-      have hf' : Contents.holeFree c₀ = true ∧ Contents.holeFreeList cs = true := by
-        simpa only [Contents.holeFreeList, Bool.and_eq_true] using hf
-      exact Contents.holeFreeList_index hf'.2 hg
+      have hf' : Contents.noMovedOut c₀ = true ∧ Contents.noMovedOutList cs = true := by
+        simpa only [Contents.noMovedOutList, Bool.and_eq_true] using hf
+      exact Contents.noMovedOutList_index hf'.2 hg
 
 /-- Writing a hole-free member into a hole-free list keeps it hole-free: what
 an element write needs before the array it stores back is still a value
 (helper). -/
-theorem Contents.holeFreeList_set : ∀ (cs : List Contents) (k : Nat) {c : Contents},
-    Contents.holeFreeList cs = true → c.holeFree = true →
-    Contents.holeFreeList (cs.set k c) = true
+theorem Contents.noMovedOutList_set : ∀ (cs : List Contents) (k : Nat) {c : Contents},
+    Contents.noMovedOutList cs = true → c.noMovedOut = true →
+    Contents.noMovedOutList (cs.set k c) = true
   | [], _, _, hf, _ => by simpa using hf
   | c₀ :: cs, 0, c, hf, hc => by
-      have hf' : Contents.holeFree c₀ = true ∧ Contents.holeFreeList cs = true := by
-        simpa only [Contents.holeFreeList, Bool.and_eq_true] using hf
-      show (Contents.holeFree c && Contents.holeFreeList cs) = true
+      have hf' : Contents.noMovedOut c₀ = true ∧ Contents.noMovedOutList cs = true := by
+        simpa only [Contents.noMovedOutList, Bool.and_eq_true] using hf
+      show (Contents.noMovedOut c && Contents.noMovedOutList cs) = true
       rw [hc, hf'.2]; rfl
   | c₀ :: cs, k + 1, c, hf, hc => by
-      have hf' : Contents.holeFree c₀ = true ∧ Contents.holeFreeList cs = true := by
-        simpa only [Contents.holeFreeList, Bool.and_eq_true] using hf
-      show (Contents.holeFree c₀ && Contents.holeFreeList (cs.set k c)) = true
-      rw [hf'.1, Contents.holeFreeList_set cs k hf'.2 hc]; rfl
+      have hf' : Contents.noMovedOut c₀ = true ∧ Contents.noMovedOutList cs = true := by
+        simpa only [Contents.noMovedOutList, Bool.and_eq_true] using hf
+      show (Contents.noMovedOut c₀ && Contents.noMovedOutList (cs.set k c)) = true
+      rw [hf'.1, Contents.noMovedOutList_set cs k hf'.2 hc]; rfl
 
 /-- `n` copies of a well-typed value are `n` copies of its type, well typed:
 the repeat form's own premise, once `7.1:38` has made the element `Copy`
@@ -350,35 +350,35 @@ mutual
 half of the correspondence the machine needs at a use: (D-Use-Copy)/(D-Use-Move)
 §6.3 hand the context a *value*, and `fully-owned(Σ, p)` (§5.1) is what says
 the contents they read has no hole in it (helper). -/
-theorem ContentsTy.toVal {D c T} (h : ContentsTy D c T) (hf : c.holeFree = true) :
+theorem ContentsTy.toVal {D c T} (h : ContentsTy D c T) (hf : c.noMovedOut = true) :
     ∃ v, c.toVal = some v ∧ HasTy D v T := by
   cases h with
-  | hole => exact absurd hf (by simp [Contents.holeFree])
+  | movedOut => exact absurd hf (by simp [Contents.noMovedOut])
   | int hb => exact ⟨_, rfl, .int hb⟩
   | float hw => exact ⟨_, rfl, .float hw⟩
   | bool => exact ⟨_, rfl, .bool⟩
   | unit => exact ⟨_, rfl, .unit⟩
   | @struct s sd i cs hd hcs =>
       obtain ⟨vs, hvs, hty⟩ := ContentsTys.toVals hcs (by
-        simpa only [Contents.holeFree] using hf)
+        simpa only [Contents.noMovedOut] using hf)
       exact ⟨Val.struct s i vs, by simp only [Contents.toVal, hvs, Option.map_some], .struct hd hty⟩
   | @enum e k ed Ts i cs hd hv hcs =>
       obtain ⟨vs, hvs, hty⟩ := ContentsTys.toVals hcs (by
-        simpa only [Contents.holeFree] using hf)
+        simpa only [Contents.noMovedOut] using hf)
       exact ⟨Val.enum e k i vs, by simp only [Contents.toVal, hvs, Option.map_some], .enum hd hv hty⟩
   | @array T n i cs hcs =>
       obtain ⟨vs, hvs, hty⟩ := ContentsTys.toVals hcs (by
-        simpa only [Contents.holeFree] using hf)
+        simpa only [Contents.noMovedOut] using hf)
       exact ⟨Val.array T i vs, by simp only [Contents.toVal, hvs, Option.map_some], .array hty⟩
 
 /-- The same over a field list (helper). -/
 theorem ContentsTys.toVals {D cs Ts} (h : ContentsTys D cs Ts)
-    (hf : Contents.holeFreeList cs = true) :
+    (hf : Contents.noMovedOutList cs = true) :
     ∃ vs, Contents.toVals cs = some vs ∧ HasTys D vs Ts := by
   cases h with
   | nil => exact ⟨[], rfl, .nil⟩
   | @cons c cs T Ts hc hcs =>
-      simp only [Contents.holeFreeList, Bool.and_eq_true] at hf
+      simp only [Contents.noMovedOutList, Bool.and_eq_true] at hf
       obtain ⟨v, hv, htv⟩ := ContentsTy.toVal hc hf.1
       obtain ⟨vs, hvs, htvs⟩ := ContentsTys.toVals hcs hf.2
       exact ⟨v :: vs, by simp only [Contents.toVals, hv, hvs], .cons htv htvs⟩
@@ -386,10 +386,10 @@ end
 
 /-- A hole-free well-typed contents has its type's class, which is what the
 `Copy` test of (D-Use-Copy) and of `dropCell` reads (helper). -/
-theorem ContentsTy.mult_eq {D c T} (h : ContentsTy D c T) (hf : c.holeFree = true) :
+theorem ContentsTy.mult_eq {D c T} (h : ContentsTy D c T) (hf : c.noMovedOut = true) :
     c.mult D = T.mult D := by
   cases h with
-  | hole => exact absurd hf (by simp [Contents.holeFree])
+  | movedOut => exact absurd hf (by simp [Contents.noMovedOut])
   | int => rfl
   | float => rfl
   | bool => rfl
@@ -455,7 +455,7 @@ mutual
 theorem ContentsTy.allCopy {D : Decls} {c : Contents} {T : Ty} (hwf : WfDecls D)
     (h : ContentsTy D c T) (hc : T.mult D = .copy) : c.allCopy D = true := by
   cases h with
-  | hole => rfl
+  | movedOut => rfl
   | int => rfl
   | float => rfl
   | bool => rfl
@@ -498,7 +498,7 @@ monitor (`Contents.copyClosed`) lets every checked program's aggregates through
 theorem ContentsTy.copyClosed {D : Decls} {c : Contents} {T : Ty} (hwf : WfDecls D)
     (h : ContentsTy D c T) : c.copyClosed D = true := by
   cases h with
-  | hole => rfl
+  | movedOut => rfl
   | int => rfl
   | float => rfl
   | bool => rfl
@@ -554,7 +554,7 @@ declaration order (`3.9:13`), every `⊘` skipped (`3.8:60`). -/
 theorem dropContents_events {D : Decls} {c : Contents} {T : Ty} (h : ContentsTy D c T) :
     dropContents D c = .ok (dropEvents D c) := by
   cases h with
-  | hole => rfl
+  | movedOut => rfl
   | int => rfl
   | float => rfl
   | bool => rfl
@@ -594,7 +594,7 @@ declarations.
 
 Be exact about the `⊘`-skip: this theorem states the **map**, `cs.map
 (dropEvents D)`, and a moved-out field contributes nothing because
-`dropEvents .hole = []` *by definition* (`Dynamics.lean`). So `3.8:60`'s skip
+`dropEvents .movedOut = []` *by definition* (`Dynamics.lean`). So `3.8:60`'s skip
 is carried by the closed form's own leaf case, not concluded here; what the
 theorem adds is that the walk emits exactly that map, in that order. -/
 theorem dropContents_struct_events {D : Decls} {s : Nat} {sd : StructDecl}
@@ -612,7 +612,7 @@ emits, in payload order, and nothing else: no destructor event, because §3 lets
 an enum declare none (E0417), and nothing at all for a discriminant-only variant,
 whose payload list is empty. The inactive variants contribute nothing because
 they have no storage — the value carries one tag — and a payload already moved
-out by a `match` binding left the enum place `⊘`, which `dropEvents .hole = []`
+out by a `match` binding left the enum place `⊘`, which `dropEvents .movedOut = []`
 skips. -/
 theorem dropContents_enum_events {D : Decls} {e k i : Nat} {cs : List Contents}
     (h : ContentsTy D (.enum e k i cs) (.enum e)) :
@@ -624,7 +624,7 @@ theorem dropContents_enum_events {D : Decls} {e k i : Nat} {cs : List Contents}
 well-typed array's stored contents emits the concatenation of its **elements'**
 drop events in **ascending index order** and nothing else: no destructor event
 of the array's own, because `3.9:14` gives `[T; n]` a destructor exactly when
-`T` has one, and a moved-out element contributes none (`dropEvents .hole = []`,
+`T` has one, and a moved-out element contributes none (`dropEvents .movedOut = []`,
 the same `⊘`-skip `dropContents_struct_events` carries). This is the closed
 form RUE-2237's "dropped exactly once" quantifies over at an array, and it is
 `3.8:73`'s "untouched elements are dropped, in ascending index order" as a
@@ -677,7 +677,7 @@ theorem ContentsTy.residualLinear_false {D : Decls} {c : Contents} {T : Ty}
     (hwf : WfDecls D) (h : ContentsTy D c T) (hnl : T.mult D ≠ .linear) :
     c.residualLinear D = false := by
   cases h with
-  | hole => rfl
+  | movedOut => rfl
   | int => rfl
   | float => rfl
   | bool => rfl
@@ -1033,11 +1033,11 @@ theorem ContentsOwnTypingList.set : ∀ {D : Decls} {cs : List Contents} {ts : L
 `owned` — which is what lets the §5.5 join read an `Owned` arm field by field
 against a partially moved one (helper). -/
 theorem ContentsOwnTypingList.of_owned : ∀ {D : Decls} {cs : List Contents} {Ts : List Ty},
-    ContentsTys D cs Ts → Contents.holeFreeList cs = true → ContentsOwnTypingList D cs [] Ts
+    ContentsTys D cs Ts → Contents.noMovedOutList cs = true → ContentsOwnTypingList D cs [] Ts
   | _, _, _, .nil, _ => .nil
   | D, _, _, @ContentsTys.cons _ c cs T Ts hc hcs, hf => by
-      have hf' : Contents.holeFree c = true ∧ Contents.holeFreeList cs = true := by
-        simpa only [Contents.holeFreeList, Bool.and_eq_true] using hf
+      have hf' : Contents.noMovedOut c = true ∧ Contents.noMovedOutList cs = true := by
+        simpa only [Contents.noMovedOutList, Bool.and_eq_true] using hf
       refine .cons ?_ ?_
       · simpa only [OwnSt.fieldAt, List.getElem?_nil, Option.getD_none] using
           ContentsOwnTyping.owned hc hf'.1
@@ -1051,12 +1051,12 @@ theorem ContentsOwnTyping.owned_struct {D : Decls} {c : Contents} {s : Nat}
   cases h with
   | owned hty hf =>
       cases hty with
-      | hole => simp [Contents.holeFree] at hf
+      | movedOut => simp [Contents.noMovedOut] at hf
       | @struct s' sd' i cs hd' hcs =>
           have : sd' = sd := by rw [hd'] at hd; cases hd; rfl
           subst this
           exact ⟨i, cs, rfl, ContentsOwnTypingList.of_owned hcs
-            (by simpa only [Contents.holeFree] using hf)⟩
+            (by simpa only [Contents.noMovedOut] using hf)⟩
 
 /-- Inversion of an `Owned` match at an array type: the cell holds that array,
 and every element of it is `owned` (helper). -/
@@ -1066,10 +1066,10 @@ theorem ContentsOwnTyping.owned_array {D : Decls} {c : Contents} {T : Ty} {n : N
   cases h with
   | owned hty hf =>
       cases hty with
-      | hole => simp [Contents.holeFree] at hf
+      | movedOut => simp [Contents.noMovedOut] at hf
       | @array T' n' i cs hcs =>
           exact ⟨i, cs, rfl, ContentsOwnTypingList.of_owned hcs
-            (by simpa only [Contents.holeFree] using hf)⟩
+            (by simpa only [Contents.noMovedOut] using hf)⟩
 
 /-- Inversion of a field step (helper).
 
@@ -1147,20 +1147,20 @@ recursion. The struct step and the array step both consume it, with the
 declaration's fields or `List.replicate n T` for `Ts` (helper). -/
 theorem splitFields_ok {D : Decls} {πs : List Nat} {T' : Ty} :
     ∀ (f : Nat) {cs : List Contents} {Ts : List Ty} {Tf : Ty},
-      ContentsTys D cs Ts → Contents.holeFreeList cs = true →
+      ContentsTys D cs Ts → Contents.noMovedOutList cs = true →
       Ts[f]? = some Tf → anyLinearOther D Ts f = false →
-      (∀ cf, ContentsTy D cf Tf → cf.holeFree = true →
+      (∀ cf, ContentsTy D cf Tf → cf.noMovedOut = true →
         ∃ leaf rs, Contents.splitResidue D cf πs = .ok (leaf, rs) ∧
-          ContentsTy D leaf T' ∧ leaf.holeFree = true ∧ ResidueOk D rs) →
+          ContentsTy D leaf T' ∧ leaf.noMovedOut = true ∧ ResidueOk D rs) →
       ∃ leaf rs, Contents.splitFields D cs f πs = .ok (leaf, rs) ∧
-        ContentsTy D leaf T' ∧ leaf.holeFree = true ∧ ResidueOk D rs
+        ContentsTy D leaf T' ∧ leaf.noMovedOut = true ∧ ResidueOk D rs
   | 0, _, _, _, hcs, hhf, hf, hlin, hrec => by
       cases hcs with
       | nil => simp at hf
       | @cons c cs T₀ Ts hc hcs' =>
           simp only [List.getElem?_cons_zero, Option.some.injEq] at hf
           subst hf
-          simp only [Contents.holeFreeList, Bool.and_eq_true] at hhf
+          simp only [Contents.noMovedOutList, Bool.and_eq_true] at hhf
           obtain ⟨leaf, inner, hsp, hlt, hlhf, hro⟩ := hrec c hc hhf.1
           refine ⟨leaf, inner ++ cs, by simp only [Contents.splitFields, hsp], hlt, hlhf, ?_⟩
           intro r hr
@@ -1174,7 +1174,7 @@ theorem splitFields_ok {D : Decls} {πs : List Nat} {T' : Ty} :
       | nil => simp at hf
       | @cons c cs T₀ Ts hc hcs' =>
           simp only [List.getElem?_cons_succ] at hf
-          simp only [Contents.holeFreeList, Bool.and_eq_true] at hhf
+          simp only [Contents.noMovedOutList, Bool.and_eq_true] at hhf
           simp only [anyLinearOther, Bool.or_eq_false_iff, decide_eq_false_iff_not] at hlin
           obtain ⟨leaf, rest, hsp, hlt, hlhf, hro⟩ :=
             splitFields_ok f hcs' hhf.2 hf hlin.2 hrec
@@ -1192,10 +1192,10 @@ of `π_s` is a field, and `¬ linear-residue(S, π_s)` is what makes every
 retained subtree droppable. The leaf is hole-free because the whole subtree
 was, which is what lets the use hand the context a `Val` (`ContentsTy.toVal`). -/
 theorem splitResidue_ok {D : Decls} : ∀ (πs : List Nat) {c : Contents} {T T' : Ty},
-    ContentsTy D c T → c.holeFree = true → T.atPath D πs = some T' →
+    ContentsTy D c T → c.noMovedOut = true → T.atPath D πs = some T' →
     linearResidue D T πs = false →
     ∃ leaf rs, Contents.splitResidue D c πs = .ok (leaf, rs) ∧
-      ContentsTy D leaf T' ∧ leaf.holeFree = true ∧ ResidueOk D rs
+      ContentsTy D leaf T' ∧ leaf.noMovedOut = true ∧ ResidueOk D rs
   | [], c, _, _, hty, hhf, hpath, _ => by
       simp only [Ty.atPath, Option.some.injEq] at hpath
       subst hpath
@@ -1211,18 +1211,18 @@ theorem splitResidue_ok {D : Decls} : ∀ (πs : List Nat) {c : Contents} {T T' 
         rcases Ty.fieldAt_inv hfa with ⟨s, sd, rfl, hd, hf⟩ | ⟨n, rfl, hf⟩
         · simp only [linearResidue, hd, hf, Bool.or_eq_false_iff] at hres
           cases hty with
-          | hole => simp [Contents.holeFree] at hhf
+          | movedOut => simp [Contents.noMovedOut] at hhf
           | @struct s' sd' i cs hd' hcs =>
               have heq : sd' = sd := by rw [hd'] at hd; cases hd; rfl
               subst heq
-              refine splitFields_ok f hcs (by simpa only [Contents.holeFree] using hhf)
+              refine splitFields_ok f hcs (by simpa only [Contents.noMovedOut] using hhf)
                 hf hres.1 (fun cf hcf hhf' => splitResidue_ok π hcf hhf' hpath ?_)
               simpa only [hf] using hres.2
         · simp only [linearResidue, hf, Bool.or_eq_false_iff] at hres
           cases hty with
-          | hole => simp [Contents.holeFree] at hhf
+          | movedOut => simp [Contents.noMovedOut] at hhf
           | @array T'' n' i cs hcs =>
-              refine splitFields_ok f hcs (by simpa only [Contents.holeFree] using hhf)
+              refine splitFields_ok f hcs (by simpa only [Contents.noMovedOut] using hhf)
                 hf hres.1 (fun cf hcf hhf' => splitResidue_ok π hcf hhf' hpath ?_)
               simpa only [hf] using hres.2
 
@@ -1252,11 +1252,11 @@ hole-free — so a use hands on a `Val` and a `@drop` can run §6.11 on it — a
 the events are `dropResidueEvents` and one `consume`, with no `linearLeak`
 reachable. -/
 theorem destructure_ok {D : Decls} (hwf : WfDecls D) (ℓ : Nat) {c : Contents} {T T' : Ty}
-    {πs : List Nat} (hty : ContentsTy D c T) (hhf : c.holeFree = true)
+    {πs : List Nat} (hty : ContentsTy D c T) (hhf : c.noMovedOut = true)
     (hpath : T.atPath D πs = some T') (hres : linearResidue D T πs = false) :
     ∃ leaf rs, Contents.destructure D ℓ c πs
         = .ok (leaf, dropResidueEvents D ℓ rs ++ [.consume (c.pathOnly πs)]) ∧
-      ContentsTy D leaf T' ∧ leaf.holeFree = true := by
+      ContentsTy D leaf T' ∧ leaf.noMovedOut = true := by
   obtain ⟨leaf, rs, hsp, hlt, hlhf, hro⟩ := splitResidue_ok πs hty hhf hpath hres
   exact ⟨leaf, rs, by simp only [Contents.destructure, hsp, dropResidue_events hwf ℓ hro],
     hlt, hlhf⟩
@@ -1265,38 +1265,38 @@ mutual
 /-- A fully-owned node holds a hole-free contents: `fully-owned(Σ, p)` (§5.1)
 is exactly what says the aggregate a use hands on has no hole in it
 (`3.8:26`) (helper). -/
-theorem ContentsOwnTyping.holeFree {D c t T} (h : ContentsOwnTyping D c t T)
-    (hf : t.fullyOwned = true) : c.holeFree = true := by
+theorem ContentsOwnTyping.noMovedOut {D c t T} (h : ContentsOwnTyping D c t T)
+    (hf : t.fullyOwned = true) : c.noMovedOut = true := by
   cases h with
   | owned _ hh => exact hh
   | moved _ _ => simp [OwnSt.fullyOwned] at hf
   | fields hd hl =>
-      show Contents.holeFreeList _ = true
-      exact ContentsOwnTypingList.holeFreeList hl (by simpa only [OwnSt.fullyOwned] using hf)
+      show Contents.noMovedOutList _ = true
+      exact ContentsOwnTypingList.noMovedOutList hl (by simpa only [OwnSt.fullyOwned] using hf)
   | elems hl =>
-      show Contents.holeFreeList _ = true
-      exact ContentsOwnTypingList.holeFreeList hl (by simpa only [OwnSt.fullyOwned] using hf)
+      show Contents.noMovedOutList _ = true
+      exact ContentsOwnTypingList.noMovedOutList hl (by simpa only [OwnSt.fullyOwned] using hf)
 
 /-- The same over a field list (helper). -/
-theorem ContentsOwnTypingList.holeFreeList {D cs ts Ts} (h : ContentsOwnTypingList D cs ts Ts)
-    (hf : OwnSt.fullyOwnedList ts = true) : Contents.holeFreeList cs = true := by
+theorem ContentsOwnTypingList.noMovedOutList {D cs ts Ts} (h : ContentsOwnTypingList D cs ts Ts)
+    (hf : OwnSt.fullyOwnedList ts = true) : Contents.noMovedOutList cs = true := by
   cases h with
   | nil => rfl
   | @cons c cs ts T Ts hc hl =>
       cases ts with
       | nil =>
-          show (Contents.holeFree c && Contents.holeFreeList cs) = true
-          rw [ContentsOwnTyping.holeFree hc rfl,
-            ContentsOwnTypingList.holeFreeList hl (by rfl)]
+          show (Contents.noMovedOut c && Contents.noMovedOutList cs) = true
+          rw [ContentsOwnTyping.noMovedOut hc rfl,
+            ContentsOwnTypingList.noMovedOutList hl (by rfl)]
           rfl
       | cons t ts' =>
           have hf' : OwnSt.fullyOwned t = true ∧ OwnSt.fullyOwnedList ts' = true := by
             simpa only [OwnSt.fullyOwnedList, Bool.and_eq_true] using hf
-          show (Contents.holeFree c && Contents.holeFreeList cs) = true
-          rw [ContentsOwnTyping.holeFree hc
+          show (Contents.noMovedOut c && Contents.noMovedOutList cs) = true
+          rw [ContentsOwnTyping.noMovedOut hc
                 (by simpa only [OwnSt.fieldAt, List.getElem?_cons_zero,
                       Option.getD_some] using hf'.1),
-            ContentsOwnTypingList.holeFreeList hl (by simpa only [List.tail_cons] using hf'.2)]
+            ContentsOwnTypingList.noMovedOutList hl (by simpa only [List.tail_cons] using hf'.2)]
           rfl
 end
 
@@ -1304,14 +1304,14 @@ end
 on, well typed at the node's type (helper). -/
 theorem ContentsOwnTyping.toVal {D c t T} (h : ContentsOwnTyping D c t T)
     (hf : t.fullyOwned = true) : ∃ v, c.toVal = some v ∧ HasTy D v T :=
-  h.contentsTy.toVal (h.holeFree hf)
+  h.contentsTy.toVal (h.noMovedOut hf)
 
 /-- A matched node whose state is `Owned` is not itself a hole — which is what
 lets `@drop` at a partially moved place run at all (helper). -/
-theorem ContentsOwnTyping.ne_hole {D c t T} (h : ContentsOwnTyping D c t T)
-    (ho : t.isOwned = true) : c ≠ .hole := by
+theorem ContentsOwnTyping.ne_movedOut {D c t T} (h : ContentsOwnTyping D c t T)
+    (ho : t.isOwned = true) : c ≠ .movedOut := by
   cases h with
-  | owned _ hh => intro hc; rw [hc] at hh; simp [Contents.holeFree] at hh
+  | owned _ hh => intro hc; rw [hc] at hh; simp [Contents.noMovedOut] at hh
   | moved _ _ => simp [OwnSt.isOwned] at ho
   | fields _ _ => simp
   | elems _ => simp
@@ -1332,11 +1332,11 @@ theorem ContentsOwnTyping.mult_eq {D c t T} (h : ContentsOwnTyping D c t T)
 (§6.7's (D-Let), §6.8's store) (helper). -/
 theorem ContentsOwnTyping.ofVal {D v T} (h : HasTy D v T) :
     ContentsOwnTyping D (Contents.ofVal v) .owned T :=
-  .owned h.contentsTy (Contents.holeFree_ofVal v)
+  .owned h.contentsTy (Contents.noMovedOut_ofVal v)
 
 /-- A contents that is not `⊘` fails the `⊘` test (helper). -/
-theorem Contents.isHole_eq_false : ∀ {c : Contents}, c ≠ .hole → c.isHole = false
-  | .hole, h => absurd rfl h
+theorem Contents.isMovedOut_eq_false : ∀ {c : Contents}, c ≠ .movedOut → c.isMovedOut = false
+  | .movedOut, h => absurd rfl h
   | .int _ _ _, _ => rfl
   | .float _ _, _ => rfl
   | .bool _, _ => rfl
@@ -1545,8 +1545,8 @@ theorem ContentsOwnTyping.declaredPlan_eq {D : Decls} : ∀ (π : List Nat) {c :
 
 /-- A `⊘` matches a `MovedOut` state at every type: nothing is stored, so
 nothing is claimed (helper). -/
-theorem ContentsOwnTyping.hole {D T} : ContentsOwnTyping D (.hole : Contents) .movedOut T :=
-  .moved .hole rfl
+theorem ContentsOwnTyping.movedOut {D T} : ContentsOwnTyping D (.movedOut : Contents) .movedOut T :=
+  .moved .movedOut rfl
 
 /-! ### §5.6's obligation, read on Σ and read on the store, agree -/
 
@@ -3049,7 +3049,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
           obtain ⟨v, hv, htyv⟩ := hsub.toVal hfo
           have hvm : v.mult P.decls ≠ .copy := by rw [htyv.mult_eq]; exact hncopy
           obtain ⟨cc', hw, hmm'⟩ :=
-            ContentsOwnTyping.writeAt pl.path hmm hg hty (ContentsOwnTyping.hole (T := T))
+            ContentsOwnTyping.writeAt pl.path hmm hg hty (ContentsOwnTyping.movedOut (T := T))
           have hev : eval M.toFloatSig (fuel + 1) P H φ (.use pl) = .ok (H.set ℓ (.full cc')) v [] := by
             simp [eval, hρ, hc, hpl, hread, hv, hvm, hw]
           rw [hev]
@@ -3064,7 +3064,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
           -- premise held), and only then does the **consumed place** become
           -- `⊘`. That last write is (Use-Move)'s at `π_d`, so the invariant is
           -- re-established exactly as the `useMove` case above re-establishes
-          -- it, with `ContentsOwnTyping.hole` at `d`'s own type.
+          -- it, with `ContentsOwnTyping.movedOut` at `d`'s own type.
           obtain ⟨ℓ, cell, hρ, hc, hcm⟩ := hfm.store.lookup hget
           obtain ⟨cc, rfl, hmm⟩ := hcm
           obtain ⟨hsplit, _⟩ := declaredPrefix_split P.decls en.ty pl.path πd πs hplan
@@ -3078,10 +3078,10 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
             rw [ContentsOwnTyping.declaredPlan_eq pl.path hmm hgfull hty]; exact hplan
           obtain ⟨cd, hread, hsub⟩ := ContentsOwnTyping.readAt πd hmm hgd htd
           obtain ⟨leaf, rs, hdest, hlty, hlhf⟩ :=
-            destructure_ok hwf.decls ℓ hsub.contentsTy (hsub.holeFree hfo) hleaf hres
+            destructure_ok hwf.decls ℓ hsub.contentsTy (hsub.noMovedOut hfo) hleaf hres
           obtain ⟨v, hv, htyv⟩ := hlty.toVal hlhf
           obtain ⟨cc', hw, hmm'⟩ :=
-            ContentsOwnTyping.writeAt πd hmm hgd htd (ContentsOwnTyping.hole (T := Td))
+            ContentsOwnTyping.writeAt πd hmm hgd htd (ContentsOwnTyping.movedOut (T := Td))
           have hev : eval M.toFloatSig (fuel + 1) P H φ (.use pl)
               = .ok (H.set ℓ (.full cc')) v (dropResidueEvents P.decls ℓ rs ++ [.consume (cd.pathOnly πs)]) := by
             simp [eval, hρ, hc, hpl, hread, hdest, hv, hw]
@@ -3386,7 +3386,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
               obtain ⟨cc, rfl, hmm⟩ := hcm
               obtain ⟨sub, hread, hsub⟩ := ContentsOwnTyping.readAt p.path hmm hg hty
               have hso : ContentsOwnTyping P.decls sub .owned Ta :=
-                .owned hsub.contentsTy (hsub.holeFree hfo)
+                .owned hsub.contentsTy (hsub.noMovedOut hfo)
               refine EvalOk.withTrace ?_ tr
               rcases Contents.resolveDyn_ok is πs hso hdyn hlen' with hb | ⟨ρ, hres, hρty⟩
               · have hdp : dynPlace H₁ φ p vs πs = .bounds := by
@@ -3466,7 +3466,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
               have hty₁ : en₁.ty.atPath P.decls p.path = some Ta := htyeq ▸ hty₀
               obtain ⟨sub, hread, hsub⟩ := ContentsOwnTyping.readAt p.path hmm hg₁ hty₁
               have hso : ContentsOwnTyping P.decls sub .owned Ta :=
-                .owned hsub.contentsTy (hsub.holeFree hfo)
+                .owned hsub.contentsTy (hsub.noMovedOut hfo)
               have hmem : ℓ ∈ φ.env := List.mem_of_getElem? hρ
               refine EvalOk.withTrace ?_ tr
               rcases Contents.resolveDyn_ok is πs hso hdyn hlen' with hb | ⟨ρ, hres, hρty⟩
@@ -3484,7 +3484,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
                 obtain ⟨sub', hw', hm'⟩ := ContentsOwnTyping.writeAt ρ hso (OwnSt.get_owned ρ)
                   hρty (ContentsOwnTyping.ofVal htyv)
                 have hso' : ContentsOwnTyping P.decls sub' .owned Ta :=
-                  .owned hm'.contentsTy (hm'.holeFree (OwnSt.fullyOwned_setAt_owned ρ))
+                  .owned hm'.contentsTy (hm'.noMovedOut (OwnSt.fullyOwned_setAt_owned ρ))
                 obtain ⟨cc', hw, hmm'⟩ := ContentsOwnTyping.writeAt p.path hmm hg₁ hty₁ hso'
                 simp only [hdp, hrl, hnl, Bool.false_eq_true, if_false, hdc, hw', hw,
                   hmm'.contentsTy.copyClosed hwf.decls, if_true]
@@ -3496,8 +3496,8 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
           have hpl : cc.declaredPlan P.decls pl.path = none := by
             rw [ContentsOwnTyping.declaredPlan_eq pl.path hmm hg hty]; exact hplan
           obtain ⟨sub, hread, hsub⟩ := ContentsOwnTyping.readAt pl.path hmm hg hty
-          have hnh : sub.isHole = false :=
-            Contents.isHole_eq_false (hsub.ne_hole (OwnSt.isOwned_of_fullyOwned hfo))
+          have hnh : sub.isMovedOut = false :=
+            Contents.isMovedOut_eq_false (hsub.ne_movedOut (OwnSt.isOwned_of_fullyOwned hfo))
           have hvm : sub.mult P.decls = .copy := by
             rw [hsub.mult_eq (OwnSt.isOwned_of_fullyOwned hfo)]; exact hcopy
           have hev : eval M.toFloatSig (fuel + 1) P H φ (.drop pl) = .ok H .unit [] := by
@@ -3512,11 +3512,11 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
           have hpl : cc.declaredPlan P.decls pl.path = none := by
             rw [ContentsOwnTyping.declaredPlan_eq pl.path hmm hg hty]; exact hplan
           obtain ⟨sub, hread, hsub⟩ := ContentsOwnTyping.readAt pl.path hmm hg hty
-          have hnh : sub.isHole = false := Contents.isHole_eq_false (hsub.ne_hole ho)
+          have hnh : sub.isMovedOut = false := Contents.isMovedOut_eq_false (hsub.ne_movedOut ho)
           have hvm : sub.mult P.decls ≠ .copy := by rw [hsub.mult_eq ho]; exact hncopy
           obtain ⟨evs, hdc⟩ := dropCell_ok (D := P.decls) (ℓ := ℓ) hsub.contentsTy
           obtain ⟨cc', hw, hmm'⟩ :=
-            ContentsOwnTyping.writeAt pl.path hmm hg hty (ContentsOwnTyping.hole (T := T))
+            ContentsOwnTyping.writeAt pl.path hmm hg hty (ContentsOwnTyping.movedOut (T := T))
           have hev : eval M.toFloatSig (fuel + 1) P H φ (.drop pl)
               = .ok (H.set ℓ (.full cc')) .unit evs := by
             simp [eval, hρ, hc, hpl, hread, hnh, hvm, hdc, hw]
@@ -3540,16 +3540,16 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
             rw [ContentsOwnTyping.declaredPlan_eq pl.path hmm hgfull hty]; exact hplan
           obtain ⟨cd, hread, hsub⟩ := ContentsOwnTyping.readAt πd hmm hgd htd
           obtain ⟨leaf, rs, hdest, hlty, hlhf⟩ :=
-            destructure_ok hwf.decls ℓ hsub.contentsTy (hsub.holeFree hfo) hleaf hres
+            destructure_ok hwf.decls ℓ hsub.contentsTy (hsub.noMovedOut hfo) hleaf hres
           -- The machine's hole guard on the leaf (`Dynamics.lean`) is the one
           -- the ordinary `.drop` branch makes; here it is dead, because
           -- `fully-owned(Σ, d)` left the whole of `d` hole-free and `split`
           -- carries that to the leaf.
-          have hnh : leaf.isHole = false := by
-            cases leaf <;> simp_all [Contents.isHole, Contents.holeFree]
+          have hnh : leaf.isMovedOut = false := by
+            cases leaf <;> simp_all [Contents.isMovedOut, Contents.noMovedOut]
           obtain ⟨levs, hdc⟩ := dropCell_ok (D := P.decls) (ℓ := ℓ) hlty
           obtain ⟨cc', hw, hmm'⟩ :=
-            ContentsOwnTyping.writeAt πd hmm hgd htd (ContentsOwnTyping.hole (T := Td))
+            ContentsOwnTyping.writeAt πd hmm hgd htd (ContentsOwnTyping.movedOut (T := Td))
           have hev : eval M.toFloatSig (fuel + 1) P H φ (.drop pl)
               = .ok (H.set ℓ (.full cc')) .unit ((dropResidueEvents P.decls ℓ rs ++ [.consume (cd.pathOnly πs)]) ++ levs) := by
             simp [eval, hρ, hc, hpl, hread, hdest, hnh, hdc, hw]

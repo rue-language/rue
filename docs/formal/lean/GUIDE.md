@@ -1561,12 +1561,12 @@ index order, skipping every `⊘`:
 ```
 
 So stdout is `2`, `20`, `1`, `3`, then `main`'s `7`. The pinned trace beside
-`arrayElemMove` in `Examples.lean` is this, event for event, with `.hole` for
+`arrayElemMove` in `Examples.lean` is this, event for event, with `.movedOut` for
 the `⊘`:
 
 ```lean
 [.drop 5 (cA 1 2), .dtor sAffine (cA 1 2), .dbg (v64 20),
- .drop 4 (.array (.struct sAffine) 3 [cA 0 1, .hole, cA 2 3]),
+ .drop 4 (.array (.struct sAffine) 3 [cA 0 1, .movedOut, cA 2 3]),
  .dtor sAffine (cA 0 1), .dtor sAffine (cA 2 3)]
 ```
 

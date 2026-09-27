@@ -656,16 +656,16 @@ theorem pending_program :
       ActivationTyping P.decls [{ ty := .struct 0, mu := false, st := .owned }] { env := [0], scope := [0] } [.full (.struct 0 0 [.int .w64 .signed 5])] ∧ StoreCC P.decls [.full (.struct 0 0 [.int .w64 .signed 5])] ∧
       (∃ c Ω, check P (.int .w64 .signed) [{ ty := .struct 0, mu := false, st := .owned }] e = some (c, Ω) ∧ c.fits (.int .w64 .signed) = true ∧
         Typed P (.int .w64 .signed) [{ ty := .struct 0, mu := false, st := .owned }] e (.int .w64 .signed) Ω) ∧
-      Lead Float.exactOps P 200 [.full (.struct 0 0 [.int .w64 .signed 5])] { env := [0], scope := [0] } [.full .hole] [(.struct 0 0 [.int .w64 .signed 5])] [] e ∧
+      Lead Float.exactOps P 200 [.full (.struct 0 0 [.int .w64 .signed 5])] { env := [0], scope := [0] } [.full .movedOut] [(.struct 0 0 [.int .w64 .signed 5])] [] e ∧
       eval Float.exactOps 201 P [.full (.struct 0 0 [.int .w64 .signed 5])] { env := [0], scope := [0] } e = (eval Float.exactOps 201 P [.full (.struct 0 0 [.int .w64 .signed 5])] { env := [0], scope := [0] } e).withTrace [] ∧
       ¬ Exact P.decls [.full (.struct 0 0 [.int .w64 .signed 5])] [] (eval Float.exactOps 200 P [.full (.struct 0 0 [.int .w64 .signed 5])] { env := [0], scope := [0] } e) ∧
-      ¬ Exact P.decls [.full .hole] (Contents.ownList P.decls (Contents.ofVals [(.struct 0 0 [.int .w64 .signed 5])]))
+      ¬ Exact P.decls [.full .movedOut] (Contents.ownList P.decls (Contents.ofVals [(.struct 0 0 [.int .w64 .signed 5])]))
         (eval Float.exactOps 201 P [.full (.struct 0 0 [.int .w64 .signed 5])] { env := [0], scope := [0] } e) := by
   intro P hP e he
   have hPT : ProgramTyped P := checkProgram_sound (by subst hP; rfl)
-  have hr : eval Float.exactOps 200 P [.full (.struct 0 0 [.int .w64 .signed 5])] { env := [0], scope := [0] } e = .ok [.full .hole, .dead] (.int .w64 .signed 7) [] := by
+  have hr : eval Float.exactOps 200 P [.full (.struct 0 0 [.int .w64 .signed 5])] { env := [0], scope := [0] } e = .ok [.full .movedOut, .dead] (.int .w64 .signed 7) [] := by
     subst he hP; rfl
-  have hr' : eval Float.exactOps 201 P [.full (.struct 0 0 [.int .w64 .signed 5])] { env := [0], scope := [0] } e = .ok [.full .hole, .dead] (.int .w64 .signed 7) [] := by
+  have hr' : eval Float.exactOps 201 P [.full (.struct 0 0 [.int .w64 .signed 5])] { env := [0], scope := [0] } e = .ok [.full .movedOut, .dead] (.int .w64 .signed 7) [] := by
     subst he hP; rfl
   refine ⟨hPT, by subst hP; rfl, by subst he; rfl, by subst hP; exact ⟨.cons rfl ⟨_, rfl, .owned (.struct rfl (.cons (.int (by decide)) .nil)) rfl⟩ (by simp) .nil, rfl⟩,
     by subst hP; exact storeCC_one rfl,

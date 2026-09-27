@@ -110,7 +110,7 @@ exactly `dropEvents`, with no typing hypothesis — the walk refuses only an
 unbound struct index, where `dropEvents` would emit nothing (§6.11). -/
 theorem dropContents_eq {D : Decls} : ∀ {c : Contents} {evs : List Event},
     dropContents D c = .ok evs → evs = dropEvents D c
-  | .hole, _, h | .int _ _ _, _, h | .float _ _, _, h | .bool _, _, h | .unit, _, h => by
+  | .movedOut, _, h | .int _ _ _, _, h | .float _ _, _, h | .bool _, _, h | .unit, _, h => by
       simp [dropContents] at h; subst h; rfl
   | .struct s i cs, evs, h => by
       simp only [dropContents] at h
@@ -148,7 +148,7 @@ mutual
 destructor (`3.9:31`) (helper). -/
 theorem dropEvents_allCopy {D : Decls} (hdt : DtorNotCopy D) :
     ∀ {c : Contents}, c.allCopy D = true → dropEvents D c = []
-  | .hole, _ | .int _ _ _, _ | .float _ _, _ | .bool _, _ | .unit, _ => rfl
+  | .movedOut, _ | .int _ _ _, _ | .float _ _, _ | .bool _, _ | .unit, _ => rfl
   | .struct s i cs, hac => by
       simp only [Contents.allCopy, Bool.and_eq_true, decide_eq_true_eq] at hac
       simp only [dropEvents, dropEventsList_allCopy hdt hac.2, List.append_nil]
@@ -192,7 +192,7 @@ destructor first, then the fields in declaration order, the elements
 ascending, an enum's stored payload, every `⊘` skipped. -/
 theorem dropContents_glue {D : Decls} : ∀ {c : Contents} {evs : List Event},
     dropContents D c = .ok evs → DropGlue D c evs
-  | .hole, _, h => by simp [dropContents] at h; subst h; exact .hole
+  | .movedOut, _, h => by simp [dropContents] at h; subst h; exact .movedOut
   | .int _ _ _, _, h => by simp [dropContents] at h; subst h; exact .int
   | .float _ _, _, h => by simp [dropContents] at h; subst h; exact .float
   | .bool _, _, h => by simp [dropContents] at h; subst h; exact .bool
@@ -234,7 +234,7 @@ mutual
 /-- §6.11's rules determine the events, and they are `dropEvents`'s (helper). -/
 theorem DropGlue.eq_dropEvents {D : Decls} : ∀ {c : Contents} {evs : List Event},
     DropGlue D c evs → evs = dropEvents D c
-  | _, _, .hole | _, _, .int | _, _, .float | _, _, .bool | _, _, .unit => rfl
+  | _, _, .movedOut | _, _, .int | _, _, .float | _, _, .bool | _, _, .unit => rfl
   | _, _, .struct hd hdt hl => by simp [dropEvents, hd, hdt, DropGlueSeq.eq_dropEventsList hl]
   | _, _, .structDtor hd hdt hl => by simp [dropEvents, hd, hdt, DropGlueSeq.eq_dropEventsList hl]
   | _, _, .array hl => by simp only [dropEvents]; exact DropGlueSeq.eq_dropEventsList hl
@@ -915,7 +915,7 @@ theorem dropLocs_append (l₁ l₂ : List Event) : dropLocs (l₁ ++ l₂) = dro
 mutual
 /-- §6.11's walk names no cell: it emits destructor events only (helper). -/
 theorem dropLocs_dropEvents (D : Decls) : ∀ c : Contents, dropLocs (dropEvents D c) = []
-  | .hole | .int _ _ _ | .float _ _ | .bool _ | .unit => rfl
+  | .movedOut | .int _ _ _ | .float _ _ | .bool _ | .unit => rfl
   | .struct s i cs => by
       simp only [dropEvents, dropLocs_append, dropLocs_dropEventsList D cs, List.append_nil]
       split
@@ -1403,7 +1403,7 @@ mutual
 so it says the rules themselves fix the order (helper). -/
 theorem DropGlue.det {D : Decls} : ∀ {c : Contents} {e₁ e₂ : List Event},
     DropGlue D c e₁ → DropGlue D c e₂ → e₁ = e₂
-  | _, _, _, .hole, .hole | _, _, _, .int, .int | _, _, _, .float, .float
+  | _, _, _, .movedOut, .movedOut | _, _, _, .int, .int | _, _, _, .float, .float
   | _, _, _, .bool, .bool | _, _, _, .unit, .unit => rfl
   | _, _, _, .struct hd₁ _ hl₁, .struct hd₂ _ hl₂ => DropGlueSeq.det hl₁ hl₂
   | _, _, _, .structDtor hd₁ _ hl₁, .structDtor hd₂ _ hl₂ => by
