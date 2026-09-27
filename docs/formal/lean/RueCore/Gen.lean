@@ -565,6 +565,41 @@ RUE-2318 mutant accepts it too but computes `min_T` and exits `0`. This one
 program is the only generated catch at this setting; `--gen 200 --seed 7`
 catches nothing.
 
+Reaching `divZero` (RUE-2512): The `(x, 0)` div-by-zero shape
+`boundaryPair`'s `.div | .rem` case already appends (above) reaches an
+*accepted* program too rarely to be useful as generated coverage: measured
+against trunk `3a2432f14` (before this section's own changes), 0 of the 1,200
+generated programs at `--gen 200 --seed 7` and `--gen 1000 --seed 23` end in
+`panic divZero`, against one `remZero` (`gen_7_171`) — partly because `op`
+itself has to land on `div` before its own pair can even fire, and seed 7's
+200 programs never draw it (seed 23's 1,000 draw it 21 times, none the
+`(x, 0)` shape). `pairRate` raises `/`'s own rate to one in six (its own doc
+has the modulus's reasoning); `rem`'s stays untouched. And since the runtime
+prints one message for `divZero` and `remZero` (`crates/rue-runtime/src/error.rs`)
+and `crates/rue-oracle-diff/src/lean_corpus.rs` maps both to one bridge kind, a
+`rem` site landing on `(x, 0)` is as good a `divZero` witness as a `div` site
+is — so `arithBinop` prints `/` under this one shape whichever of `div` or
+`rem` `op` itself is (its own doc has the mechanism), at no extra cost to
+`rem`'s own rate or any other pair. The `0` divisor is, one draw in two, bound
+through a `let` first — `let d = 0; x / d` — the same technique the `mul`
+pair above uses for its `-1`, so the non-constant divisor is exercised too.
+
+With it: `--gen 200 --seed 7` reaches one accepted `divZero`, at no extra
+draw — `gen_7_171`'s existing `(x, 0)` hit (`op` was already `rem`) now prints
+under `/` instead. `--gen 1000 --seed 23` reaches one, `gen_23_351`: trunk
+drew a 2-function, 119-node program the checker rejects (no refusal reached
+on the executed path, `f0` calling a recursive `f1`); this branch's raised
+rate fires a root-level `(x, 0)` pair against `f1`'s whole call, `pruneFns`
+then removes the now-unreferenced `f1`, and the 3-node result — `fn f0() ->
+u8 { let v0: u8 = 0; (255 / v0) }`, the non-constant divisor — is accepted
+and traps `divZero`; this is the only verdict change at either setting.
+Measured against the pre-RUE-2512 draw, 20 of 200 and 357 of 1,000 generated
+cases differ at all, 3 and 23 differ in more than a literal (the same kind of
+pair-subtree and cascading-drift change the mul rate raise above causes, at a
+lower rate since `rem`'s own rate is untouched). `bin/verify.py` agrees with
+the compiler on every case at both settings; the only disagreement, at
+either, is `array_elem_self_assign` itself, unaffected.
+
 ## What it deliberately does not guarantee
 
 Ownership. Moves, drops, assignments, `match` arms and scope exits are chosen
@@ -998,9 +1033,27 @@ mis-handle this one, verified by hand at `i8`/`i16`/`i32` against the RUE-2318
 mutant, so `boundaryPair`'s `min_T`-paired candidates at those widths cost a
 draw without ever reaching the bug. So at signed 64-bit `*` specifically — the
 operator §6.4 traps on overflow, where a wrong shift-based check would wrongly
-fold — the rate is raised to one in four (`/` is not raised: `multiplier_shift`
-only ever lowers a *multiply*, and `min_T / -1` traps correctly under the
-RUE-2318 mutant, checked by hand).
+fold — the rate is raised to one in four (`/` is not raised *for this reason*:
+`multiplier_shift` only ever lowers a *multiply*, and `min_T / -1` traps
+correctly under the RUE-2318 mutant, checked by hand).
+
+`/`'s own rate is raised for an unrelated reason (RUE-2512): one in six, at
+every width and signedness, so an accepted program reaches `panic divZero` at
+all. `boundaryPair`'s `.div | .rem` case (above) appends the div-by-zero shape
+`(x, 0)` to its own candidates already, at the ordinary one-in-sixteen rate —
+too rarely, measured against trunk, to land in an *accepted* program at
+either pinned setting: 0 of the 1,200 generated programs at `--gen 200 --seed
+7` and `--gen 1000 --seed 23` end in `panic divZero`, against one `remZero`
+(`gen_7_171`). Part of the gap is that `op` itself has to land on `div` before
+its own pair can fire at all, and `--gen 200 --seed 7`'s 200 programs never
+draw it (`--gen 1000 --seed 23`'s 1,000 draw it 21 times, none the `(x, 0)`
+shape). `rem`'s own rate is untouched — raising it too would only disturb
+`gen_7_171`'s existing hit without widening the seed-7 opportunity `op` itself
+never offers `div` — and `arithBinop` (below) prints `/` whenever the fired
+pair is `(x, 0)`, whichever of `div` or `rem` `op` itself is, so that existing
+`rem` hit becomes a `divZero` witness for free, at no extra draw. One in six
+is not a small power of two, for the same low-order-bit reason `(25, 100)`
+is not `(1, 4)` above.
 
 One in four is `(25, 100)`, not `(1, 4)`: at seed 23's specific stream
 positions for this check, `chance 1 4` (and `chance 1 2`) draws the *same*
@@ -1027,6 +1080,7 @@ that on its own). -/
 def pairRate (w : IntWidth) (sg : Sign) (op : BinOp) : Nat × Nat :=
   match w, sg, op with
   | .w64, .signed, .mul => (25, 100)
+  | _, _, .div => (1, 6)
   | _, _, _ => (1, 16)
 
 /-- (helper) An integer binop `op` over two operands each drawn by `self`
@@ -1055,7 +1109,18 @@ the second operand is bound through a `let` first — `let b = -1; min_T * b`
 `multiplier_shift` actually exists for (a literal multiplier against an
 arbitrary runtime value) rather than only literal-times-literal. The `let`
 only ever wraps this one pair, at a type both sides already have, so nothing
-else about the surrounding program's shape changes. -/
+else about the surrounding program's shape changes.
+
+At `(x, 0)` — the div-by-zero shape `boundaryPair`'s `.div | .rem` case
+appends (RUE-2512) — the same `let`-or-not choice applies to the `0` divisor,
+one draw in two, so the non-constant divisor (`let d = 0; x / d`) is exercised
+too, not only the literal `x / 0`. And whichever of `div` or `rem` `op` itself
+is, this one shape always prints under `/`: the runtime prints one message
+for `divZero` and `remZero` (`crates/rue-runtime/src/error.rs`) and
+`crates/rue-oracle-diff/src/lean_corpus.rs` maps both to one bridge kind, so a
+`rem` site landing on `(x, 0)` is as good a `divZero` witness as a `div` site
+is, and forcing it costs nothing observable. Every other pair, at every op,
+still prints under `op` exactly as before. -/
 def arithBinop (w : IntWidth) (sg : Sign) (op : BinOp) (self : G Expr) : G Expr := do
   let e1 ← self
   let e2 ← self
@@ -1064,15 +1129,20 @@ def arithBinop (w : IntWidth) (sg : Sign) (op : BinOp) (self : G Expr) : G Expr 
     if ← chance num den then boundaryPair w sg op else return none)
   match pairOverride with
   | some (a, b) =>
+      -- The `(x, 0)` div-by-zero shape always prints under `/` (RUE-2512,
+      -- above the docstring); every other pair still prints under `op`.
+      let op' := if b = 0 ∧ (op = .div ∨ op = .rem) then BinOp.div else op
       let asLet ←
         match op with
         | .mul =>
             if a = intMin w sg ∧ b = -1 then boundary (chance 50 100) else pure false
+        | .div | .rem =>
+            if b = 0 then boundary (chance 50 100) else pure false
         | _ => pure false
       if asLet then
-        return letIn false (intLit w sg b) (binop op (intLit w sg a) (use (.var 0)))
+        return letIn false (intLit w sg b) (binop op' (intLit w sg a) (use (.var 0)))
       else
-        return binop op (intLit w sg a) (intLit w sg b)
+        return binop op' (intLit w sg a) (intLit w sg b)
   | none => return binop op e1 e2
 
 /-- (helper) A float width: `f64` more often than `f32`, the way `3.12:8`
