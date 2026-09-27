@@ -303,7 +303,7 @@ theorem typed :
       eval Float.exactOps 200 P [] Activation.empty e = .refused .useAfterMove ∧
       eval Float.exactOps 201 P [] Activation.empty e = .refused .useAfterMove ∧
       eval Float.exactOps 201 P [] Activation.empty e = (EvalRes.refused .useAfterMove).withTrace [] ∧
-      CTy.never.fits (.int .w64 .signed) = true ∧
+      TyOrNever.never.fits (.int .w64 .signed) = true ∧
       ∀ (T : Ty) (Ω : Out), ¬ EvalOk P.decls T (.int .w64 .signed) Ω.norm Ω.brk Activation.empty []
         (eval Float.exactOps 200 P [] Activation.empty e) := by
   intro B hB P hP e he

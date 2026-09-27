@@ -238,7 +238,7 @@ it has two rows.
 | statics-only | Of a premise: it constrains typing only and has no counterpart in the dynamics | none | — | ours, pending audit | `Statics` |
 | deviation | A place where the mechanization states a rule differently from the calculus, with the reason | none | — | ours, pending audit | `Statics` |
 | joint (acyclicity) | Of the no-cycle condition: it spans struct fields, enum payloads and array elements together | [spec 3.0:5][s3] | `WfNames` | Rue-specific, grounded | 03 intro; lean/README “What is mechanized”; `Syntax` |
-| by-value "names" relation | Between declarations: `S` names `T` when a field of `S`, a payload component of `S`, or the element type of such a field or component has type `T`; well-founded on every admitted program, so `class` is defined by recursion on it | [spec 3.0:5][s3] | `Decls.Names`, `WfNames` | Rue-specific, grounded | 01 §3 |
+| by-value "names" relation | Between declarations: `S` names `T` when a field of `S`, a payload component of `S`, or the element type of such a field or component has type `T`; well-founded on every admitted program, so `class` is defined by recursion on it | [spec 3.0:5][s3] | `Decls.ByValueEdge`, `WfNames` | Rue-specific, grounded | 01 §3 |
 | topological sort; grounded (declaration) | The checker's acyclicity test: repeatedly remove declarations whose by-value components are all already removed | none (Kahn 1962's "Topological sorting of large networks" is the accepted source, but ACM DL blocks it; not cited unseen) | `Decls.topoSort`, `Ty.grounded` | ours, pending audit | 03 intro; README “Contents”; lean/README “What is mechanized”; MUTATION “What the proofs kill, and …”; `Checker.Defs` |
 
 ### Dynamics
@@ -688,7 +688,7 @@ documents rely on.
 | `TyName.ty` | `Statics` | The type that names a declaration | helper | — |
 | `Ty.tyNames` | `Statics` | The declarations a type names by value, through any depth of arrays | helper | 03 “Type safety”; lean/README “What is mechanized”; `Statics` |
 | `Decls.byValue` | `Statics` | The types a declaration contains by value: a struct's fields, an enum's payload components (`3.0:5`) | Rue-specific, grounded (spec 3.0:5) | — |
-| `Decls.Names` | `Statics` | One step of the contains-by-value relation between declarations (`3.0:5`) | ours, pending audit | 03 “Type safety”; `Statics` |
+| `Decls.ByValueEdge` | `Statics` | One step of the contains-by-value relation between declarations (`3.0:5`) | ours, pending audit | 03 “Type safety”; `Statics` |
 | `WfNames` | `Statics` | The contains-by-value relation is well-founded: no declaration contains itself (`3.0:5`, E0483) | standard (FIELD §8: well-founded recursion, Reference §7.6) | 03 intro; lean/README “What is mechanized”; `Statics` |
 | `WfDecls` | `Statics` | The declarations are well formed: no containment cycle, and every struct and enum class is correct | standard (FIELD §9: well-formed, PFPL §1.2) | 03 “Type safety”; MUTATION “The mutants”; `Checker.Defs` |
 | `OwnSt` | `Statics` | A variable's ownership state, as a tree over its paths: owned, moved out, or per-field states after a partial move (§5) | Rue-specific, grounded (spec 3.8:79) | lean/README “The trusted-base lint”; GUIDE §3 |
@@ -848,11 +848,11 @@ documents rely on.
 | `demoI32` | `Step` | Demo `i32` literal | helper | — |
 | `demoSc` | `Step` | The contents `S{}` leaves in a cell | helper | — |
 | `demoCountingLoop` | `Step` | Demo counting loop that builds and drops an `S` each turn | helper | — |
-| `CTy` | `Checker.Defs` | The type the checker concludes: a type, or `never` for a form that always diverges (§5.7) | ours, pending audit | `Checker.Defs` |
-| `CTy.fits` | `Checker.Defs` | Whether a checker type admits a type (`never` admits all) | helper | — |
-| `CTy.fitsC` | `Checker.Defs` | Whether one checker type admits every type another admits | helper | — |
-| `CTy.meet` | `Checker.Defs` | The common type of two branch arms | helper | `Checker.Defs` |
-| `CTy.pick` | `Checker.Defs` | A type a checker type admits | helper | — |
+| `TyOrNever` | `Checker.Defs` | The type the checker concludes: a type, or `never` for a form that always diverges (§5.7) | ours, pending audit | `Checker.Defs` |
+| `TyOrNever.fits` | `Checker.Defs` | Whether a checker type admits a type (`never` admits all) | helper | — |
+| `TyOrNever.fitsC` | `Checker.Defs` | Whether one checker type admits every type another admits | helper | — |
+| `TyOrNever.meet` | `Checker.Defs` | The common type of two branch arms | helper | `Checker.Defs` |
+| `TyOrNever.pick` | `Checker.Defs` | A type a checker type admits | helper | — |
 | `Expr.nodes` | `Checker.Defs` | The size of an expression, the bound on the loop-head iteration | helper | `Checker.Defs` |
 | `Expr.nodesList` | `Checker.Defs` | `Expr.nodes` over a list | helper | — |
 | `headNext` | `Checker.Defs` | One round of the loop-head iteration: join the entry state with the state the body reaches | helper | — |

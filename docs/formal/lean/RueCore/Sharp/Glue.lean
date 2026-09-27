@@ -247,7 +247,7 @@ theorem typed.soundness_2 :
 
 /-- `Sharp.typed` refutes `check_sound` without hypothesis 1 (helper). -/
 theorem typed.check_sound_1 :
-    ¬∀ {P : Program} {R : Ty} (e : RueCore.Expr) {Γ : Ctx} {c : CTy} {Ω : Out} (T : Ty),
+    ¬∀ {P : Program} {R : Ty} (e : RueCore.Expr) {Γ : Ctx} {c : TyOrNever} {Ω : Out} (T : Ty),
         c.fits T = true → Typed P R Γ e T Ω := by
   intro h
   obtain ⟨hPT, hwf, hps, heps, hfm, hcc, -, hnt, hl, h200, -, h201, hfit, hne⟩ :=
@@ -569,7 +569,7 @@ theorem fuel_panic.run_complete_4 :
 
 /-- `Sharp.not_fits` refutes `check_sound` without hypothesis 2 (helper). -/
 theorem not_fits.check_sound_2 :
-    ¬∀ {P : Program} {R : Ty} (e : RueCore.Expr) {Γ : Ctx} {c : CTy} {Ω : Out},
+    ¬∀ {P : Program} {R : Ty} (e : RueCore.Expr) {Γ : Ctx} {c : TyOrNever} {Ω : Out},
         RueCore.check P R Γ e = some (c, Ω) → ∀ (T : Ty), Typed P R Γ e T Ω := by
   intro h
   obtain ⟨-, c, Ω, hc, -, hn⟩ := Spine.Sharp.not_fits _ rfl _ rfl

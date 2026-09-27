@@ -143,7 +143,7 @@ per-layer order does not exclude `struct S { x0: E } / enum E { K(S) }` — a
 shape both equations solve at more than one assignment
 (`Examples.lean`'s cycle witnesses; the compiler reports E0483).
 
-`Decls.Names` is `3.0:5`'s "contains by value" relation, one step, and
+`Decls.ByValueEdge` is `3.0:5`'s "contains by value" relation, one step, and
 `WfNames` is the rule itself: the relation is **well-founded**, so each
 declaration's class is the unique solution of its equation (`class_unique`).
 The calculus states the equations but not this side condition; §3 gains the

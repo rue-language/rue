@@ -163,7 +163,7 @@ their conclusions holds of it: the typing hypothesis `Typed` is needed. It is
 also `check_sound`'s first hypothesis dropped: `check` does not accept it, and
 no type fits a derivation. `check_sound`'s hypothesis 2 (`c.fits T = true`) has
 no `c` to hold of, since `check` answers `none`: the statement gives
-`CTy.never`, which fits every type, and no `Ω` at all; `¬ Typed` is stated
+`TyOrNever.never`, which fits every type, and no `Ω` at all; `¬ Typed` is stated
 for every type and outcome, so for any `c`, `Ω` a spine instance picks. And
 `rest_exactly_once`'s hypothesis 8 is `eval … = r.withTrace []` with `r` the
 refusal. The pairing is kernel-checked (`Sharp/Glue.lean`, RUE-2495); `¬ Typed`
@@ -189,7 +189,7 @@ def typed_stmt : Prop :=
       eval Float.exactOps 200 P [] Activation.empty e = .refused .useAfterMove ∧
       eval Float.exactOps 201 P [] Activation.empty e = .refused .useAfterMove ∧
       eval Float.exactOps 201 P [] Activation.empty e = (EvalRes.refused .useAfterMove).withTrace [] ∧
-      CTy.never.fits (.int .w64 .signed) = true ∧
+      TyOrNever.never.fits (.int .w64 .signed) = true ∧
       ∀ (T : Ty) (Ω : Out), ¬ EvalOk P.decls T (.int .w64 .signed) Ω.norm Ω.brk Activation.empty []
         (eval Float.exactOps 200 P [] Activation.empty e)
 

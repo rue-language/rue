@@ -147,14 +147,14 @@ SYNTAX_FORMS: Dict[Tuple[str, str], Tuple[str, List[str], str]] = {
     ("T", "unit"): ("yes", ["Ty.unit"], ""),
     ("T", "never"): (
         "stand-in",
-        ["Typed.ret", "Typed.panic", "Typed.brk", "Typed.loopDiv", "CTy.never"],
+        ["Typed.ret", "Typed.panic", "Typed.brk", "Typed.loopDiv", "TyOrNever.never"],
         "`return`, `@panic`, `break` and a `break`-less `loop` are in the fragment "
         "(§5.7, §5.8) but `never` is not a type of the judgment: every rule §5.7 "
         "types at `never` — `ret`, `retBot`, `panic`, `brk`, `loopDiv`, `seqBot`, "
         "`letBot`, `iteBot`, `matchBot` — folds (Sub-Never) in by concluding at any "
         "type, with §5.3's `⊥` as its outgoing result, which is sound because "
         "`never` has no values (`3.4:1`) and needs no `HasTy` case. The checker's "
-        "`CTy.never` is the type's algorithmic image",
+        "`TyOrNever.never` is the type's algorithmic image",
     ),
     ("T", "S"): (
         "partial",

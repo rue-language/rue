@@ -20,7 +20,7 @@ namespace RueCore.Spec
 a derivation of `Typed`, at every type the result fits: algorithmic soundness
 in Walker's sense (`FIELD.md`, section 4), and not completeness, which does not hold. -/
 def check_sound_stmt : Prop :=
-  ∀ {P : Program} {R : Ty} (e : Expr) {Γ : Ctx} {c : CTy} {Ω : Out},
+  ∀ {P : Program} {R : Ty} (e : Expr) {Γ : Ctx} {c : TyOrNever} {Ω : Out},
     check P R Γ e = some (c, Ω) → ∀ T, c.fits T = true → Typed P R Γ e T Ω
 
 /-- **An accepted program is well-typed** (§3, (Fn) §5.8): `checkProgram`

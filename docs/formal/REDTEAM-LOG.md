@@ -43,7 +43,7 @@ never `returned` or `broke`), the three linear theorems `no_linear_leak`,
 `no_linear_overwrite` and `no_linear_discard`, and the kernel-checked examples
 that each monitor fires. The closure extractor also missed five definitions
 reached only through dot notation (`Decls.classOf`, `Decls.enumClassOf`,
-`Decls.Names`, `Activation.unwindScope`, `FloatLit.exact`). Four of the statement
+`Decls.ByValueEdge`, `Activation.unwindScope`, `FloatLit.exact`). Four of the statement
 agent's findings are artefacts of that and are dropped below. REDTEAM.md now
 requires the packet to carry every theorem §7 and the metatheory cite.
 
@@ -125,7 +125,7 @@ Read the same way by the red agent and by us, with no gap either found:
 - `eval_sound`'s second and third conjuncts: every `ok`/`panic` result is
   `Step`-reachable with the same store, value and trace.
 - `check_sound`, read as expression-level soundness, with (Sub-Never) folded
-  into `CTy.fits` correctly.
+  into `TyOrNever.fits` correctly.
 - `no_double_free` on runs that finish or trap: identities are never reused
   and holes carry no identity.
 - `drop_order`'s `Blocks` conjuncts: within a drop, the destructor first,

@@ -286,7 +286,7 @@ def ctxLine (Γ : Ctx) : String :=
   if Γ.isEmpty then "(empty)" else "[" ++ String.intercalate ", " (ctxEntryLines Γ) ++ "]"
 
 /-- (helper) A checked type: an ordinary type's name, or `never` (§5.7). -/
-def cTyName : CTy → String
+def tyOrNeverName : TyOrNever → String
   | .never => "never"
   | .ty T => Print.tyName T
 
@@ -824,7 +824,7 @@ def neverOperand : String :=
 
 /-- Two arm types that do not meet: one type each, and different (§5.5's
 single `T`, with (Sub-Never) §5.7 letting a diverging arm meet anything). -/
-def armTypeMismatchC : CTy → CTy → String
+def armTypeMismatchC : TyOrNever → TyOrNever → String
   | .ty T₁, .ty T₂ => armTypeMismatch T₁ T₂
   | _, _ => subDerivation
 
@@ -894,7 +894,7 @@ def exitJoinConflict (D : Decls) : List Ctx → Option String
 /-- What a rule concluded at one node: the §5 judgment's right-hand side
 `⇒ T ⊣ Σ'`, or the premise that failed. -/
 inductive Verdict where
-  | accept (ty : CTy) (out : Out)
+  | accept (ty : TyOrNever) (out : Out)
   | reject (premise : String)
 
 /-- A derivation tree for the §5 judgment `Γ;Σ ⊢ e ⇒ T ⊣ Ω`: one node per
@@ -907,7 +907,7 @@ inductive Deriv where
 /-- The derivation's conclusion, in `check`'s shape: the type and outgoing
 `Σ` of an accepted node, nothing for a rejected one. `explain_result` is the
 proof that this projection is exactly `check` (§5 as an algorithm). -/
-def Deriv.result : Deriv → Option (CTy × Out)
+def Deriv.result : Deriv → Option (TyOrNever × Out)
   | .node _ _ _ (.accept c Ω) _ => some (c, Ω)
   | .node _ _ _ (.reject _) _ => none
 
@@ -936,7 +936,7 @@ def dynAtFailure (D : Decls) : Ty → List (List Nat) → String
   | _, [] => Premise.pathNotField
 
 /-- (helper) An accepting node. -/
-def accepted (rule : String) (Γ : Ctx) (e : Expr) (c : CTy) (Ω : Out)
+def accepted (rule : String) (Γ : Ctx) (e : Expr) (c : TyOrNever) (Ω : Out)
     (kids : List Deriv) : Deriv :=
   .node rule Γ e (.accept c Ω) kids
 
@@ -1523,7 +1523,7 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
         let d₂ := explain P R Γ₀ e₂
         (match d₁.result, d₂.result with
          | some (c₁, Ω₁), some (c₂, Ω₂) =>
-             (match CTy.meet c₁ c₂ with
+             (match TyOrNever.meet c₁ c₂ with
               | some c' =>
                 (match Ctx.joinOpt P.decls Ω₁.norm Ω₂.norm with
                  | some o =>
@@ -1734,7 +1734,7 @@ def explainArms (P : Program) (R : Ty) (Γ₀ : Ctx) : List Expr → List (List 
 /-- The premise a rejected arm list failed: the first arm whose body does not
 check, whose type is not the one the first typed arm fixed, or which, when it
 continues, leaves a payload local unconsumed at the arm's end (§5.6). -/
-def armsPremise (P : Program) (R : Ty) (Γ₀ : Ctx) (c : CTy) :
+def armsPremise (P : Program) (R : Ty) (Γ₀ : Ctx) (c : TyOrNever) :
     List Expr → List (List Ty) → String
   | [], [] => Premise.subDerivation
   | e :: es, Ts :: Tss =>
@@ -2023,7 +2023,7 @@ theorem explain_result {P : Program} {R : Ty} : ∀ (e : Expr) (Γ : Ctx),
                     obtain ⟨c₁, Ω₁⟩ := q₁
                     obtain ⟨c₂, Ω₂⟩ := q₂
                     simp only []
-                    cases hm : CTy.meet c₁ c₂ with
+                    cases hm : TyOrNever.meet c₁ c₂ with
                     | none => rfl
                     | some c' =>
                         dsimp only
