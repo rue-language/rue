@@ -1189,7 +1189,7 @@ theorem Long.pre1 {C C₂ : List Kont → List Event → Config} {n : Nat}
 
 /-- **§6.2's (Search), counted**: the twin of `Sim.bind` for exhausted
 fuel. If `eval` spent its fuel on the operand, the operand's run under the
-pushed frame `F` is the long one, one enter step in; if the operand reached a
+pushed frame `F` is the long one, one evaluation-state step in; if the operand reached a
 value (`Sim`'s `ok` clause gives the run to it) and the context spent the fuel,
 the context's run is (helper). -/
 theorem Long.bind {φ₁ : Activation} {C C₁ : List Kont → List Event → Config} {F : Kont} {fuel : Nat}
@@ -1471,8 +1471,8 @@ theorem long_ite (IH : LongIH M P fuel) (c e₁ e₂ : Expr) :
         (fun K tr => ⟨_, _, .iteFalse, .refl _⟩) (IH H₀ φ e₂ hk))
   · simp at hk
 
-/-- An argument-list form whose list spent the fuel, from its enter step
-(helper). -/
+/-- An argument-list form whose list spent the fuel, from its evaluation-state
+step (helper). -/
 theorem long_argsForm {t : ArgsFrame} {es : List Expr} {e : Expr} (IH : LongIH M P fuel)
     (hent : ∀ K tr, Step M P (evalConf H φ e K tr) (argsConf H φ t [] es K tr))
     (h : evalArgs (fun H e => eval M fuel P H φ e) H es = .abort .outOfFuel) :

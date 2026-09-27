@@ -82,7 +82,7 @@ it has two rows.
 | mechanization; mechanized; mechanized as written; not yet mechanized | The Lean transcription of the calculus and its theorems in `lean/`; "not yet mechanized" marks a rule or theorem with no Lean counterpart | none fetched | — | ours, pending audit | 01 §3; 03 intro; README intro; REDTEAM “Roles”; lean/README intro; GUIDE intro; BRIDGE-SENSITIVITY “Six divergence-rule seeds”; `Float` |
 | fragment | The part of the core that the mechanization covers today | none | — | ours, pending audit | 03 intro; README intro; WHAT-IT-MEANS “What is modelled”; lean/README intro; GUIDE §1; BRIDGE-SENSITIVITY “Method”; `Syntax` |
 | trusted code; trusted-code obligations; trusted-code bug | The standard-library code behind the buffer-backed abstract data types, which the theorems trust; the conditions (§6.13.5) it must meet; and a violation of them | [FIELD §8][F8]: trusted code base (the Lean Reference; CakeML §1) | — | standard | 01 §2; README “Contents” |
-| abstract data type; abstract data types | A buffer-backed container type of the standard library (`ArrayBuf(T)`, `StrBuf`), known to the core only by its methods' specification equations | [FIELD §10][F10]: abstract data type (Liskov & Zilles 1974; MIT 6.005 Reading 13) | — | standard | 01 §2; README “Contents” |
+| abstract data type; abstract data types; buffer-backed abstract data type | A type known only through its operations, its representation hidden; here, the buffer-backed ones of the standard library (`ArrayBuf(T)`, `StrBuf`), which the core knows only by their methods' specification equations | [FIELD §10][F10]: abstract data type (Liskov & Zilles 1974; MIT 6.005 Reading 13) | — | standard | 01 §2; README “Contents” |
 | (O1) Unique handle; (O2) Representation invariant; (O3) Footprint; (O4) Refinement | The four trusted-code obligations: no operation duplicates or fabricates a live buffer identity; every method re-establishes the representation invariant; a method touches only its own allocations and arguments; a method behaves as its specification equation says | none as a set; (O2) is the representation invariant of [FIELD §10][F10] (MIT 6.005 Reading 13) | — | ours, pending audit | 01 §6.13.5 |
 | specification equation; specification equations | A method's or intrinsic's meaning given as an equation over the machine's store, as a function would define it | [FIELD §10][F10]: the axioms of an algebraic specification (Guttag & Horning, via Gaudel & Le Gall §2) are the nearest accepted term; ours define each operation over the store rather than relate operations to one another | — | ours, pending audit | 01 §2; README “Contents”; `Step` |
 | representation invariant | A condition every value of an abstract type's representation satisfies between operations | none fetched (FIELD.md has no source for it) | — | ours, pending audit | 01 §6.13.3 |
@@ -1006,7 +1006,7 @@ Emphasized words:
   by; cases (accepted cases); checked; computation; contradiction; create;
   declares; defined; directly; does; early; empty; ends; equal;
   equation; every; exactly; except; false; the fields after it; finite; first;
-  for every; form; forward references; given; grounds; have; here; in; in
+  for every; form; forward references; given; grounds; handing; have; here; in; in
   declaration order; in effect; in range; innermost; inside; into; is; it;
   its; later; length; live; locally; mentioning; model's; name; no; no
   destructor; no live linear sub-value; non-empty; not; nothing; on demand;

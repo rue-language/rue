@@ -1440,8 +1440,8 @@ which remains outside this rule's scope.
 - **The reachable exit states.** Each reachable targeting `break` contributes
   the ownership state in force where it fires *on any iteration* — read off the
   body typed at `Σ_h`, not at the entry state — restricted to paths rooted
-  outside the loop — read (Break) as *completing abruptly with* `unit` at that state to its
-  innermost enclosing loop while its own context sees `never ⊣ ⊥;{⟨break, Σ⟩}`.
+  outside the loop — read (Break) as *handing* `unit` to its innermost enclosing loop at that
+  state while its own context sees `never ⊣ ⊥;{⟨break, Σ⟩}`.
   The loop's output context is §5.5's `join` over those states (3.8:80): a
   linear-carrying path must agree across every reachable exit (`3.8:50` —
   consumed on only some exits is ill-formed), and an affine, non-Copy move-type
@@ -3131,7 +3131,7 @@ Two §6.1 value forms name allocations:
   pointer field inside an abstract data type's header struct (the `ptr mut T` of
   `std/arraybuf.rue`, the `ptr mut u8` of `std/strbuf.rue`'s header),
   and only the specification equations below touch the allocation it names. Every
-  abstract data type declares a destructor, so its qualifier is `Affine` (§3,
+  buffer-backed abstract data type declares a destructor, so its qualifier is `Affine` (§3,
   never `@copy`) and core code cannot duplicate a header — and with it a
   handle — by (Use-Copy); handle uniqueness inside the *trusted code* is obligation
   (O1) of §6.13.5.

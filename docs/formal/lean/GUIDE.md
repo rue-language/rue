@@ -353,7 +353,7 @@ Two things differ, and neither is a disagreement:
 - Five of the twelve steps are (Search): entering a subexpression, or
   returning a value into its context. `eval` does these by recursion, so
   they have no row of their own. Each unit of fuel `eval` spends is paid for
-  by at least one step, either an enter step or the rule step that puts the
+  by at least one step, either an evaluation-state step or the rule step that puts the
   next subexpression in focus, which is why `eval_steps_of_outOfFuel` can
   count fuel in steps.
 - `explain/` lists a node after its premises, so (D-Let)'s row [4] follows
