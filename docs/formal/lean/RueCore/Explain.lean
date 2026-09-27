@@ -310,7 +310,7 @@ def fnHeader (i : Nat) (fd : FnDef) : String :=
 
 /-- (helper) One drop event (§6.7/§6.8/§6.9/§6.11): where a drop starts, and
 each user destructor it runs — the one event a printed Rue program can
-observe (`Print.lean`) — and where a matched or destructured shell is
+observe (`Print.lean`) — and where a matched or destructured dead remainder is
 consumed (RUE-2427). -/
 def eventLine : Event → String
   | .drop ℓ c => "drop " ++ locName ℓ ++ " = " ++ contentsLine c

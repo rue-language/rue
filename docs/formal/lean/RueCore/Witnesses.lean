@@ -223,7 +223,7 @@ example : orderView (prog tI64 arrayElemMove).decls (corpusTrace (prog tI64 arra
     = ([1, 0, 2], [5, 4], [1, 3, 0, 2]) := by rfl
 
 open Examples in
-/-- `enum_match_affine`: the shell (`#1`) consumed, the payload (`#0`)
+/-- `enum_match_affine`: the dead remainder (`#1`) consumed, the payload (`#0`)
 dropped once by the arm's binding, `6.3:20`. -/
 example : orderView (enumProg tI64 enumMatchAffine).decls
       (corpusTrace (enumProg tI64 enumMatchAffine)) = ([0], [3], [1, 0]) := by rfl
@@ -464,7 +464,7 @@ theorem demo_returnInLet_runs (M : FloatSig) :
 /-- **(D-Return) from a `match` arm** (§6.6, §6.9):
 `let x = S{}; match A(S{}) { A(p) => return 4, B => 0 }` destroys the arm's
 payload and then `x`, newest first, and reaches `✓4`. The match consumes the
-`A`'s shell first (`consume`, RUE-2427). -/
+`A`'s dead remainder first (`consume`, RUE-2427). -/
 theorem demo_returnInMatch_runs (M : FloatSig) :
     ∃ H, Steps M (demoProgram (.letIn false demoS
         (.«match» (.mkEnum 0 0 [demoS]) [.ret (demoI32 4), demoI32 0]))) Config.init

@@ -30,7 +30,7 @@ non-`Copy` nodes, `⊘` skipped. Two projections of the trace read it:
 * `freedIds`: the owned identities each marker ends — a `drop`/`dropTemp`
   marker the whole dropped tree, which is where §6.11's walk goes (a
   declared-linear destructure's residue included, which drops each retained
-  subtree under a `drop` marker of its own), and a `consume` event the shell a
+  subtree under a `drop` marker of its own), and a `consume` event the dead remainder a
   `match` or a destructure consumes (RUE-2427);
 * `dtorIds`: the identity of each value a user destructor ran on — §7's own
   wording, "every stored value's destructor runs at most once".
@@ -955,8 +955,8 @@ theorem Contents.ownList_movedOuts {α : Type} (D : Decls) :
   | _ :: cs => by simp [Contents.ownList, Contents.own, Contents.ownList_movedOuts D cs]
 
 mutual
-/-- **`split` and the consumed shell, counted exactly** (§6.3, RUE-2427): the
-leaf, the residue and the path's shell (`Contents.pathOnly`) together own
+/-- **`split` and the consumed dead remainder, counted exactly** (§6.3, RUE-2427): the
+leaf, the residue and the path's dead remainder (`Contents.pathOnly`) together own
 exactly what the consumed place owned — every owned node of it is in exactly
 one of the three (helper). -/
 theorem Contents.pathOnly_own {D : Decls} (a : Nat) : ∀ (π : List Nat) {c leaf : Contents}
@@ -1028,7 +1028,7 @@ theorem Contents.pathOnlyFields_own {D : Decls} (a : Nat) : ∀ (cs : List Conte
 end
 
 /-- **§6.3's `destructure`, counted**: the leaf it hands on, the residue drops
-it runs and the shell it consumes together account for at most what the
+it runs and the dead remainder it consumes together account for at most what the
 consumed place owned (helper). -/
 theorem Contents.destructure_measure {D : Decls} {F : Event → List Nat} (hF : TraceMeasure D F)
     {ℓ : Nat} {cd leaf : Contents} {πs : List Nat} {evs : List Event}
@@ -1350,8 +1350,8 @@ theorem Contents.enum_payload {D : Decls} {e k i : Nat} {cs : List Contents}
     refine ⟨by simp [Contents.own, hc, List.count_cons], h⟩
 
 /-- **(D-Match)'s consumption, counted** (RUE-2427): the payload the arm's cells
-receive and the shell `matchConsume` ends together account for at most the
-scrutinee — the payload moves, the shell ends, nothing is duplicated
+receive and the dead remainder `matchConsume` ends together account for at most the
+scrutinee — the payload moves, the dead remainder ends, nothing is duplicated
 (helper). -/
 theorem matchConsume_measure {D : Decls} {F : Event → List Nat} (hF : TraceMeasure D F)
     {e k i : Nat} {vs : List Val} (h : (Contents.enum e k i (Contents.ofVals vs)).copyContained D = true)
@@ -2075,7 +2075,7 @@ theorem run_trace_once (M : FloatSig) {P : Program} {F : Event → List Nat}
 /-- **No identity appears twice among the `drop`/`dropTemp` free events, on
 any terminating run** (§6.11): each owned identity occurs at most once among the
 trees those markers free (`freedIds`), a declared-linear destructure's
-residue and a consumed shell included (RUE-2427). Holds unconditionally, for
+residue and a consumed dead remainder included (RUE-2427). Holds unconditionally, for
 every program, no hypothesis at all: the machine refuses the one shape — an
 owned value hidden under a `Copy` node — that would let a copy duplicate it
 (`Contents.copyContained`). -/
@@ -2106,7 +2106,7 @@ position is never dropped through the old owner; and a `match` binding takes
 the payload whole into the arm's cells, so the scrutinee's owner is gone.
 The declared-linear destructure (§6.3) consumes its place the same way: the
 leaf is handed on, the residue is dropped once, each retained subtree under
-its own `drop` marker, the path's shell is consumed (`consume`), and the
+its own `drop` marker, the path's dead remainder is consumed (`consume`), and the
 place becomes `⊘`. -/
 theorem no_double_free (M : FloatLaws) {P : Program} (h : ProgramTyped P) (fuel : Nat) :
     (∀ w, run M.toFloatSig P fuel ≠ .refused w) ∧

@@ -61,7 +61,7 @@ One array of case objects. Fields:
   too. A drop with no destructor anywhere in it is unobservable in Rue and
   contributes no line; the interpreter's `drop ℓ v` and `dropTemp v` events
   mark where a drop *starts*, and its `consume c` events where a matched or
-  destructured shell ends, and are likewise not lines. Or
+  destructured dead remainder ends, and are likewise not lines. Or
   `{"kind": "panic", "panic": <name>, "stdout": [<line>...]}` for a §6.12
   trap, where the lines are the ones the run produced **before** the trap:
   §6.12's outcome keeps the observable output a trapping run emitted, and the
@@ -1114,7 +1114,7 @@ def dtorLine (marks : Print.DtorMarks) : Contents → Option String
 /-- One stdout line per *observable* event, in trace order. Two events are
 observable in Rue: a user destructor (`Print.lean`) and `@dbg` (§6.12's
 observable output). `drop ℓ v` and `dropTemp v` mark where a drop starts
-(§6.11, §6.7), `consume c` marks where a matched or destructured shell ends
+(§6.11, §6.7), `consume c` marks where a matched or destructured dead remainder ends
 (RUE-2427), and a drop with no destructor inside it prints nothing. Because
 both channels are read off the one trace, a `@dbg` line between two drops
 comes out between them. The projection is total and never panics — an event

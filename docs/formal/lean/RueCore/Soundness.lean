@@ -1246,7 +1246,7 @@ theorem dropResidue_events {D : Decls} (hwf : WfDecls D) (ℓ : Nat) : ∀ {rs :
 
 /-- **§6.3's `destructure` is total where §5.1 admits the redex**, and its
 trace is the residue's in closed form followed by the consumption of the
-path's shell. This is the statement the two declared-linear `soundness` cases
+path's dead remainder. This is the statement the two declared-linear `soundness` cases
 consume: the selected leaf comes back well typed at `Γ ⊢ p : T`'s type and
 moved-out-free — so a use hands on a `Val` and a `@drop` can run §6.11 on it — and
 the events are `dropResidueEvents` and one `consume`, with no `linearLeak`

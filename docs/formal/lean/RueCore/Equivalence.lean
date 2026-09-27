@@ -779,7 +779,7 @@ theorem sim_match (IH : SimIH M P fuel) (scrut : Expr) (arms : List Expr) :
     split
     · trivial
     · rename_i body hbody
-      -- (D-Match) records the shell's consumption as it binds the payload.
+      -- (D-Match) records the dead remainder's consumption as it binds the payload.
       refine Sim.withTrace (C₂ := fun K tr => evalConf (freshParams H₀ vs).1
           { env := (freshParams H₀ vs).2.reverse ++ φ.env, scope := φ.scope ++ (freshParams H₀ vs).2 }
           body (.endscope (freshParams H₀ vs).2 :: K) tr)

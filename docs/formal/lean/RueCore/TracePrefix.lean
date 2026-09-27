@@ -306,7 +306,7 @@ theorem longc_letIn (hF : TraceMeasure P.decls F) (IH : LongCIH M P F fuel)
   rw [storeOwn_append]
   simp [storeOwn, Cell.own, List.count_append]
 
-/-- (D-Match) §6.6, with the ledger: the consumed shell and the payload cells
+/-- (D-Match) §6.6, with the ledger: the consumed dead remainder and the payload cells
 own what the scrutinee owned (helper). -/
 theorem longc_match (hF : TraceMeasure P.decls F) (IH : LongCIH M P F fuel)
     (hcc : StoreCC P.decls H) (scrut : Expr) (arms : List Expr) :

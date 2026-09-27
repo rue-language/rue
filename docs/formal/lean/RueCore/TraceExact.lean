@@ -26,7 +26,7 @@ way an owned value's life ends has one:
   §6.11, §6.7, §6.8), and a declared-`linear` destructure's residue (§6.3),
   which drops each retained subtree with the same marker;
 * a discarded temporary (`dropTemp v`, §6.7);
-* a **consumption** (`consume c`): the shell a `match` leaves once its payload
+* a **consumption** (`consume c`): the dead remainder a `match` leaves once its payload
   is bound (§6.6), and the path from `d` to the leaf a destructure leaves once
   the leaf is handed on and the residue dropped (§6.3). Neither runs a drop of
   its own — every member has already gone somewhere — but the value's life
@@ -674,7 +674,7 @@ theorem unwindLocs_exact {D : Decls} : ∀ {H H' : Store} {ls : List Nat} {evs :
           omega
 
 /-- **(D-Match)'s consumption, counted exactly** (RUE-2427): the payload the
-arm's cells receive and the shell `matchConsume` ends are exactly the
+arm's cells receive and the dead remainder `matchConsume` ends are exactly the
 scrutinee (helper). -/
 theorem matchConsume_exact {D : Decls} {e k i : Nat} {vs : List Val}
     (h : (Contents.enum e k i (Contents.ofVals vs)).copyContained D = true) (a : Nat) :
@@ -999,7 +999,7 @@ theorem Exact.move {D : Decls} {H : Store} {ℓ : Nat} {c c' sub : Contents} {π
     omega
 
 /-- **(D-Use-Declared-Linear) §6.3, exactly**: the leaf handed on, the residue
-dropped and the shell consumed are exactly the consumed place, which becomes
+dropped and the dead remainder consumed are exactly the consumed place, which becomes
 `⊘` (helper). -/
 theorem Exact.destructure {D : Decls} {H : Store} {ℓ : Nat} {c c' cd leaf : Contents}
     {πd πs : List Nat} {v : Val} {evs : List Event} (hcc : StoreCC D H)
@@ -2581,7 +2581,7 @@ after trace `tr` (`Lead`). Whatever the rest of the form yields, `r` with
 or ended in `r`'s trace exactly as many times as it was held; every cell
 allocated since `H₁` is tombstoned (`Settled`). This is where a `let`'s
 initializer is dropped at the `endscope`, a discarded `S { .. };` at the
-`dropTemp`, an argument at the callee's activation record pop, and a scrutinee's shell at
+`dropTemp`, an argument at the callee's activation record pop, and a scrutinee's dead remainder at
 its `consume`, and where a `break` unwinds the bindings its loop body still
 held — the loop's lead is its body breaking, so the unwind is that loop's rest
 (`breakLeak_rejected`) — values `drop_exactly_once` alone never sees, because
