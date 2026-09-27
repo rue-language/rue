@@ -616,8 +616,8 @@ theorem bare_dtor.drop_order_1 :
                 Step M.toFloatSig P C C' →
                   ∃ evs,
                     C'.trace = C.trace ++ evs ∧
-                      NewestFirst (dropLocs evs) ∧
-                        Lifo C.stack C'.stack (dropLocs evs) ∧
+                      StrictStackOrder (dropLocs evs) ∧
+                        StackDiscipline C.stack C'.stack (dropLocs evs) ∧
                           List.Pairwise (fun x1 x2 => x1 < x2) C.stack := by
   intro h
   obtain ⟨-, -, H, φ, v, tr, hs, hn⟩ := Spine.Sharp.bare_dtor _ rfl _ rfl
@@ -809,8 +809,8 @@ theorem unreached.drop_order_2 :
                   Step M.toFloatSig P C C' →
                     ∃ evs,
                       C'.trace = C.trace ++ evs ∧
-                        NewestFirst (dropLocs evs) ∧
-                          Lifo C.stack C'.stack (dropLocs evs) ∧
+                        StrictStackOrder (dropLocs evs) ∧
+                          StackDiscipline C.stack C'.stack (dropLocs evs) ∧
                             List.Pairwise (fun x1 x2 => x1 < x2) C.stack := by
   intro h
   obtain ⟨hPT, hns, -, hnb, hn⟩ := Spine.Sharp.unreached _ rfl _ rfl
@@ -897,8 +897,8 @@ theorem unreached_panic.drop_order_3 :
                   Step M.toFloatSig P C C' →
                     ∃ evs,
                       C'.trace = C.trace ++ evs ∧
-                        NewestFirst (dropLocs evs) ∧
-                          Lifo C.stack C'.stack (dropLocs evs) ∧
+                        StrictStackOrder (dropLocs evs) ∧
+                          StackDiscipline C.stack C'.stack (dropLocs evs) ∧
                             List.Pairwise (fun x1 x2 => x1 < x2) C.stack := by
   intro h
   obtain ⟨hPT, hns, -, hnb, hn⟩ := Spine.Sharp.unreached_panic _ rfl _ rfl
@@ -985,8 +985,8 @@ theorem unordered.drop_order_4 :
                 Step M.toFloatSig P C C' →
                   ∃ evs,
                     C'.trace = C.trace ++ evs ∧
-                      NewestFirst (dropLocs evs) ∧
-                        Lifo C.stack C'.stack (dropLocs evs) ∧
+                      StrictStackOrder (dropLocs evs) ∧
+                        StackDiscipline C.stack C'.stack (dropLocs evs) ∧
                           List.Pairwise (fun x1 x2 => x1 < x2) C.stack := by
   intro h
   obtain ⟨hPT, -, hs, hn⟩ := Spine.Sharp.unordered _ rfl _ rfl
@@ -1005,8 +1005,8 @@ theorem not_a_step.drop_order_5 :
                 Steps M.toFloatSig P Config.init C →
                   ∃ evs,
                     C'.trace = C.trace ++ evs ∧
-                      NewestFirst (dropLocs evs) ∧
-                        Lifo C.stack C'.stack (dropLocs evs) ∧
+                      StrictStackOrder (dropLocs evs) ∧
+                        StackDiscipline C.stack C'.stack (dropLocs evs) ∧
                           List.Pairwise (fun x1 x2 => x1 < x2) C.stack := by
   intro h
   obtain ⟨hPT, H, v, tr, hs, -, -, hn⟩ := Spine.Sharp.not_a_step _ rfl _ rfl
@@ -1126,8 +1126,8 @@ theorem uncut_drop.drop_order_4 :
                 Step M.toFloatSig P C C' →
                   ∃ evs,
                     C'.trace = C.trace ++ evs ∧
-                      NewestFirst (dropLocs evs) ∧
-                        Lifo C.stack C'.stack (dropLocs evs) ∧
+                      StrictStackOrder (dropLocs evs) ∧
+                        StackDiscipline C.stack C'.stack (dropLocs evs) ∧
                           List.Pairwise (fun x1 x2 => x1 < x2) C.stack := by
   intro h
   obtain ⟨hPT, -, hs, -, -, -, hn⟩ := Spine.Sharp.uncut_drop _ rfl _ rfl

@@ -85,7 +85,7 @@ procedure by hand: its `commands/<name>.md` names the scripts and the order.
 | Rebuild, `lake build RueCore.TraceOrder` with its outputs removed, three runs | 1.42 s, 1.29 s, 1.43 s |
 | Profile, `lake env lean -Dprofiler=true` (cumulative, three runs) | tactic execution 1.67 to 1.69 s, simp 0.48 to 0.49 s, type checking 0.28 s, elaboration 0.35 s |
 | Heartbeat floor (`-DmaxHeartbeats=N` on the whole file) | builds at 6000, fails at 5000 (in `step_ordered`); the default is 200000 |
-| Longest proofs (lines to the next declaration, doc-comment included) | `eval_glue_blocks` 248, `step_ordered` 63, `step_nested` 56, `step_lifo` 49, `step_drop_order` 43 |
+| Longest proofs (lines to the next declaration, doc-comment included) | `eval_glue_blocks` 248, `step_ordered` 63, `step_nested` 56, `step_stackDiscipline` 49, `step_drop_order` 43 |
 
 ### What the review found
 
@@ -119,7 +119,7 @@ rebuilt at the end. Eleven edits were accepted:
 
 | Where | Change |
 | --- | --- |
-| `Lifo.newer` | a two-line `have := ...; simpa using this` becomes `by simpa using hs.subset ...` |
+| `StackDiscipline.newer` | a two-line `have := ...; simpa using this` becomes `by simpa using hs.subset ...` |
 | `dropEvents_allCopy` | a `cases`-on-`Bool` block becomes `Bool.eq_false_iff.mpr fun hsd => ...`; its identical `.enum` and `.array` branches are merged, and the `simp only [dropEvents]` before `exact` dropped |
 | `Config.Ordered.keep`, `Config.Ordered.push` | `rcases` blocks become `Or.elim` terms |
 | `dropLocs_dropEvents` | `by simp only [dropEvents]; exact t` becomes `t` |

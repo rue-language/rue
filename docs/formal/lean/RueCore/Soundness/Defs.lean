@@ -11,7 +11,7 @@ The definitions §7's safety theorems (`Soundness.lean`) and the trace theorems
 (`Trace.lean`, `TraceExact.lean`) write their statements in: §6.1's value and
 contents typing (`HasTy`, `ContentsTy`), the store–context agreement the
 invariant carries (`ContentsOwnTyping`, `StoreTyping`, `ActivationTyping`), and the
-promise `soundness` makes about `eval`'s result (`EvalOk`, `BrokeOk`).
+promise `soundness` makes about `eval`'s result (`EvalOk`, `BreakOutputOk`).
 
 They are moved here verbatim from `Soundness.lean` (RUE-2456) so that the
 claims' vocabulary sits in the definitions layer, below every proof: this
@@ -206,10 +206,10 @@ opened and had not closed, each minted above `H` — and at one of the
 delivered states `B` of §5.3's `Ω`, the frame it fired in agrees with the
 store. Its record is `φ`'s with `locs` appended, which is what the loop reads
 to find the drops it owes, and nothing `φ` names outside the frame was
-touched. It is closed under entering a binder (`BrokeOk.under_binders`), so a
+touched. It is closed under entering a binder (`BreakOutputOk.under_binders`), so a
 `let` or a `match` arm passes it outward unchanged, and the loop that catches
 it reads the frame it fired in straight off it (helper). -/
-def BrokeOk (D : Decls) (B : List Ctx) (φ : Activation) (H H' : Store) (sc : List Nat) : Prop :=
+def BreakOutputOk (D : Decls) (B : List Ctx) (φ : Activation) (H H' : Store) (sc : List Nat) : Prop :=
   ∃ Γb ∈ B, ∃ locs : List Nat, sc = φ.scope ++ locs ∧
     ActivationTyping D Γb { env := locs.reverse ++ φ.env, scope := sc } H' ∧
     (∀ ℓ ∈ locs, H.length ≤ ℓ) ∧ FrameProperty φ.env H H'
@@ -231,7 +231,7 @@ def EvalOk (D : Decls) (T R : Ty) (o : Option Ctx) (B : List Ctx) (φ : Activati
       | some Γ' => HasTy D v T ∧ ActivationTyping D Γ' φ H' ∧ FrameProperty φ.env H H'
       | none => False
   | .returned H' v _ => HasTy D v R ∧ FrameProperty φ.env H H'
-  | .broke H' sc _ => BrokeOk D B φ H H' sc
+  | .broke H' sc _ => BreakOutputOk D B φ H H' sc
   | .panic _ _ => True
   | .refused _ => False
   | .outOfFuel => True

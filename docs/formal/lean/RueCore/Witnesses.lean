@@ -132,7 +132,7 @@ open Examples in
 and the one step that runs the frame's σ-walk drops `ℓ3` then `ℓ1` — two
 distinct cells, newest first, the teardown `reachable_drop_order` speaks
 of. -/
-theorem returnPastAffine_newestFirst :
+theorem returnPastAffine_strictStackOrder :
     ∃ C C' evs, Steps demoOps returnPastAffine Config.init C ∧
       Step demoOps returnPastAffine C C' ∧ C'.trace = C.trace ++ evs ∧ dropLocs evs = [3, 1] :=
   ⟨stepN demoOps returnPastAffine 18 Config.init, _, _, stepN_steps,
@@ -147,12 +147,12 @@ So `step_drop_order`'s hypothesis is load-bearing, and `reachable_ordered`
 is what discharges it. -/
 theorem unorderedRecord_rejected :
     ∃ C C' evs, ¬ C.Ordered ∧ Step demoOps returnPastAffine C C' ∧
-      C'.trace = C.trace ++ evs ∧ ¬ NewestFirst (dropLocs evs) := by
+      C'.trace = C.trace ++ evs ∧ ¬ StrictStackOrder (dropLocs evs) := by
   refine ⟨.run [.dead, .full (cA 0 3), .dead, .full (cA 2 4)] { env := [3, 1], scope := [3, 1] }
       [.call { env := [], scope := [] }] (.ret (v64 7)) [], _, _,
     fun h => ?_, .callReturn rfl, rfl, fun h => ?_⟩
   · have := h.1.1; simp at this
-  · change NewestFirst [1, 3] at h
+  · change StrictStackOrder [1, 3] at h
     rcases h with ⟨ℓ, hℓ⟩ | h
     · have h1 := hℓ 1 (by decide); have h3 := hℓ 3 (by decide); omega
     · simp at h
@@ -257,7 +257,7 @@ example : (Corpus.cases.find? (·.name == "nested_scopes")).map (·.prog.fns.map
     some (nestedScopes.fns.map (·.body)) := by rfl
 
 /-- `nested_scopes`: two sibling `let`s exit over two (D-EndScope) steps, the
-inner (`ℓ3`) before the outer (`ℓ1`) — the cross-step order `reachable_lifo`
+inner (`ℓ3`) before the outer (`ℓ1`) — the cross-step order `reachable_stackDiscipline`
 fixes, bridge-checked. -/
 example : orderView nestedScopes.decls (corpusTrace nestedScopes) = ([2, 0], [3, 1], [2, 0]) := by
   rfl

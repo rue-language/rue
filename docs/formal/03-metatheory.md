@@ -175,7 +175,7 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
   with `Γ`, then at every fuel bound `eval` yields a well-typed value with the
   agreement restored at `Ω`'s normal outgoing state, a value handed back by an
   unwinding `return`, an unwinding `break` that fired at one of `Ω`'s
-  delivered states (`RueCore.BrokeOk`), a defined panic, or `outOfFuel`; it
+  delivered states (`RueCore.BreakOutputOk`), a defined panic, or `outOfFuel`; it
   is never a
   `Refusal`. `Ω` is §5.3's outgoing result (`RueCore.Out`): a normal state
   or §5.7's `⊥`, with the edge deliveries. When it is `⊥` the theorem says
@@ -581,20 +581,20 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
     location order. In particular (D-EndScope)'s pop by count removes the
     marker's own cells (`RueCore.Activation.unwindScope_tail`), which §6.7 states as
     a set difference and `Step.lean` implements by count.
-  - `RueCore.reachable_lifo`: every step is last-in first-out on that stack
-    (`RueCore.Lifo`). It keeps the stack as a prefix of the new one, or it
+  - `RueCore.reachable_stackDiscipline`: every step is last-in first-out on that stack
+    (`RueCore.StackDiscipline`). It keeps the stack as a prefix of the new one, or it
     cuts the stack back and drops only cells of the suffix it cut, newest
     first. Each such cell is newer than every cell still registered
-    (`RueCore.Lifo.newer`). So across all its exit steps a scope's cells drop
+    (`RueCore.StackDiscipline.newer`). So across all its exit steps a scope's cells drop
     newest first, and before any cell of an enclosing scope or a caller:
     `{ let a; let b; }` exits over two (D-EndScope) steps and drops `b`
     first.
   - `RueCore.reachable_drop_order`: within one step, the markers name one
     cell (an overwrite, `@drop`, a destructure's residue) or distinct cells
-    in strictly decreasing location order (`RueCore.NewestFirst`).
+    in strictly decreasing location order (`RueCore.StrictStackOrder`).
 
   Witnesses:
-  - `RueCore.returnPastAffine_newestFirst` is a teardown on a real run:
+  - `RueCore.returnPastAffine_strictStackOrder` is a teardown on a real run:
     `return_past_affine`'s σ-walk drops `ℓ3` then `ℓ1` in one step.
   - `RueCore.swappedMarkers_rejected` is two nested `let`s' markers swapped.
     Every record is in location order and every step drops one cell, yet the

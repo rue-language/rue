@@ -129,7 +129,7 @@ theorem Expr.quietList_mem {es : List Expr} {e : Expr} (h : Expr.quietList es = 
     (hm : e ∈ es) : e.returns = false ∧ e.breaks = false := by
   simp only [Expr.quietList, List.all_eq_true, Bool.not_eq_eq_eq_not, Bool.not_true] at h
   have := h e hm
-  simp only [Expr.unwinds, Bool.or_eq_false_iff] at this
+  simp only [Expr.canCompleteAbruptly, Bool.or_eq_false_iff] at this
   exact this
 
 /-! ## Results that do not unwind -/
@@ -1234,7 +1234,7 @@ theorem rest_step (M : FloatSig) {P : Program} (hp : P.pendingSafe = true) {n : 
       obtain rfl := EvalRes.withTrace_inj heq
       rw [Contents.ownList_ofVals_single]
       simp only [Expr.pendingSafe, Bool.and_eq_true, Bool.not_eq_eq_eq_not, Bool.not_true,
-        Expr.unwinds, Bool.or_eq_false_iff] at he
+        Expr.canCompleteAbruptly, Bool.or_eq_false_iff] at he
       refine Exact.bindHeld (ih H₁ φ e₂ hc₁ he.1.2) (hq H₁ e₂ he.2) (fun H₂ v₂ _ _ hc₂ _ => ?_)
       refine Exact.opRes hc₂ (fun v h => ⟨evalBinOp_scalar h, fun a _ => ?_⟩)
       obtain ⟨s₁, s₂⟩ := evalBinOp_val_args h
@@ -1877,17 +1877,17 @@ theorem Local.append {φ : Activation} {H : Store} (ext : Store) : Local φ H (H
   ⟨by simp, fun ℓ hl _ => .inl (List.getElem?_append_left hl)⟩
 
 /-- Nothing allocated, nothing to retire (helper). -/
-theorem Retired.same {H H' : Store} {keep : List Nat} (h : H'.length ≤ H.length) :
-    Retired H keep H' := fun _ h₁ h₂ _ => absurd (Nat.lt_of_lt_of_le h₂ h) (Nat.not_lt.mpr h₁)
+theorem Tombstoned.same {H H' : Store} {keep : List Nat} (h : H'.length ≤ H.length) :
+    Tombstoned H keep H' := fun _ h₁ h₂ _ => absurd (Nat.lt_of_lt_of_le h₂ h) (Nat.not_lt.mpr h₁)
 
 /-- A value produced where the store is (helper). -/
 theorem Tidy.same {φ : Activation} {H : Store} {v : Val} {tr : List Event} :
-    Tidy φ H (.ok H v tr) := ⟨Local.refl φ H, Retired.same (Nat.le_refl _)⟩
+    Tidy φ H (.ok H v tr) := ⟨Local.refl φ H, Tombstoned.same (Nat.le_refl _)⟩
 
 /-- A write through the environment (helper). -/
 theorem Tidy.write {φ : Activation} {H : Store} {ℓ : Nat} {x : Cell} {v : Val} {tr : List Event}
     (hℓ : ℓ ∈ φ.env) : Tidy φ H (.ok (H.set ℓ x) v tr) :=
-  ⟨Local.set x hℓ, Retired.same (by simp)⟩
+  ⟨Local.set x hℓ, Tombstoned.same (by simp)⟩
 
 /-- An operator's outcome (helper). -/
 theorem Tidy.opRes {φ : Activation} {H : Store} {o : OpRes} : Tidy φ H (o.toRes H) := by
@@ -1908,10 +1908,10 @@ theorem Tidy.intro {D : Decls} {φ : Activation} {H : Store} {mk : Nat → Val} 
 /-- **Composition**: a step that allocated and retired locally, then an
 evaluation in the same frame (helper). -/
 theorem Tidy.prefix {φ : Activation} {H H₁ : Store} {tr : List Event} {r : EvalRes}
-    (hf : ∀ ℓ ∈ φ.env, ℓ < H.length) (hl : Local φ H H₁) (hre : Retired H [] H₁)
+    (hf : ∀ ℓ ∈ φ.env, ℓ < H.length) (hl : Local φ H H₁) (hre : Tombstoned H [] H₁)
     (hr : Tidy φ H₁ r) : Tidy φ H (r.withTrace tr) := by
-  have key : ∀ (H₂ : Store) (keep : List Nat), Local φ H₁ H₂ → Retired H₁ keep H₂ →
-      Retired H keep H₂ := by
+  have key : ∀ (H₂ : Store) (keep : List Nat), Local φ H₁ H₂ → Tombstoned H₁ keep H₂ →
+      Tombstoned H keep H₂ := by
     intro H₂ keep l₂ r₂ ℓ h₁ h₂ hk
     by_cases hlt : ℓ < H₁.length
     · have hd := hre ℓ h₁ hlt (by simp)
@@ -2047,8 +2047,8 @@ theorem Tidy.scoped {φ : Activation} {H Hm : Store} {ls : List Nat} {r : EvalRe
     have hn' : ℓ ∉ ls.reverse ++ φ.env := by simp [hnl, hn]
     rw [← hpre ℓ hl]
     exact l.2 ℓ (Nat.lt_of_lt_of_le hl hlen) hn'
-  have ret : ∀ H₂ keep, (∀ ℓ ∈ ls, ℓ ∉ keep → H₂[ℓ]? = some .dead) → Retired Hm keep H₂ →
-      Retired H keep H₂ := by
+  have ret : ∀ H₂ keep, (∀ ℓ ∈ ls, ℓ ∉ keep → H₂[ℓ]? = some .dead) → Tombstoned Hm keep H₂ →
+      Tombstoned H keep H₂ := by
     intro H₂ keep hd r₂ ℓ h₁ h₂ hk'
     by_cases hm : ℓ ∈ ls
     · exact hd ℓ hm hk'
@@ -2128,14 +2128,14 @@ theorem dynPlace_env {H : Store} {φ : Activation} {p : Place} {vs : List Val} {
 
 /-- The frame-pop invariant for an argument list (helper). -/
 def ArgsTidy (φ : Activation) (H : Store) : ArgsRes → Prop
-  | .ok H' _ _ => Local φ H H' ∧ Retired H [] H'
+  | .ok H' _ _ => Local φ H H' ∧ Tombstoned H [] H'
   | .abort r => Tidy φ H r
 
 /-- An argument list keeps the frame-pop invariant (helper). -/
 theorem evalArgs_tidy {φ : Activation} {ev : Store → Expr → EvalRes} :
     ∀ {es : List Expr}, (∀ H e, e ∈ es → φ.In H → Tidy φ H (ev H e)) →
       ∀ H, φ.In H → ArgsTidy φ H (evalArgs ev H es)
-  | [], _, H, _ => ⟨Local.refl φ H, Retired.same (Nat.le_refl _)⟩
+  | [], _, H, _ => ⟨Local.refl φ H, Tombstoned.same (Nat.le_refl _)⟩
   | e :: es, hev, H, hf => by
       have h₁ := hev H e List.mem_cons_self hf
       simp only [evalArgs]
@@ -2177,7 +2177,7 @@ theorem Tidy.call {D : Decls} {φ : Activation} {H Hm : Store} {ls : List Nat} {
     have hnl : ℓ ∉ ls := fun h => absurd ((hls ℓ).mp h).1 (Nat.not_le.mpr hl)
     rw [← hpre ℓ hl]
     exact l.2 ℓ (Nat.lt_of_lt_of_le hl hlen) (fun h => hnl (List.mem_reverse.mp h))
-  have ret : ∀ H₂, (∀ ℓ ∈ ls, H₂[ℓ]? = some .dead) → Retired Hm [] H₂ → Retired H [] H₂ := by
+  have ret : ∀ H₂, (∀ ℓ ∈ ls, H₂[ℓ]? = some .dead) → Tombstoned Hm [] H₂ → Tombstoned H [] H₂ := by
     intro H₂ hd r₂ ℓ h₁ h₂ hk'
     by_cases hm : ℓ ∈ ls
     · exact hd ℓ hm
@@ -2228,7 +2228,7 @@ theorem eval_tidy (M : FloatSig) (P : Program) :
     | panic => simp only [eval]; trivial
     | brk =>
         simp only [eval]
-        exact ⟨Local.refl φ H, Retired.same (Nat.le_refl _), [], by simp, by simp⟩
+        exact ⟨Local.refl φ H, Tombstoned.same (Nat.le_refl _), [], by simp, by simp⟩
     | use p | drop p =>
         simp only [eval]
         split
@@ -2305,7 +2305,7 @@ theorem eval_tidy (M : FloatSig) (P : Program) :
           split
           · trivial
           · rename_i body _
-            refine Tidy.prefix (H₁ := H₀) hf₀.1 (Local.refl φ H₀) (Retired.same (Nat.le_refl _)) ?_
+            refine Tidy.prefix (H₁ := H₀) hf₀.1 (Local.refl φ H₀) (Tombstoned.same (Nat.le_refl _)) ?_
             have hmem := freshParams_mem H₀ vs
             refine Tidy.scoped (Hm := (freshParams H₀ vs).1) hmem
               (by rw [freshParams_length]; omega) (freshParams_pre H₀ vs)
@@ -2358,7 +2358,7 @@ theorem eval_tidy (M : FloatSig) (P : Program) :
         · trivial
         · split
           · trivial
-          · exact Tidy.prefix hf₁.1 (Local.refl φ H₁) (Retired.same (Nat.le_refl _))
+          · exact Tidy.prefix hf₁.1 (Local.refl φ H₁) (Tombstoned.same (Nat.le_refl _))
               (ih H₁ φ e₂ hf₁)
         · exact ih H₁ φ e₂ hf₁
     | ite c e₁ e₂ =>
@@ -2402,7 +2402,7 @@ theorem eval_tidy (M : FloatSig) (P : Program) :
         · trivial
         · rename_i H₂ evs hu
           obtain ⟨l, d, u⟩ := unwindLocs_shape hu
-          refine ⟨⟨by omega, fun ℓ hl' _ => ?_⟩, Retired.same (by omega),
+          refine ⟨⟨by omega, fun ℓ hl' _ => ?_⟩, Tombstoned.same (by omega),
             fun ℓ hm => d ℓ (List.mem_reverse.mpr hm)⟩
           by_cases hm : ℓ ∈ φ.scope.reverse
           · exact .inr (d ℓ hm)
@@ -2505,17 +2505,17 @@ theorem drop_exactly_once (M : FloatLaws) {P : Program} (h : ProgramTyped P)
 
 /-- Allocations since an earlier store include those since a later one
 (helper). -/
-theorem Retired.mono {H H₁ H' : Store} {keep : List Nat} (hle : H.length ≤ H₁.length)
-    (h : Retired H keep H') : Retired H₁ keep H' :=
+theorem Tombstoned.mono {H H₁ H' : Store} {keep : List Nat} (hle : H.length ≤ H₁.length)
+    (h : Tombstoned H keep H') : Tombstoned H₁ keep H' :=
   fun ℓ h₁ h₂ hk => h ℓ (Nat.le_trans hle h₁) h₂ hk
 
 /-- The whole form's frame-pop invariant, read at the rest (helper). -/
 theorem Tidy.settled {φ : Activation} {H H₁ : Store} {r : EvalRes} {tr : List Event}
     (hle : H.length ≤ H₁.length) (h : Tidy φ H (r.withTrace tr)) : Settled φ H₁ r := by
   cases r with
-  | ok => exact Retired.mono hle h.2
-  | returned => exact ⟨Retired.mono hle h.2.1, h.2.2⟩
-  | broke => exact ⟨Retired.mono hle h.2.1, h.2.2.elim fun locs h' => ⟨locs, h'.1⟩⟩
+  | ok => exact Tombstoned.mono hle h.2
+  | returned => exact ⟨Tombstoned.mono hle h.2.1, h.2.2⟩
+  | broke => exact ⟨Tombstoned.mono hle h.2.1, h.2.2.elim fun locs h' => ⟨locs, h'.1⟩⟩
   | _ => trivial
 
 /-- A form's leading operands ran from a copy-closed store: the store only
