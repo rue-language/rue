@@ -246,6 +246,49 @@ with a destructor, so regenerating still reshuffles case identities exactly
 as RUE-2480's own regeneration did. `Gen.lean`'s docstring and
 BRIDGE-SENSITIVITY.md have the design and the rerun results.
 
+**Boundary integer literals and operand pairs (RUE-2482).** Integer literals
+are otherwise small, so an overflow, cast or comparison trap is rare and a
+shape needing a literal at `min_T`/`max_T` together with another boundary
+value is rarer still. `intLiteral` reads a **fourth** random stream, the
+**boundary** stream, one draw in eight, and replaces the literal with
+`min_T`/`max_T`, one step in from each, `-1`/`0`/`1`, or a power of two and
+its neighbour instead. Unlike the side and call streams, this one costs
+nothing even when it fires on a leaf: it only ever replaces the single
+literal `intLiteral` was about to draw anyway, main-stream draw and all, so a
+program with no boundary draw is exactly the program drawn before RUE-2482.
+Measured against trunk, 91 of 200 (`--gen 200 --seed 7`) and 407 of 1,000
+(`--gen 1000 --seed 23`) generated cases differ at all; of those, 4 and 6
+differ in more than a literal value, because the *pair* draw below discards
+whole operand subtrees, and one of those six also changes its verdict
+(below).
+
+A single literal rarely lands on both operands of one binop, and the RUE-2318
+shape (`min_T * -1` folding to `min_T` instead of trapping) needs exactly
+that. So an arithmetic or shift binop also reads the boundary stream, at one
+in sixteen ordinarily, and replaces *both* operands at once with a pair —
+`min_T` with `-1`, `1` or itself, `max_T` with `1`, a power of two with a
+shift near the width, or, for `/`/`%`, any boundary value with `0` — again
+discarding whatever `self` drew on the main stream first. At `i64`, signed,
+`*` specifically the rate is raised to one in four (`min_T`'s bit pattern
+only confuses `crates/rue-codegen/src/value_plan.rs`'s `multiplier_shift` at
+64 bits, verified by hand, and the ordinary rate went uncaught in a
+1,000-program run) — expressed as `25` in `100` rather than `1` in `4`,
+because `4` and `2` both hit a low-order-bit correlation in this seed's
+specific `StdGen` positions (checked directly: eight draws, eight identical
+residues, at both moduli) that a modulus which is not a small power of two
+side-steps. Half of *those* draws additionally bind the `-1` operand through
+a `let` first, testing `multiplier_shift`'s actual shape — a literal
+multiplier against a runtime value — rather than only literal-times-literal.
+With it, `--gen 1000 --seed 23` draws the shape at `gen_23_73`, the program
+whose verdict changed above: trunk drew a 4-function, 327-node program the
+checker rejects (`linearDiscard`); this branch's root-level pair replaces the
+whole body with `let v0: i64 = (-1); (min_T * v0)`, which the checker
+accepts and the model traps overflow on — and which the RUE-2318 mutant
+instead computes `min_T` and exits `0` on. `--gen 200 --seed 7` catches
+nothing; the shape needs a seed whose draws put `i64`, signed and `*` at a
+binop the pair reaches at all. `Gen.lean`'s docstring has the mechanism in
+full and BRIDGE-SENSITIVITY.md the mutant results.
+
 ```bash
 lake exe ruecore-corpus --gen 1000 --seed 7 > /tmp/gen.json   # seed cases, then 1000 generated
 scripts/rue lean-bridge -- --corpus /tmp/gen.json               # the last --corpus wins
