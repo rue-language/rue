@@ -34,7 +34,7 @@ the `@copy`/`linear` attribute, whether the struct declares a destructor, and
 (`WfStructs` is the equation, and `checkStructs` decides it) — and monomorphic
 **enum** types, one payload tuple per variant with `class(E)` the payload join
 over every variant (`6.3:19`; `WfEnums` is the equation and `checkEnums`
-decides it), the two layers grounded by `3.0:5`'s joint acyclicity (`WfNames`,
+decides it), the two layers grounded by `3.0:5`'s joint acyclicity (`WfByValueEdge`,
 decided by `checkNoCycle`, which is what makes either equation a definition —
 and which sees **through an array element**, since `3.0:5` names array
 elements beside fields and payloads: `struct S { x0: [S; 1] }` is E0483 for

@@ -144,7 +144,7 @@ shape both equations solve at more than one assignment
 (`Examples.lean`'s cycle witnesses; the compiler reports E0483).
 
 `Decls.ByValueEdge` is `3.0:5`'s "contains by value" relation, one step, and
-`WfNames` is the rule itself: the relation is **well-founded**, so each
+`WfByValueEdge` is the rule itself: the relation is **well-founded**, so each
 declaration's class is the unique solution of its equation (`class_unique`).
 The calculus states the equations but not this side condition; §3 gains the
 paragraph in RUE-2334, and `3.0:5` is the normative form it mechanizes.
@@ -241,7 +241,7 @@ theorem enum_carriesLinear_iff {D : Decls} {e : Nat} {ed : EnumDecl}
 A declaration carries `class(S)`/`class(E)` so that `Ty.qual` is a lookup. That
 is only honest if §3's equations have one solution, which is what `3.0:5`
 buys: no declaration contains itself by value, so the by-value relation is
-well-founded (`WfNames`) and each declaration's class is fixed by the classes
+well-founded (`WfByValueEdge`) and each declaration's class is fixed by the classes
 of the declarations it names.
 
 The condition has to be **joint**, because the recursion is. A field may name
@@ -309,7 +309,7 @@ theorem class_unique {D D' : Decls} (hwf : WfDecls D) (hwf' : WfDecls D')
     ∀ T : Ty, T.qual D = T.qual D' := by
   have key : ∀ d : TyName, d.ty.qual D = d.ty.qual D' := by
     intro d
-    refine WellFounded.induction (C := fun d => d.ty.qual D = d.ty.qual D') hwf.names d ?_
+    refine WellFounded.induction (C := fun d => d.ty.qual D = d.ty.qual D') hwf.byValueEdge d ?_
     clear d
     intro d ih
     have hmem : ∀ T ∈ D.byValue d, T.qual D = T.qual D' := fun T hT =>
