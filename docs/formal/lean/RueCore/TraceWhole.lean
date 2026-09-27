@@ -60,7 +60,7 @@ carve-out, used exactly where §6 discards a pending value.
 
 ## From one run to every configuration
 
-`run_msteps` is the simulation at `run`: a finished run reaches its terminal
+`run_msteps` is the simulation at `run`: a terminating run reaches its terminal
 configuration from `Config.init` losslessly. By determinism (`Step.det`) every
 configuration the run passes through lies on that path
 (`MSteps.of_steps`), so its ledger is at most the end's. At the end the
@@ -74,7 +74,7 @@ once.
 * A **panic** carries no claim. §6.12's `↯κ` keeps a trace and no store, and
   §5.7's `⊥_panic` edge runs no drop, so what a trap abandons is abandoned by
   design; `step_no_double_free` bounds its trace.
-* A **run that never finishes** has no end to account at; its prefixes are
+* A **run that never terminates** has no end to account at; its prefixes are
   bounded above by `step_no_double_free`.
 * **RUE-2316** stays a hypothesis: `Sharp.pending_leak` is a checked program,
   not `pendingSafe`, whose `return` discards a pending owned argument that
@@ -1500,7 +1500,7 @@ theorem eval_msim (M : FloatSig) {P : Program} (hp : P.pendingSafe = true) (fuel
 
 /-! ## Over a whole run -/
 
-/-- **A finished run of a `pendingSafe` program is lossless** (helper): where
+/-- **A terminating run of a `pendingSafe` program is lossless** (helper): where
 `run` answers a value, §6's relation reaches that value's terminal
 configuration from `Config.init` by a run along which no step loses an owned
 identity. -/
@@ -1524,7 +1524,7 @@ theorem storeOwn_of_dead {D : Decls} {H : Store}
   rw [Option.some.inj this]
   rfl
 
-/-- **A finished run ends with an empty store and counts every identity at
+/-- **A terminating run ends with an empty store and counts every identity at
 most once** (helper): `eval_tidy` retires every cell by the end, and
 `eval_conserves` from the empty store bounds what the result and the trace
 own by the range of identities minted (`run_trace_once`'s argument). -/
@@ -1546,12 +1546,12 @@ theorem run_final_le (M : FloatSig) (P : Program) (fuel : Nat) {H : Store} {v : 
   simp only [freedIds]
   omega
 
-/-- **Every owned value of a finished run ends exactly once** (§7 "No
+/-- **Every owned value of a terminating run ends exactly once** (§7 "No
 use-after-drop / no leak of drops", over a whole program; RUE-2478). For a
 checked program whose functions are all `pendingSafe` (RUE-2316), take any
 configuration `C` §6's relation reaches from `Config.init` and any owned
 identity `a` it holds (`Config.held`: in a cell, in focus, or pending on the
-control stack). If the run from `C` finishes with a value — `✓v`, a value at
+control stack). If the run from `C` terminates with a value — `✓v`, a value at
 an empty stack — then `a` is ended exactly once in the final trace (a drop, a
 discarded temporary's drop, or a consumption: `freedIds`) or is part of the
 final value, and not both. So no owned value the run ever holds is lost, and

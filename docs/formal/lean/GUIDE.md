@@ -245,7 +245,7 @@ theorems run whole programs through it), is not what the bridge runs against
 the compiler, and it does not carry the safety proof as cheaply. The semantic-equivalence
 theorems (RUE-2289's parts 2 and 3) are the bridge between them. Besides
 them, `Step`'s own theorems are the cheap ones — it is deterministic, a
-finished configuration takes no step, and a stuck one is stuck on one of §6's
+terminal configuration takes no step, and a stuck one is stuck on one of §6's
 four violations, never on one of `eval`'s four monitors
 (`../03-metatheory.md`). Where `Step` departs from §6's text, and the
 metatheory row and `Step.lean`'s module docstring give the same list:
@@ -716,7 +716,7 @@ live bindings. The σ-walk drops each once (`#2` and `#0`, row 9), and no
 them are on the unwind path.
 
 **Exactly once, over a whole run** (`TraceWhole.lean`). *Every owned value
-a run of a checked, `pendingSafe` program that finishes with a value ever holds is, at the
+a run of a checked, `pendingSafe` program that terminates with a value ever holds is, at the
 end, ended exactly once in the trace or part of the result, and not both.*
 
 ```lean
@@ -741,9 +741,9 @@ trap runs no drop (§6.12).
 
 Witness: `Nonvacuous.whole_drops`, `let x = S0 { 1 }; let y = S0 { 2 }; 3`.
 Fifteen steps in, the configuration holds both values, `#0` and `#2`, in
-their cells; the finished trace drops each once.
+their cells; the terminating trace drops each once.
 
-**Drop order** (`TraceOrder.lean`). *In every finished run, every
+**Drop order** (`TraceOrder.lean`). *In every terminating run, every
 destructor runs inside the drop of the value that owns it, in §6.11's order;
 and at every step the machine tears cells down last-in first-out: it drops
 only cells it deregistered, newest first, and every such cell is newer than
@@ -766,7 +766,7 @@ Both halves are over §6's `Step`.
   destructor first, then the fields in declaration order, an array's
   elements ascending, and an enum's active payload only. A destructor event
   has no other place in the grammar. It is proved over `eval`
-  (`run_blocks`) and carried to `Step`'s finished runs by `eval_small_to_big`
+  (`run_blocks`) and carried to `Step`'s terminating runs by `eval_small_to_big`
   (`step_blocks`).
   `Blocks` reads each drop's events off `dropEvents`, so it moves with that
   definition. `drop_glue_order` (RUE-2487) states the same order in §6.11's
@@ -2014,8 +2014,8 @@ Three things, in `Statics.lean` and `Soundness.lean`:
   exit's state joins into the loop's output one. The machine keeps the
   state of the path it took, and the join is the "maybe" over all paths, which
   is `3.8:60`'s asymmetry again.
-- **Nontermination.** A loop may never finish. Each turn spends fuel, so a
-  run that has not finished is `outOfFuel`, never a wrong answer
+- **Nontermination.** A loop may never terminate. Each turn spends fuel, so
+  a run that has not terminated is `outOfFuel`, never a wrong answer
   (`infiniteLoop_outOfFuel` proves an infinite loop exhausts every bound), and
   the export leaves such a case out (`Corpus.lean`).
 

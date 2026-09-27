@@ -2452,7 +2452,7 @@ theorem ActivationTyping.activationIn {D : Decls} {Γ : Ctx} {φ : Activation} {
 §6.7, §6.9, §6.10, §6.11). Take any well-typed configuration of a checked
 program — an expression typed in `Γ`, run in an activation record and store that agree
 with `Γ` — whose program and expression are `pendingSafe`. Its evaluation is
-never refused, and when it finishes normally or completes abruptly by `return` or
+never refused, and when it completes normally or abruptly by `return` or
 `break`:
 
 * **every owned identity the store held at the start** is in exactly one
@@ -2604,7 +2604,7 @@ What the two do not see is an end emitted *early*, inside the evaluation
 that minted the value: no window holds the value yet, so only
 `no_double_free`'s "at most once" bounds such an end, and `main`'s own result
 is part of `run`'s result, handed to no form. `whole_program_exactly_once`
-(`TraceWhole.lean`, RUE-2478) counts both: over a whole run that finishes with a value (a trap ends nothing), every
+(`TraceWhole.lean`, RUE-2478) counts both: over a whole run that terminates with a value (a trap ends nothing), every
 owned value any configuration of the run holds is ended exactly once or is
 part of the result. -/
 theorem rest_exactly_once (M : FloatLaws) {P : Program} (h : ProgramTyped P)

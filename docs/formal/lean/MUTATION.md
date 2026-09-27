@@ -415,7 +415,7 @@ work directory is not rerun here (`--before` recomputes the column from one).
   `Blocks` is written in terms of `dropEvents`, so it follows whatever
   `dropEvents` says, and `no_double_free` counts at most one destructor,
   which zero satisfies. `drop_glue_order` states the order in §6.11's own
-  terms: a finished run's trace is in the grammar `DropGlueBlocks`, whose drop
+  terms: a terminating run's trace is in the grammar `DropGlueBlocks`, whose drop
   blocks are the rules `DropGlue`, written from §6.11's equations over the
   declarations and not through `dropEvents`. Each mutant's machine emits a
   trace that grammar rejects, so each now falsifies a statement. The

@@ -26,7 +26,7 @@ marker names. The grammar has no other place for a destructor event, so a
 trace in it runs every destructor inside the walk of the marker before it,
 in §6.11's order, and no destructor anywhere else.
 
-`run_blocks` proves every finished run's trace is in the grammar. It reads no
+`run_blocks` proves every terminating run's trace is in the grammar. It reads no
 typing derivation, only `DtorNotCopy` (a destructor-bearing struct is not
 `Copy`, `3.9:31`), which a declared-linear destructure's `Copy` residue
 subtree needs: that subtree is dropped with no marker, as `@drop` of a `Copy`
@@ -66,7 +66,7 @@ reachable from `Config.init`:
   drops oldest first — and it is not `Nested`, so no run reaches it.
 
 `drop_order` states both halves over `Step`: the within-value half reaches
-`Step`'s finished runs through `eval_small_to_big` (`step_blocks`).
+`Step`'s terminating runs through `eval_small_to_big` (`step_blocks`).
 
 ## What the grammar does not constrain
 
@@ -680,7 +680,7 @@ theorem eval_glue_blocks (M : FloatSig) {P : Program} (hdt : DtorNotCopy P.decls
             exact DropGlueBlocks.append hb (unwindLocs_blocks hu)
         · exact hb
 
-/-- **Every finished run's trace is in §6.11's block grammar** (§3.9, §6.11):
+/-- **Every terminating run's trace is in §6.11's block grammar** (§3.9, §6.11):
 every destructor event of every run sits inside §6.11's walk of the drop
 marker before it — the value's own destructor first (`3.9:28`), then its
 fields in declaration order (`3.9:13`), an array's elements ascending
@@ -690,7 +690,7 @@ theorem run_glue_blocks (M : FloatSig) {P : Program} (hdt : DtorNotCopy P.decls)
     DropGlueBlocks P.decls (run M P fuel).trace :=
   eval_glue_blocks M hdt fuel [] _ _ (fun ℓ c hc => by simp at hc)
 
-/-- **Every finished run's trace is in the block grammar `Blocks`** (§3.9,
+/-- **Every terminating run's trace is in the block grammar `Blocks`** (§3.9,
 §6.11), each drop marker followed by exactly `dropEvents` of what it names:
 `run_glue_blocks` read through `DropGlueBlocks.toBlocks`. -/
 theorem run_blocks (M : FloatSig) {P : Program} (hdt : DtorNotCopy P.decls) (fuel : Nat) :
@@ -1305,7 +1305,7 @@ theorem reachable_stackDiscipline {M : FloatSig} {P : Program} {C C' : Config}
 
 /-! ## `drop_order` -/
 
-/-- `Blocks` on §6's terminal configurations: a finished `Step` run's trace
+/-- `Blocks` on §6's terminal configurations: a terminating `Step` run's trace
 is the one `eval` answers (`eval_small_to_big`), so it is in the block grammar
 (helper). -/
 theorem step_blocks (M : FloatLaws) {P : Program} (h : ProgramTyped P) :
@@ -1325,7 +1325,7 @@ theorem step_blocks (M : FloatLaws) {P : Program} (h : ProgramTyped P) :
 
 /-- **§6.11's order within a value, in §6.11's own terms** (§3.9, §6.11;
 RUE-2487), over §6's relation, for a program the checker accepts: every
-finished run's trace — a terminal value or a trap — is in the block grammar
+terminating run's trace — a terminal value or a trap — is in the block grammar
 `DropGlueBlocks`, whose drop blocks are §6.11's rules (`DropGlue`) rather than the
 machine's walk. So each drop marker is followed by the value's own destructor
 first (`3.9:28`), then its fields in declaration order (`3.9:13`), an array's
@@ -1353,7 +1353,7 @@ theorem drop_glue_order (M : FloatLaws) {P : Program} (h : ProgramTyped P) :
 no leak of drops" bullet, its *when*), over §6's relation, for a program the
 checker accepts:
 
-* **within a value**: every finished run's trace — a terminal value or a
+* **within a value**: every terminating run's trace — a terminal value or a
   trap — is in §6.11's block grammar (`step_blocks`): every destructor event
   sits inside the walk of the drop marker before it — destructor first
   (`3.9:28`), fields in declaration order (`3.9:13`), array elements
