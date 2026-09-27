@@ -1308,7 +1308,7 @@ theorem reachable_lifo {M : FloatSig} {P : Program} {C C' : Config}
 /-- `Blocks` on §6's terminal configurations: a finished `Step` run's trace
 is the one `eval` answers (`eval_complete`), so it is in the block grammar
 (helper). -/
-theorem step_blocks (M : FloatModel) {P : Program} (h : ProgramTyped P) :
+theorem step_blocks (M : FloatLaws) {P : Program} (h : ProgramTyped P) :
     (∀ H φ v tr, Steps M.toFloatSig P Config.init (.run H φ [] (.ret v) tr) → Blocks P.decls tr) ∧
     (∀ κ tr, Steps M.toFloatSig P Config.init (.panic κ tr) → Blocks P.decls tr) := by
   obtain ⟨hv, hp⟩ := eval_complete M h
@@ -1333,7 +1333,7 @@ elements ascending (`3.9:15`), an enum's active payload only (`6.3:20`), every
 `⊘` skipped. `drop_order`'s first half says the same of `dropEvents`; this
 statement does not go through it, so a machine whose walk and `dropEvents`
 change together still fails it. -/
-theorem drop_glue_order (M : FloatModel) {P : Program} (h : ProgramTyped P) :
+theorem drop_glue_order (M : FloatLaws) {P : Program} (h : ProgramTyped P) :
     (∀ H φ v tr, Steps M.toFloatSig P Config.init (.run H φ [] (.ret v) tr) →
       DropGlueBlocks P.decls tr) ∧
     (∀ κ tr, Steps M.toFloatSig P Config.init (.panic κ tr) → DropGlueBlocks P.decls tr) := by
@@ -1369,7 +1369,7 @@ checker accepts:
 
 Only the first half reads the typing hypothesis, through `eval_complete` and
 `DtorNotCopy`. -/
-theorem drop_order (M : FloatModel) {P : Program} (h : ProgramTyped P) :
+theorem drop_order (M : FloatLaws) {P : Program} (h : ProgramTyped P) :
     (∀ H φ v tr, Steps M.toFloatSig P Config.init (.run H φ [] (.ret v) tr) → Blocks P.decls tr) ∧
     (∀ κ tr, Steps M.toFloatSig P Config.init (.panic κ tr) → Blocks P.decls tr) ∧
     ∀ C C', Steps M.toFloatSig P Config.init C → Step M.toFloatSig P C C' →

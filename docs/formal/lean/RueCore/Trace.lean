@@ -2108,7 +2108,7 @@ The declared-linear destructure (§6.3) consumes its place the same way: the
 leaf is handed on, the residue is dropped once, each retained subtree under
 its own `drop` marker, the path's shell is consumed (`consume`), and the
 place becomes `⊘`. -/
-theorem no_double_free (M : FloatModel) {P : Program} (h : ProgramTyped P) (fuel : Nat) :
+theorem no_double_free (M : FloatLaws) {P : Program} (h : ProgramTyped P) (fuel : Nat) :
     (∀ w, run M.toFloatSig P fuel ≠ .refused w) ∧
       (∀ a, (freedIds P.decls (run M.toFloatSig P fuel).trace).count a ≤ 1) ∧
       (∀ a, (dtorIds (run M.toFloatSig P fuel).trace).count a ≤ 1) :=

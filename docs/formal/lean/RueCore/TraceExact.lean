@@ -2490,7 +2490,7 @@ The carve-outs, stated where they apply:
   the compiler; `pendingSafe` excludes the shape, and
   `pendingSafe_needed` shows a checked program on which the conclusion fails
   without it. -/
-theorem drop_exactly_once (M : FloatModel) {P : Program} (h : ProgramTyped P)
+theorem drop_exactly_once (M : FloatLaws) {P : Program} (h : ProgramTyped P)
     (hp : P.pendingSafe = true) {fuel : Nat} {R : Ty} {Γ : Ctx} {e : Expr} {T : Ty} {Ω : Out}
     {φ : Activation} {H : Store} (ht : Typed P R Γ e T Ω) (hfm : ActivationTyping P.decls Γ φ H)
     (hcc : StoreCC P.decls H) (he : e.pendingSafe = true) :
@@ -2607,7 +2607,7 @@ is part of `run`'s result, handed to no form. `whole_program_exactly_once`
 (`TraceWhole.lean`, RUE-2478) counts both: over a whole run that finishes with a value (a trap ends nothing), every
 owned value any configuration of the run holds is ended exactly once or is
 part of the result. -/
-theorem rest_exactly_once (M : FloatModel) {P : Program} (h : ProgramTyped P)
+theorem rest_exactly_once (M : FloatLaws) {P : Program} (h : ProgramTyped P)
     (hp : P.pendingSafe = true) {fuel : Nat} {R : Ty} {Γ : Ctx} {e : Expr} {T : Ty} {Ω : Out}
     {φ : Activation} {H : Store} (ht : Typed P R Γ e T Ω) (hfm : ActivationTyping P.decls Γ φ H)
     (hcc : StoreCC P.decls H) (he : e.pendingSafe = true)
@@ -2764,7 +2764,7 @@ typed configuration `g(x)` of a checked, `pendingSafe` program, the real run
 drops `x`'s `S0` at `g`'s frame pop and retires the cell, and satisfies
 `drop_exactly_once`; the orphaned result keeps `Exact` yet fails `Tidy`,
 which `drop_exactly_once` concludes. -/
-theorem orphan_rejected (M : FloatModel) :
+theorem orphan_rejected (M : FloatLaws) :
     ProgramTyped orphanProgram ∧ orphanProgram.pendingSafe = true ∧
       (∃ Ω, Typed orphanProgram (.int .w64 .signed) lostCtx (.call 1 [.use (.var 0)])
         (.int .w64 .signed) Ω) ∧
@@ -2804,7 +2804,7 @@ program, from the empty store. The whole evaluation's ledger counts no
 starting identity, so it accepts the result with the `endscope`'s drop
 deleted; `rest_exactly_once`'s ledger — from the store the initializer left,
 holding the minted `S0` — holds of the real rest and rejects the deletion. -/
-theorem letDropDeleted_rejected (M : FloatModel) :
+theorem letDropDeleted_rejected (M : FloatLaws) :
     ProgramTyped orphanProgram ∧
       (∃ Ω, Typed orphanProgram (.int .w64 .signed) []
         (.letIn false (.mkStruct 0 [.intLit .w64 .signed 1]) (.intLit .w64 .signed 0))
@@ -2844,7 +2844,7 @@ theorem letDropDeleted_rejected (M : FloatModel) :
 /-- **The same for a discarded temporary** (§6.7's (D-Seq)): `S0 { 1 }; 0`
 with its `dropTemp` deleted is rejected by `rest_exactly_once`'s ledger, which
 holds of the real rest. -/
-theorem seqDropDeleted_rejected (M : FloatModel) :
+theorem seqDropDeleted_rejected (M : FloatLaws) :
     (∃ Ω, Typed orphanProgram (.int .w64 .signed) []
         (.seq (.mkStruct 0 [.intLit .w64 .signed 1]) (.intLit .w64 .signed 0))
         (.int .w64 .signed) Ω) ∧
@@ -2900,7 +2900,7 @@ real loop drop-retires `z`'s cell. A loop that retires it silently satisfies
 the bare ledger and `Tidy` — `z`'s `S0` was minted after the loop started, and
 its cell is retired — and is rejected by `rest_exactly_once` at the loop, whose
 lead is the body breaking in `breakStore`; the real unwind satisfies it. -/
-theorem breakLeak_rejected (M : FloatModel) :
+theorem breakLeak_rejected (M : FloatLaws) :
     ProgramTyped breakProgram ∧ breakProgram.pendingSafe = true ∧
       (∃ Ω, Typed breakProgram (.int .w64 .signed) lostCtx breakLoop .unit Ω) ∧
       Lead M.toFloatSig breakProgram 100 lostStore lostActivation breakStore [] [] breakLoop ∧

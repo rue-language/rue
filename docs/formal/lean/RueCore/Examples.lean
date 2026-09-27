@@ -40,7 +40,7 @@ this file are *executable* demos, so they are pinned at one model rather than
 quantified over all of them; because `exactOps` is built from `Nat`/`Int`
 arithmetic and never touches Lean's `Float`, pinning them costs no axiom
 (`TRUST.md`). The float **trap** witnesses at the bottom of the file are the
-exception: they are stated over an arbitrary `FloatModel` and proved from its
+exception: they are stated over an arbitrary `FloatLaws` and proved from its
 laws, which is what makes them claims about IEEE 754 rather than about this
 instance. -/
 abbrev demoOps : FloatSig := Float.exactOps
@@ -3693,7 +3693,7 @@ of their own.
 What they do need is a way for a core program to *reach* an infinity, and
 that is a law: `3.12:22`'s "a finite non-zero over a zero is the infinity of
 the xor sign", which §6.4 quotes as a consequence of `⊕_w`. The witnesses are
-therefore stated over an **arbitrary** `FloatModel` and proved from its
+therefore stated over an **arbitrary** `FloatLaws` and proved from its
 laws rather than by computing with `Float.exactOps` — which is what makes them
 claims about IEEE 754 instead of claims about this package's instance, and
 what keeps them (and everything above them) free of `Classical.choice`. The
@@ -3702,23 +3702,23 @@ compiler agreement is checked the other way, case by case, by the corpus. -/
 /-- **`@float_to_int` of an infinity traps** — `3.12:18`'s guard "admits both
 infinities as failures" — and the category is `↯overflow`, the one §6.12
 already lists (`8.1:7`), not a new one. -/
-theorem floatToInt_inf_traps (M : FloatModel) (w : FloatWidth) (w' : IntWidth) (s' : Sign)
+theorem floatToInt_inf_traps (M : FloatLaws) (w : FloatWidth) (w' : IntWidth) (s' : Sign)
     (b : Bool) :
     evalFintrin M.toFloatSig (.floatToInt w' s') (.float w (.inf b)) = .trap .overflow := rfl
 
 /-- **`@float_to_int` of a NaN traps**, the other half of
 `(D-Float-To-Int-Trap)`'s premise (`3.12:18`). -/
-theorem floatToInt_nan_traps (M : FloatModel) (w : FloatWidth) (w' : IntWidth) (s' : Sign)
+theorem floatToInt_nan_traps (M : FloatLaws) (w : FloatWidth) (w' : IntWidth) (s' : Sign)
     (b : Bool) :
     evalFintrin M.toFloatSig (.floatToInt w' s') (.float w (.nan b)) = .trap .overflow := rfl
 
 /-- **A whole redex: `@float_to_int(1.0 / 0.0)` traps at every model.** The
-division is `3.12:22`'s (`FloatModel.div_by_zero`), the literals are
+division is `3.12:22`'s (`FloatLaws.div_by_zero`), the literals are
 `3.12:9`'s (`ofLit_one`, `ofLit_zero`), and the trap is the partition. No
 float arithmetic is computed anywhere in the proof, and the theorem holds for
 every model satisfying the laws — including, but not only, `Float.exactOps`,
 which the corpus runs and the compiler agrees with. -/
-theorem floatDivZeroToInt_traps (M : FloatModel) (P : Program) (H : Store) (φ : Activation)
+theorem floatDivZeroToInt_traps (M : FloatLaws) (P : Program) (H : Store) (φ : Activation)
     (w : FloatWidth) (w' : IntWidth) (s' : Sign) :
     eval M.toFloatSig 8 P H φ
         (fintrin (.floatToInt w' s') (binop .div (flE w 1 0) (flE w 0 0)))

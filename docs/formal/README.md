@@ -23,7 +23,7 @@ today — a store of cells (`Store`) but no loans or borrows, and none of
 §6.13's allocation store for buffers and views (ADR-0097 Phase D: exclusivity
 RUE-2238, no-use-after-free RUE-2240) — the core's rules and its §7 theorems
 as kernel-checked Lean statements, under the stated hypotheses (`pendingSafe`,
-the `FloatModel` laws); a safe run may still panic or diverge, and
+the `FloatLaws` laws); a safe run may still panic or diverge, and
 exactly-once excludes the `@panic` path (see [`lean/DIGEST.md`](lean/DIGEST.md)).
 All four are views of one language and must agree where they overlap; a
 genuine disagreement is a bug in one of them, reconciled by fixing whichever
@@ -84,7 +84,7 @@ core is what an alternate compiler's *back half* targets; elaboration is its
 for the fragment the mechanization covers today — a store of cells (`Store`)
 but no loans or borrows, and none of §6.13's allocation store for buffers and
 views (ADR-0097 Phase D: exclusivity RUE-2238, no-use-after-free RUE-2240) —
-the core's soundness rests on the `FloatModel` laws, and exactly-once
+the core's soundness rests on the `FloatLaws` laws, and exactly-once
 additionally on `pendingSafe` (RUE-2316); a safe run may still panic or
 diverge, and exactly-once excludes the `@panic` path, however the program was
 elaborated; see [`lean/DIGEST.md`](lean/DIGEST.md).)

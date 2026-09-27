@@ -33,7 +33,7 @@ inductive HasTy (D : Decls) : Val → Ty → Prop where
   /-- §6.1's `f_T` at `T = float(w)`: the datum lies in `𝔽_w`, which is the
   float counterpart of `n_T`'s `min_T ≤ n ≤ max_T` side condition. Keeping it
   is what gives §7's "totality of the float operations" lemma something to
-  preserve: the model's closure laws (`FloatModel`, `Float.lean`) are exactly
+  preserve: the model's closure laws (`FloatLaws`, `Float.lean`) are exactly
   what re-establishes it after a rounded operation. -/
   | float {w f} : f.Wf w → HasTy D (.float w f) (.float w)
   | bool {b} : HasTy D (.bool b) .bool

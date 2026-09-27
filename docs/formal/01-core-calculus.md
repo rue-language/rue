@@ -2374,7 +2374,7 @@ promises. Which NaN splits two ways. A NaN an **invalid operation creates** —
 keeps *that operand's* sign, `σ_NaN` notwithstanding; and which operand wins
 when both are NaNs is target-defined (§9 item 5, RUE-2283 — x86-64 and AArch64
 both take the first). So a rule may not assume a propagated NaN's sign, and the
-mechanization does not: `RueCore.FloatModel.arith_nan` says `isNaN` and no
+mechanization does not: `RueCore.FloatLaws.arith_nan` says `isNaN` and no
 more, and the propagation its executable instance implements is checked against
 the compiler rather than assumed.
 
@@ -2567,7 +2567,7 @@ infinity and a NaN giving a NaN. A converted NaN is a **propagated** NaN, not
 one the conversion creates, so it keeps the operand's sign rather than taking
 `σ_NaN` — the same split as the arithmetic clause above, and verified against
 the compiler, which casts a negative `f64` NaN to a negative `f32` NaN
-(`RueCore.FloatModel.narrow_nan`, `RueCore.FloatModel.cast_nan`).
+(`RueCore.FloatLaws.narrow_nan`, `RueCore.FloatLaws.cast_nan`).
 
 `≺_w` is the IEEE 754 `totalOrder` predicate on `𝔽_w` (`3.12:32`):
 
@@ -3699,6 +3699,6 @@ locked:
      `@total_cmp` and nowhere else. §6.4 therefore states the clause as "the
      result is a NaN" and records the propagation as target-defined, and the
      mechanization assumes no more than that
-     (`RueCore.FloatModel.arith_nan`/`narrow_nan`). Confirm the propagation as
+     (`RueCore.FloatLaws.arith_nan`/`narrow_nan`). Confirm the propagation as
      normative, or `3.12:44` needs a companion sentence for it too.
 

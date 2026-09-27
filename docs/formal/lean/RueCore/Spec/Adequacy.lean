@@ -33,7 +33,7 @@ the semantic equivalence (§7's adequacy sentence; ADR-0097). For a
 checked program, `run` is never stuck, and its values and panics are reached
 by `→*` from `Config.init` with the same store and trace. -/
 def eval_sound_stmt : Prop :=
-  ∀ (M : FloatModel) {P : Program} (_ : ProgramTyped P) (fuel : Nat),
+  ∀ (M : FloatLaws) {P : Program} (_ : ProgramTyped P) (fuel : Nat),
     (∀ w, run M.toFloatSig P fuel ≠ .refused w) ∧
     (∀ H v tr, run M.toFloatSig P fuel = .ok H v tr →
       Steps M.toFloatSig P Config.init (.run H Activation.empty [] (.ret v) tr)) ∧
@@ -53,7 +53,7 @@ direction of the semantic equivalence (§7's adequacy sentence).
 For a checked program, a value or panic `→*` reaches is `run`'s answer at
 every large enough fuel. -/
 def eval_complete_stmt : Prop :=
-  ∀ (M : FloatModel) {P : Program} (_ : ProgramTyped P),
+  ∀ (M : FloatLaws) {P : Program} (_ : ProgramTyped P),
     (∀ H φ v tr, Steps M.toFloatSig P Config.init (.run H φ [] (.ret v) tr) →
       ∃ n, ∀ fuel, n < fuel → run M.toFloatSig P fuel = .ok H v tr) ∧
     (∀ κ tr, Steps M.toFloatSig P Config.init (.panic κ tr) →
@@ -74,7 +74,7 @@ is never stuck iff no reachable configuration is. Under `ProgramTyped` both
 sides hold outright, so the equivalence adds nothing; cite
 `step_never_stuck_of_run` (R5 of `REDTEAM-LOG.md`). -/
 def never_stuck_iff_stmt : Prop :=
-  ∀ (M : FloatModel) {P : Program} (_ : ProgramTyped P),
+  ∀ (M : FloatLaws) {P : Program} (_ : ProgramTyped P),
     (∀ fuel w, run M.toFloatSig P fuel ≠ .refused w) ↔
       ∀ C, Steps M.toFloatSig P Config.init C → C.Terminal ∨ ∃ C', Step M.toFloatSig P C C'
 
@@ -96,7 +96,7 @@ def run_stuck_of_step_stuck_stmt : Prop :=
 checked program, `run` is `outOfFuel` at every fuel iff `Step` has runs of
 every length from `Config.init`. -/
 def eval_diverges_iff_stmt : Prop :=
-  ∀ (M : FloatModel) {P : Program} (_ : ProgramTyped P),
+  ∀ (M : FloatLaws) {P : Program} (_ : ProgramTyped P),
     (∀ fuel, run M.toFloatSig P fuel = .outOfFuel) ↔
       ∀ n, ∃ D, StepsN M.toFloatSig P n Config.init D
 

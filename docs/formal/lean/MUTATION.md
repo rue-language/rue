@@ -787,7 +787,7 @@ proposal in two places. The `HasTy` witnesses are sharpness
 counter-examples of `step_preservation` over a halted, unreached
 configuration, not witnesses about a checked program's contents: a value
 `HasTy` must reject cannot be written by a checked program, and no run
-produces one. And the float witness needs no proof about the `FloatModel`
+produces one. And the float witness needs no proof about the `FloatLaws`
 laws, since `¬ Wf` of the datum is what the mutant falsifies. The table is
 kept as RUE-2490's record.
 
@@ -807,7 +807,7 @@ score block above for the full breakdown.
 | `hasty-float-any-value` (`HasTy.float` drops `f.Wf w`) | the same argument, over `f.Wf w` | the same shape, for a concrete `FloatDatum` that is not `Wf` |
 | `lifo-vacuous` (`Lifo → True`) | `Lifo.newer` is an L2 helper, not a stated property; the two Sharp `¬ Lifo` claims (`.unordered`, `.not_a_step`) stay true through other facts, not through `Lifo` | a Sharp statement with `¬ Lifo` of a pop that drops a cell it did not cut — the counterpart of `unorderedRecord_rejected`, in the Spec layer rather than a witness |
 | `safeat-typing-vacuous` (`Config.SafeAt`'s typing conjunct `→ True`) | both Sharp `¬ SafeAt` claims (`.stuck_step`, `.unreachable_stuck`) rest on the progress conjunct, which this mutant leaves alone | a `¬ SafeAt` of a configuration that halts with an ill-typed value, naming the typing conjunct the way `unreachable_stuck` names progress |
-| `float-wf-no-emin` (`FloatDatum.Wf` drops the `eMin` floor) | sampled, not proved: `exactOps` on data that satisfy the mutant's weaker `Wf` but not the real one still satisfies `arith_wf`/`sqrt_wf`/`narrow_wf`/`div_by_zero` on the cases checked, so `Nonvacuous.exact_model` stands | a `¬ Wf` witness for a below-`eMin` datum, and a proof (not a sample) that no `FloatModel` law is vacuous on it |
+| `float-wf-no-emin` (`FloatDatum.Wf` drops the `eMin` floor) | sampled, not proved: `exactOps` on data that satisfy the mutant's weaker `Wf` but not the real one still satisfies `arith_wf`/`sqrt_wf`/`narrow_wf`/`div_by_zero` on the cases checked, so `Nonvacuous.exact_model` stands | a `¬ Wf` witness for a below-`eMin` datum, and a proof (not a sample) that no `FloatLaws` law is vacuous on it |
 | `float-wf-noncanonical` (drops the odd-significand requirement) | the same sampling argument | a `¬ Wf` witness for an even-significand datum |
 
 Two kills are worth flagging for the coordinator, not because they are

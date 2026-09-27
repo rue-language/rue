@@ -214,7 +214,7 @@ def spineReport (env : Environment) : CoreM (String × UInt32) := do
   let base ← Lint.trustedBase env
   let floatStmts := Spec.spine.filter fun (_, s) =>
     match Lint.find? env s with
-    | some (.defnInfo v) => v.value.getUsedConstants.contains ``FloatModel
+    | some (.defnInfo v) => v.value.getUsedConstants.contains ``FloatLaws
     | _ => false
   -- the sharpness counts (RUE-2495), computed from `Lint.hypothesisList`, the
   -- walk the lint numbers the hypotheses by: every hypothesis of every spine
@@ -252,10 +252,10 @@ def spineReport (env : Environment) : CoreM (String × UInt32) := do
     "- the lemmas §7 names explicitly: loan/drop non-interference, loan-extent",
     "  nesting, root separation, view-intact (RUE-2238) and handle-uniqueness",
     "  preservation (RUE-2240). Float totality is not a theorem either: the rounded",
-    "  operations' closure is assumed, as the laws of `FloatModel`, of every model",
+    "  operations' closure is assumed, as the laws of `FloatLaws`, of every model",
     "  the statements quantify over (it is proved of `Float.exactOps`).",
     "",
-    s!"{floatStmts.length} of the {Spec.spine.length} statements quantify over `M : FloatModel`, the IEEE 754 laws assumed.",
+    s!"{floatStmts.length} of the {Spec.spine.length} statements quantify over `M : FloatLaws`, the IEEE 754 laws assumed.",
     "The laws have a model: `Float.exactModel` (`RueCore/Float/Lemmas.lean`) proves every one",
     "of them of the executable instance `Float.exactOps`, so they are jointly satisfiable and",
     s!"those {floatStmts.length} are not vacuous in `M` (`Nonvacuous.exact_model`, RUE-2469). Several statements say",
@@ -316,7 +316,7 @@ def spineReport (env : Environment) : CoreM (String × UInt32) := do
     "The counter-examples are Spec statements too, proved in",
     "`RueCore/Sharp.lean` and covered by the kernel, the lint, Comparator and the",
     "fingerprints. Several are refusals of `eval`'s monitors, so a machine without a",
-    "monitor falsifies one (R3 of `REDTEAM-LOG.md`). The `FloatModel` laws are not",
+    "monitor falsifies one (R3 of `REDTEAM-LOG.md`). The `FloatLaws` laws are not",
     "numbered: they are assumptions about the model a statement is instantiated at, not",
     "hypotheses about a program, and every counter-example runs on `Float.exactOps`, a",
     "model of them; that one reason is recorded with `RueCore.Spec.sharpnessReasons`.",

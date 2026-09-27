@@ -533,8 +533,8 @@ def sharpness : List (Lean.Name × Lean.Name × List (Lean.Name × Nat)) := [
 (RUE-2485), in the form of `sharpness`'s pairs; the lint fails on a
 hypothesis that neither list covers (helper).
 
-One reason covers every statement over `M : FloatModel`, and is recorded here
-once: the laws of `FloatModel` are not a hypothesis about a program but
+One reason covers every statement over `M : FloatLaws`, and is recorded here
+once: the laws of `FloatLaws` are not a hypothesis about a program but
 assumptions about the float model every statement is instantiated at, and the
 counter-examples all run on `Float.exactOps`, a model of them
 (`Nonvacuous.exact_model`). A statement that failed at a model breaking a law

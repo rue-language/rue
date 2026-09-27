@@ -12,7 +12,7 @@ public import RueCore.Adequacy.Defs
 # RueCore.Spec.Nonvacuous — the spine's hypotheses hold of real programs (Spec layer)
 
 A kernel-checked theorem can still be empty: a checker that accepts nothing
-is trivially sound, and a statement over every `M : FloatModel` holds
+is trivially sound, and a statement over every `M : FloatLaws` holds
 vacuously if no model satisfies the laws (RUE-2469). Each statement here says
 that some spine statements' hypotheses **hold together, of a non-trivial
 program**, with the program written out and its non-triviality in the
@@ -28,7 +28,7 @@ gets stuck. Each is a small copy of a corpus case (`Corpus.lean`), named in its
 doc-comment, over one declaration environment: `S0`, an affine struct with a
 destructor; `S1`, a `linear` struct; and `E0 { K0(S0), K1 }`. Every program is
 run on `Float.exactOps`, which `exact_model` shows is the operations of a
-`FloatModel`, so the statements quantified over `M : FloatModel` apply to it.
+`FloatLaws`, so the statements quantified over `M : FloatLaws` apply to it.
 
 `Spec.witnesses` (`Spec.lean`) lists each statement with the theorem that
 proves it (`RueCore/Nonvacuous.lean`, layer L2) and the spine statements
@@ -44,12 +44,12 @@ namespace RueCore.Spec.Nonvacuous
 
 
 /-- **The float laws have a model: `Float.exactOps`** (§7's "totality of the
-float operations"; RUE-2469). Some `FloatModel` has the executable instance
-`Float.exactOps` as its operations, so every law of `FloatModel` holds of the
+float operations"; RUE-2469). Some `FloatLaws` has the executable instance
+`Float.exactOps` as its operations, so every law of `FloatLaws` holds of the
 model the corpus runs on, and the laws are jointly satisfiable: the 22 spine
-statements that quantify over `M : FloatModel` are not vacuous in `M`. -/
+statements that quantify over `M : FloatLaws` are not vacuous in `M`. -/
 def exact_model_stmt : Prop :=
-  ∃ M : FloatModel, M.toFloatSig = Float.exactOps
+  ∃ M : FloatLaws, M.toFloatSig = Float.exactOps
 
 /-- **The initial frame agrees with the empty context** (§6.12's initial
 configuration): at every declaration environment, the empty frame over the

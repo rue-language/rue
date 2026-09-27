@@ -524,7 +524,7 @@ honest by making the IEEE side an *interface* rather than an `axiom`.
 `RueCore.FloatSig` (`RueCore/Float.lean`) is the operations §6.4 needs whose
 result is `rnd_w` of a value that need not lie in `𝔽_w`: the four arithmetic
 operators, `@sqrt`, a literal's conversion (`3.12:9`), `@int_to_float`, the
-narrowing half of `@float_cast`, and `σ_NaN`. `RueCore.FloatModel` adds the
+narrowing half of `@float_cast`, and `σ_NaN`. `RueCore.FloatLaws` adds the
 laws: closure in `𝔽_w` (`arith_wf`, `sqrt_wf`, `ofLit_wf`, `ofInt_wf`,
 `narrow_wf`), and the behavioural clauses §6.4 quotes from `3.12:22`,
 `3.12:19` and `3.12:9` (`arith_nan`, `narrow_nan`, `div_by_zero`,
@@ -554,7 +554,7 @@ definition over an `opaque` constant would otherwise put `Classical.choice` on
 every theorem that so much as mentions a value. And `exactOps` satisfies the
 laws, as a theorem rather than an assumption: `Float.exactModel`
 (`RueCore/Float/Lemmas.lean`, RUE-2469) proves every one of them of it, so the
-laws have a model and the theorems over `M : FloatModel` are not vacuous in
+laws have a model and the theorems over `M : FloatLaws` are not vacuous in
 `M`: none holds for want of a model. The laws say nothing about which datum a
 rounding returns; that `exactOps`'s roundings are IEEE 754's is checked
 against the compiler by the corpus, not proved. `propext` and
@@ -718,7 +718,7 @@ its own layer or a lower one:
 | **L0 syntax** | `Float`, `Syntax` | §2's syntax, types and float data |
 | **L1 definitions** | `Statics`, `Dynamics`, `Step`, `Soundness/Defs`, `Checker/Defs`, `Trace/Defs`, `Adequacy/Defs` | the semantics (§5's judgment, `eval`, §6's `Step`), and every definition a headline statement is written in: value typing and `ActivationTyping`, the checker algorithm, the trace projections, ledgers and configuration invariants, `Config.SafeAt` |
 | **Spec statements** | `Spec`, `Spec.Safety`, `Spec.Checker`, `Spec.Trace`, `Spec.Step`, `Spec.Adequacy`, `Spec.Nonvacuous`, `Spec.Sharp` | the headline statements, each a `def …_stmt : Prop` over L0 and L1 alone, with its English reading; the one list of them, `Spec.spine` ("The statement layer"); the non-vacuity witnesses with their list, `Spec.witnesses` ("Non-vacuity witnesses"); and the sharpness counter-examples with theirs, `Spec.sharpness` and `Spec.sharpnessReasons` ("Sharpness counter-examples") |
-| **L2 proofs** | `Float.Lemmas`, `Statics.Lemmas`, `Dynamics.Lemmas`, `Step.Lemmas`, `Soundness`, `Checker`, `Trace`, `Adequacy`, `TraceExact`, `TraceOrder`, `Retire`, `TracePrefix`, `TraceWhole`, `Nonvacuous`, `Sharp`, `Spine`, `Nonvacuous.Glue`, `Sharp.Glue` | the theorems and their proofs, with the proof-internal relations (`Sim`, `Long`, the `*IH` motives); the `*.Lemmas` modules are the theorems about L0's and L1's definitions (`Float.Lemmas`: the `FloatModel` laws of `Float.exactOps`), `Nonvacuous` proves the witness statements and `Sharp` the counter-example statements, `Spine` checks each headline, witness and counter-example proof against its Spec statement, `Nonvacuous.Glue` applies each witness to the theorems it lists, and `Sharp.Glue` refutes each spine statement with a hypothesis dropped from the counter-example `Spec.sharpness` pairs with it |
+| **L2 proofs** | `Float.Lemmas`, `Statics.Lemmas`, `Dynamics.Lemmas`, `Step.Lemmas`, `Soundness`, `Checker`, `Trace`, `Adequacy`, `TraceExact`, `TraceOrder`, `Retire`, `TracePrefix`, `TraceWhole`, `Nonvacuous`, `Sharp`, `Spine`, `Nonvacuous.Glue`, `Sharp.Glue` | the theorems and their proofs, with the proof-internal relations (`Sim`, `Long`, the `*IH` motives); the `*.Lemmas` modules are the theorems about L0's and L1's definitions (`Float.Lemmas`: the `FloatLaws` laws of `Float.exactOps`), `Nonvacuous` proves the witness statements and `Sharp` the counter-example statements, `Spine` checks each headline, witness and counter-example proof against its Spec statement, `Nonvacuous.Glue` applies each witness to the theorems it lists, and `Sharp.Glue` refutes each spine statement with a hypothesis dropped from the counter-example `Spec.sharpness` pairs with it |
 | **L3 tooling** | `Examples`, `Witnesses`, `Print`, `Corpus`, `Gen`, `Explain*`, `Digest`, `Map`, `Literature`, `Layers`, `Lint`, the `*Main` executables, the root `RueCore` | example and corpus programs and the theorems about them, the printer, the generator, the explain and digest reports, the proof map's milestone list, the spine's table against the literature, the layer table and the lint |
 
 L3 may import anything; nothing in L0–L2 or Spec imports L3, so no theorem of the
@@ -1203,14 +1203,14 @@ without Landlock fails 3.
 ## Non-vacuity witnesses (RUE-2469)
 
 A kernel-checked statement can still be empty: a checker that accepts nothing
-is trivially sound, and a statement over every `M : FloatModel` holds
+is trivially sound, and a statement over every `M : FloatLaws` holds
 vacuously if no model satisfies the laws. So every spine statement has
 **non-vacuity witnesses**: Spec statements (`RueCore/Spec/Nonvacuous.lean`)
 saying that its hypotheses hold together of a non-trivial program, written out
 in the statement, with the non-triviality in the statement too.
 
 * **The float laws have a model.** `Nonvacuous.exact_model` is `∃ M :
-  FloatModel, M.toFloatSig = Float.exactOps`: `RueCore/Float/Lemmas.lean`
+  FloatLaws, M.toFloatSig = Float.exactOps`: `RueCore/Float/Lemmas.lean`
   proves every law of the executable instance (closure of `rnd_w` through
   `roundRat_wf` and `@sqrt`'s `sqrt_core`, the NaN, division and literal laws
   by case analysis), constructively, with four core-library facts that reach
@@ -1335,7 +1335,7 @@ The walk does not go
 under `∨` or `¬`, nor into a definition that is not reducible: a premise
 inside `Config.SafeAt`, `Exact`, `Blocks`, `DropGlueBlocks` or `Lifo` is part of the
 conclusion. No spine statement has a premise under `∨` or `¬` today.
-`M : FloatModel` is not a hypothesis either: it is not a `Prop`.
+`M : FloatLaws` is not a hypothesis either: it is not a `Prop`.
 
 `RueCore.Spec.sharpness` (`Spec.lean`) names each counter-example
 statement, the theorem that proves it (`RueCore/Sharp.lean`, L2), and the
@@ -1430,14 +1430,14 @@ The counter-examples, by kind:
 
 The two reasons, both in `Spec.lean`:
 
-* The `FloatModel` laws are assumptions about the float model a
+* The `FloatLaws` laws are assumptions about the float model a
   statement is instantiated at, not hypotheses about a program, and every
   counter-example runs on `Float.exactOps`, a model of them
   (`Nonvacuous.exact_model`). Recorded once, in `sharpnessReasons`'
   doc-comment.
 * `no_use_after_drop`'s `ProgramTyped` has no counter-example because it is
   redundant (RUE-2496): `run_no_use_after_drop` proves the conclusion for
-  every program, checked or not, at every fuel and any float operations (not only a `FloatModel`), and
+  every program, checked or not, at every fuel and any float operations (not only a `FloatLaws`), and
   `step_no_use_after_drop` the same over `Step` for every configuration
   reached from `Config.init` (`RueCore/Retire.lean`). The property is
   structural, not a consequence of typing: a binding's cell is minted fresh
@@ -1510,8 +1510,8 @@ pass is):
 
 | File | Contents | Calculus |
 | --- | --- | --- |
-| `RueCore/Float.lean` | §2's datum set `𝔽_w` with the operations §6.4 computes exactly, `3.12:40`–`3.12:42`'s shortest round-trip rendering, the `FloatSig`/`FloatModel` interface and its named IEEE laws, and the constructive instance `Float.exactOps` | §2, §6.4, §7's float lemma |
-| `RueCore/Float/Lemmas.lean` | (layer L2) every `FloatModel` law proved of `Float.exactOps`, and `Float.exactModel` (RUE-2469): `roundRat_wf` (`rnd_w` lands in `𝔽_w`), `sqrt_core`/`sqrt_wf`, the NaN, division and literal laws | §2, §6.4, §7's float lemma |
+| `RueCore/Float.lean` | §2's datum set `𝔽_w` with the operations §6.4 computes exactly, `3.12:40`–`3.12:42`'s shortest round-trip rendering, the `FloatSig`/`FloatLaws` interface and its named IEEE laws, and the constructive instance `Float.exactOps` | §2, §6.4, §7's float lemma |
+| `RueCore/Float/Lemmas.lean` | (layer L2) every `FloatLaws` law proved of `Float.exactOps`, and `Float.exactModel` (RUE-2469): `roundRat_wf` (`rnd_w` lands in `𝔽_w`), `sqrt_core`/`sqrt_wf`, the NaN, division and literal laws | §2, §6.4, §7's float lemma |
 | `RueCore/Syntax.lean` | multiplicity lattice and its join, §2's declaration environment `D` — struct declarations with their attribute, fields and destructor, and **enum** declarations with one payload tuple per variant — types including `[T; n]`, `class(T)` with §3's four-line array table (`3.8:74`), **places** (§5's `Path`, field steps and **constant** index steps) with the type a path reaches, §4.2's use plan `dl(Γ,p)` (`declaredPrefix`) and §5.1's residue test (`linearResidue`) over it, and §4.2's restrictions on which projections may be moved, expressions | §2, §3, §4.2 |
 | `RueCore/Statics.lean` | §3's class assignment as a checked equation, for both layers, grounded by `3.0:5`'s joint acyclicity read through array nesting (`WfStructs`/`WfEnums`/`WfNames` over `Ty.tyNames`, the unconditional `class_unique` and its two projections, `struct_carriesLinear_iff`/`enum_carriesLinear_iff`), the fused flow-sensitive `Γ;Σ` context with Σ **keyed by path** (`OwnSt`, `fullyOwned`, §5.6's recursive `residualLinear`, whose array clause reads the element type `n` times), the ownership-threading judgment `Typed` (parameterized by the program and the enclosing return type, and concluding at §5.3's outgoing result `Ω` with the `-Bottom` rules and the join over the arms that continue) — the ordinary place rules and the **declared-linear destructure** of §5.1 beside them — the §5.5 branch join over paths and its n-way fold at a `match` (proved commutative and, over states that are shapes of their declared types (`OwnSt.wf`), associative, so the fold is invariant under a permutation of the arms, `Ctx.joinAll_perm`, idempotent and absorbing its right arm, `Ctx.join_absorb`, and every derivation preserves that shape invariant, `Typed.wf`), §5.7's loop-head equation `LoopHead` with its re-entry lemma, (Fn) and whole-program well-formedness, skeleton preservation | §3, §4.2, §5.1–§5.3, §5.5–§5.8 |
 | `RueCore/Dynamics.lean` | store/frame machine as a fuel-indexed definitional interpreter with observation traces (drops, destructors, `@dbg`); cell **contents as a tree with `⊘` at any node**, navigated by a path (§6.3's `H(ℓ)@π` and `H[ℓ@π ↦ ⊘]`, a constant index being a step like a field slot); §6.3's `split`/`destructure` for the declared-linear redex, with a residue monitor; §6.11's recursive drop (destructor, then fields in declaration order, an enum's active variant's payload, and an array's elements in ascending index order, every `⊘` skipped); frames with scope records and their unwinds, `return`'s and `break`'s; loops, each turn spending fuel; value identities minted at aggregate introduction and carried by values, cells and trace events; violations as named refusals, among them the copy-closure monitor; §6.4's operator rules, §6.5's bounds trap at a dynamic index, and every §6.12 trap the fragment reaches, each carrying the trace up to it | §6.1–§6.12 |
