@@ -827,7 +827,7 @@ always rejected.
 
 ### 5.3 Sequencing, discard, and the linear leak check
 
-Expression evaluation carries an outgoing result `Ω`: an optional normal
+Expression evaluation carries an output result `Ω`: an optional normal
 ownership state together with the set of **edge deliveries** made by the
 reachable diverging edges of the expression:
 
@@ -1066,8 +1066,8 @@ model masks that class and is not evidence that deferred view equality is sound.
 
 ### 5.5 Control flow and the branch join
 
-`if` and `match` type each arm under the *same* incoming Σ and must **reconcile**
-their outgoing states:
+`if` and `match` type each arm under the *same* input Σ and must **reconcile**
+their output contexts:
 
 ```
   Γ;Σ;Λ ⊢ e0 ⇒ bool ⊣ Σ0
@@ -1104,7 +1104,7 @@ states the sub-place keying normatively — an infectious carrier's must-consume
 obligation "attaches to its linear *sub-places* rather than to the carrier as a
 whole" — so this is a reading of an existing paragraph rather than an inference
 the compiler's behavior forced.
-A branch ending in any never-typed divergence has a divergent outgoing state
+A branch ending in any never-typed divergence has a divergent output context
 (`⊥;Δ_i`, with `δ(Δ_i)` naming the kind: `⊥_exit`, `⊥_diverge`, or `⊥_panic`)
 and is excluded from the join (`3.8:51`); its *type* is `never`, which
 (Sub-Never), §5.7, coerces to the sibling arm's type `T`, so a diverging arm
@@ -1280,7 +1280,7 @@ favour of `!`-typing: `@panic` participates in never-coercion (Sub-Never)
 exactly like `return`, so it may inhabit any value context. `@assert` is **not**
 a never form — it returns on the success path and is typed `unit`.)
 
-For ownership provenance, every judgment's outgoing result `Ω` (§5.3) carries
+For ownership provenance, every judgment's output result `Ω` (§5.3) carries
 the set `Δ` of **edge deliveries** made by the reachable diverging edges of the
 expression, each with the ownership state in force where it fires: `⟨ret, Σ⟩`
 for a `return`, `⟨break, Σ⟩` for a `break`, `⟨diverge, Σ_h⟩` for a loop that never
@@ -1360,7 +1360,7 @@ and the loop is ill-formed.
 
 `break` yields no value to its *own* context, so its type is `never`; the "value
 unit" of the grammar (§2) is what it hands to the enclosing loop, not the type of
-the `break` expression. The outgoing state of each form is a divergent state
+the `break` expression. The output context of each form is a divergent state
 that §5.5's join excludes: a branch ending in one of these forms contributes no
 ownership state to the merge.
 
@@ -1442,7 +1442,7 @@ which remains outside this rule's scope.
   body typed at `Σ_h`, not at the entry state — restricted to paths rooted
   outside the loop — read (Break) as *delivering* `unit` at that state to its
   innermost enclosing loop while its own context sees `never ⊣ ⊥;{⟨break, Σ⟩}`.
-  The loop's outgoing state is §5.5's `join` over those states (3.8:80): a
+  The loop's output context is §5.5's `join` over those states (3.8:80): a
   linear-carrying path must agree across every reachable exit (`3.8:50` —
   consumed on only some exits is ill-formed), and an affine, non-Copy move-type
   path joins to `MovedOut` if any reachable exit has it `MovedOut`. Copy paths
@@ -1545,7 +1545,7 @@ its deliveries, when it is re-typed.
 premises still demand a single common type `T`. In
 `if c { 5 } else { return 0 }` the `else` arm has type `never`, which
 (Sub-Never) re-types to `i32` to meet the `then` arm; the whole `if` is `i32`,
-and since the `else` arm's outgoing state is divergent provenance (and is
+and since the `else` arm's output context is divergent provenance (and is
 excluded) the branch join is just the
 `then` arm's state. When *every* arm diverges (`3.4:6`, e.g.
 `if c { return 1 } else { return 0 }`), the principal type is `never`, which
@@ -1881,7 +1881,7 @@ panic edge. The three views agree on this rule (the RUE-523 reconciliation recor
 RUE-526): the entry recheck here is prose `6.1:36`, which the compiler
 enforces as E0208 — the core stated the rule first, the prose and compiler
 followed. The
-loans are second-class — released when the call returns — so the outgoing Σm
+loans are second-class — released when the call returns — so the output Σm
 carries only the moves performed by the by-value arguments. Because the core is
 fully monomorphic (§1), `g` names a single concrete signature: there is no
 overload or generic instantiation to resolve at the call.
@@ -1889,7 +1889,7 @@ overload or generic instantiation to resolve at the call.
 **Intrinsic forms `@panic` / `@dbg`.** `@panic` transfers control away instead
 of yielding a value, so it is typed exactly like the §5.7 diverging forms —
 `never` — and (Sub-Never) then admits it wherever a value of any type is
-expected. Its outgoing provenance is `⊥_panic` only when its message evaluates
+expected. Its output provenance is `⊥_panic` only when its message evaluates
 normally; if the message diverges, the intrinsic propagates that operand
 provenance. `@dbg` is an ordinary `unit`-typed expression whose operand is a
 value-context use.

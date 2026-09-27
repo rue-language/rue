@@ -306,7 +306,7 @@ def enumItems : Nat → List EnumDecl → String
   | e, ed :: rest => enumItem e ed ++ enumItems (e + 1) rest
 
 mutual
-/-- Whether `check` gives an expression §5.7's `⊥` (no normal outgoing state):
+/-- Whether `check` gives an expression §5.7's `⊥` (no normal output context):
 a `return` or `@panic`, a form whose first diverging operand stops it (§5.3's
 (Strict-Bottom), (Seq-Bottom), (Let-Bottom)), a sequence or `let` whose tail
 diverges, and a branch whose condition or scrutinee diverges or whose every arm

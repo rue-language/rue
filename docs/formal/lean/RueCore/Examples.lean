@@ -766,7 +766,7 @@ def arrayZeroLengthDynTrap : Expr :=
 
 /-- **The element move in one arm of an `if`** (probe `a4`/`a4b`): the §5.5
 join meets `MovedOut` at the element against `Owned`, and `ownedJoinable`'s array
-clause admits it because `S1` is not `Linear` (`3.8:50`). The outgoing state has
+clause admits it because `S1` is not `Linear` (`3.8:50`). The output context has
 the element `MovedOut`, so the scope exit drops only `a[1]` — which is what the
 compiler prints on the taken path, and `3.8:73`'s "elements moved out on only
 some paths are dropped exactly when the executed path did not move them" is
@@ -1874,7 +1874,7 @@ def panicPastAffine : Expr :=
 program (`panicPastLinear_typed`) and the machine runs it to a trap with an
 empty trace. `check` accepts it too, since it carries §5.7's `⊥`: the `let`'s
 tail diverges, so no scope exit is reached on a normal path (before RUE-2368
-`check` handed that scope exit the incoming `Owned` state and refused). The
+`check` handed that scope exit the input `Owned` state and refused). The
 compiler accepts and runs it: `panic: boom`, exit 101, nothing on stdout, so
 `S3`'s destructor does not run there either (verified by hand). -/
 def panicPastLinear : Expr :=
@@ -3863,7 +3863,7 @@ def matchNeverFirstArm : Expr :=
 /-- A `@panic` in one arm of an `if` whose other arm consumes a **linear**
 binding: the panic arm is `⊥` and excluded, so the binding is `MovedOut` after
 the `if` and the `let` owes nothing at its scope exit. The old `check` gave the
-panic arm the incoming state, where the binding is still `Owned`, and the join
+panic arm the input context, where the binding is still `Owned`, and the join
 was a linear disagreement. The run takes the consuming arm: `S3`'s destructor
 prints `1`, then the value `3`. -/
 def ifPanicArmLinear : Expr :=

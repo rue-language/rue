@@ -65,7 +65,7 @@ def verdictLines (indent : Nat) : Verdict → List String
         para (indent + 8) 68 why
 
 /-- One node of the derivation tree, indented by its depth: the §5 rule the
-node applies, the expression it concludes about, the incoming fused `Γ;Σ`,
+node applies, the expression it concludes about, the input fused `Γ;Σ`,
 and its conclusion. Children (the rule's premises, in premise order) follow,
 indented one level further. -/
 partial def derivLines (P : Program) (R : Ty) (indent : Nat) : Deriv → List String
