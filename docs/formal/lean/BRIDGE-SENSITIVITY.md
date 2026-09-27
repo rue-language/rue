@@ -751,12 +751,12 @@ module doc has the mechanism and the corpus-shape counts).
 
 Rerun at these settings:
 
-* `h2318`: **caught**, at `--gen 1000 --seed 23` only, program 74 (`gen_23_73`
+* `h2318`: **killed**, at `--gen 1000 --seed 23` only, program 74 (`gen_23_73`
   — a boundary pair at the program's root replaced trunk's rejected
   4-function, 327-node draw with `fn f0() -> i64 { let v0: i64 = (-1);
   (min_T * v0) }`; the model accepts and traps overflow, the mutant accepts
   and computes `min_T`, exiting `0`). `--gen 200 --seed 7` catches nothing.
-* `c-overflow-kind`: **caught**, by the loop's own `verify.py`/`mverify.py`
+* `c-overflow-kind`: **killed**, by the loop's own `verify.py`/`mverify.py`
   (RUE-2482 also gave both scripts a trap-kind comparison against the
   compiler's fixed stderr message, `crates/rue-runtime/src/error.rs`) — 7
   cases at `--gen 1000 --seed 23`, first `gen_23_73` (the same program;
