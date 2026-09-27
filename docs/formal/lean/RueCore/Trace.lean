@@ -51,7 +51,7 @@ drops, a `Copy` value owns nothing, and §6.11's `⊘`-skip is what keeps a
 moved-out position from being counted twice — "this single skip is what makes
 double-free impossible".
 
-What the law needs from the program is **copy closure** (`Contents.copyContained`):
+What the law needs from the program is **Copy containment** (`Contents.copyContained`):
 nothing owned hides under a `Copy` node, or a copy would duplicate it. §3 makes
 that a property of every well-typed value, and the machine enforces it with a
 monitor at aggregate introduction and assignment (`Dynamics.lean`), so the law
@@ -104,13 +104,13 @@ theorem Contents.allCopyList_own {D : Decls} :
       simp only [Contents.allCopyList, Bool.and_eq_true] at h
       simp [Contents.ownList, Contents.allCopy_own h.1, Contents.allCopyList_own h.2]
 
-/-- A copy-closed node that is `Copy` is `Copy` all the way down (helper). -/
+/-- A copy-contained node that is `Copy` is `Copy` all the way down (helper). -/
 theorem Contents.copyContained_allCopy {D : Decls} {c : Contents} (hc : c.copyContained D = true)
     (hm : c.qual D = .copy) : c.allCopy D = true := by
   cases c <;> simp_all [Contents.copyContained, Contents.qual, Contents.allCopy]
 
 mutual
-/-- All-`Copy` contents is copy-closed (helper). -/
+/-- All-`Copy` contents is copy-contained (helper). -/
 theorem Contents.allCopy_copyContained {D : Decls} :
     ∀ {c : Contents}, c.allCopy D = true → c.copyContained D = true
   | .movedOut, _ | .int _ _ _, _ | .float _ _, _ | .bool _, _ | .unit, _ => rfl
@@ -134,7 +134,7 @@ theorem Contents.allCopyList_copyContainedList {D : Decls} :
         Contents.allCopyList_copyContainedList h.2]
 end
 
-/-- A member of a copy-closed list is copy-closed (helper). -/
+/-- A member of a copy-contained list is copy-contained (helper). -/
 theorem Contents.copyContainedList_index {D : Decls} :
     ∀ {cs : List Contents} {f : Nat} {c : Contents},
       Contents.copyContainedList D cs = true → cs[f]? = some c → c.copyContained D = true
@@ -164,7 +164,7 @@ theorem Contents.allCopyList_index {D : Decls} :
       simp only [Contents.allCopyList, Bool.and_eq_true] at h
       exact Contents.allCopyList_index h.2 hg
 
-/-- Writing a copy-closed member keeps a copy-closed list so (helper). -/
+/-- Writing a copy-contained member keeps a copy-contained list so (helper). -/
 theorem Contents.copyContainedList_set {D : Decls} :
     ∀ {cs : List Contents} (f : Nat) {c : Contents},
       Contents.copyContainedList D cs = true → c.copyContained D = true →
@@ -264,7 +264,7 @@ theorem Contents.getAt_allCopy {D : Decls} : ∀ (π : List Nat) {c sub : Conten
           · cases hr
       | _ => simp [Contents.getAt] at hr
 
-/-- A position read out of a copy-closed contents is copy-closed (helper). -/
+/-- A position read out of a copy-contained contents is copy-contained (helper). -/
 theorem Contents.getAt_copyContained {D : Decls} : ∀ (π : List Nat) {c sub : Contents},
     c.copyContained D = true → c.getAt π = .ok sub → sub.copyContained D = true
   | [], c, sub, h, hr => by simp [Contents.getAt] at hr; subst hr; exact h
@@ -321,7 +321,7 @@ theorem Contents.setAt_allCopy {D : Decls} : ∀ (π : List Nat) {c new c' : Con
           · cases hw
       | _ => simp [Contents.setAt] at hw
 
-/-- **A `⊘` write keeps copy closure** (§6.3's `H[ℓ@π ↦ ⊘]`): `⊘` is
+/-- **A `⊘` write keeps Copy containment** (§6.3's `H[ℓ@π ↦ ⊘]`): `⊘` is
 all-`Copy`, so it may sit under any node (helper). -/
 theorem Contents.setAt_copyContained {D : Decls} : ∀ (π : List Nat) {c new c' : Contents},
     c.copyContained D = true → new.allCopy D = true → c.setAt π new = some c' →
@@ -370,7 +370,7 @@ theorem Contents.setAt_copyContained {D : Decls} : ∀ (π : List Nat) {c new c'
 owned before, less what sat at the path, plus what was written. This is §6.3's
 move (write `⊘`, hand the old sub-tree on) and §6.8's store (drop the old
 sub-tree, write the new value) read as a ledger. Below a `Copy` node both
-sides own nothing there, which is where copy closure is needed (helper). -/
+sides own nothing there, which is where Copy containment is needed (helper). -/
 theorem Contents.setAt_own {D : Decls} (a : Nat) : ∀ (π : List Nat) {c sub new c' : Contents},
     c.copyContained D = true → c.getAt π = .ok sub → c.setAt π new = some c' →
     (c'.own D).count a + (sub.own D).count a ≤ (c.own D).count a + (new.own D).count a
@@ -443,7 +443,7 @@ theorem storeOwn_set_count (D : Decls) (a : Nat) : ∀ {H : Store} {ℓ : Nat} {
       simp only [storeOwn, List.set_cons_succ, List.flatMap_cons, List.count_append]
       omega
 
-/-- Growing the store by a copy-closed cell keeps it copy-closed (helper). -/
+/-- Growing the store by a copy-contained cell keeps it copy-contained (helper). -/
 theorem StoreCC.append {D : Decls} {H ext : Store} (h : StoreCC D H) (he : StoreCC D ext) :
     StoreCC D (H ++ ext) := by
   intro ℓ c hc
@@ -451,7 +451,7 @@ theorem StoreCC.append {D : Decls} {H ext : Store} (h : StoreCC D H) (he : Store
   · rw [List.getElem?_append_left hl] at hc; exact h ℓ c hc
   · rw [List.getElem?_append_right (by omega)] at hc; exact he _ c hc
 
-/-- A store of one copy-closed cell is copy-closed (helper). -/
+/-- A store of one copy-contained cell is copy-contained (helper). -/
 theorem StoreCC.single {D : Decls} {c : Contents} (h : c.copyContained D = true) :
     StoreCC D [.full c] := by
   intro ℓ c' hc
@@ -459,14 +459,14 @@ theorem StoreCC.single {D : Decls} {c : Contents} (h : c.copyContained D = true)
   | zero => simp at hc; subst hc; exact h
   | succ ℓ => simp at hc
 
-/-- A `†` cell is copy-closed (helper). -/
+/-- A `†` cell is copy-contained (helper). -/
 theorem StoreCC.dead {D : Decls} : StoreCC D [.dead] := by
   intro ℓ c hc
   cases ℓ with
   | zero => simp at hc
   | succ ℓ => simp at hc
 
-/-- Writing a copy-closed cell keeps the store copy-closed (helper). -/
+/-- Writing a copy-contained cell keeps the store copy-contained (helper). -/
 theorem StoreCC.set {D : Decls} {H : Store} {ℓ : Nat} {c : Contents} (h : StoreCC D H)
     (hc : c.copyContained D = true) : StoreCC D (H.set ℓ (.full c)) := by
   intro ℓ' c' hc'
@@ -478,7 +478,7 @@ theorem StoreCC.set {D : Decls} {H : Store} {ℓ : Nat} {c : Contents} (h : Stor
     exact hc
   · rw [List.getElem?_set_ne he] at hc'; exact h ℓ' c' hc'
 
-/-- Tombstoning a cell keeps the store copy-closed (helper). -/
+/-- Tombstoning a cell keeps the store copy-contained (helper). -/
 theorem StoreCC.set_dead {D : Decls} {H : Store} {ℓ : Nat} (h : StoreCC D H) :
     StoreCC D (H.set ℓ .dead) := by
   intro ℓ' c' hc'
@@ -871,7 +871,7 @@ end
 mutual
 /-- **`split`, counted** (§6.3): the leaf and the residue together own at most
 what the consumed place owned — the nodes on the path between them are
-consumed — and both stay copy-closed (helper). -/
+consumed — and both stay copy-contained (helper). -/
 theorem Contents.splitResidue_own {D : Decls} (a : Nat) : ∀ (π : List Nat) {c leaf : Contents}
     {rs : List Contents}, c.copyContained D = true → c.splitResidue D π = .ok (leaf, rs) →
     (leaf.own D).count a + (Contents.ownList D rs).count a ≤ (c.own D).count a ∧
@@ -1191,7 +1191,7 @@ theorem Cons.pure {D : Decls} {F : Event → List Nat} {H : Store} {X : List Nat
     (ho : ∀ a, (v.own D).count a ≤ X.count a) : Cons D F H X (.ok H v []) :=
   ⟨Nat.le_refl _, hcc, hv, fun a => by have := ho a; simp; omega⟩
 
-/-- A scalar owns nothing and is copy-closed (helper). -/
+/-- A scalar owns nothing and is copy-contained (helper). -/
 def Val.scalar : Val → Prop
   | .int _ _ _ | .float _ _ | .bool _ | .unit => True
   | _ => False
@@ -1300,7 +1300,7 @@ theorem storeOwn_freshParams (D : Decls) (H : Store) (vs : List Val) :
       simp only [List.map_cons, storeOwn, List.flatMap_cons, Cell.own] at ih ⊢
       rw [ih]; rfl
 
-/-- The cells `freshParams` adds are copy-closed when the arguments are
+/-- The cells `freshParams` adds are copy-contained when the arguments are
 (helper). -/
 theorem StoreCC.freshParams {D : Decls} {H : Store} {vs : List Val} (h : StoreCC D H)
     (hv : Contents.copyContainedList D (Contents.ofVals vs) = true) :
@@ -1336,8 +1336,8 @@ theorem Contents.own_array_le (D : Decls) (T : Ty) (i : Nat) (cs : List Contents
     ((Contents.array T i cs).own D).count a ≤ (Contents.ownList D cs).count a + [i].count a := by
   simp only [Contents.own]; split <;> simp [List.count_cons] <;> omega
 
-/-- An enum owns at least its payload, and a copy-closed one's payload is
-copy-closed — what (D-Match) §6.6 hands the arm's cells (helper). -/
+/-- An enum owns at least its payload, and a copy-contained one's payload is
+copy-contained — what (D-Match) §6.6 hands the arm's cells (helper). -/
 theorem Contents.enum_payload {D : Decls} {e k i : Nat} {cs : List Contents}
     (h : (Contents.enum e k i cs).copyContained D = true) (a : Nat) :
     (Contents.ownList D cs).count a ≤ ((Contents.enum e k i cs).own D).count a ∧
@@ -1609,10 +1609,10 @@ theorem Cons.unwind {D : Decls} {F : Event → List Nat} (hF : TraceMeasure D F)
 /-! ## The law, over the whole machine -/
 
 /-- **The conservation law** (§7's no-double-free, the invariant half): every
-evaluation, of every expression from every copy-closed store, at every fuel,
+evaluation, of every expression from every copy-contained store, at every fuel,
 keeps `Cons` — no identity is ever duplicated, only moved, consumed, or
 minted fresh. By fuel induction over `eval`, one case per form, each closed by
-its ledger above. It reads no typing derivation: copy closure is what the
+its ledger above. It reads no typing derivation: Copy containment is what the
 machine maintains itself, and `DtorNotCopy` (inside `TraceMeasure`, for
 `dtorIds`) is the one fact it needs about the declarations. -/
 theorem eval_conserves (M : FloatSig) {P : Program} {F : Event → List Nat}

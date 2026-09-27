@@ -270,7 +270,7 @@ would duplicate an owner through: over `S0 = @copy struct { x0: i64 }` and
 @drop(p.x0); @drop(q.x0); 0` (`Trace.lean`'s `dupProgram`). It is not
 `ProgramTyped`, and `eval` refuses it with `ownedUnderCopy`, at the literal:
 `no_refusal`'s conclusion fails once `ProgramTyped` is dropped, and a machine
-without the copy-closure monitor (`Contents.copyContained` in `introVal`) makes
+without the Copy-containment monitor (`Contents.copyContained` in `introVal`) makes
 this statement false. -/
 def copy_stmt : Prop :=
   ∀ B : Expr, B =
@@ -558,13 +558,13 @@ def pending_expr_stmt : Prop :=
       ¬ Exact P.decls [.full (.struct 0 0 [.int .w64 .signed 5])] (Contents.ownList P.decls (Contents.ofVals [.int .w64 .signed 0]))
         (eval Float.exactOps 201 P [.full (.struct 0 0 [.int .w64 .signed 5])] { env := [0], scope := [0] } e)
 
-/-- **A store that is not copy-closed** (§7 sharpness, RUE-2485). The store's one
+/-- **A store that is not copy-contained** (§7 sharpness, RUE-2485). The store's one
 cell holds an `[i64; 1]` array (a `Copy` type) with an owned `S0` inside it,
 outside the activation record. `1; 2` is typed and run from the empty activation record over it, which
 agrees with the empty context, in the checked program of `Nonvacuous.dtor`;
 everything else `drop_exactly_once` and `rest_exactly_once` ask holds. The
 evaluation leaves the cell alone, and `Exact` asks the final store to be
-copy-closed, which it is not: both fail without `StoreCC`. -/
+copy-contained, which it is not: both fail without `StoreCC`. -/
 def store_cc_stmt : Prop :=
   ∀ B : Expr, B =
       .letIn false (.mkStruct 0 [.intLit .w64 .signed 1])
@@ -983,7 +983,7 @@ RUE-2478; the ill-typed shape of `double_drop`, without the copies). With `S0`
 a `@copy` struct whose field is an `i64`, `let p = S0 { S1 { 1 } }; 0` is
 rejected by the checker (the field is given an `S1`), so it is not
 `ProgramTyped` (shown through `whole_program_exactly_once` itself), and it is
-`pendingSafe`. §6's relation, which has no copy-closure monitor, runs it: the
+`pendingSafe`. §6's relation, which has no Copy-containment monitor, runs it: the
 configuration after `S1`'s (D-Struct) holds `S1`'s identity `0`; (D-Struct)
 wraps it in the `Copy` `S0`, which owns nothing, and `p`'s drop at scope exit
 is a `Copy` cell's, which runs nothing; the run terminates with `0` and an empty

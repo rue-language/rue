@@ -55,7 +55,7 @@ def Cell.own (D : Decls) : Cell → List Nat
 /-- The store's owned identities, cell by cell (helper). -/
 def storeOwn (D : Decls) (H : Store) : List Nat := H.flatMap (Cell.own D)
 
-/-- Every live cell of the store is copy-closed (helper). -/
+/-- Every live cell of the store is copy-contained (helper). -/
 def StoreCC (D : Decls) (H : Store) : Prop :=
   ∀ (ℓ : Nat) (c : Contents), H[ℓ]? = some (Cell.full c) → c.copyContained D = true
 
@@ -129,7 +129,7 @@ structure TraceMeasure (D : Decls) (F : Event → List Nat) : Prop where
 owned identities `X` besides it (a pending operand's value): the result's
 store, its value and the trace's projection `F` together own at most what `H`
 and `X` owned, plus what was minted on the way — each identity counted, as a
-multiset. The store and the value stay copy-closed. A trap carries no store,
+multiset. The store and the value stay copy-contained. A trap carries no store,
 so its minted range is existential; a refusal and exhausted fuel promise
 nothing (helper). -/
 def Cons (D : Decls) (F : Event → List Nat) (H : Store) (X : List Nat) : EvalRes → Prop

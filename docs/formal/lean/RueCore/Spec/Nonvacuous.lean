@@ -54,7 +54,7 @@ def exact_model_stmt : Prop :=
 /-- **The initial activation record agrees with the empty context** (§6.12's initial
 configuration): at every declaration environment, the empty activation record over the
 empty store matches the empty context (`ActivationTyping`) and its store is
-copy-closed (`StoreCC`). With a program's typed body this is the activation record and
+copy-contained (`StoreCC`). With a program's typed body this is the activation record and
 store the evaluation statements (`soundness`, `drop_exactly_once`,
 `rest_exactly_once`) are applied at by the witnesses below. -/
 def empty_activation_stmt : Prop :=
@@ -64,7 +64,7 @@ def empty_activation_stmt : Prop :=
 beyond the empty activation record. Over the witnesses' declarations, `@drop(s); 1` is
 typed by `check` in the context `s : S0`, owned, and the activation record `{ ρ := [ℓ0],
 σ := [ℓ0] }` over the store `ℓ0 ↦ S0 { 5 }` agrees with that context
-(`ActivationTyping`) and is copy-closed (`StoreCC`), for a checked, `pendingSafe`
+(`ActivationTyping`) and is copy-contained (`StoreCC`), for a checked, `pendingSafe`
 program. Its evaluation runs the destructor of the value it started with, and
 its leading operand has a `Lead`, so `soundness`, `drop_exactly_once` and
 `rest_exactly_once` apply to a term with a free variable and a store that is

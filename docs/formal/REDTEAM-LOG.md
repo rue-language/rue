@@ -448,7 +448,7 @@ What the mutants could not get past:
     prefix of a run, whether or not the run terminates. `no_double_free` for a
     terminating run follows (`no_double_free_of_step`); its statement is
     unchanged, and its doc-comment now points at the new one.
-  - **The invariant.** When `eval` exhausts its fuel from a copy-closed
+  - **The invariant.** When `eval` exhausts its fuel from a copy-contained
     store, `Step` has a run at least that long whose appended trace keeps
     the conservation law's trap ledger: it owns at most what the store owned
     plus a range of fresh identities (`LongC`, `eval_longc`). The proof is
@@ -560,13 +560,13 @@ What the mutants could not get past:
     changed.
   - **The invariant.** A configuration's ledger is what it holds plus what
     its trace has ended; a step loses nothing when the ledger does not shrink
-    (`MSteps`). Stated over `Step` alone, the invariant needs copy closure
+    (`MSteps`). Stated over `Step` alone, the invariant needs Copy containment
     at every aggregate and assignment, which only a configuration typing
     would give (`Step` has no monitor; `Sharp.copy_leak`). So it is carried
     along `eval`'s own run: `eval_msim` is `eval_sim` with every run
     lossless, each step closed by one of `TraceExact.lean`'s exact ledgers
-    read at every identity, with copy closure from `eval`'s monitor and the
-    store's copy closure from `eval_exact`. The unwinding clauses ask that the
+    read at every identity, with Copy containment from `eval`'s monitor and the
+    store's Copy containment from `eval_exact`. The unwinding clauses ask that the
     frames `return` and `break` discard hold nothing, and `pendingSafe`
     discharges that through `eval_quiet` wherever an activation record holds a value.
     Determinism puts every reached configuration on the run

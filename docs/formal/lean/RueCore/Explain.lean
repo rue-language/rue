@@ -2145,11 +2145,11 @@ premises run before the node itself, so the table reads top to bottom as the
 machine ran). Each row carries the store before and after, the drop events
 the node emitted, and what the node produced. -/
 
-/-- (helper) The copy-closure monitor's premise, `ownedUnderCopy`
+/-- (helper) The Copy-containment monitor's premise, `ownedUnderCopy`
 (`Dynamics.lean`), as one literal: a chain of `++` here costs the digest's
 equation generator more than its heartbeat limit allows. -/
 def ownedUnderCopyPremise : String :=
-  "an owned value under a Copy node: a Copy type's fields, payloads and elements are Copy (§3, 3.8:18, 6.3:19), so a copy of this aggregate would duplicate an owner; the machine's copy-closure monitor refuses it (§7 “no double free”), and `soundness` proves a checked program never reaches it"
+  "an owned value under a Copy node: a Copy type's fields, payloads and elements are Copy (§3, 3.8:18, 6.3:19), so a copy of this aggregate would duplicate an owner; the machine's Copy-containment monitor refuses it (§7 “no double free”), and `soundness` proves a checked program never reaches it"
 
 /-- The machine's refusal, in §6's words, with the §7 bullet it violates
 and the prose paragraph behind it. -/
@@ -2327,7 +2327,7 @@ def trapLiftsPastCall : String :=
 /-- (helper) An aggregate's introduction ((D-Struct), (D-Array) §6.5,
 (D-Enum-Intro) §6.6, the repeat form), mirroring `introVal`: the value's
 identity is minted as the next store index, reserved with `†`, and the row
-shows the value with it (`idTag`); an aggregate the copy-closure monitor
+shows the value with it (`idTag`); an aggregate the Copy-containment monitor
 refuses is refused here too. -/
 def tracedIntro (P : Program) (kids : List Step) (d : Nat) (Θ : List Ty) (R : Ty) (e : Expr)
     (rule : String) (H H₁ : Store) (tr : List Event) (mk : Nat → Val) : Trace :=

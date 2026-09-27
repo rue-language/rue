@@ -45,8 +45,8 @@ configuration (RUE-2423).
 So the ledger is carried along `eval`'s own run instead. `eval_msim` is
 `eval_sim` (`Equivalence.lean`) with every run lossless: form by form, each
 `Step` the simulation takes is shown to lose nothing, from the facts `eval`
-itself established on the way — its copy-closure monitor passed at an
-aggregate or an assignment, its store is copy-closed (`eval_exact`), and its
+itself established on the way — its Copy-containment monitor passed at an
+aggregate or an assignment, its store is copy-contained (`eval_exact`), and its
 operands are scalars where §6.4 computes. The step's ledger is then one of
 `TraceExact.lean`'s exact ledgers, read at every identity rather than only at
 those the evaluation started with (`move_count`, `plainUnwind_count`, …).
@@ -487,7 +487,7 @@ theorem assignDyn_count {D : Decls} {H : Store} {ℓ : Nat} {c c' sub sub' old :
   simp only [Val.own] at *
   omega
 
-/-- A fresh struct owns at least its fields, copy-closed (helper). -/
+/-- A fresh struct owns at least its fields, copy-contained (helper). -/
 theorem Contents.own_struct_ge {D : Decls} {s i : Nat} {cs : List Contents}
     (h : (Contents.struct s i cs).copyContained D = true) (a : Nat) :
     (Contents.ownList D cs).count a ≤ ((Contents.struct s i cs).own D).count a := by
@@ -497,7 +497,7 @@ theorem Contents.own_struct_ge {D : Decls} {s i : Nat} {cs : List Contents}
   · rename_i hc; rw [if_pos hc] at h; simp [Contents.allCopyList_own h]
   · simp only [List.count_cons]; omega
 
-/-- A fresh array owns at least its elements, copy-closed (helper). -/
+/-- A fresh array owns at least its elements, copy-contained (helper). -/
 theorem Contents.own_array_ge {D : Decls} {T : Ty} {i : Nat} {cs : List Contents}
     (h : (Contents.array T i cs).copyContained D = true) (a : Nat) :
     (Contents.ownList D cs).count a ≤ ((Contents.array T i cs).own D).count a := by
@@ -510,7 +510,7 @@ theorem Contents.own_array_ge {D : Decls} {T : Ty} {i : Nat} {cs : List Contents
 /-! ## Argument lists, losslessly -/
 
 /-- The induction hypothesis: `eval` at fuel `fuel` is simulated losslessly
-from every copy-closed store, for every `pendingSafe` expression (helper). -/
+from every copy-contained store, for every `pendingSafe` expression (helper). -/
 def MSimIH (M : FloatSig) (P : Program) (fuel : Nat) : Prop :=
   ∀ H φ e, StoreCC P.decls H → e.pendingSafe = true →
     MSim M P φ (evalConf H φ e) (eval M fuel P H φ e)
@@ -519,7 +519,7 @@ section forms
 variable {M : FloatSig} {P : Program} {fuel : Nat} {H : Store} {φ : Activation}
 
 /-- An argument list of `pendingSafe` members that finishes leaves a
-copy-closed store and copy-closed values (`eval_exact`) (helper). -/
+copy-contained store and copy-contained values (`eval_exact`) (helper). -/
 theorem evalArgs_cc (hp : P.pendingSafe = true) :
     ∀ {es : List Expr} {H H' : Store} {vs : List Val} {tr : List Event},
       Expr.pendingSafeList es = true → StoreCC P.decls H →
@@ -884,7 +884,7 @@ theorem msim_argsForm (hp : P.pendingSafe = true) (IH : MSimIH M P fuel)
       (hk H₁ vs tr₁ hr)
 
 /-- (D-Struct) §6.5: the identity is minted as `introVal` mints it, whose
-copy-closure monitor keeps every member's identities in the new value
+Copy-containment monitor keeps every member's identities in the new value
 (helper). -/
 theorem msim_mkStruct (hp : P.pendingSafe = true) (IH : MSimIH M P fuel)
     (hcc : StoreCC P.decls H) (s : Nat) (args : List Expr)
@@ -1228,7 +1228,7 @@ theorem msim_letIn (hp : P.pendingSafe = true) (IH : MSimIH M P fuel) (hcc : Sto
       rw [stackOwn_cons_nil rfl]
       omega)
 
-/-- (D-Assign) §6.8: `eval`'s copy-closure monitor passed, so the stored
+/-- (D-Assign) §6.8: `eval`'s Copy-containment monitor passed, so the stored
 value's identities stay counted (helper). -/
 theorem msim_assign (hp : P.pendingSafe = true) (IH : MSimIH M P fuel) (hcc : StoreCC P.decls H)
     (p : Place) (e : Expr) (he : (Expr.assign p e).pendingSafe = true) :
@@ -1450,11 +1450,11 @@ theorem msim_loop (hp : P.pendingSafe = true) (IH : MSimIH M P fuel) (hcc : Stor
 end forms
 
 /-- **`eval` is simulated losslessly** (helper): for a `pendingSafe` program,
-every `pendingSafe` expression from every copy-closed store, at every fuel,
+every `pendingSafe` expression from every copy-contained store, at every fuel,
 reaches what `Sim` says it reaches by a run along which no step loses an
 owned identity. The proof is `eval_sim`'s, form by form, with each step's
 ledger closed by the matching exact ledger of `TraceExact.lean`; typing
-enters nowhere — `eval`'s monitors are what copy closure needs — and
+enters nowhere — `eval`'s monitors are what Copy containment needs — and
 `pendingSafe` is what keeps an unwind from discarding a held value. -/
 theorem eval_msim (M : FloatSig) {P : Program} (hp : P.pendingSafe = true) (fuel : Nat) :
     MSimIH M P fuel := by

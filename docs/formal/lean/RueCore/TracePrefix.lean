@@ -32,7 +32,7 @@ range of fresh identities (`Cons`'s `panic` clause).
 
 `eval_steps_of_outOfFuel` (`Equivalence.lean`) turns exhausted fuel into a run of
 §6's relation at least that long. This module strengthens it by that same
-ledger (`LongC`): if `eval` exhausts `fuel` from a copy-closed store, §6's
+ledger (`LongC`): if `eval` exhausts `fuel` from a copy-contained store, §6's
 relation has a run of at least `fuel` steps from the expression in focus,
 and the trace that run appends satisfies the law as a trap's trace would —
 it owns at most the start plus a range of fresh identities. The proof follows
@@ -185,7 +185,7 @@ theorem LongC.andThen {H : Store} {X : List Nat} {φ₁ : Activation}
         (fun K tr => h (Fr :: K) tr)
   | _ => simp [EvalRes.bind] at hr
 
-/-- The induction hypothesis: at fuel `fuel`, exhaustion from a copy-closed
+/-- The induction hypothesis: at fuel `fuel`, exhaustion from a copy-contained
 store is a run of at least `fuel` steps with the ledger (helper). -/
 def LongCIH (M : FloatSig) (P : Program) (F : Event → List Nat) (fuel : Nat) : Prop :=
   ∀ H φ e, StoreCC P.decls H → eval M fuel P H φ e = .outOfFuel →
@@ -608,7 +608,7 @@ theorem longc_loop (hF : TraceMeasure P.decls F) (IH : LongCIH M P F fuel)
 end longcForms
 
 /-- **Exhausted fuel keeps the ledger** (RUE-2477): if `eval` exhausts `fuel`
-on an expression from a copy-closed store, then from that expression in
+on an expression from a copy-contained store, then from that expression in
 focus, under any context and after any trace, §6's relation has a run of at
 least `fuel` steps whose appended trace owns, under any projection the law
 counts, at most what the store owned plus a range of fresh identities — the

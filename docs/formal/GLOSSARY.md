@@ -156,7 +156,7 @@ it has two rows.
 | declared-linear; declared | Of a struct: marked `linear` itself, not linear only by infection | [spec 3.8:30][s3.8], [3.8:33][s3.8] | `Ty.declaredLinear` | Rue-specific, grounded | 01 §3; 03 intro; WHAT-IT-MEANS “What is proved”; lean/README “Generated programs”; GUIDE §1; BRIDGE-SENSITIVITY “Results”; MUTATION “What is mutated”; CHECKER-PROFILE “Why a rejected program still …”; `Syntax` |
 | non-linear | Of a type or content: it carries no linear value | [spec 3.8:57][s3.8] | — | Rue-specific, grounded | 01 §5.6; 03 “Type safety”; lean/README “The main theorem”; GUIDE “The run”; `Statics` |
 | droppability; droppable; trivially droppable | Whether a value may be discarded, and whether discarding it runs anything | [spec 3.9:7][s3.9], [3.8:74][s3.8] | — | Rue-specific, grounded | 01 §2; 03 intro; lean/README “What is mechanized”; BRIDGE-SENSITIVITY “Results”; `Syntax` |
-| Copy closure; copy-closure | The condition that no non-`Copy` value sits inside a `Copy` one | none | `Contents.copyContained` | ours, pending audit | 03 “No double-free”; lean/README “Sharpness counter-examples”; GUIDE §4; `Dynamics` |
+| Copy containment; Copy-containment; copy-contained | The condition that no non-`Copy` value sits inside a `Copy` one | [FIELD §4][F4]: Walker's containment rules ("unrestricted data structures may not contain linear data structures") | `Contents.copyContained` | standard | 03 “No double-free”; lean/README “Sharpness counter-examples”; GUIDE §4; `Dynamics` |
 
 ### Places, use and ownership
 

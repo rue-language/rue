@@ -340,6 +340,7 @@ annotation. State the order's direction every time it is used.
 | "infectious" (a struct takes its fields' join) | Walker's containment rules (a container is at least as restrictive as what it contains: an `un` pair cannot hold a `lin` component); Tov & Pucella give a product the least upper bound `⊔` of its components' kinds | partial: the same constraint, with no single-word name |
 | `Typed … Ω`, the "input context" and "output context" (formerly "incoming" and "outgoing state") | Walker's algorithmic `Γin ⊢ t : T; Γout` (input / output context, §1.2); Oxide's output context `⇒ Γ′` | clear for the words; partial for `Ω`, which also carries the abrupt-completion contexts `Δ` |
 | `check_sound` | algorithmic soundness (Walker 1.2.9) | clear |
+| "Copy containment", "copy-contained" (the metatheory; `Contents.copyContained`; formerly "Copy closure", "copy-closed") | Walker's containment rules (§1.2) | clear: nothing owned sits under a `Copy` node, the containment rule for the least restrictive qualifier |
 
 ---
 

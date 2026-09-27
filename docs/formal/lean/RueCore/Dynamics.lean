@@ -43,7 +43,7 @@ Design commitments carried over from §6:
     (which is what `soundness` needs), at the price that `eval` and §6
     differ on statically invalid input.
   - `ownedUnderCopy` is a fourth monitor of the same kind (RUE-2323): the
-    **copy-closure** check (`Contents.copyContained`) at aggregate introduction
+    **Copy-containment** check (`Contents.copyContained`) at aggregate introduction
     and at an assignment. §6.5's (D-Struct) builds whatever its initializers
     produced and relies on (Struct-Intro) §5.8 to have made a `Copy`
     struct's fields `Copy`; on a program §5 rejects, an owned value can sit
@@ -427,7 +427,7 @@ def Contents.allCopyList (D : Decls) : List Contents → Bool
 end
 
 mutual
-/-- **Copy closure**: no non-`Copy` value sits under a `Copy` node. §3 makes
+/-- **Copy containment**: no non-`Copy` value sits under a `Copy` node. §3 makes
 it a fact about types — a `Copy` type's fields, payloads and elements are
 `Copy` (`3.8:18`, `6.3:19`, §3's array lift) — and the machine relies on it
 wherever it duplicates a value: (D-Use-Copy), the dynamic-index read and the
@@ -618,7 +618,7 @@ inductive Refusal where
   /-- An owned value under a `Copy` node (§3: a `Copy` type's fields, payloads
   and elements are `Copy`, `3.8:18`, `6.3:19`) — the shape a copy would
   duplicate an owner through, which §7's no-double-free bullet forbids. The
-  copy-closure monitor (`Contents.copyContained`) refuses it where it could be
+  Copy-containment monitor (`Contents.copyContained`) refuses it where it could be
   built: at aggregate introduction and at an assignment (RUE-2323). -/
   | ownedUnderCopy
 deriving DecidableEq, Repr
@@ -1373,7 +1373,7 @@ binds it; it is never read. The identity travels with the value — through
 cells and a `match` arm's payload cells — and the drop trace records it
 (`Event`), which is what `no_double_free` (`Trace.lean`) counts.
 
-The copy-closure monitor (`Contents.copyContained`) runs here, on the finished
+The Copy-containment monitor (`Contents.copyContained`) runs here, on the finished
 value (helper). -/
 def introVal (D : Decls) (H : Store) (mk : Nat → Val) : EvalRes :=
   if (Contents.ofVal (mk H.length)).copyContained D then .ok (H ++ [.dead]) (mk H.length) []
@@ -1392,7 +1392,7 @@ them through the model `M`;
 observable output (§5.8's (Dbg), §6.12's `Outcome`); `drop` is §6.11's
 explicit `@drop`; `letIn` is (D-Let) + (D-EndScope)'s drop-retire (§6.7);
 `assign` is (D-Assign), §6.8's overwrite-drop / reinitialization, with the
-copy-closure monitor on what it stores; `seq` is
+Copy-containment monitor on what it stores; `seq` is
 (D-Seq), discarding with a temporary drop (§6.7); `mkStruct` is (D-Struct)
 §6.5 after §6.2's left-to-right search through its initializers and `mkArray`
 is (D-Array) §6.5 after the same search, each minting its value's identity
@@ -1753,7 +1753,7 @@ def eval (M : FloatSig) : Nat → Program → Store → Activation → Expr → 
                       match c.setAt p.path (Contents.ofVal v) with
                       | none => .refused .typeConfusion
                       | some c' =>
-                          -- The copy-closure monitor (`Contents.copyContained`).
+                          -- The Copy-containment monitor (`Contents.copyContained`).
                           if c'.copyContained P.decls then .ok (H₁.set ℓ (.full c')) .unit evs
                           else .refused .ownedUnderCopy
   | fuel + 1, P, H, φ, .seq e₁ e₂ =>

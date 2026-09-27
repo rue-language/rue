@@ -399,14 +399,14 @@ theorem ContentsTy.qual_eq {D c T} (h : ContentsTy D c T) (hf : c.noMovedOut = t
   | array hcs =>
       simp only [Contents.qual, ContentsTys.length_eq hcs, List.length_replicate]
 
-/-! ## Copy closure: a `Copy` type holds nothing owned
+/-! ## Copy containment: a `Copy` type holds nothing owned
 
-The machine's copy-closure monitor (`Contents.copyContained`, `Dynamics.lean`)
+The machine's Copy-containment monitor (`Contents.copyContained`, `Dynamics.lean`)
 refuses an aggregate whose qualifier is `Copy` but whose members are not. §3 makes
 that a fact about types — `3.8:18` requires every field of a `@copy` struct to
 be `Copy`, `6.3:19` makes an enum `Copy` only when every payload component is,
 and §3's array lift makes `[T; n]` `Copy` only when `T` is — so well-typed
-contents is copy-closed and the monitor never fires on a checked program. -/
+contents is copy-contained and the monitor never fires on a checked program. -/
 
 /-- A qualifier of rank `0` is `Copy` (helper). -/
 theorem Qual.eq_copy_of_rank {m : Qual} (h : m.rank = 0) : m = .copy := by
@@ -492,7 +492,7 @@ theorem ContentsTys.allCopyList {D : Decls} {cs : List Contents} {Ts : List Ty}
 end
 
 mutual
-/-- **Well-typed contents is copy-closed**, so the machine's copy-closure
+/-- **Well-typed contents is copy-contained**, so the machine's Copy-containment
 monitor (`Contents.copyContained`) lets every checked program's aggregates through
 (helper). -/
 theorem ContentsTy.copyContained {D : Decls} {c : Contents} {T : Ty} (hwf : WfDecls D)
@@ -539,7 +539,7 @@ theorem ContentsTys.copyContainedList {D : Decls} {cs : List Contents} {Ts : Lis
       exact ⟨ContentsTy.copyContained hwf h₁, ContentsTys.copyContainedList hwf h₂⟩
 end
 
-/-- A well-typed value is copy-closed (helper). -/
+/-- A well-typed value is copy-contained (helper). -/
 theorem HasTy.copyContained {D : Decls} {v : Val} {T : Ty} (hwf : WfDecls D) (h : HasTy D v T) :
     (Contents.ofVal v).copyContained D = true :=
   h.contentsTy.copyContained hwf
@@ -2751,7 +2751,7 @@ theorem EvalOk.weaken {D T R o₁ o' B φ H r}
 
 /-- **Aggregate introduction keeps the promise** ((D-Struct), (D-Array) §6.5,
 (D-Enum-Intro) §6.6, the repeat form): a well-typed aggregate passes the
-copy-closure monitor (`HasTy.copyContained`), and the identity it mints reserves
+Copy-containment monitor (`HasTy.copyContained`), and the identity it mints reserves
 one `†` slot above the store, which no binding names — so the activation record still
 matches and nothing it names was touched (helper). -/
 theorem introVal_ok {D : Decls} {T R : Ty} {Γ : Ctx} {B : List Ctx} {φ : Activation}
