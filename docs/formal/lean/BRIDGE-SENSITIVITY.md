@@ -269,8 +269,8 @@ parentheses, and the `(mint #n)` identities are merged into one row.
 | (D-EndScope) §6.6 (end the arm) | 9 (6) | 45 (25) | 240 (113) |
 | (D-EndScope) §6.6 (end the arm), *where a destructor prints* | 8 (7) | 5 (4) | 14 (8) |
 | (D-EndScope) §6.7 | 28 (14) | 73 (28) | 329 (101) |
-| (D-EndScope) §6.7 (retire the binding) | 87 (71) | 125 (74) | 611 (362) |
-| (D-EndScope) §6.7 (retire the binding), *where a destructor prints* | 40 (36) | 10 (8) | 44 (32) |
+| (D-EndScope) §6.7 (tombstone the binding) | 87 (71) | 125 (74) | 611 (362) |
+| (D-EndScope) §6.7 (tombstone the binding), *where a destructor prints* | 40 (36) | 10 (8) | 44 (32) |
 | (D-Enum-Intro) §6.6 | 19 (15) | 109 (53) | 569 (253) |
 | (D-Float-Arith) §6.4 | 9 (9) | 5 (4) | 24 (21) |
 | (D-Float-Cast) §6.4 | 2 (2) | 3 (3) | 10 (9) |

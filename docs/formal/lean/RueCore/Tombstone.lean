@@ -5,9 +5,9 @@ public import RueCore.Step.Lemmas
 @[expose] public section
 
 /-!
-# RueCore.Tombstone — no program reaches a retired cell (layer L2)
+# RueCore.Tombstone — no program reaches a tombstoned cell (layer L2)
 
-`useAfterDrop` is the refusal `eval` raises when it reaches a retired (`†`)
+`useAfterDrop` is the refusal `eval` raises when it reaches a tombstoned (`†`)
 cell (§6.1), and `step` names the same stuck state. This module proves that
 neither is ever reached from a program's start, **checked or not**
 (RUE-2496): `run_no_use_after_drop` over the interpreter at every fuel and
@@ -22,16 +22,16 @@ is one such configuration, not reached from `Config.init`.
 
 **The invariant** is structural, not a typing fact. `†` enters the store in
 two ways only: as the reserved slot of a minted object identity (`introVal`),
-which no binding names, and when a scope teardown retires the cells its
+which no binding names, and when a scope teardown tombstones the cells its
 drop scope holds a drop obligation for (`dropRetire`, `unwindLocs`, and `Step`'s plain
 versions). Every binding cell is minted fresh at the end of the store and
 bound at once, and a drop scope lists each cell once. So:
 
 * over `eval` (`Tombstone.eval_live`): if every cell the activation record's environment and
   drop scope name is live, and the record owes each cell once
-  (`LiveActivation`), then an evaluation that yields a value retired no cell that
-  was live before it; an unwinding `return` retired at most the activation record's
-  drop scope; a `break` retired nothing live before it and hands its loop
+  (`LiveActivation`), then an evaluation that yields a value tombstoned no cell that
+  was live before it; an unwinding `return` tombstoned at most the activation record's
+  drop scope; a `break` tombstoned nothing live before it and hands its loop
   the activation record's drop scope extended by distinct fresh cells, still live; and no
   refusal is `useAfterDrop` (`LivePost`). The induction is on fuel, one case
   per `eval` rule, and the empty activation record of `run` starts it.
@@ -44,7 +44,7 @@ bound at once, and a drop scope lists each cell once. So:
   under it, and `Config.init` has it.
 
 A scope teardown walks only cells the invariant says are live and distinct,
-so it never meets `†` and never retires a cell twice; a lookup through the
+so it never meets `†` and never tombstones a cell twice; a lookup through the
 environment finds a live cell; and every other helper a rule calls refuses
 with some other violation, never `useAfterDrop`.
 
@@ -59,7 +59,7 @@ namespace RueCore.Tombstone
 
 /-! ## The invariant over `eval` -/
 
-/-- Cell `ℓ` of the store is live: it holds contents, not the retired marker
+/-- Cell `ℓ` of the store is live: it holds contents, not the tombstoned marker
 `†` (helper). -/
 def Live (H : Store) (ℓ : Nat) : Prop := ∃ c, H[ℓ]? = some (.full c)
 
@@ -70,7 +70,7 @@ theorem Live.lt {H : Store} {ℓ : Nat} (h : Live H ℓ) : ℓ < H.length := by
   | inl hl => exact hl
   | inr hg => rw [List.getElem?_eq_none hg] at hc; cases hc
 
-/-- A live cell is not retired (helper). -/
+/-- A live cell is not tombstoned (helper). -/
 theorem Live.ne_dead {H : Store} {ℓ : Nat} (h : Live H ℓ) : H[ℓ]? ≠ some .dead := by
   obtain ⟨c, hc⟩ := h
   rw [hc]; intro h'; cases h'
@@ -86,7 +86,7 @@ theorem Live.set_full {H : Store} {ℓ : Nat} (h : Live H ℓ) (ℓ' : Nat) (c :
 theorem Live.append {H : Store} {ℓ : Nat} (h : Live H ℓ) (H' : Store) : Live (H ++ H') ℓ := by
   rw [Live, List.getElem?_append_left h.lt]; exact h
 
-/-- The store grew: it is no shorter, and no live cell was retired (helper). -/
+/-- The store grew: it is no shorter, and no live cell was tombstoned (helper). -/
 def Grow (H H' : Store) : Prop := H.length ≤ H'.length ∧ ∀ ℓ, Live H ℓ → Live H' ℓ
 
 /-- An unchanged store has grown (helper). -/
@@ -122,10 +122,10 @@ theorem LiveActivation.grow {H H' : Store} {φ : Activation} (h : LiveActivation
     LiveActivation H' φ :=
   ⟨fun ℓ hℓ => hg.2 ℓ (h.1 ℓ hℓ), fun ℓ hℓ => hg.2 ℓ (h.2.1 ℓ hℓ), h.2.2⟩
 
-/-- **What an evaluation keeps**, by outcome (helper). A value retires no cell
+/-- **What an evaluation keeps**, by outcome (helper). A value tombstones no cell
 that was live before it (only the cells it minted itself). An unwinding
-`return` may retire the activation record's drop scope, and nothing else live before it.
-A `break` retires nothing live before it, and the drop scope it carries is
+`return` may tombstone the activation record's drop scope, and nothing else live before it.
+A `break` tombstones nothing live before it, and the drop scope it carries is
 the activation record's own, extended by distinct cells it minted, still live. And no
 refusal is `useAfterDrop`. -/
 def LivePost (H : Store) (φ : Activation) : EvalRes → Prop
@@ -350,9 +350,9 @@ theorem Contents.destructure_ne_uad {D : Decls} {ℓ : Nat} {c : Contents} {πs 
     · cases h; exact dropResidue_ne_uad (by assumption)
     · cases h
 
-/-! ### Retiring cells -/
+/-! ### Tombstoning cells -/
 
-/-- `drop-retire` of a live cell never meets `†`, and retires exactly that
+/-- `drop-retire` of a live cell never meets `†`, and tombstones exactly that
 cell (helper). -/
 theorem dropRetire_live {D : Decls} {H : Store} {ℓ : Nat} (hl : Live H ℓ) :
     (∀ w, dropRetire D H ℓ = .error w → w ≠ .useAfterDrop) ∧
@@ -414,7 +414,7 @@ theorem unwindLocs_live {D : Decls} : ∀ {H : Store} {ls : List Nat}, ls.Nodup 
 theorem nodup_reverse {l : List Nat} (h : l.Nodup) : l.reverse.Nodup :=
   List.pairwise_reverse.mpr (h.imp (fun h' he => h' he.symm))
 
-/-- Retiring a record's cells leaves every live cell outside it live (helper). -/
+/-- Tombstoning a record's cells leaves every live cell outside it live (helper). -/
 theorem UnwindPost.grow {H H' : Store} {ls : List Nat} {evs : List Event}
     (h : UnwindPost H ls (.ok (H', evs))) :
     H.length ≤ H'.length ∧ ∀ ℓ, ℓ ∉ ls → Live H ℓ → Live H' ℓ :=
@@ -874,7 +874,7 @@ theorem eval_live (M : FloatSig) (P : Program) :
 
 /-! ## The invariant over §6's relation -/
 
-/-- The plain `drop-retire` of a live cell never meets `†`, and retires
+/-- The plain `drop-retire` of a live cell never meets `†`, and tombstones
 exactly that cell (helper). -/
 theorem plainDropRetire_live {D : Decls} {H : Store} {ℓ : Nat} (hl : Live H ℓ) :
     (∀ w, plainDropRetire D H ℓ = .error w → w ≠ .useAfterDrop) ∧
@@ -1077,7 +1077,7 @@ def StepLive : StepOut → Prop
   | .halted => True
   | .stuck w => w ≠ .useAfterDrop
 
-/-- Retiring the cells at the end of the owed list keeps the rest live and
+/-- Tombstoning the cells at the end of the owed list keeps the rest live and
 owed once (helper). -/
 theorem unwind_keeps {D : Decls} {H H' : Store} {A xs : List Nat} {evs : List Event}
     (hnd : (A ++ xs).Nodup) (hl : ∀ ℓ ∈ A ++ xs, Live H ℓ)
@@ -1482,7 +1482,7 @@ theorem run_no_use_after_drop (M : FloatSig) (P : Program) (fuel : Nat) :
   exact this rfl
 
 /-- **No use-after-drop over §6's relation, on every program**: a
-configuration `→*` reaches from `Config.init` is never stuck on a retired
+configuration `→*` reaches from `Config.init` is never stuck on a tombstoned
 cell, checked or not. -/
 theorem step_no_use_after_drop (M : FloatSig) (P : Program) {C : Config}
     (h : Steps M P Config.init C) : ¬ C.Stuck M P .useAfterDrop := by

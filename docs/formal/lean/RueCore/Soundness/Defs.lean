@@ -161,7 +161,7 @@ end
 
 /-- Per-cell agreement between the static entry and the dynamic cell: §7's
 "Σ faithfully tracks the store's initialization", with the §5.5 join's
-asymmetry built into `ContentsOwnTyping`. A retired (`†`) cell matches no entry
+asymmetry built into `ContentsOwnTyping`. A tombstoned (`†`) cell matches no entry
 at all, which is what keeps the unwind off one. -/
 def CellTyping (D : Decls) (cell : Cell) (en : Entry) : Prop :=
   ∃ c, cell = .full c ∧ ContentsOwnTyping D c en.st en.ty

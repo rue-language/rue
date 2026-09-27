@@ -1046,7 +1046,7 @@ checked by the kernel. `cA i n` abbreviates the stored `S1 { x0: n }` with
 object identity `i` these traces are full of. Every aggregate a program builds
 mints its identity from the store's next index (`introVal`, `Dynamics.lean`),
 so a pinned final store is a run of `†` cells — the reserved slots and the
-retired bindings — and a binding's location counts the slots before it. -/
+tombstoned bindings — and a binding's location counts the slots before it. -/
 
 /-- `S1 { x0: n }` with identity `i`, as stored contents — the shape an array
 element's drop event carries (helper). -/
@@ -3671,7 +3671,7 @@ that is not. -/
 stops early and says so. -/
 example : run demoOps countdown 16 = .outOfFuel := by rfl
 
-/-- Seventeen is enough, and the answer is a value with five retired
+/-- Seventeen is enough, and the answer is a value with five tombstoned
 parameter cells — one per activation record the recursion pushed. -/
 theorem countdown_at_17 :
     run demoOps countdown 17 = .ok [.dead, .dead, .dead, .dead, .dead] (v64 10) [] := by rfl
@@ -3754,17 +3754,17 @@ example : run demoOps (scalarProg tI64 (lit (2 ^ 64))) demoFuel
 example : checkProgram (scalarProg tI64 (lit (2 ^ 64))) = false := by rfl
 
 /-!
-## The retired-cell refusal, witnessed from an open machine state
+## The tombstoned-cell refusal, witnessed from an open machine state
 
-`useAfterDrop` is the machine's guard on a retired (`†`) cell (§6.1): a use,
+`useAfterDrop` is the machine's guard on a tombstoned (`†`) cell (§6.1): a use,
 an explicit `@drop`, or an assignment through a binding whose cell has been
-retired is refused. With activation records the guard is load-bearing on the unwind path
+tombstoned is refused. With activation records the guard is load-bearing on the unwind path
 too — `run-all-scope-drops` walks the activation record's drop scope. No program
 reaches the guard from `run`'s start, checked or not: a binding's cell is
-minted fresh and retired only when its scope ends, after which nothing names
+minted fresh and tombstoned only when its scope ends, after which nothing names
 it, and a drop scope owes each cell once (`run_no_use_after_drop`,
 `step_no_use_after_drop`, `Tombstone.lean`, RUE-2496). So the witnesses below
-start the machine in an open state — a store holding one retired cell and a
+start the machine in an open state — a store holding one tombstoned cell and a
 activation record naming it — which is the state the guard exists for.
 -/
 
@@ -3784,7 +3784,7 @@ not, and each is a state the statics exclude: the path runs into a `⊘` on the
 way down (`3.8:53`, (Owned-Base) §5.1), the value it reaches has a `⊘`
 somewhere inside it (`3.8:26`, `fully-owned`), or a step of the path is not a
 field of what is stored (which elaboration resolves, §2). The first two are
-`useAfterMove`; the third is `typeConfusion`. As with the retired-cell guard,
+`useAfterMove`; the third is `typeConfusion`. As with the tombstoned-cell guard,
 no *closed* fragment program reaches them, so the witnesses start the machine
 in an open state. -/
 
@@ -3812,7 +3812,7 @@ example : eval demoOps demoFuel (prog tI64 unitLit)
     { env := [0], scope := [] } (drop (.proj (.var 0) 0)) = .refused .useAfterMove := by rfl
 
 /-- The same guard on the unwind path: an activation record whose drop scope names a
-retired cell refuses instead of retiring it twice (§6.9). No run from the
+tombstoned cell refuses instead of tombstoning it twice (§6.9). No run from the
 start reaches this state (`run_no_use_after_drop`); for a well-typed program
 `ActivationTyping` excludes it as well. -/
 example : eval demoOps demoFuel (scalarProg tI64 unitLit) [.dead] { env := [0], scope := [0] }

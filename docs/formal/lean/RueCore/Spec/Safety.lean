@@ -66,8 +66,8 @@ def no_use_after_move_stmt : Prop :=
 
 /-- **No use-after-drop** (§7 "No use-after-drop / no leak of drops", "never
 read afterward"): `run` never refuses with `useAfterDrop`, the tag `eval`
-raises when it reaches a retired cell. It is `no_refusal` at one tag, so it
-says no retired cell is accessed only as far as `eval` checks every access
+raises when it reaches a tombstoned cell. It is `no_refusal` at one tag, so it
+says no tombstoned cell is accessed only as far as `eval` checks every access
 and labels it so: what it rules out is what that monitor watches (R3 of
 `REDTEAM-LOG.md`; RUE-2469). The buffer half of the bullet, use-after-free,
 has no statement (§6.13 is outside the fragment). Its `ProgramTyped`
@@ -83,12 +83,12 @@ def no_use_after_drop_stmt : Prop :=
 of drops", "never read afterward"; RUE-2496): `run` never refuses with
 `useAfterDrop`, at any fuel and any float operations (not only a `FloatLaws`), **whether or not the program is
 checked**. The property is structural rather than a corollary of typing: a
-binding's cell is minted fresh and retired only when the scope that bound it
+binding's cell is minted fresh and tombstoned only when the scope that bound it
 ends, after which nothing names it, and a drop scope owes each cell once.
 So `no_use_after_drop`'s `ProgramTyped` is redundant for a run from the
 start. The guard is not dead code: from an open configuration, an activation record that
-names a cell already retired, `eval` does refuse (`Sharp.tombstoned_cell`). Like
-`no_use_after_drop`, it says no retired cell is accessed only as far as
+names a cell already tombstoned, `eval` does refuse (`Sharp.tombstoned_cell`). Like
+`no_use_after_drop`, it says no tombstoned cell is accessed only as far as
 `eval` checks every access and labels it so (R3 of `REDTEAM-LOG.md`). -/
 def run_no_use_after_drop_stmt : Prop :=
   ∀ (M : FloatSig) (P : Program) (fuel : Nat), run M P fuel ≠ .refused .useAfterDrop

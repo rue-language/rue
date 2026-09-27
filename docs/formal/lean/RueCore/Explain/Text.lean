@@ -250,7 +250,7 @@ def render (name description : String) (rules : List String) (marks : Print.Dtor
      "is the nesting depth — a callee's rows are deeper than its call's — and `>>`",
      "marks a drop event. The run enters at f0(), as `Dynamics.run` does.",
      "`#n` after an aggregate is its identity, minted when it was built; a `†`",
-     "cell is a retired binding or an identity's reserved slot (`introVal`).", ""] ++
+     "cell is a tombstoned binding or an identity's reserved slot (`introVal`).", ""] ++
     ((numbered 1 t.steps).map (fun p => stepLines P p.1 p.2)).flatten ++
     section' "Identities (§7)" ++
     ledgerLines P (numbered 1 t.steps) t.res ++

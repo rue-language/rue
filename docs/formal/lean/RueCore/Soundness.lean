@@ -49,7 +49,7 @@ What the clause does buy, already: `run-all-scope-drops` walks σ, and because
 σ is ρ, `StoreTyping` — every cell live or moved-out, no two bindings sharing one
 — applies to the walk. That is what turns §7's no-use-after-drop bullet from a
 structural observation into a corollary of the invariant, and what proves no
-unwind retires a cell twice or touches a `†` cell.
+unwind tombstones a cell twice or touches a `†` cell.
 
 ## The frame property (`FrameProperty`)
 
@@ -1823,7 +1823,7 @@ theorem StoreTyping.transport {D Γ ρ₀ ρ H H'} (hm : StoreTyping D Γ ρ₀ 
 /-! ## Scope teardown never refuses -/
 
 /-- **A cell whose Σ record carries no residual linear content is one
-`drop-retire` can retire.** Both halves come off the invariant: the contents
+`drop-retire` can tombstone.** Both halves come off the invariant: the contents
 are well typed (so §6.11's walk never refuses) and hold no live
 declared-`linear` sub-value (so the leak monitor lets them through)
 (helper). -/
@@ -1842,7 +1842,7 @@ theorem dropCell_ok {D : Decls} {ℓ : Nat} {c : Contents} {T : Ty} (h : Content
   · obtain ⟨evs, hevs⟩ := dropContents_ok h
     exact ⟨.drop ℓ c :: evs, by simp [hcp, hevs]⟩
 
-/-- `drop-retire` (§6.1) succeeds on such a cell, retiring it: the contents'
+/-- `drop-retire` (§6.1) succeeds on such a cell, tombstoning it: the contents'
 own drop (§6.11) runs — `dropContents_ok` is why it never refuses — and the
 leak monitor lets it through because no live linear sub-value is left in it
 (helper). -/
@@ -1857,7 +1857,7 @@ theorem dropRetire_ok {D : Decls} {H : Store} {ℓ : Nat} {cell : Cell} {c : Con
 
 /-- **Scope teardown never refuses on an activation record the statics cleared.**
 `run-scope-drops` (§6.1) over an activation record whose bindings carry no residual linear
-content retires every one of them: none is already retired (`StoreTyping` says
+content tombstones every one of them: none is already tombstoned (`StoreTyping` says
 every bound cell is live and that no two bindings share one — §7's
 no-use-after-drop at an unwinding edge), and none holds a live linear
 sub-value (the §5.6 obligation, read on the residue). -/
@@ -4338,13 +4338,13 @@ theorem no_refusal (M : FloatLaws) {P : Program} (h : ProgramTyped P) (fuel : Na
 theorem no_use_after_move (M : FloatLaws) {P : Program} (h : ProgramTyped P) (fuel : Nat) :
     run M.toFloatSig P fuel ≠ .refused .useAfterMove := no_refusal M h fuel _
 
-/-- §7 "No use-after-drop": the machine never touches a retired (`†`) cell.
+/-- §7 "No use-after-drop": the machine never touches a tombstoned (`†`) cell.
 Here it is `no_refusal` at one tag, over checked programs, but typing is not
 what makes it true: `run_no_use_after_drop` (`Tombstone.lean`, RUE-2496) proves
 it for every program. `run-all-scope-drops` (§6.9) walks the activation record's drop
 scope at every `return` and at every activation record pop, and what keeps those walks
-off a `†` cell, and stops any cell being retired twice, is structural: a
-binding's cell is minted fresh and retired only when its scope ends, after
+off a `†` cell, and stops any cell being tombstoned twice, is structural: a
+binding's cell is minted fresh and tombstoned only when its scope ends, after
 which nothing names it, and a record owes each cell once. `ActivationTyping`
 implies as much for a checked program (the record is the environment, whose
 cells `StoreTyping` says are live or moved out and pairwise distinct). -/

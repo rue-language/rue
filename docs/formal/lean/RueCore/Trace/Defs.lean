@@ -46,7 +46,7 @@ end
 /-- A value's owned identities: its stored image's (helper). -/
 abbrev Val.own (D : Decls) (v : Val) : List Nat := (Contents.ofVal v).own D
 
-/-- A cell's owned identities: a retired cell, or a reserved identity slot,
+/-- A cell's owned identities: a tombstoned cell, or a reserved identity slot,
 holds none (helper). -/
 def Cell.own (D : Decls) : Cell → List Nat
   | .full c => c.own D
@@ -250,23 +250,23 @@ def Lead (M : FloatSig) (P : Program) (fuel : Nat) (H : Store) (φ : Activation)
   | .brk => False
 
 /-- The store only grew, and a cell outside the activation record's environment was left
-alone or retired (helper). -/
+alone or tombstoned (helper). -/
 def Local (φ : Activation) (H H' : Store) : Prop :=
   H.length ≤ H'.length ∧
     ∀ ℓ, ℓ < H.length → ℓ ∉ φ.env → H'[ℓ]? = H[ℓ]? ∨ H'[ℓ]? = some .dead
 
-/-- Every cell allocated since `H` is retired, but those `keep` names
+/-- Every cell allocated since `H` is tombstoned, but those `keep` names
 (helper). -/
 def Tombstoned (H : Store) (keep : List Nat) (H' : Store) : Prop :=
   ∀ ℓ, H.length ≤ ℓ → ℓ < H'.length → ℓ ∉ keep → H'[ℓ]? = some .dead
 
 /-- **The activation-record-pop invariant for one evaluation** in activation record `φ` from store `H`
 (§6.7, §6.9, §6.10): the store only grew and was touched outside `φ`'s
-environment only to retire; every cell the evaluation allocated is retired by
+environment only to tombstone; every cell the evaluation allocated is tombstoned by
 its end — for an unwinding `break`, all but the cells of the drop scope it
 carries, which extends `φ`'s by cells allocated since `H` and which the loop
-retires; and an unwinding
-`return` has retired every cell of `φ`'s record (§6.9's σ-walk). -/
+tombstones; and an unwinding
+`return` has tombstoned every cell of `φ`'s record (§6.9's σ-walk). -/
 def Tidy (φ : Activation) (H : Store) : EvalRes → Prop
   | .ok H' _ _ => Local φ H H' ∧ Tombstoned H [] H'
   | .returned H' _ _ => Local φ H H' ∧ Tombstoned H [] H' ∧ ∀ ℓ ∈ φ.scope, H'[ℓ]? = some .dead
@@ -275,9 +275,9 @@ def Tidy (φ : Activation) (H : Store) : EvalRes → Prop
   | .panic _ _ | .refused _ | .outOfFuel => True
 
 /-- What the rest of a form owes the cells allocated after its leading
-operands ran: every one retired by the form's end — but, for an unwinding
+operands ran: every one tombstoned by the form's end — but, for an unwinding
 `break`, the ones its record owes the loop — and, for an unwinding `return`,
-the activation record's whole drop scope retired (helper). -/
+the activation record's whole drop scope tombstoned (helper). -/
 def Settled (φ : Activation) (H₁ : Store) : EvalRes → Prop
   | .ok H' _ _ => Tombstoned H₁ [] H'
   | .returned H' _ _ => Tombstoned H₁ [] H' ∧ ∀ ℓ ∈ φ.scope, H'[ℓ]? = some .dead

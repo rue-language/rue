@@ -84,7 +84,7 @@ def milestones : List (Name × String) := [
   (``unwindLocs_plain, "a monitor removes no behaviour: an unwind's drops are the same with or without the monitors"),
   -- key trace lemmas
   (``eval_conserves, "the conservation law over `eval`'s identities, proved by fuel induction, that `no_double_free` follows from"),
-  (``eval_tidy, "every cell an evaluation allocates is retired by its end — the activation-record-pop invariant behind `drop_exactly_once`"),
+  (``eval_tidy, "every cell an evaluation allocates is tombstoned by its end — the activation-record-pop invariant behind `drop_exactly_once`"),
   (``rest_step, "the ledger for the rest of every form, behind `rest_exactly_once`"),
   (``run_blocks, "every terminating run's trace is in the block grammar `Blocks`: each drop marker followed by exactly its own walk"),
   (``step_blocks, "carries `run_blocks` to `Step`"),

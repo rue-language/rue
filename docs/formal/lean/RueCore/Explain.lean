@@ -226,7 +226,7 @@ partial def contentsLine : Contents → String
         idTag i
   | .array _ i cs => "[" ++ String.intercalate ", " (cs.map contentsLine) ++ "]" ++ idTag i
 
-/-- (helper) A store cell: its contents, or `†` — a retired binding, or the
+/-- (helper) A store cell: its contents, or `†` — a tombstoned binding, or the
 slot a minted object identity reserved (`introVal`), which never held a value. -/
 def cellLine : Cell → String
   | .full c => contentsLine c
@@ -2158,7 +2158,7 @@ def refusalPremise : Refusal → String
       "a read of a cell holding ⊘: the value was already moved out of this place " ++
       "((D-Use-Move) §6.3; 3.8:5; §7 “no use after move”)"
   | .useAfterDrop =>
-      "a touch of a retired cell †: the binding's allocation was dropped and retired " ++
+      "a touch of a tombstoned cell †: the binding's allocation was dropped and tombstoned " ++
       "at a scope exit or an activation record teardown ((D-EndScope) §6.1/§6.7, " ++
       "`run-all-scope-drops` §6.9; §7 “no use after drop”)"
   | .linearLeak =>
@@ -2796,10 +2796,10 @@ def traceEval (M : FloatSig) (P : Program) :
              (match dropRetire P.decls H₂ H₁.length with
               | .error w =>
                   refused (t₁.steps ++ [bind] ++ t₂.steps) d Θ R (.letIn m e₁ e₂)
-                    "(D-EndScope) §6.7 (retire the binding)" H₂ w
+                    "(D-EndScope) §6.7 (tombstone the binding)" H₂ w
               | .ok (H₃, evs) =>
                   tracedAs (t₁.steps ++ [bind] ++ t₂.steps) d Θ R (.letIn m e₁ e₂)
-                    "(D-EndScope) §6.7 (retire the binding)"
+                    "(D-EndScope) §6.7 (tombstone the binding)"
                     ("endscope(" ++ locsLine [H₁.length] ++ ")")
                     H₂ H₃ evs (.value v₂) (.ok H₃ v₂ (tr₁ ++ (tr₂ ++ evs))))
            | r =>

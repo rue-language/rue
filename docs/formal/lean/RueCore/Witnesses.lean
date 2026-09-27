@@ -29,13 +29,13 @@ abbrev affineScopeDropProgram : Program := Examples.prog Examples.tI64 Examples.
 
 /-- **One corpus program, both presentations** (GUIDE section 2, "One
 program, traced both ways"; §6.2, §6.5, §6.7, §6.9, §6.11, §6.12). `check`
-accepts `affine_scope_drop`; `run` answers `1` with both cells retired and
+accepts `affine_scope_drop`; `run` answers `1` with both cells tombstoned and
 the trace "drop `ℓ1`, then `S1`'s destructor"; and §6's `→*` reaches the same
 terminal configuration by the twelve steps written out here, one `Step`
 constructor each: (Search) into the call's empty argument list, (D-Call),
 (Search) into the `let`, (Search) into the struct literal and its one
 initializer, the literal, the return-state step, (D-Struct) minting `#0`, (D-Let),
-the body's literal, (D-EndScope) dropping and retiring `ℓ1`, and
+the body's literal, (D-EndScope) dropping and tombstoning `ℓ1`, and
 (D-Return-Value). `explain/affine_scope_drop.txt` renders `eval`'s run of the
 same program in seven rows: the (Search) steps are the part of `Step` that
 `eval` does by recursion. -/
@@ -324,7 +324,7 @@ def letAddProgram : Program :=
 the two presentations can be compared on before the semantic-equivalence theorems say
 they always agree: from §6.12's initial configuration, `→*` reaches `✓42`
 through (D-Call), (D-Let), (D-Use-Copy), (D-Arith), (D-EndScope) and
-(D-Return-Value), with the `let`'s cell retired and nothing printed; and
+(D-Return-Value), with the `let`'s cell tombstoned and nothing printed; and
 `run` answers the same value, store and trace. -/
 theorem letAddProgram_runs (M : FloatSig) :
     Steps M letAddProgram Config.init
@@ -514,7 +514,7 @@ theorem dropMoved_refused (M : FloatSig) :
 /-- **The theorem at work**: `letAddProgram_runs` (above) found its
 `→*` derivation by running `stepN`; here it comes from `run`'s answer alone,
 through `run_sim` — `let x = 40; x + 2` reaches `✓42` with the `let`'s cell
-retired and nothing printed (§6.7, §6.9, §6.12). -/
+tombstoned and nothing printed (§6.7, §6.9, §6.12). -/
 theorem letAddProgram_sound (M : FloatSig) :
     Steps M letAddProgram Config.init
       (.run [.dead] Activation.empty [] (.ret (.int .w32 .signed 42)) []) :=

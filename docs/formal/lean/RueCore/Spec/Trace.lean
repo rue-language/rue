@@ -67,7 +67,7 @@ drops"). A typed expression of a checked program, the expression and the
 program both `pendingSafe` (`e.pendingSafe`, `P.pendingSafe`), run from an
 agreeing activation record and store, is never refused; every identity the store
 holds ends up in an old cell, in the result, or ended in the trace as often
-as held (`Exact`); every cell it allocated is retired (`Tidy`). Narrower
+as held (`Exact`); every cell it allocated is tombstoned (`Tidy`). Narrower
 than the bullet: `pendingSafe` (RUE-2316), nothing about a panic, and per
 evaluation, not per run; the whole-run form is `whole_program_exactly_once`
 (RUE-2478). -/
@@ -83,7 +83,7 @@ def drop_exactly_once_stmt : Prop :=
 /-- **Values minted during an evaluation end exactly once too** (the same §7
 bullet; §6.7, §6.9, §6.10): under the same hypotheses, once a form's leading
 operands produced `vs` in `H₁` (`Lead`), the rest of the form ends them and
-`H₁`'s identities as `Exact` counts, and retires what it allocated
+`H₁`'s identities as `Exact` counts, and tombstones what it allocated
 (`Settled`). This is the form the proof of `drop_exactly_once` inducts on
 (`Lead`, `fuel + 1`, `withTrace`), listed as a linking statement: it is what
 says the values a form mints mid-evaluation are covered too. -/
