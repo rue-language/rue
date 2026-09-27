@@ -128,9 +128,9 @@ representation; none changes what a checked program does.
   than discarded without a drop, as in `eval`. (Dbg) §5.8 and §5.7's `unit`
   body keep a checked program away from both.
 * **Consumption is recorded** (RUE-2427). (D-Match) appends a `consume` event
-  for a non-`Copy` scrutinee's shell (`matchConsume`), and the destructure
+  for a non-`Copy` scrutinee's dead remainder (`matchConsume`), and the destructure
   drops each retained subtree under a `drop ℓ r` marker and then consumes the
-  path's shell (`plainDestructure`), exactly as `eval` does, so the two
+  path's dead remainder (`plainDestructure`), exactly as `eval` does, so the two
   presentations keep one trace. Like `drop` and `dropTemp`, both are markers
   no Rue program observes.
 
@@ -339,7 +339,7 @@ def plainResidue (D : Decls) (ℓ : Nat) : List Contents → Except Refusal (Lis
 /-- §6.3's `destructure(H, ℓ@π_d, π_s)` as §6.3 writes it: `split`, then
 `drop*` on the residue left to right, with no linear-leak monitor — the
 (Use-Declared-Linear-Destructure) premise excluded a linear residue before
-(D-Use-Declared-Linear) can fire — and then the path's shell consumed
+(D-Use-Declared-Linear) can fire — and then the path's dead remainder consumed
 (`consume`, RUE-2427), exactly as `eval`'s `Contents.destructure` records it
 (helper). -/
 def plainDestructure (D : Decls) (ℓ : Nat) (c : Contents) (πs : List Nat) :
@@ -607,7 +607,7 @@ inductive Step (M : FloatSig) (P : Program) : Config → Config → Prop where
         (.run H φ (.«match» arms :: K) (.eval scrut) tr)
   /-- (D-Match) §6.6: the tag selects the arm; the payload is bound to fresh
   cells, appended to the drop scope *and* owed to the arm's `endscope`; a
-  non-`Copy` scrutinee's shell is consumed (`matchConsume`, RUE-2427). -/
+  non-`Copy` scrutinee's dead remainder is consumed (`matchConsume`, RUE-2427). -/
   | «match» {H φ K tr arms e k i vs body H' ls} :
       arms[k]? = some body →
       freshParams H vs = (H', ls) →

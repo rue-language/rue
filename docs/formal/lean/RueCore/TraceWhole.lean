@@ -1141,7 +1141,7 @@ theorem msim_indexWrite (hp : P.pendingSafe = true) (IH : MSimIH M P fuel)
                     omega)
                 · trivial
 
-/-- (D-Match) §6.6: the payload moves into the arm's cells and the shell is
+/-- (D-Match) §6.6: the payload moves into the arm's cells and the dead remainder is
 consumed; the arm runs under its `endscope`, which (D-EndScope) closes
 (helper). -/
 theorem msim_match (hp : P.pendingSafe = true) (IH : MSimIH M P fuel) (hcc : StoreCC P.decls H)

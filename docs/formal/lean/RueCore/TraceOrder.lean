@@ -342,7 +342,7 @@ theorem dropResidue_blocks {D : Decls} (hdt : DtorNotCopy D) {ℓ : Nat} :
             · simpa using DropGlueBlocks.drop (ℓ := ℓ) (dropContents_glue h₁) ih
 
 /-- §6.3's destructure is a sequence of blocks: the residue's, then the
-consumed shell (helper). -/
+consumed dead remainder (helper). -/
 theorem destructure_blocks {D : Decls} (hdt : DtorNotCopy D) {ℓ : Nat} {cd leaf : Contents}
     {πs : List Nat} {evs : List Event} (hcc : cd.copyContained D = true)
     (h : cd.destructure D ℓ πs = .ok (leaf, evs)) : DropGlueBlocks D evs := by

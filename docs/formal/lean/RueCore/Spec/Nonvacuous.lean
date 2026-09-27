@@ -209,7 +209,7 @@ def array_stmt : Prop :=
 /-- **A checked program with an enum and a `match`** (§5.5, §6.6; construct class: enums with
 `match`; the corpus case `enum_match_affine`). `let e = E0::K0(S0 { 1 }); match
 e { K0(s) => s.x0, K1 => 0 }` is accepted and typed; its run returns, reached
-by `Step`, and its trace frees two identities (the scrutinee's shell,
+by `Step`, and its trace frees two identities (the scrutinee's dead remainder,
 consumed by the match, and the payload, dropped at the arm's end) and runs
 the payload's destructor. -/
 def enum_match_stmt : Prop :=

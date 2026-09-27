@@ -78,7 +78,7 @@ Design commitments carried over from §6:
   (`dropTemp v`) — the §6.7 temporary-death analog — and, nested under
   either, every user destructor §6.11 runs (`dtor s v`). A declared-linear
   destructure's residue drops each retained subtree under a `drop ℓ r`
-  marker of its own (`residueDropEvent`), and the shell a `match` or a destructure
+  marker of its own (`residueDropEvent`), and the dead remainder a `match` or a destructure
   consumes is recorded by a `consume` event (RUE-2427), so every way an owned
   value's life ends is in the trace (`drop_exactly_once`,
   `TraceExact.lean`). Beside them
@@ -560,10 +560,10 @@ inductive Event where
   | dtor (s : Nat) (c : Contents)
   /-- **A consumption** (RUE-2427): the aggregate nodes of `c` end here without
   a drop of their own, because every member they held has already been moved
-  out or dropped — a `match`'s scrutinee shell once (D-Match) §6.6 has bound its
+  out or dropped — a `match`'s scrutinee dead remainder once (D-Match) §6.6 has bound its
   payload to the arm's cells, and the path from a declared-`linear` place `d`
   down to the selected leaf once §6.3's destructure has handed the leaf on and
-  dropped the residue. `c` is the shell itself, every member a `⊘`
+  dropped the residue. `c` is the dead remainder itself, every member a `⊘`
   (`matchConsume`, `Contents.pathOnly`). No destructor runs: an enum
   declares none (§3, E0417), and `3.9:34` keeps a destructor-bearing value off
   a destructure's path — a guarantee of the checker, not of the machine, which
@@ -1038,7 +1038,7 @@ def dropResidue (D : Decls) (ℓ : Nat) : List Contents → Except Refusal (List
             | .ok evs' => .ok (residueDropEvent D ℓ r ++ evs ++ evs')
 
 mutual
-/-- **The consumed shell of a destructure** (RUE-2427): the nodes on the
+/-- **The consumed dead remainder of a destructure** (RUE-2427): the nodes on the
 selected path — the declared-`linear` place `d` and every node below it down
 to the leaf's parent — with the leaf and every retained subtree replaced by
 `⊘`. It is what §6.3's destructure consumes without dropping: the leaf is
@@ -1060,7 +1060,7 @@ end
 
 /-- **§6.3's `destructure(H, ℓ@π_d, π_s)`**, on the contents stored at the
 consumed place of cell `ℓ`: `split` the aggregate, then apply `drop*` to the
-residue, then record the consumption of the path's shell (`consume`,
+residue, then record the consumption of the path's dead remainder (`consume`,
 RUE-2427). The result is the selected leaf — "the result transferred to the
 context, not a value dropped by `destructure`" — and the residue's drop events
 followed by the consumption. Writing `⊘` at `ℓ@π_d` is the caller's step,
@@ -1082,10 +1082,10 @@ the new redex. -/
 def dropResidueEvents (D : Decls) (ℓ : Nat) (rs : List Contents) : List Event :=
   rs.flatMap (fun r => residueDropEvent D ℓ r ++ dropEvents D r)
 
-/-- A `match` consumes a non-`Copy` scrutinee's **shell** (RUE-2427): the enum
+/-- A `match` consumes a non-`Copy` scrutinee's **dead remainder** (RUE-2427): the enum
 node, its payload already bound to the arm's cells. The event names the node
 with every payload slot `⊘`. A `Copy` scrutinee was copied, not consumed, and
-its shell owns nothing, so nothing is recorded (helper). -/
+its dead remainder owns nothing, so nothing is recorded (helper). -/
 def matchConsume (D : Decls) (e k i : Nat) (vs : List Val) : List Event :=
   if D.enumClassOf e = .copy then [] else [.consume (.enum e k i (vs.map fun _ => .movedOut))]
 
@@ -1527,7 +1527,7 @@ def eval (M : FloatSig) : Nat → Program → Store → Activation → Expr → 
       -- was read — then read the tag, which selects the one covering arm
       -- (exhaustiveness, §5.5, makes `arms[k]?` succeed for a well-typed value:
       -- `exhaustive_arm_exists`, `Soundness.lean`). The value's enum **index**
-      -- is read only to class the consumed shell (`matchConsume`): the arms
+      -- is read only to class the consumed dead remainder (`matchConsume`): the arms
       -- come from the `match` form, and under `Typed` the index is the
       -- scrutinee's own (`HasTy.enum_inv`).
       (eval M fuel P H φ scrut).bind fun H₀ v =>
@@ -1543,7 +1543,7 @@ def eval (M : FloatSig) : Nat → Program → Store → Activation → Expr → 
              -- minting (D-Call) §6.9 performs, and the two `reverse`s are the
              -- same one it needs: a payload tuple is written left to right while
              -- `Env` lists the innermost binder first.
-             -- The scrutinee's shell is consumed here, before the arm runs
+             -- The scrutinee's dead remainder is consumed here, before the arm runs
              -- (`matchConsume`, RUE-2427): its payload now lives in the cells.
              let minted := freshParams H₀ vs
              EvalRes.withTrace (matchConsume P.decls e k i vs) <|

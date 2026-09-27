@@ -182,7 +182,7 @@ The trace lists, in order, everything the machine did that a program can see:
   residue). It records the *contents* dropped, which after a partial move is
   a tree with moved-out parts in it.
 - `dropTemp v`, a discarded temporary.
-- `consume c`, the shell a `match` or a destructure consumes: every member
+- `consume c`, the dead remainder a `match` or a destructure consumes: every member
   already moved out or dropped, so no drop of its own runs (RUE-2427).
 - `dtor s c`, a user destructor §6.11 ran.
 - `dbg v`, a `@dbg`: §6.12's observable output.
@@ -600,7 +600,7 @@ of each `drop`/`dropTemp` marker's tree, and `dtorIds` the identity of each
 value a destructor ran on. A `Copy` value is duplicated freely and frees
 nothing, so neither counts it. A declared-linear destructure's residue is
 dropped under a `drop` marker per retained subtree, and a `match` or a
-destructure records the shell it consumes with a `consume` event (RUE-2427),
+destructure records the dead remainder it consumes with a `consume` event (RUE-2427),
 so `freedIds` sees every way an owned value's life ends.
 
 The proof is a **conservation law**, `eval_conserves`, by the same fuel
@@ -1691,7 +1691,7 @@ Change one thing and each premise answers in turn:
 
 The payload keeps its identity, `#0`, as it moves from the enum into the
 arm's cell, and the enum's own identity, `#1`, is consumed by the match and
-never dropped: the `consume` event on row [7] records the shell's end, every
+never dropped: the `consume` event on row [7] records the dead remainder's end, every
 payload slot `⊘` (RUE-2427), and the arm's cell is the payload's one owner.
 
 Row [7] is (D-Match): the tag `K0` selects the covering arm, and the payload

@@ -68,7 +68,7 @@ since `introVal` takes the next index (helper). -/
 def Fresh (H H' : Store) : List Nat := List.range' H.length (H'.length - H.length)
 
 /-- The owned identities a `drop` or `dropTemp` marker frees: the whole tree
-§6.11's walk goes through — and the shell a `consume` event ends (RUE-2427),
+§6.11's walk goes through — and the dead remainder a `consume` event ends (RUE-2427),
 whose members were already moved out or dropped. A destructor event frees
 nothing of its own — it is nested under a marker — and a `@dbg` frees nothing
 (helper). -/
@@ -120,7 +120,7 @@ structure TraceMeasure (D : Decls) (F : Event → List Nat) : Prop where
   /-- A discarded temporary: its `dropTemp v` marker, then the walk (§6.7). -/
   temp : ∀ {v : Val} {evs : List Event}, (Contents.ofVal v).copyContained D = true →
     dropContents D (Contents.ofVal v) = .ok evs → IdLe (F (.dropTemp v) ++ evs.flatMap F) (v.own D)
-  /-- A consumption ends at most its shell (RUE-2427). -/
+  /-- A consumption ends at most its dead remainder (RUE-2427). -/
   consume : ∀ c, IdLe (F (.consume c)) (c.own D)
   /-- `@dbg` frees nothing. -/
   dbg : ∀ v, F (.dbg v) = []
