@@ -24,7 +24,7 @@ The laws have a model: `Float.exactModel` (`RueCore/Float/Lemmas.lean`) proves e
 of them of the executable instance `Float.exactOps`, so they are jointly satisfiable and
 those 22 are not vacuous in `M` (`Nonvacuous.exact_model`, RUE-2469). Several statements say
 "`run` is never `.refused` with violation *v*": they mean what `eval`'s monitors
-watch, since *v* is the tag a monitor raises (`no_violation`, `no_use_after_move`,
+watch, since *v* is the tag a monitor raises (`no_refusal`, `no_use_after_move`,
 `no_use_after_drop` and `no_linear_discard` say so; RUE-2469).
 What the proof means for the compiler, in plain language, is RUE-2462's
 one-page account, WHAT-IT-MEANS, beside `../README.md` once it lands.
@@ -63,8 +63,8 @@ fails on one with neither: 81 of the 82 have a counter-example and 1
 has a reason. Of the 81, 21 are premises inside a conclusion, under
 an `∧`, an `↔` or an `∃` of it (a `run … = .ok`, a `Steps …` or an `n < fuel` that
 a conjunct starts from), not hypotheses about the program. For `drop_order` 2–3,
-`drop_glue_order` 2–3, `eval_sound` 2–3, `run_sim` 1–2, `eval_complete` 2 and 4 and
-`run_complete` 1 and 3,
+`drop_glue_order` 2–3, `eval_big_to_small` 2–3, `run_sim` 1–2, `eval_small_to_big` 2 and 4 and
+`run_small_to_big` 1 and 3,
 the dropped premise is the only thing tying its bound value or trace to the program,
 so the counter-example shows only that the conclusion is not a tautology. The walk does not go
 under `∨` or `¬`, nor into a definition that is not reducible (`Config.SafeAt`,
@@ -102,10 +102,10 @@ in the notation of `../GLOSSARY.md`; and the difference, in one sentence, or
 "Identical up to notation." Generated from `RueCore.Literature.rows`, a
 tooling-layer table kept beside the Spec layer rather than in it, so a row is
 commentary that no fingerprint or Comparator challenge covers; `--spine` fails
-on a spine theorem with no row. Three names differ from the field's in a way
-the table records rather than renames. `step_preservation` and `step_progress`
-are §7's words for a semantic invariant and its consequence along runs, not the
-one-step lemmas over a syntactic configuration typing, which the calculus does
+on a spine theorem with no row. Two names differ from the field's in a way
+the table records rather than renames. `step_progress` is §7's word for a
+consequence along runs of the semantic invariant `step_safeAt` states, not the
+one-step lemma over a syntactic configuration typing, which the calculus does
 not define (RUE-2423 decides which §7 means). The `eval`/`Step` agreement the
 calculus calls the adequacy lemma is, in the field's words, the semantic
 equivalence of a definitional interpreter and a small-step semantics (Amin &
@@ -116,8 +116,8 @@ Rompf; `../FIELD.md` §3); its Spec module keeps the file name
 |---|---|---|---|
 | `soundness` | Soundness via a definitional interpreter: `⊢ e : T ∧ eval n e = r ≠ Timeout ⇒ r = Val v ∧ v : T` (FIELD §3: Amin & Rompf Lemma 3; Owens et al. §5) | `WfProgram P`, `Typed P R Γ e T Ω` and a frame and store agreeing with `Γ` ⇒ `EvalOk` of `eval` at every fuel | The same theorem for an open expression, from any frame and store that agree with its context (`ActivationTyping`), with an unwinding `return` or `break`, a defined panic and exhausted fuel among the allowed outcomes, and with `.refused` excluded, which covers `eval`'s monitors as well as stuck states. |
 | `run_safe` | Syntactic soundness: `⊢ e : τ ⇒ e⇑ ∨ (e ↦* v ∧ ⊢ v : τ)` (FIELD §2: Wright & Felleisen Thm 4.12 (preprint numbering)) | `WfProgram P` and a parameterless entry point ⇒ at every fuel, `run` is out of fuel, a panic, or a value of the entry point's type | Wright & Felleisen's three-way form, read per fuel bound over the interpreter: divergence is exhausting this fuel rather than `⇑`, and a defined panic, PFPL's checked error, is an allowed outcome. |
-| `no_violation` | Weak soundness: a well-typed program never yields `wrong` ("well-typed programs do not go wrong") (FIELD §2: Wright & Felleisen §§1–2; Milner 1978) | `ProgramTyped P` ⇒ `run` is never `.refused w`, at any fuel and for any `w` | `.refused w` is wider than `wrong`: it includes the refusals of `eval`'s four monitors, which are not stuck states of §6, so the statement also says that no monitor fires (R3 of `REDTEAM-LOG.md`). |
-| `no_use_after_move` | No named theorem; reading a moved-from (deinitialized) place is a use of uninitialized memory, one of the memory access errors of memory safety (FIELD §5: Rust Reference, Expressions and Glossary (moved from); Hicks 2014 (memory safety)) | `ProgramTyped P` ⇒ `run` never refuses with `useAfterMove` | It is `no_violation` at one tag, so it rules out a read of a `⊘` cell only as far as `eval` checks every read and labels it so. |
+| `no_refusal` | Weak soundness: a well-typed program never yields `wrong` ("well-typed programs do not go wrong") (FIELD §2: Wright & Felleisen §§1–2; Milner 1978) | `ProgramTyped P` ⇒ `run` is never `.refused w`, at any fuel and for any `w` | `.refused w` is wider than `wrong`: it includes the refusals of `eval`'s four monitors, which are not stuck states of §6, so the statement also says that no monitor fires (R3 of `REDTEAM-LOG.md`). |
+| `no_use_after_move` | No named theorem; reading a moved-from (deinitialized) place is a use of uninitialized memory, one of the memory access errors of memory safety (FIELD §5: Rust Reference, Expressions and Glossary (moved from); Hicks 2014 (memory safety)) | `ProgramTyped P` ⇒ `run` never refuses with `useAfterMove` | It is `no_refusal` at one tag, so it rules out a read of a `⊘` cell only as far as `eval` checks every read and labels it so. |
 | `no_use_after_drop` | No use after free: the program never "reuses or references memory after it has been freed" (FIELD §5: CWE-416) | `ProgramTyped P` ⇒ `run` never refuses with `useAfterDrop` | The freed object is a dropped binding's retired (`†`) cell rather than heap memory, the error is ruled out as far as `eval` labels an access to it, and the typing hypothesis is redundant (`run_no_use_after_drop`). |
 | `run_no_use_after_drop` | No use after free (CWE-416), as above (FIELD §5: CWE-416) | every program ⇒ `run` never refuses with `useAfterDrop`, at any fuel and any float operations | No typing hypothesis: the property is structural, since a cell is minted fresh and nothing names it once its scope has retired it. |
 | `no_linear_leak` | Linearity: a linear assumption is used exactly once, so there is no weakening; failing the "at least once" half is a leak (FIELD §4: Walker §1.1; FIELD §5: CWE-401) | `ProgramTyped P` ⇒ `run` never refuses with `linearLeak` | Walker's rule is a property of the typing context. Ours is its dynamic image at the scope records: no scope exit, frame pop or unwind meets a live linear binding, as `eval`'s monitor for it watches. A linear operand value that a sibling's `return` or `break` abandons is outside it (RUE-2316). |
@@ -144,16 +144,16 @@ Rompf; `../FIELD.md` §3); its Spec module keeps the file name
 | `Config.stuck_iff` | Stuck: not a value (not final) and no step applies (FIELD §1: Plotkin 1981/2004 §3.1, Def. 11; PFPL ch. 6) | (`C` not terminal and no `C → C′`) ⇔ `C` is stuck on some `Refusal` | The accepted definition, proved equal to ours (the step function's verdict), with terminal in the role of value, traps included. |
 | `step_stuck_isStuckState` | No counterpart (FIELD §2: the `Refusal` row (four of its constructors are monitors, not stuck states of `Step`)) | `C` stuck on `w` ⇒ `w` is one of §6's own four stuck states | Says that `Step`'s stuck states are §6's own and never one of `eval`'s monitors, which the literature, with no monitors, has no need of. |
 | `step_progress` | Progress: `⊢ e : τ ⇒ e val ∨ ∃e′. e ↦ e′`; along runs, `safe(e)`: every state reachable from `e` is progressive (FIELD §2: PFPL Thm 6.4; Timany et al. §2.4) | `ProgramTyped P` and `init →* C` ⇒ `C` terminal or `C → C′` for some `C′` | Not the one-step lemma over typed configurations, since no configuration typing is defined (RUE-2423), but its consequence along every run from `Config.init`, Timany's `safe(init)` with traps final. |
-| `step_preservation` | Preservation (subject reduction): `Γ ⊢ e : τ ∧ e ↦ e′ ⇒ Γ ⊢ e′ : τ` (FIELD §2: PFPL Thm 6.2; Wright & Felleisen Lemma 4.3) | `ProgramTyped P` and `init →* C` ⇒ `C.SafeAt` the entry point's return type | Substantive: `SafeAt` is a semantic invariant (Timany's `safe` plus typed halting values), closed under `→*` by definition, so the statement is `SafeAt` at `Config.init`, the conclusion of Timany's Cor. 2.3, and no syntactic `⊢ C : T` is preserved (R4 of `REDTEAM-LOG.md`; RUE-2423). |
+| `step_safeAt` | Preservation (subject reduction): `Γ ⊢ e : τ ∧ e ↦ e′ ⇒ Γ ⊢ e′ : τ` (FIELD §2: PFPL Thm 6.2; Wright & Felleisen Lemma 4.3) | `ProgramTyped P` and `init →* C` ⇒ `C.SafeAt` the entry point's return type | Substantive: `SafeAt` is a semantic invariant (Timany's `safe` plus typed halting values), closed under `→*` by definition, so the statement is `SafeAt` at `Config.init`, the conclusion of Timany's Cor. 2.3, and no syntactic `⊢ C : T` is preserved (R4 of `REDTEAM-LOG.md`; RUE-2423). |
 | `step_type_safety` | Type safety = preservation ∧ progress; in Wright & Felleisen's form, `⊢ e : τ ⇒ e⇑ ∨ (e ↦* v ∧ ⊢ v : τ)` (FIELD §2: PFPL Thm 6.1; Wright & Felleisen Thm 4.12) | `ProgramTyped P` ⇒ for every `n`, `init →ⁿ D` for some `D`, or `init →* ✓v` with `v` of the entry point's type, or `init →* ↯κ` | Wright & Felleisen's three-way form per horizon `n`, with a trap as an allowed outcome (PFPL's checked error) and divergence read as having run `n` steps, rather than a conjunction of progress and preservation. |
 | `step_no_use_after_drop` | No use after free (CWE-416), a safety property of runs (FIELD §5: CWE-416; FIELD §6: Alpern & Schneider §2) | every program and `init →* C` ⇒ `C` is not stuck on a retired (`†`) cell | Over §6's relation on every program, checked or not, with a dropped binding's cell in the role of freed memory. |
-| `eval_sound` | Semantic equivalence, interpreter to small-step: `eval n e = r ⇒ ∃e′. e →* e′ ∧ r ∼ e′`; big-step to small-step, `a ⇒ v ⇒ a →* v` (FIELD §3: Amin & Rompf Thm 2; Leroy & Grall Thm 9) | `ProgramTyped P` ⇒ at every fuel, `run` is not stuck, a value it answers is `init →* ✓v` and a panic is `init →* ↯κ`, with the same store and trace | The interpreter-to-small-step direction, restricted to checked programs and bundled with "`run` is never stuck"; the unconditional direction is `run_sim`. |
+| `eval_big_to_small` | Semantic equivalence, interpreter to small-step: `eval n e = r ⇒ ∃e′. e →* e′ ∧ r ∼ e′`; big-step to small-step, `a ⇒ v ⇒ a →* v` (FIELD §3: Amin & Rompf Thm 2; Leroy & Grall Thm 9) | `ProgramTyped P` ⇒ at every fuel, `run` is not stuck, a value it answers is `init →* ✓v` and a panic is `init →* ↯κ`, with the same store and trace | The interpreter-to-small-step direction, restricted to checked programs and bundled with "`run` is never stuck"; the unconditional direction is `run_sim`. |
 | `run_sim` | Semantic equivalence, interpreter to small-step (Amin & Rompf Thm 2), unconditionally (FIELD §3: Amin & Rompf Thm 2; Leroy & Grall Thm 9) | every program ⇒ at every fuel, a value `run` answers is `init →* ✓v` and a panic is `init →* ↯κ` | The literature's unconditional direction for values and panics, with a refusal or exhausted fuel left outside it. |
-| `eval_complete` | Semantic equivalence, small-step to interpreter: `e →* e′ ⇒ ∃n. eval n e ∼ e′`; small-step to big-step, `a →* v ∧ v value ⇒ a ⇒ v` (FIELD §3: Amin & Rompf Thm 2; Leroy & Grall Thm 9; Owens et al. §3.4) | `ProgramTyped P` and `init →* ✓v` (or `↯κ`) ⇒ `run` answers that value (or panic), with the same store and trace, at every fuel past some `n` | Restricted to checked programs, and at every fuel past `n` rather than at some `n`, which folds in the clock lemma (`fuel_mono`). |
-| `run_complete` | Semantic equivalence, small-step to interpreter (Amin & Rompf Thm 2), unconditionally (FIELD §3: Amin & Rompf Thm 2) | every program and `init →* ✓v` (or `↯κ`) ⇒ past some fuel, `run` answers that value (or panic) or refuses | On every program only up to a refusal, since `eval`'s monitors are stricter than §6, which makes it much weaker than the literature's unconditional direction. |
-| `never_stuck_iff` | No named counterpart: the interpreter's weak soundness against the small-step `safe(init)` (FIELD §2: Wright & Felleisen §§1–2 (weak soundness); Timany et al. §2.4 (`safe`)) | `ProgramTyped P` ⇒ (`run` never stuck at any fuel ⇔ every `C` with `init →* C` is terminal or steps) | Under `ProgramTyped` both sides hold outright (`no_violation`, `step_progress`), so the `⇔` adds nothing; its content is the forward direction on every program, `step_never_stuck_of_run` (R5 of `REDTEAM-LOG.md`). |
+| `eval_small_to_big` | Semantic equivalence, small-step to interpreter: `e →* e′ ⇒ ∃n. eval n e ∼ e′`; small-step to big-step, `a →* v ∧ v value ⇒ a ⇒ v` (FIELD §3: Amin & Rompf Thm 2; Leroy & Grall Thm 9; Owens et al. §3.4) | `ProgramTyped P` and `init →* ✓v` (or `↯κ`) ⇒ `run` answers that value (or panic), with the same store and trace, at every fuel past some `n` | Restricted to checked programs, and at every fuel past `n` rather than at some `n`, which folds in the clock lemma (`fuel_mono`). |
+| `run_small_to_big` | Semantic equivalence, small-step to interpreter (Amin & Rompf Thm 2), unconditionally (FIELD §3: Amin & Rompf Thm 2) | every program and `init →* ✓v` (or `↯κ`) ⇒ past some fuel, `run` answers that value (or panic) or refuses | On every program only up to a refusal, since `eval`'s monitors are stricter than §6, which makes it much weaker than the literature's unconditional direction. |
+| `never_refused_iff` | No named counterpart: the interpreter's weak soundness against the small-step `safe(init)` (FIELD §2: Wright & Felleisen §§1–2 (weak soundness); Timany et al. §2.4 (`safe`)) | `ProgramTyped P` ⇒ (`run` never stuck at any fuel ⇔ every `C` with `init →* C` is terminal or steps) | Under `ProgramTyped` both sides hold outright (`no_refusal`, `step_progress`), so the `⇔` adds nothing; its content is the forward direction on every program, `step_never_stuck_of_run` (R5 of `REDTEAM-LOG.md`). |
 | `step_never_stuck_of_run` | No named counterpart: `safe(init)` transferred from the interpreter (FIELD §2: Timany et al. §2.4 (`safe`); FIELD §3: Amin & Rompf Thm 2) | every program, `run` never stuck at any fuel ⇒ every `C` with `init →* C` is terminal or steps | Carries the interpreter's never-stuck to `Step`'s `safe(init)` on every program, a use of the equivalence the literature does not state separately. |
-| `run_stuck_of_step_stuck` | No named counterpart: the stuck case of the equivalence, where `∼` relates an error result to a stuck term (FIELD §3: Amin & Rompf Thm 2) | `init →* C` and `C` stuck ⇒ past some fuel, `run` refuses, perhaps with another `Refusal` | The error half of the equivalence, stated separately because `run` and `Step` may name the same failure by different violations. |
+| `run_refused_of_step_stuck` | No named counterpart: the stuck case of the equivalence, where `∼` relates an error result to a stuck term (FIELD §3: Amin & Rompf Thm 2) | `init →* C` and `C` stuck ⇒ past some fuel, `run` refuses, perhaps with another `Refusal` | The error half of the equivalence, stated separately because `run` and `Step` may name the same failure by different violations. |
 | `eval_diverges_iff` | Big-step/small-step equivalence for diverging runs: `a ⇒∞ ⇔ a →∞`; clock-based divergence, timing out at every clock (FIELD §3: Leroy & Grall Thm 11; Owens et al. §3.4) | `ProgramTyped P` ⇒ (`run` out of fuel at every fuel ⇔ `init →ⁿ D` for every `n` and some `D`) | Restricted to checked programs, with Owens's clocked divergence on the interpreter side and runs of every length instead of a coinductive `→∞` on the small-step side, which agree because `Step` is deterministic. |
 
 ## Type safety over the interpreter
@@ -181,13 +181,13 @@ def Spec.soundness_stmt : Prop :=
 
 Proved by `soundness` (`RueCore.Soundness`). Names `FloatLaws`, `Program`, `WfProgram`, `Ty`, `Ctx`, `Out`, `Expr`, `Typed`, `Activation`, `Store`, `ActivationTyping`, `EvalOk`, `eval`; rests on 208 definitions.
 
-Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.empty_frame`, `Nonvacuous.open_frame`, `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`.
+Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.empty_activation`, `Nonvacuous.open_activation`, `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`.
 
 Sharp:
 
-1. `WfProgram P` — counter-example `Sharp.stuck`
+1. `WfProgram P` — counter-example `Sharp.refused`
 2. `Typed P R Γ e T Ω` — counter-example `Sharp.typed`
-3. `ActivationTyping P.decls Γ φ H` — counter-example `Sharp.frame`
+3. `ActivationTyping P.decls Γ φ H` — counter-example `Sharp.activation`
 
 ### `run_safe`
 
@@ -218,11 +218,11 @@ Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.dtor`, `Nonvacuous.
 
 Sharp:
 
-1. `WfProgram P` — counter-example `Sharp.stuck`
+1. `WfProgram P` — counter-example `Sharp.refused`
 2. `P.fns[0]? = some fd` — counter-example `Sharp.no_entry`
 3. `fd.params = []` — counter-example `Sharp.entry_param`
 
-### `no_violation`
+### `no_refusal`
 
 **No refusal of any kind** (§7's memory-safety bullets). A checked
 program's run is never `.refused`. Narrower than the bullets: a value built for
@@ -233,25 +233,25 @@ monitors never fire: what it rules out is what they watch (R3 of
 `REDTEAM-LOG.md`; RUE-2469).
 
 ```lean
-def Spec.no_violation_stmt : Prop :=
+def Spec.no_refusal_stmt : Prop :=
   ∀ (M : FloatLaws) {P : Program},
     ProgramTyped P →
       ∀ (fuel : Nat) (w : Refusal), run M.toFloatSig P fuel ≠ EvalRes.refused w
 ```
 
-Proved by `no_violation` (`RueCore.Soundness`). Names `FloatLaws`, `Program`, `ProgramTyped`, `Refusal`, `EvalRes`, `run`; rests on 197 definitions.
+Proved by `no_refusal` (`RueCore.Soundness`). Names `FloatLaws`, `Program`, `ProgramTyped`, `Refusal`, `EvalRes`, `run`; rests on 197 definitions.
 
 Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`.
 
 Sharp:
 
-1. `ProgramTyped P` — counter-examples `Sharp.stuck`, `Sharp.entry_param`, `Sharp.copy`
+1. `ProgramTyped P` — counter-examples `Sharp.refused`, `Sharp.entry_param`, `Sharp.copy`
 
 ### `no_use_after_move`
 
 **No use-after-move** (§7 "No use-after-move"): `run` never refuses with
 `useAfterMove`, the tag `eval` raises when it reads a `⊘`. It is
-`no_violation` at one tag, so it says no read of a moved-out place happens
+`no_refusal` at one tag, so it says no read of a moved-out place happens
 only as far as `eval` checks every read and labels it so: what it rules out is
 what that monitor watches (R3 of `REDTEAM-LOG.md`; RUE-2469).
 
@@ -268,13 +268,13 @@ Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.dtor`, `Nonvacuous.
 
 Sharp:
 
-1. `ProgramTyped P` — counter-example `Sharp.stuck`
+1. `ProgramTyped P` — counter-example `Sharp.refused`
 
 ### `no_use_after_drop`
 
 **No use-after-drop** (§7 "No use-after-drop / no leak of drops", "never
 read afterward"): `run` never refuses with `useAfterDrop`, the tag `eval`
-raises when it reaches a retired cell. It is `no_violation` at one tag, so it
+raises when it reaches a retired cell. It is `no_refusal` at one tag, so it
 says no retired cell is accessed only as far as `eval` checks every access
 and labels it so: what it rules out is what that monitor watches (R3 of
 `REDTEAM-LOG.md`; RUE-2469). The buffer half of the bullet, use-after-free,
@@ -309,7 +309,7 @@ binding's cell is minted fresh and retired only when the scope that bound it
 ends, after which nothing names it, and a scope record owes each cell once.
 So `no_use_after_drop`'s `ProgramTyped` is redundant for a run from the
 start. The guard is not dead code: from an open configuration, a frame that
-names a cell already retired, `eval` does refuse (`Sharp.retired_cell`). Like
+names a cell already retired, `eval` does refuse (`Sharp.tombstoned_cell`). Like
 `no_use_after_drop`, it says no retired cell is accessed only as far as
 `eval` checks every access and labels it so (R3 of `REDTEAM-LOG.md`).
 
@@ -411,7 +411,7 @@ def Spec.fuel_mono_stmt : Prop :=
 
 Proved by `fuel_mono` (`RueCore.Soundness`). Names `FloatSig`, `Program`, `Store`, `Activation`, `Expr`, `EvalRes`, `eval`; rests on 111 definitions.
 
-Non-vacuous: witnesses `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`, `Nonvacuous.stuck`.
+Non-vacuous: witnesses `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`, `Nonvacuous.refused_stuck`.
 
 Sharp:
 
@@ -434,12 +434,12 @@ def Spec.no_masking_stmt : Prop :=
 
 Proved by `no_masking` (`RueCore.Soundness`). Names `FloatSig`, `Program`, `Store`, `Activation`, `Expr`, `Refusal`, `EvalRes`, `eval`; rests on 111 definitions.
 
-Non-vacuous: witnesses `Nonvacuous.stuck`.
+Non-vacuous: witnesses `Nonvacuous.refused_stuck`.
 
 Sharp:
 
 1. `eval M n P H φ e = EvalRes.refused w` — counter-example `Sharp.fuel`
-2. `eval M m P H φ e ≠ EvalRes.outOfFuel` — counter-example `Sharp.stuck`
+2. `eval M m P H φ e ≠ EvalRes.outOfFuel` — counter-example `Sharp.refused`
 
 ### `run_ne_returned`
 
@@ -475,7 +475,7 @@ def Spec.check_sound_stmt : Prop :=
 
 Proved by `check_sound` (`RueCore.Checker`). Names `Program`, `Ty`, `Expr`, `Ctx`, `TyOrNever`, `Out`, `check`, `TyOrNever.fits`, `Typed`; rests on 104 definitions.
 
-Non-vacuous: witnesses `Nonvacuous.open_frame`, `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`.
+Non-vacuous: witnesses `Nonvacuous.open_activation`, `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`.
 
 Sharp:
 
@@ -499,7 +499,7 @@ Non-vacuous: witnesses `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`
 
 Sharp:
 
-1. `checkProgram P = true` — counter-example `Sharp.stuck`
+1. `checkProgram P = true` — counter-example `Sharp.refused`
 
 ## What the drop trace says
 
@@ -636,14 +636,14 @@ def Spec.drop_exactly_once_stmt : Prop :=
 
 Proved by `drop_exactly_once` (`RueCore.TraceExact`). Names `FloatLaws`, `Program`, `ProgramTyped`, `Program.pendingSafe`, `Ty`, `Ctx`, `Expr`, `Out`, `Activation`, `Store`, `Typed`, `ActivationTyping`, `StoreCC`, `Expr.pendingSafe`, `Refusal`, `EvalRes`, `eval`, `Exact`, `Tidy`; rests on 220 definitions.
 
-Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.empty_frame`, `Nonvacuous.open_frame`, `Nonvacuous.dtor`.
+Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.empty_activation`, `Nonvacuous.open_activation`, `Nonvacuous.dtor`.
 
 Sharp:
 
-1. `ProgramTyped P` — counter-example `Sharp.stuck`
+1. `ProgramTyped P` — counter-example `Sharp.refused`
 2. `P.pendingSafe = true` — counter-example `Sharp.pending_program`
 3. `Typed P R Γ e T Ω` — counter-example `Sharp.typed`
-4. `ActivationTyping P.decls Γ φ H` — counter-example `Sharp.frame`
+4. `ActivationTyping P.decls Γ φ H` — counter-example `Sharp.activation`
 5. `StoreCC P.decls H` — counter-example `Sharp.store_cc`
 6. `e.pendingSafe = true` — counter-example `Sharp.pending_expr`
 
@@ -680,14 +680,14 @@ def Spec.rest_exactly_once_stmt : Prop :=
 
 Proved by `rest_exactly_once` (`RueCore.TraceExact`). Names `FloatLaws`, `Program`, `ProgramTyped`, `Program.pendingSafe`, `Ty`, `Ctx`, `Expr`, `Out`, `Activation`, `Store`, `Typed`, `ActivationTyping`, `StoreCC`, `Expr.pendingSafe`, `Val`, `Event`, `Lead`, `EvalRes`, `eval`, `EvalRes.withTrace`, `Refusal`, `Exact`, `Contents.ownList`, `Contents.ofVals`, `Settled`; rests on 222 definitions.
 
-Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.empty_frame`, `Nonvacuous.open_frame`, `Nonvacuous.dtor`.
+Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.empty_activation`, `Nonvacuous.open_activation`, `Nonvacuous.dtor`.
 
 Sharp:
 
-1. `ProgramTyped P` — counter-example `Sharp.stuck`
+1. `ProgramTyped P` — counter-example `Sharp.refused`
 2. `P.pendingSafe = true` — counter-example `Sharp.pending_program`
 3. `Typed P R Γ e T Ω` — counter-example `Sharp.typed`
-4. `ActivationTyping P.decls Γ φ H` — counter-example `Sharp.frame`
+4. `ActivationTyping P.decls Γ φ H` — counter-example `Sharp.activation`
 5. `StoreCC P.decls H` — counter-example `Sharp.store_cc`
 6. `e.pendingSafe = true` — counter-example `Sharp.pending_expr`
 7. `Lead M.toFloatSig P fuel H φ H₁ vs tr e` — counter-example `Sharp.no_lead`
@@ -868,7 +868,7 @@ def Spec.Config.trichotomy_stmt : Prop :=
 
 Proved by `Config.trichotomy` (`RueCore.Step.Lemmas`). Names `FloatSig`, `Program`, `Config`, `Step`, `Config.Terminal`, `Refusal`, `Config.Stuck`; rests on 114 definitions.
 
-Non-vacuous: no hypotheses to satisfy; applied at a non-trivial program by witnesses `Nonvacuous.dtor`, `Nonvacuous.stuck`.
+Non-vacuous: no hypotheses to satisfy; applied at a non-trivial program by witnesses `Nonvacuous.dtor`, `Nonvacuous.refused_stuck`.
 
 Sharp: no hypotheses to drop.
 
@@ -902,7 +902,7 @@ def Spec.Config.stuck_iff_stmt : Prop :=
 
 Proved by `Config.stuck_iff` (`RueCore.Step.Lemmas`). Names `FloatSig`, `Program`, `Config`, `Config.Terminal`, `Step`, `Refusal`, `Config.Stuck`; rests on 114 definitions.
 
-Non-vacuous: no hypotheses to satisfy; applied at a non-trivial program by witnesses `Nonvacuous.stuck`.
+Non-vacuous: no hypotheses to satisfy; applied at a non-trivial program by witnesses `Nonvacuous.refused_stuck`.
 
 Sharp: no hypotheses to drop.
 
@@ -920,7 +920,7 @@ def Spec.step_stuck_isStuckState_stmt : Prop :=
 
 Proved by `step_stuck_isStuckState` (`RueCore.Step.Lemmas`). Names `FloatSig`, `Program`, `Config`, `Refusal`, `Config.Stuck`, `Refusal.isStuckState`; rests on 113 definitions.
 
-Non-vacuous: witnesses `Nonvacuous.stuck`.
+Non-vacuous: witnesses `Nonvacuous.refused_stuck`.
 
 Sharp:
 
@@ -951,7 +951,7 @@ Sharp:
 1. `ProgramTyped P` — counter-example `Sharp.stuck_step`
 2. `Steps M.toFloatSig P Config.init C` — counter-example `Sharp.unreachable_stuck`
 
-### `step_preservation`
+### `step_safeAt`
 
 **The invariant `SafeAt` along every run** (§7 "Type safety"; *not* its
 sentence "types are preserved under reduction"). For a checked program, every
@@ -965,7 +965,7 @@ the conclusion of Timany et al.'s Cor. 2.3, `safe`, with typed halting values
 (`FIELD.md`, section 2); the name is §7's, and RUE-2423 decides whether it stays.
 
 ```lean
-def Spec.step_preservation_stmt : Prop :=
+def Spec.step_safeAt_stmt : Prop :=
   ∀ (M : FloatLaws) {P : Program},
     ProgramTyped P →
       ∃ fd,
@@ -974,7 +974,7 @@ def Spec.step_preservation_stmt : Prop :=
             Steps M.toFloatSig P Config.init C → Config.SafeAt M.toFloatSig P fd.ret C
 ```
 
-Proved by `step_preservation` (`RueCore.Adequacy`). Names `FloatLaws`, `Program`, `ProgramTyped`, `FnDef`, `Config`, `Steps`, `Config.init`, `Config.SafeAt`; rests on 197 definitions.
+Proved by `step_safeAt` (`RueCore.Adequacy`). Names `FloatLaws`, `Program`, `ProgramTyped`, `FnDef`, `Config`, `Steps`, `Config.init`, `Config.SafeAt`; rests on 197 definitions.
 
 Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`.
 
@@ -1021,7 +1021,7 @@ no leak of drops"; §6.1's retired cell; RUE-2496). No configuration reachable
 from `Config.init` is stuck on a retired (`†`) cell, whether or not the
 program is checked. The hypothesis that the configuration is reached is
 needed: a configuration whose frame names a retired cell is stuck so
-(`Sharp.retired_cell`).
+(`Sharp.tombstoned_cell`).
 
 ```lean
 def Spec.step_no_use_after_drop_stmt : Prop :=
@@ -1035,13 +1035,13 @@ Non-vacuous: witnesses `Nonvacuous.dtor`.
 
 Sharp:
 
-1. `Steps M P Config.init C` — counter-example `Sharp.retired_cell`
+1. `Steps M P Config.init C` — counter-example `Sharp.tombstoned_cell`
 
 ## Semantic equivalence of `eval` and `Step`
 
 `RueCore.Spec.Adequacy`
 
-### `eval_sound`
+### `eval_big_to_small`
 
 **`eval` is sound for `Step`**, the interpreter-to-small-step direction of
 the semantic equivalence (§7's adequacy sentence; ADR-0097). For a
@@ -1049,7 +1049,7 @@ checked program, `run` is never stuck, and its values and panics are reached
 by `→*` from `Config.init` with the same store and trace.
 
 ```lean
-def Spec.eval_sound_stmt : Prop :=
+def Spec.eval_big_to_small_stmt : Prop :=
   ∀ (M : FloatLaws) {P : Program},
     ProgramTyped P →
       ∀ (fuel : Nat),
@@ -1063,13 +1063,13 @@ def Spec.eval_sound_stmt : Prop :=
                 Steps M.toFloatSig P Config.init (Config.panic k tr)
 ```
 
-Proved by `eval_sound` (`RueCore.Adequacy`). Names `FloatLaws`, `Program`, `ProgramTyped`, `Refusal`, `EvalRes`, `run`, `Store`, `Val`, `Event`, `Steps`, `Config.init`, `Config`, `Activation.empty`, `Kont`, `Focus`, `PanicKind`; rests on 213 definitions.
+Proved by `eval_big_to_small` (`RueCore.Adequacy`). Names `FloatLaws`, `Program`, `ProgramTyped`, `Refusal`, `EvalRes`, `run`, `Store`, `Val`, `Event`, `Steps`, `Config.init`, `Config`, `Activation.empty`, `Kont`, `Focus`, `PanicKind`; rests on 213 definitions.
 
 Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`.
 
 Sharp:
 
-1. `ProgramTyped P` — counter-example `Sharp.stuck`
+1. `ProgramTyped P` — counter-example `Sharp.refused`
 2. `run M.toFloatSig P fuel = EvalRes.ok H v tr` — counter-example `Sharp.unreached`
 3. `run M.toFloatSig P fuel = EvalRes.panic k tr` — counter-example `Sharp.unreached_panic`
 
@@ -1097,7 +1097,7 @@ Sharp:
 1. `run M P fuel = EvalRes.ok H v tr` — counter-example `Sharp.unreached`
 2. `run M P fuel = EvalRes.panic k tr` — counter-example `Sharp.unreached_panic`
 
-### `eval_complete`
+### `eval_small_to_big`
 
 **`eval` is complete for `Step`, modulo fuel**, the small-step-to-interpreter
 direction of the semantic equivalence (§7's adequacy sentence).
@@ -1105,7 +1105,7 @@ For a checked program, a value or panic `→*` reaches is `run`'s answer at
 every large enough fuel.
 
 ```lean
-def Spec.eval_complete_stmt : Prop :=
+def Spec.eval_small_to_big_stmt : Prop :=
   ∀ (M : FloatLaws) {P : Program},
     ProgramTyped P →
       (∀ (H : Store) (φ : Activation) (v : Val) (tr : List Event),
@@ -1116,7 +1116,7 @@ def Spec.eval_complete_stmt : Prop :=
             ∃ n, ∀ (fuel : Nat), n < fuel → run M.toFloatSig P fuel = EvalRes.panic κ tr
 ```
 
-Proved by `eval_complete` (`RueCore.Adequacy`). Names `FloatLaws`, `Program`, `ProgramTyped`, `Store`, `Activation`, `Val`, `Event`, `Steps`, `Config.init`, `Config`, `Kont`, `Focus`, `EvalRes`, `run`, `PanicKind`; rests on 212 definitions.
+Proved by `eval_small_to_big` (`RueCore.Adequacy`). Names `FloatLaws`, `Program`, `ProgramTyped`, `Store`, `Activation`, `Val`, `Event`, `Steps`, `Config.init`, `Config`, `Kont`, `Focus`, `EvalRes`, `run`, `PanicKind`; rests on 212 definitions.
 
 Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`.
 
@@ -1128,14 +1128,14 @@ Sharp:
 4. `Steps M.toFloatSig P Config.init (Config.panic κ tr)` — counter-example `Sharp.unreached_panic`
 5. `n < fuel` — counter-example `Sharp.fuel_panic`
 
-### `run_complete`
+### `run_small_to_big`
 
 **Completeness on every program** (§6.12): the same, up to a refusal of
 `run`'s (RUE-2314). With no typing hypothesis the escape is wide: a `run` that
 is `.refused` past some fuel satisfies it, whatever `→*` reaches.
 
 ```lean
-def Spec.run_complete_stmt : Prop :=
+def Spec.run_small_to_big_stmt : Prop :=
   ∀ (M : FloatSig) (P : Program),
     (∀ (H : Store) (φ : Activation) (v : Val) (tr : List Event),
         Steps M P Config.init (Config.run H φ [] (Focus.ret v) tr) →
@@ -1151,7 +1151,7 @@ def Spec.run_complete_stmt : Prop :=
                 run M P fuel = EvalRes.panic κ tr ∨ ∃ w, run M P fuel = EvalRes.refused w
 ```
 
-Proved by `run_complete` (`RueCore.Adequacy`). Names `FloatSig`, `Program`, `Store`, `Activation`, `Val`, `Event`, `Steps`, `Config.init`, `Config`, `Kont`, `Focus`, `EvalRes`, `run`, `Refusal`, `PanicKind`; rests on 127 definitions.
+Proved by `run_small_to_big` (`RueCore.Adequacy`). Names `FloatSig`, `Program`, `Store`, `Activation`, `Val`, `Event`, `Steps`, `Config.init`, `Config`, `Kont`, `Focus`, `EvalRes`, `run`, `Refusal`, `PanicKind`; rests on 127 definitions.
 
 Non-vacuous: witnesses `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`.
 
@@ -1162,7 +1162,7 @@ Sharp:
 3. `Steps M P Config.init (Config.panic κ tr)` — counter-example `Sharp.unreached_panic`
 4. `n < fuel` — counter-example `Sharp.fuel_panic`
 
-### `never_stuck_iff`
+### `never_refused_iff`
 
 **Never stuck, both ways** (§7 "Type safety"). For a checked program, `run`
 is never stuck iff no reachable configuration is. Under `ProgramTyped` both
@@ -1170,7 +1170,7 @@ sides hold outright, so the equivalence adds nothing; cite
 `step_never_stuck_of_run` (R5 of `REDTEAM-LOG.md`).
 
 ```lean
-def Spec.never_stuck_iff_stmt : Prop :=
+def Spec.never_refused_iff_stmt : Prop :=
   ∀ (M : FloatLaws) {P : Program},
     ProgramTyped P →
       ((∀ (fuel : Nat) (w : Refusal), run M.toFloatSig P fuel ≠ EvalRes.refused w) ↔
@@ -1178,7 +1178,7 @@ def Spec.never_stuck_iff_stmt : Prop :=
           Steps M.toFloatSig P Config.init C → C.Terminal ∨ ∃ C', Step M.toFloatSig P C C')
 ```
 
-Proved by `never_stuck_iff` (`RueCore.Adequacy`). Names `FloatLaws`, `Program`, `ProgramTyped`, `Refusal`, `EvalRes`, `run`, `Config`, `Steps`, `Config.init`, `Config.Terminal`, `Step`; rests on 213 definitions.
+Proved by `never_refused_iff` (`RueCore.Adequacy`). Names `FloatLaws`, `Program`, `ProgramTyped`, `Refusal`, `EvalRes`, `run`, `Config`, `Steps`, `Config.init`, `Config.Terminal`, `Step`; rests on 213 definitions.
 
 Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.dtor`, `Nonvacuous.linear`, `Nonvacuous.loop`, `Nonvacuous.array`, `Nonvacuous.enum_match`, `Nonvacuous.early_return`, `Nonvacuous.panic`, `Nonvacuous.float`.
 
@@ -1209,22 +1209,22 @@ Sharp:
 1. `∀ (fuel : Nat) (w : Refusal), run M P fuel ≠ EvalRes.refused w` — counter-example `Sharp.stuck_step`
 2. `Steps M P Config.init C` — counter-example `Sharp.unreachable_stuck`
 
-### `run_stuck_of_step_stuck`
+### `run_refused_of_step_stuck`
 
 **A stuck `Step` run is a refusal of `run`** (§6), at every large enough
 fuel, perhaps with another `Refusal`.
 
 ```lean
-def Spec.run_stuck_of_step_stuck_stmt : Prop :=
+def Spec.run_refused_of_step_stuck_stmt : Prop :=
   ∀ (M : FloatSig) (P : Program) {C : Config} {w : Refusal},
     Steps M P Config.init C →
       Config.Stuck M P C w →
         ∃ n, ∀ (fuel : Nat), n < fuel → ∃ w', run M P fuel = EvalRes.refused w'
 ```
 
-Proved by `run_stuck_of_step_stuck` (`RueCore.Adequacy`). Names `FloatSig`, `Program`, `Config`, `Refusal`, `Steps`, `Config.init`, `Config.Stuck`, `EvalRes`, `run`; rests on 134 definitions.
+Proved by `run_refused_of_step_stuck` (`RueCore.Adequacy`). Names `FloatSig`, `Program`, `Config`, `Refusal`, `Steps`, `Config.init`, `Config.Stuck`, `EvalRes`, `run`; rests on 134 definitions.
 
-Non-vacuous: witnesses `Nonvacuous.stuck`.
+Non-vacuous: witnesses `Nonvacuous.refused_stuck`.
 
 Sharp:
 
@@ -1274,9 +1274,9 @@ def Spec.Nonvacuous.exact_model_stmt : Prop :=
   ∃ M, M.toFloatSig = Float.exactOps
 ```
 
-Proved by `Nonvacuous.exact_model` (`RueCore.Nonvacuous`). Witnesses `soundness`, `run_safe`, `no_violation`, `no_use_after_move`, `no_use_after_drop`, `no_linear_leak`, `no_linear_overwrite`, `no_linear_discard`, `no_double_free`, `step_no_double_free`, `drop_exactly_once`, `rest_exactly_once`, `whole_program_exactly_once`, `drop_order`, `drop_glue_order`, `step_progress`, `step_preservation`, `step_type_safety`, `eval_sound`, `eval_complete`, `never_stuck_iff`, `eval_diverges_iff`.
+Proved by `Nonvacuous.exact_model` (`RueCore.Nonvacuous`). Witnesses `soundness`, `run_safe`, `no_refusal`, `no_use_after_move`, `no_use_after_drop`, `no_linear_leak`, `no_linear_overwrite`, `no_linear_discard`, `no_double_free`, `step_no_double_free`, `drop_exactly_once`, `rest_exactly_once`, `whole_program_exactly_once`, `drop_order`, `drop_glue_order`, `step_progress`, `step_safeAt`, `step_type_safety`, `eval_big_to_small`, `eval_small_to_big`, `never_refused_iff`, `eval_diverges_iff`.
 
-### `Nonvacuous.empty_frame`
+### `Nonvacuous.empty_activation`
 
 **The initial frame agrees with the empty context** (§6.12's initial
 configuration): at every declaration environment, the empty frame over the
@@ -1286,13 +1286,13 @@ store the evaluation statements (`soundness`, `drop_exactly_once`,
 `rest_exactly_once`) are applied at by the witnesses below.
 
 ```lean
-def Spec.Nonvacuous.empty_frame_stmt : Prop :=
+def Spec.Nonvacuous.empty_activation_stmt : Prop :=
   ∀ (D : Decls), ActivationTyping D [] Activation.empty [] ∧ StoreCC D []
 ```
 
-Proved by `Nonvacuous.empty_frame` (`RueCore.Nonvacuous`). Witnesses `soundness`, `drop_exactly_once`, `rest_exactly_once`.
+Proved by `Nonvacuous.empty_activation` (`RueCore.Nonvacuous`). Witnesses `soundness`, `drop_exactly_once`, `rest_exactly_once`.
 
-### `Nonvacuous.open_frame`
+### `Nonvacuous.open_activation`
 
 **An open term in a live frame** (§6.1, §7): the evaluation statements apply
 beyond the empty frame. Over the witnesses' declarations, `@drop(s); 1` is
@@ -1305,7 +1305,7 @@ its leading operand has a `Lead`, so `soundness`, `drop_exactly_once` and
 not empty.
 
 ```lean
-def Spec.Nonvacuous.open_frame_stmt : Prop :=
+def Spec.Nonvacuous.open_activation_stmt : Prop :=
   ∀ (D : Decls),
     D =
         {
@@ -1366,7 +1366,7 @@ def Spec.Nonvacuous.open_frame_stmt : Prop :=
                                   EvalRes.withTrace tr r
 ```
 
-Proved by `Nonvacuous.open_frame` (`RueCore.Nonvacuous`). Witnesses `soundness`, `check_sound`, `drop_exactly_once`, `rest_exactly_once`.
+Proved by `Nonvacuous.open_activation` (`RueCore.Nonvacuous`). Witnesses `soundness`, `check_sound`, `drop_exactly_once`, `rest_exactly_once`.
 
 ### `Nonvacuous.dtor`
 
@@ -1430,7 +1430,7 @@ def Spec.Nonvacuous.dtor_stmt : Prop :=
                                   2 ≤ (freedIds P.decls tr).length ∧ 2 ≤ (dtorIds tr).length
 ```
 
-Proved by `Nonvacuous.dtor` (`RueCore.Nonvacuous`). Witnesses `soundness`, `run_safe`, `no_violation`, `no_use_after_move`, `no_use_after_drop`, `run_no_use_after_drop`, `no_linear_leak`, `no_linear_overwrite`, `no_linear_discard`, `fuel_mono`, `check_sound`, `checkProgram_sound`, `no_double_free`, `step_no_double_free`, `freed_once`, `dtor_once`, `drop_exactly_once`, `rest_exactly_once`, `drop_order`, `drop_glue_order`, `Step.det`, `Step.terminal`, `Config.trichotomy`, `step_iff`, `step_progress`, `step_preservation`, `step_type_safety`, `step_no_use_after_drop`, `eval_sound`, `run_sim`, `eval_complete`, `run_complete`, `never_stuck_iff`, `step_never_stuck_of_run`, `eval_diverges_iff`.
+Proved by `Nonvacuous.dtor` (`RueCore.Nonvacuous`). Witnesses `soundness`, `run_safe`, `no_refusal`, `no_use_after_move`, `no_use_after_drop`, `run_no_use_after_drop`, `no_linear_leak`, `no_linear_overwrite`, `no_linear_discard`, `fuel_mono`, `check_sound`, `checkProgram_sound`, `no_double_free`, `step_no_double_free`, `freed_once`, `dtor_once`, `drop_exactly_once`, `rest_exactly_once`, `drop_order`, `drop_glue_order`, `Step.det`, `Step.terminal`, `Config.trichotomy`, `step_iff`, `step_progress`, `step_safeAt`, `step_type_safety`, `step_no_use_after_drop`, `eval_big_to_small`, `run_sim`, `eval_small_to_big`, `run_small_to_big`, `never_refused_iff`, `step_never_stuck_of_run`, `eval_diverges_iff`.
 
 ### `Nonvacuous.linear`
 
@@ -1475,7 +1475,7 @@ def Spec.Nonvacuous.linear_stmt : Prop :=
                         2 ≤ (freedIds P.decls tr).length
 ```
 
-Proved by `Nonvacuous.linear` (`RueCore.Nonvacuous`). Witnesses `soundness`, `run_safe`, `no_violation`, `no_use_after_move`, `no_use_after_drop`, `no_linear_leak`, `no_linear_overwrite`, `no_linear_discard`, `fuel_mono`, `check_sound`, `checkProgram_sound`, `no_double_free`, `drop_order`, `drop_glue_order`, `Step.terminal`, `step_progress`, `step_preservation`, `step_type_safety`, `eval_sound`, `run_sim`, `eval_complete`, `run_complete`, `never_stuck_iff`, `eval_diverges_iff`.
+Proved by `Nonvacuous.linear` (`RueCore.Nonvacuous`). Witnesses `soundness`, `run_safe`, `no_refusal`, `no_use_after_move`, `no_use_after_drop`, `no_linear_leak`, `no_linear_overwrite`, `no_linear_discard`, `fuel_mono`, `check_sound`, `checkProgram_sound`, `no_double_free`, `drop_order`, `drop_glue_order`, `Step.terminal`, `step_progress`, `step_safeAt`, `step_type_safety`, `eval_big_to_small`, `run_sim`, `eval_small_to_big`, `run_small_to_big`, `never_refused_iff`, `eval_diverges_iff`.
 
 ### `Nonvacuous.loop`
 
@@ -1527,7 +1527,7 @@ def Spec.Nonvacuous.loop_stmt : Prop :=
                         3 ≤ (dtorIds tr).length
 ```
 
-Proved by `Nonvacuous.loop` (`RueCore.Nonvacuous`). Witnesses `soundness`, `run_safe`, `no_violation`, `no_use_after_move`, `no_use_after_drop`, `no_linear_leak`, `no_linear_overwrite`, `no_linear_discard`, `fuel_mono`, `check_sound`, `checkProgram_sound`, `no_double_free`, `freed_once`, `drop_order`, `drop_glue_order`, `Step.terminal`, `step_progress`, `step_preservation`, `step_type_safety`, `eval_sound`, `run_sim`, `eval_complete`, `run_complete`, `never_stuck_iff`, `eval_diverges_iff`.
+Proved by `Nonvacuous.loop` (`RueCore.Nonvacuous`). Witnesses `soundness`, `run_safe`, `no_refusal`, `no_use_after_move`, `no_use_after_drop`, `no_linear_leak`, `no_linear_overwrite`, `no_linear_discard`, `fuel_mono`, `check_sound`, `checkProgram_sound`, `no_double_free`, `freed_once`, `drop_order`, `drop_glue_order`, `Step.terminal`, `step_progress`, `step_safeAt`, `step_type_safety`, `eval_big_to_small`, `run_sim`, `eval_small_to_big`, `run_small_to_big`, `never_refused_iff`, `eval_diverges_iff`.
 
 ### `Nonvacuous.array`
 
@@ -1574,7 +1574,7 @@ def Spec.Nonvacuous.array_stmt : Prop :=
                         2 ≤ (dtorIds tr).length
 ```
 
-Proved by `Nonvacuous.array` (`RueCore.Nonvacuous`). Witnesses `soundness`, `run_safe`, `no_violation`, `no_use_after_move`, `no_use_after_drop`, `no_linear_leak`, `no_linear_overwrite`, `no_linear_discard`, `fuel_mono`, `check_sound`, `checkProgram_sound`, `no_double_free`, `drop_order`, `drop_glue_order`, `Step.terminal`, `step_progress`, `step_preservation`, `step_type_safety`, `eval_sound`, `run_sim`, `eval_complete`, `run_complete`, `never_stuck_iff`, `eval_diverges_iff`.
+Proved by `Nonvacuous.array` (`RueCore.Nonvacuous`). Witnesses `soundness`, `run_safe`, `no_refusal`, `no_use_after_move`, `no_use_after_drop`, `no_linear_leak`, `no_linear_overwrite`, `no_linear_discard`, `fuel_mono`, `check_sound`, `checkProgram_sound`, `no_double_free`, `drop_order`, `drop_glue_order`, `Step.terminal`, `step_progress`, `step_safeAt`, `step_type_safety`, `eval_big_to_small`, `run_sim`, `eval_small_to_big`, `run_small_to_big`, `never_refused_iff`, `eval_diverges_iff`.
 
 ### `Nonvacuous.enum_match`
 
@@ -1621,7 +1621,7 @@ def Spec.Nonvacuous.enum_match_stmt : Prop :=
                         2 ≤ (freedIds P.decls tr).length ∧ 1 ≤ (dtorIds tr).length
 ```
 
-Proved by `Nonvacuous.enum_match` (`RueCore.Nonvacuous`). Witnesses `soundness`, `run_safe`, `no_violation`, `no_use_after_move`, `no_use_after_drop`, `no_linear_leak`, `no_linear_overwrite`, `no_linear_discard`, `fuel_mono`, `check_sound`, `checkProgram_sound`, `no_double_free`, `drop_order`, `drop_glue_order`, `Step.terminal`, `step_progress`, `step_preservation`, `step_type_safety`, `eval_sound`, `run_sim`, `eval_complete`, `run_complete`, `never_stuck_iff`, `eval_diverges_iff`.
+Proved by `Nonvacuous.enum_match` (`RueCore.Nonvacuous`). Witnesses `soundness`, `run_safe`, `no_refusal`, `no_use_after_move`, `no_use_after_drop`, `no_linear_leak`, `no_linear_overwrite`, `no_linear_discard`, `fuel_mono`, `check_sound`, `checkProgram_sound`, `no_double_free`, `drop_order`, `drop_glue_order`, `Step.terminal`, `step_progress`, `step_safeAt`, `step_type_safety`, `eval_big_to_small`, `run_sim`, `eval_small_to_big`, `run_small_to_big`, `never_refused_iff`, `eval_diverges_iff`.
 
 ### `Nonvacuous.early_return`
 
@@ -1667,7 +1667,7 @@ def Spec.Nonvacuous.early_return_stmt : Prop :=
                         v = Val.int IntWidth.w64 Sign.signed 7 ∧ 2 ≤ (dtorIds tr).length
 ```
 
-Proved by `Nonvacuous.early_return` (`RueCore.Nonvacuous`). Witnesses `soundness`, `run_safe`, `no_violation`, `no_use_after_move`, `no_use_after_drop`, `no_linear_leak`, `no_linear_overwrite`, `no_linear_discard`, `fuel_mono`, `run_ne_returned`, `check_sound`, `checkProgram_sound`, `no_double_free`, `drop_order`, `drop_glue_order`, `Step.terminal`, `step_progress`, `step_preservation`, `step_type_safety`, `eval_sound`, `run_sim`, `eval_complete`, `run_complete`, `never_stuck_iff`, `eval_diverges_iff`.
+Proved by `Nonvacuous.early_return` (`RueCore.Nonvacuous`). Witnesses `soundness`, `run_safe`, `no_refusal`, `no_use_after_move`, `no_use_after_drop`, `no_linear_leak`, `no_linear_overwrite`, `no_linear_discard`, `fuel_mono`, `run_ne_returned`, `check_sound`, `checkProgram_sound`, `no_double_free`, `drop_order`, `drop_glue_order`, `Step.terminal`, `step_progress`, `step_safeAt`, `step_type_safety`, `eval_big_to_small`, `run_sim`, `eval_small_to_big`, `run_small_to_big`, `never_refused_iff`, `eval_diverges_iff`.
 
 ### `Nonvacuous.panic`
 
@@ -1713,7 +1713,7 @@ def Spec.Nonvacuous.panic_stmt : Prop :=
                         [Event.dbg (Val.int IntWidth.w64 Sign.signed 5)])
 ```
 
-Proved by `Nonvacuous.panic` (`RueCore.Nonvacuous`). Witnesses `soundness`, `run_safe`, `no_violation`, `no_use_after_move`, `no_use_after_drop`, `no_linear_leak`, `no_linear_overwrite`, `no_linear_discard`, `fuel_mono`, `check_sound`, `checkProgram_sound`, `no_double_free`, `drop_order`, `drop_glue_order`, `Step.terminal`, `step_progress`, `step_preservation`, `step_type_safety`, `eval_sound`, `run_sim`, `eval_complete`, `run_complete`, `never_stuck_iff`, `eval_diverges_iff`.
+Proved by `Nonvacuous.panic` (`RueCore.Nonvacuous`). Witnesses `soundness`, `run_safe`, `no_refusal`, `no_use_after_move`, `no_use_after_drop`, `no_linear_leak`, `no_linear_overwrite`, `no_linear_discard`, `fuel_mono`, `check_sound`, `checkProgram_sound`, `no_double_free`, `drop_order`, `drop_glue_order`, `Step.terminal`, `step_progress`, `step_safeAt`, `step_type_safety`, `eval_big_to_small`, `run_sim`, `eval_small_to_big`, `run_small_to_big`, `never_refused_iff`, `eval_diverges_iff`.
 
 ### `Nonvacuous.float`
 
@@ -1759,7 +1759,7 @@ def Spec.Nonvacuous.float_stmt : Prop :=
                         v = Val.float FloatWidth.w64 (FloatDatum.num false 15 (-1))
 ```
 
-Proved by `Nonvacuous.float` (`RueCore.Nonvacuous`). Witnesses `soundness`, `run_safe`, `no_violation`, `no_use_after_move`, `no_use_after_drop`, `no_linear_leak`, `no_linear_overwrite`, `no_linear_discard`, `fuel_mono`, `check_sound`, `checkProgram_sound`, `no_double_free`, `drop_order`, `drop_glue_order`, `Step.terminal`, `step_progress`, `step_preservation`, `step_type_safety`, `eval_sound`, `run_sim`, `eval_complete`, `run_complete`, `never_stuck_iff`, `eval_diverges_iff`.
+Proved by `Nonvacuous.float` (`RueCore.Nonvacuous`). Witnesses `soundness`, `run_safe`, `no_refusal`, `no_use_after_move`, `no_use_after_drop`, `no_linear_leak`, `no_linear_overwrite`, `no_linear_discard`, `fuel_mono`, `check_sound`, `checkProgram_sound`, `no_double_free`, `drop_order`, `drop_glue_order`, `Step.terminal`, `step_progress`, `step_safeAt`, `step_type_safety`, `eval_big_to_small`, `run_sim`, `eval_small_to_big`, `run_small_to_big`, `never_refused_iff`, `eval_diverges_iff`.
 
 ### `Nonvacuous.diverges`
 
@@ -1906,7 +1906,7 @@ def Spec.Nonvacuous.whole_result_stmt : Prop :=
 
 Proved by `Nonvacuous.whole_result` (`RueCore.Nonvacuous`). Witnesses `checkProgram_sound`, `whole_program_exactly_once`.
 
-### `Nonvacuous.stuck`
+### `Nonvacuous.refused_stuck`
 
 **An unchecked program that gets stuck** (§6.3's read of a `⊘`; the corpus
 case `use_after_move` reads its moved binding the same way). `let a = S0 { 1
@@ -1917,7 +1917,7 @@ statements whose hypothesis is a stuck run or a stuck configuration are not
 vacuous either.
 
 ```lean
-def Spec.Nonvacuous.stuck_stmt : Prop :=
+def Spec.Nonvacuous.refused_stuck_stmt : Prop :=
   ∀ (B : Expr),
     B =
         Expr.letIn false (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
@@ -1942,7 +1942,7 @@ def Spec.Nonvacuous.stuck_stmt : Prop :=
                   Config.Stuck Float.exactOps P C Refusal.useAfterMove
 ```
 
-Proved by `Nonvacuous.stuck` (`RueCore.Nonvacuous`). Witnesses `fuel_mono`, `no_masking`, `Config.trichotomy`, `Config.stuck_iff`, `step_stuck_isStuckState`, `run_stuck_of_step_stuck`.
+Proved by `Nonvacuous.refused_stuck` (`RueCore.Nonvacuous`). Witnesses `fuel_mono`, `no_masking`, `Config.trichotomy`, `Config.stuck_iff`, `step_stuck_isStuckState`, `run_refused_of_step_stuck`.
 
 ## Sharpness counter-examples
 
@@ -1952,10 +1952,10 @@ Each statement drops the spine hypotheses it names: that hypothesis fails of a
 program written out in the statement, every other holds, and the conclusion fails
 (RUE-2485). A hypothesis is a spine theorem and its number in `Lint.hypotheses`.
 
-### `Sharp.stuck`
+### `Sharp.refused`
 
 **An unchecked program that reads a moved-out value, run by `eval`**
-(§7 sharpness, RUE-2485; the program is `Nonvacuous.stuck`'s). `let a = S0 { 1 };
+(§7 sharpness, RUE-2485; the program is `Nonvacuous.refused_stuck`'s). `let a = S0 { 1 };
 @drop(a); a.x0` as the entry point: the checker rejects it and it is neither
 `ProgramTyped` nor `WfProgram`, while its entry point exists and takes no
 parameters, and its body is `pendingSafe`; `main()`, the call `run` makes, is
@@ -1963,8 +1963,8 @@ typed by `check` from the empty frame and store, which agree with the empty
 context, and has a `Lead` (its empty argument list). `eval` refuses it with
 `useAfterMove`, and at fuel `0` it answers `outOfFuel`. So each of these
 conclusions fails once its program hypothesis is dropped: `soundness`
-(`WfProgram`), `run_safe` (`WfProgram`), `no_violation`, `no_use_after_move`,
-`checkProgram_sound` (`checkProgram P = true`), `eval_sound`,
+(`WfProgram`), `run_safe` (`WfProgram`), `no_refusal`, `no_use_after_move`,
+`checkProgram_sound` (`checkProgram P = true`), `eval_big_to_small`,
 `drop_exactly_once` and `rest_exactly_once` (`ProgramTyped`), and `no_masking`
 (its second hypothesis, `eval m ≠ outOfFuel`, at `m = 0`). Where the spine theorem is stated over `eval`
 (`no_masking`, `drop_exactly_once`, `rest_exactly_once`), the statement gives
@@ -1975,7 +1975,7 @@ and `¬ WfProgram` are proved through the spine theorems themselves
 (`no_use_after_move`, `soundness`), not by inverting the definitions.
 
 ```lean
-def Spec.Sharp.stuck_stmt : Prop :=
+def Spec.Sharp.refused_stmt : Prop :=
   ∀ (B : Expr),
     B =
         Expr.letIn false (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
@@ -2043,17 +2043,17 @@ def Spec.Sharp.stuck_stmt : Prop :=
                                                       (Ty.int IntWidth.w64 Sign.signed))
 ```
 
-Proved by `Sharp.stuck` (`RueCore.Sharp`). Drops `soundness` 1, `run_safe` 1, `no_violation` 1, `no_use_after_move` 1, `no_masking` 2, `checkProgram_sound` 1, `drop_exactly_once` 1, `rest_exactly_once` 1, `eval_sound` 1.
+Proved by `Sharp.refused` (`RueCore.Sharp`). Drops `soundness` 1, `run_safe` 1, `no_refusal` 1, `no_use_after_move` 1, `no_masking` 2, `checkProgram_sound` 1, `drop_exactly_once` 1, `rest_exactly_once` 1, `eval_big_to_small` 1.
 
 ### `Sharp.stuck_step`
 
 **The same program, run by §6's relation** (§7 sharpness, RUE-2485). `Step`
 reaches a configuration stuck with `useAfterMove` from `Config.init`, and
 `run` refuses at fuel `200` and exhausts fuel `0`. So once `ProgramTyped` is
-dropped, `step_progress`, `step_preservation` and `step_type_safety` fail
+dropped, `step_progress`, `step_safeAt` and `step_type_safety` fail
 (no horizon passes the stuck configuration, which is not a value or a
 panic); once `step_never_stuck_of_run`'s hypothesis that `run` is never stuck
-is dropped, its conclusion fails; and once `run_stuck_of_step_stuck`'s bound
+is dropped, its conclusion fails; and once `run_refused_of_step_stuck`'s bound
 `n < fuel` is dropped, no `n` makes `run` stuck at every fuel.
 
 ```lean
@@ -2105,7 +2105,7 @@ def Spec.Sharp.stuck_step_stmt : Prop :=
                             ∃ w', run Float.exactOps P fuel = EvalRes.refused w'
 ```
 
-Proved by `Sharp.stuck_step` (`RueCore.Sharp`). Drops `step_progress` 1, `step_preservation` 1, `step_type_safety` 1, `step_never_stuck_of_run` 1, `run_stuck_of_step_stuck` 3.
+Proved by `Sharp.stuck_step` (`RueCore.Sharp`). Drops `step_progress` 1, `step_safeAt` 1, `step_type_safety` 1, `step_never_stuck_of_run` 1, `run_refused_of_step_stuck` 3.
 
 ### `Sharp.typed`
 
@@ -2181,7 +2181,7 @@ def Spec.Sharp.typed_stmt : Prop :=
 
 Proved by `Sharp.typed` (`RueCore.Sharp`). Drops `soundness` 2, `check_sound` 1, `drop_exactly_once` 3, `rest_exactly_once` 3.
 
-### `Sharp.frame`
+### `Sharp.activation`
 
 **A typed expression run in a frame that does not match its context**
 (§7 sharpness, RUE-2485). `1; x`, typed by `check` in the context `x : i64` over
@@ -2195,7 +2195,7 @@ refusal. The pairing is kernel-checked (`Sharp/Glue.lean`, RUE-2495);
 `¬ ActivationTyping` is proved through `soundness`.
 
 ```lean
-def Spec.Sharp.frame_stmt : Prop :=
+def Spec.Sharp.activation_stmt : Prop :=
   ∀ (B : Expr),
     B =
         Expr.letIn false (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
@@ -2250,7 +2250,7 @@ def Spec.Sharp.frame_stmt : Prop :=
                                     EvalRes.withTrace [] (EvalRes.refused Refusal.unbound)
 ```
 
-Proved by `Sharp.frame` (`RueCore.Sharp`). Drops `soundness` 3, `drop_exactly_once` 4, `rest_exactly_once` 4.
+Proved by `Sharp.activation` (`RueCore.Sharp`). Drops `soundness` 3, `drop_exactly_once` 4, `rest_exactly_once` 4.
 
 ### `Sharp.no_entry`
 
@@ -2291,7 +2291,7 @@ Proved by `Sharp.no_entry` (`RueCore.Sharp`). Drops `run_safe` 2.
 RUE-2485). `fn main(x: i64) -> i64 { x }` is `WfProgram`, but its entry point
 has a parameter, so it is not `ProgramTyped`; `run` calls it with no
 arguments, and `eval` refuses the call with `typeConfusion`. So `run_safe`
-needs its hypothesis `fd.params = []`, and `no_violation` needs the entry
+needs its hypothesis `fd.params = []`, and `no_refusal` needs the entry
 clause of `ProgramTyped`, not only `WfProgram`. `¬ ProgramTyped` is shown
 directly, from that clause.
 
@@ -2325,7 +2325,7 @@ def Spec.Sharp.entry_param_stmt : Prop :=
             run Float.exactOps P 200 = EvalRes.refused Refusal.typeConfusion
 ```
 
-Proved by `Sharp.entry_param` (`RueCore.Sharp`). Drops `run_safe` 3, `no_violation` 1.
+Proved by `Sharp.entry_param` (`RueCore.Sharp`). Drops `run_safe` 3, `no_refusal` 1.
 
 ### `Sharp.copy`
 
@@ -2335,7 +2335,7 @@ would duplicate an owner through: over `S0 = @copy struct { x0: i64 }` and
 `S1`, affine with a destructor, `let p = S0 { x0: S1 { 1 } }; let q = p;
 @drop(p.x0); @drop(q.x0); 0` (`Trace.lean`'s `dupProgram`). It is not
 `ProgramTyped`, and `eval` refuses it with `ownedUnderCopy`, at the literal:
-`no_violation`'s conclusion fails once `ProgramTyped` is dropped, and a machine
+`no_refusal`'s conclusion fails once `ProgramTyped` is dropped, and a machine
 without the copy-closure monitor (`Contents.copyContained` in `introVal`) makes
 this statement false.
 
@@ -2367,7 +2367,7 @@ def Spec.Sharp.copy_stmt : Prop :=
               run Float.exactOps P 200 = EvalRes.refused Refusal.ownedUnderCopy
 ```
 
-Proved by `Sharp.copy` (`RueCore.Sharp`). Drops `no_violation` 1.
+Proved by `Sharp.copy` (`RueCore.Sharp`). Drops `no_refusal` 1.
 
 ### `Sharp.leak`
 
@@ -2376,7 +2376,7 @@ Proved by `Sharp.copy` (`RueCore.Sharp`). Drops `no_violation` 1.
 value at the scope's end. It is not `ProgramTyped`, and `eval` refuses it with
 `linearLeak`: `no_linear_leak`'s conclusion fails once `ProgramTyped` is
 dropped. §6's relation, which has no monitor, runs it to a value, which `run`
-never returns at any fuel: `eval_complete` needs `ProgramTyped` too. A machine
+never returns at any fuel: `eval_small_to_big` needs `ProgramTyped` too. A machine
 whose leak monitor is off, or does not read a declared-`linear` struct's own
 obligation (`Contents.residualLinear`), makes this statement false.
 
@@ -2409,7 +2409,7 @@ def Spec.Sharp.leak_stmt : Prop :=
                           n < fuel → run Float.exactOps P fuel = EvalRes.ok H v tr
 ```
 
-Proved by `Sharp.leak` (`RueCore.Sharp`). Drops `no_linear_leak` 1, `eval_complete` 1.
+Proved by `Sharp.leak` (`RueCore.Sharp`). Drops `no_linear_leak` 1, `eval_small_to_big` 1.
 
 ### `Sharp.overwrite`
 
@@ -2454,7 +2454,7 @@ Proved by `Sharp.overwrite` (`RueCore.Sharp`). Drops `no_linear_overwrite` 1.
 `S1 { 3 }; @panic("boom")` discards a linear value. It is not `ProgramTyped`,
 and `eval` refuses the sequence with `linearDiscard`: `no_linear_discard`'s
 conclusion fails once `ProgramTyped` is dropped. §6's relation drops the
-value and reaches the panic, which `run` never answers: `eval_complete`'s
+value and reaches the panic, which `run` never answers: `eval_small_to_big`'s
 panic half needs `ProgramTyped` too. A machine without the discard monitor
 makes this statement false.
 
@@ -2485,7 +2485,7 @@ def Spec.Sharp.discard_stmt : Prop :=
                           n < fuel → run Float.exactOps P fuel = EvalRes.panic κ tr
 ```
 
-Proved by `Sharp.discard` (`RueCore.Sharp`). Drops `no_linear_discard` 1, `eval_complete` 1.
+Proved by `Sharp.discard` (`RueCore.Sharp`). Drops `no_linear_discard` 1, `eval_small_to_big` 1.
 
 ### `Sharp.discard_loop`
 
@@ -2493,7 +2493,7 @@ Proved by `Sharp.discard` (`RueCore.Sharp`). Drops `no_linear_discard` 1, `eval_
 `loop { S1 { 3 }; () }` is not `ProgramTyped`. `eval` refuses its first turn
 with `linearDiscard`, while §6's relation, which has no monitor, turns forever:
 it has runs of every length from `Config.init`, and every configuration they
-reach steps. So `eval_diverges_iff` and `never_stuck_iff` fail once
+reach steps. So `eval_diverges_iff` and `never_refused_iff` fail once
 `ProgramTyped` is dropped: one side of each holds and the other does not. A
 machine without the discard monitor makes this statement false.
 
@@ -2529,7 +2529,7 @@ def Spec.Sharp.discard_loop_stmt : Prop :=
                               C.Terminal ∨ ∃ C', Step Float.exactOps P C C')
 ```
 
-Proved by `Sharp.discard_loop` (`RueCore.Sharp`). Drops `no_linear_discard` 1, `never_stuck_iff` 1, `eval_diverges_iff` 1.
+Proved by `Sharp.discard_loop` (`RueCore.Sharp`). Drops `no_linear_discard` 1, `never_refused_iff` 1, `eval_diverges_iff` 1.
 
 ### `Sharp.fuel`
 
@@ -2538,7 +2538,7 @@ Proved by `Sharp.discard_loop` (`RueCore.Sharp`). Drops `no_linear_discard` 1, `
 relation reaches. So `fuel_mono` fails without `n ≤ m` (`n = 200`, `m = 0`) and
 without `eval n ≠ outOfFuel` (`n = 0`, `m = 200`); `no_masking` fails without
 its first hypothesis (`eval n` is a value, not a refusal); and
-`eval_complete`'s and `run_complete`'s value halves fail without `n < fuel`:
+`eval_small_to_big`'s and `run_small_to_big`'s value halves fail without `n < fuel`:
 no `n` makes the value, or a refusal, the answer at every fuel. `run P fuel`
 is `eval` at `main()` (`run`'s definition). `fuel_mono` and `no_masking` are
 stated over `eval`; the statement gives `run P n` and `eval` at `main()` as
@@ -2584,13 +2584,13 @@ def Spec.Sharp.fuel_stmt : Prop :=
                                     ∃ w, run Float.exactOps P fuel = EvalRes.refused w
 ```
 
-Proved by `Sharp.fuel` (`RueCore.Sharp`). Drops `fuel_mono` 1, `fuel_mono` 2, `no_masking` 1, `eval_complete` 3, `run_complete` 2.
+Proved by `Sharp.fuel` (`RueCore.Sharp`). Drops `fuel_mono` 1, `fuel_mono` 2, `no_masking` 1, `eval_small_to_big` 3, `run_small_to_big` 2.
 
 ### `Sharp.fuel_panic`
 
 **Fuel bounds, dropped, at a panic** (§7 sharpness, RUE-2485). The checked
 program of `Nonvacuous.panic` panics, and §6's relation reaches the panic, but
-fuel `0` is exhausted: `eval_complete`'s and `run_complete`'s panic halves
+fuel `0` is exhausted: `eval_small_to_big`'s and `run_small_to_big`'s panic halves
 fail without `n < fuel`.
 
 ```lean
@@ -2624,7 +2624,7 @@ def Spec.Sharp.fuel_panic_stmt : Prop :=
                       ∃ w, run Float.exactOps P fuel = EvalRes.refused w
 ```
 
-Proved by `Sharp.fuel_panic` (`RueCore.Sharp`). Drops `eval_complete` 5, `run_complete` 4.
+Proved by `Sharp.fuel_panic` (`RueCore.Sharp`). Drops `eval_small_to_big` 5, `run_small_to_big` 4.
 
 ### `Sharp.not_fits`
 
@@ -3188,8 +3188,8 @@ value `8`, the empty store and a trace that opens with a destructor event is
 not reached from `Config.init`, is not `run`'s answer at any fuel past any
 bound, and its trace is not in §6.11's block grammar. So each statement
 whose conclusion claims something of a reached or answered value fails once
-the hypothesis naming that value is dropped: `eval_sound`'s and `run_sim`'s
-`run … = .ok H v tr`, `eval_complete`'s and `run_complete`'s `Steps … (.ret
+the hypothesis naming that value is dropped: `eval_big_to_small`'s and `run_sim`'s
+`run … = .ok H v tr`, `eval_small_to_big`'s and `run_small_to_big`'s `Steps … (.ret
 v)`, and `drop_order`'s and `drop_glue_order`'s (a trace outside `Blocks` is
 outside `DropGlueBlocks`, RUE-2487).
 
@@ -3237,15 +3237,15 @@ def Spec.Sharp.unreached_stmt : Prop :=
                             ∃ w, run Float.exactOps P fuel = EvalRes.refused w
 ```
 
-Proved by `Sharp.unreached` (`RueCore.Sharp`). Drops `drop_order` 2, `drop_glue_order` 2, `eval_sound` 2, `run_sim` 1, `eval_complete` 2, `run_complete` 1.
+Proved by `Sharp.unreached` (`RueCore.Sharp`). Drops `drop_order` 2, `drop_glue_order` 2, `eval_big_to_small` 2, `run_sim` 1, `eval_small_to_big` 2, `run_small_to_big` 1.
 
 ### `Sharp.unreached_panic`
 
 **A panic §6's relation does not reach** (§7 sharpness, RUE-2485). The same, for
 the panic whose trace opens with a destructor event: not reached, not `run`'s
 answer past any bound (the program returns), not in the block grammar. So
-`eval_sound`'s and `run_sim`'s `run … = .panic k tr`, `eval_complete`'s and
-`run_complete`'s `Steps … (.panic κ tr)`, and `drop_order`'s and
+`eval_big_to_small`'s and `run_sim`'s `run … = .panic k tr`, `eval_small_to_big`'s and
+`run_small_to_big`'s `Steps … (.panic κ tr)`, and `drop_order`'s and
 `drop_glue_order`'s are needed.
 
 ```lean
@@ -3291,7 +3291,7 @@ def Spec.Sharp.unreached_panic_stmt : Prop :=
                             ∃ w, run Float.exactOps P fuel = EvalRes.refused w
 ```
 
-Proved by `Sharp.unreached_panic` (`RueCore.Sharp`). Drops `drop_order` 3, `drop_glue_order` 3, `eval_sound` 3, `run_sim` 2, `eval_complete` 4, `run_complete` 3.
+Proved by `Sharp.unreached_panic` (`RueCore.Sharp`). Drops `drop_order` 3, `drop_glue_order` 3, `eval_big_to_small` 3, `run_sim` 2, `eval_small_to_big` 4, `run_small_to_big` 3.
 
 ### `Sharp.unordered`
 
@@ -3410,7 +3410,7 @@ list of `main()`, and not to itself; it is not terminal and not stuck (with
 `linearLeak`, a monitor's tag, not one of §6's stuck states); and `run` is
 never stuck. So `Step.det` fails without either of its step hypotheses,
 `Step.terminal` without `C.Terminal`, `step_stuck_isStuckState` without
-`C.Stuck`, and `run_stuck_of_step_stuck` without `C.Stuck`.
+`C.Stuck`, and `run_refused_of_step_stuck` without `C.Stuck`.
 
 ```lean
 def Spec.Sharp.init_steps_stmt : Prop :=
@@ -3449,16 +3449,16 @@ def Spec.Sharp.init_steps_stmt : Prop :=
                                   ∃ w', run Float.exactOps P fuel = EvalRes.refused w'
 ```
 
-Proved by `Sharp.init_steps` (`RueCore.Sharp`). Drops `Step.det` 1, `Step.det` 2, `Step.terminal` 1, `step_stuck_isStuckState` 1, `run_stuck_of_step_stuck` 2.
+Proved by `Sharp.init_steps` (`RueCore.Sharp`). Drops `Step.det` 1, `Step.det` 2, `Step.terminal` 1, `step_stuck_isStuckState` 1, `run_refused_of_step_stuck` 2.
 
 ### `Sharp.unreachable_stuck`
 
 **A stuck configuration that is not reached** (§7 sharpness, RUE-2485). For the
 checked program of `Nonvacuous.dtor`, whose `run` is never stuck, a
 configuration reading an unbound name is stuck and is not reached from
-`Config.init`. So `step_progress`, `step_preservation`,
-`step_never_stuck_of_run` and `run_stuck_of_step_stuck` fail without the
-hypothesis that the configuration is reached, and so does `never_stuck_iff`:
+`Config.init`. So `step_progress`, `step_safeAt`,
+`step_never_stuck_of_run` and `run_refused_of_step_stuck` fail without the
+hypothesis that the configuration is reached, and so does `never_refused_iff`:
 its left side holds and its right side, over every configuration, does not.
 
 ```lean
@@ -3508,9 +3508,9 @@ def Spec.Sharp.unreachable_stuck_stmt : Prop :=
                                 ∃ w', run Float.exactOps P fuel = EvalRes.refused w'
 ```
 
-Proved by `Sharp.unreachable_stuck` (`RueCore.Sharp`). Drops `step_progress` 2, `step_preservation` 2, `never_stuck_iff` 2, `step_never_stuck_of_run` 2, `run_stuck_of_step_stuck` 1.
+Proved by `Sharp.unreachable_stuck` (`RueCore.Sharp`). Drops `step_progress` 2, `step_safeAt` 2, `never_refused_iff` 2, `step_never_stuck_of_run` 2, `run_refused_of_step_stuck` 1.
 
-### `Sharp.retired_cell`
+### `Sharp.tombstoned_cell`
 
 **A configuration that reads a retired cell, not reached** (§7 sharpness,
 RUE-2496). For the checked program of `Nonvacuous.dtor`, a configuration whose
@@ -3522,7 +3522,7 @@ configuration is reached: the refusal is live from an open configuration, and
 what keeps it away is the start, not the program's typing.
 
 ```lean
-def Spec.Sharp.retired_cell_stmt : Prop :=
+def Spec.Sharp.tombstoned_cell_stmt : Prop :=
   ∀ (B : Expr),
     B =
         Expr.letIn false (Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 1])
@@ -3554,7 +3554,7 @@ def Spec.Sharp.retired_cell_stmt : Prop :=
                       (Focus.eval (Expr.use (Place.var 0))) [])
 ```
 
-Proved by `Sharp.retired_cell` (`RueCore.Sharp`). Drops `step_no_use_after_drop` 1.
+Proved by `Sharp.tombstoned_cell` (`RueCore.Sharp`). Drops `step_no_use_after_drop` 1.
 
 ### `Sharp.unreached_double`
 
@@ -3743,7 +3743,7 @@ sharpness, RUE-2500). For the checked program of `Nonvacuous.dtor`, whose entry
 point returns `i64`, the configuration that has halted with `true` is terminal,
 so nothing it reaches is stuck; but its value is not an `i64`, so it is not
 `SafeAt` the entry type, and `Config.init` does not reach it. So
-`step_preservation` fails without the hypothesis that the configuration is
+`step_safeAt` fails without the hypothesis that the configuration is
 reached, through `SafeAt`'s typing half, where `unreachable_stuck` fails it
 through the progress half.
 
@@ -3775,7 +3775,7 @@ def Spec.Sharp.ill_typed_halt_stmt : Prop :=
                     (Config.run [] Activation.empty [] (Focus.ret (Val.bool true)) [])
 ```
 
-Proved by `Sharp.ill_typed_halt` (`RueCore.Sharp`). Drops `step_preservation` 2.
+Proved by `Sharp.ill_typed_halt` (`RueCore.Sharp`). Drops `step_safeAt` 2.
 
 ### `Sharp.out_of_range_halt`
 
@@ -3784,7 +3784,7 @@ sharpness, RUE-2500; §6.1's `n_T`). For the same program, the configuration
 that has halted with `2^63`, one past `i64`'s maximum, is terminal, but the
 value is not well typed at `i64` (`HasTy` carries the bounds), so the
 configuration is not `SafeAt` the entry type, and `Config.init` does not reach
-it. So `step_preservation` fails without the hypothesis that the configuration
+it. So `step_safeAt` fails without the hypothesis that the configuration
 is reached, at a value of the right form whose only fault is its range.
 
 ```lean
@@ -3823,7 +3823,7 @@ def Spec.Sharp.out_of_range_halt_stmt : Prop :=
                         [])
 ```
 
-Proved by `Sharp.out_of_range_halt` (`RueCore.Sharp`). Drops `step_preservation` 2.
+Proved by `Sharp.out_of_range_halt` (`RueCore.Sharp`). Drops `step_safeAt` 2.
 
 ### `Sharp.float_halt`
 
@@ -3834,7 +3834,7 @@ datum `15 · 2^-1`, two data that are not in `𝔽_f64` are not `Wf`: `30 · 2^-
 the same number with an even significand (not canonical), and `1 · 2^-1075`,
 half the least subnormal (below the floor `eMin`). The configurations that
 have halted with them are terminal, not `SafeAt` the entry type, and not
-reached from `Config.init`. So `step_preservation` fails without the
+reached from `Config.init`. So `step_safeAt` fails without the
 hypothesis that the configuration is reached, at a float value whose only
 fault is its datum.
 
@@ -3901,7 +3901,7 @@ def Spec.Sharp.float_halt_stmt : Prop :=
                                   [])
 ```
 
-Proved by `Sharp.float_halt` (`RueCore.Sharp`). Drops `step_preservation` 2.
+Proved by `Sharp.float_halt` (`RueCore.Sharp`). Drops `step_safeAt` 2.
 
 ### `Sharp.copy_leak`
 
