@@ -95,7 +95,7 @@ RUE-2460), each beside the `…_stmt` statement it proves, and this list is
 read from there: the §7 claims and their linking theorems — type safety over
 `eval` and its named corollaries, the checker's soundness, the trace
 properties, the reduction relation's own properties and §7 over it, and the
-adequacy of `eval` to `Step` with the fuel lemmas. A lemma `03-metatheory.md`
+semantic equivalence of `eval` and `Step` with the fuel lemmas. A lemma `03-metatheory.md`
 cites as a step of a proof is not a claim and is not on the list. The
 theorem names are resolved against the environment by `spineProblems`. -/
 def headline : List Name := Spec.spine.map (·.1)

@@ -6,7 +6,7 @@ public import RueCore.Soundness.Defs
 @[expose] public section
 
 /-!
-# RueCore.Equivalence.Defs — what the adequacy theorems are stated over (layer L1)
+# RueCore.Equivalence.Defs — what the semantic-equivalence theorems are stated over (layer L1)
 
 The three definitions `Equivalence.lean`'s headline statements use beyond §6's
 `Step`: the entry point's empty activation record (`Activation.empty`), counted runs

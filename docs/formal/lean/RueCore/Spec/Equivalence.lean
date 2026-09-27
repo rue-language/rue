@@ -8,7 +8,7 @@ public import RueCore.Equivalence.Defs
 # RueCore.Spec.Equivalence — semantic equivalence of `eval` and `Step` (Spec layer)
 
 §7 says the mechanization states type safety over its interpreter and that
-"the two readings meet in the adequacy lemma `03-metatheory.md` owes"
+"the two readings meet in the semantic-equivalence lemma `03-metatheory.md` owes"
 (ADR-0097 decision 3). These statements are that lemma: on the programs
 `check` accepts, `run`'s values and panics are exactly the ends of §6's runs
 from `Config.init`, `run` is never refused exactly when no reachable
@@ -17,11 +17,11 @@ configuration is, and exhausting the fuel at every bound is divergence.
 The field's name for it is **semantic equivalence** (Amin & Rompf, Thm 2), the
 equivalence of a definitional interpreter and a small-step semantics, in the
 line of the equivalence of big-step and small-step semantics (Leroy & Grall,
-Thms 9 and 11; `FIELD.md`, section 3). "Adequacy" is the calculus's word, in the sense
+Thms 9 and 11; `FIELD.md`, section 3). "Adequacy" was the calculus's word, in the sense
 of one operational semantics being adequate with respect to another; in the
 field it more often means computational adequacy or the adequacy of a
-semantic model, neither of which this is. RUE-2466 renamed the module to the
-field's term; the proof module `RueCore.Equivalence` took the same name.
+semantic model, neither of which this is. RUE-2466 renamed the module and the
+prose to the field's term; the proof module `RueCore.Equivalence` took the same name.
 `eval_big_to_small` and
 `eval_small_to_big` are the equivalence's two directions, named as Isabelle's
 HOL-IMP names them (`big_to_small`, `small_to_big`).
@@ -30,7 +30,7 @@ HOL-IMP names them (`big_to_small`, `small_to_big`).
 namespace RueCore.Spec
 
 /-- **The big-to-small direction, `eval` to `Step`**: the interpreter-to-small-step direction of
-the semantic equivalence (§7's adequacy sentence; ADR-0097). For a
+the semantic equivalence (§7's semantic-equivalence sentence; ADR-0097). For a
 checked program, `run` is never refused, and its values and panics are reached
 by `→*` from `Config.init` with the same store and trace. -/
 def eval_big_to_small_stmt : Prop :=
@@ -50,7 +50,7 @@ def run_sim_stmt : Prop :=
     (∀ k tr, run M P fuel = .panic k tr → Steps M P Config.init (.panic k tr))
 
 /-- **The small-to-big direction, `Step` to `eval`, modulo fuel**: the small-step-to-interpreter
-direction of the semantic equivalence (§7's adequacy sentence).
+direction of the semantic equivalence (§7's semantic-equivalence sentence).
 For a checked program, a value or panic `→*` reaches is `run`'s answer at
 every large enough fuel. -/
 def eval_small_to_big_stmt : Prop :=

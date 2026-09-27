@@ -321,7 +321,7 @@ def letAddProgram : Program :=
     (.letIn false (.intLit .w32 .signed 40) (.binop .add (.use (.var 0)) (.intLit .w32 .signed 2)))
 
 /-- **The relation runs a program to the same answer `eval` does**, a check
-the two presentations can be compared on before the adequacy theorems say
+the two presentations can be compared on before the semantic-equivalence theorems say
 they always agree: from §6.12's initial configuration, `→*` reaches `✓42`
 through (D-Call), (D-Let), (D-Use-Copy), (D-Arith), (D-EndScope) and
 (D-Return-Value), with the `let`'s cell retired and nothing printed; and

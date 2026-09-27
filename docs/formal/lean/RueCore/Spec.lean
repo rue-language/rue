@@ -25,7 +25,7 @@ definitions they unfold to (`TRUST.md`, "Trusted base") and nothing else:
 * `Spec/Trace.lean` — no double free, exactly-once drops, and drop order;
 * `Spec/Step.lean` — §6's relation's own properties, and §7 over it;
 * `Spec/Equivalence.lean` — `eval` and §6's relation agree: their semantic
-  equivalence, the calculus's adequacy lemma.
+  equivalence, the calculus's semantic-equivalence lemma.
 
 Beside them, `Spec/Nonvacuous.lean` holds the non-vacuity witnesses
 (`witnesses` below, RUE-2469) and `Spec/Sharp.lean` the sharpness
@@ -96,7 +96,7 @@ def spine : List (Lean.Name × Lean.Name) := [
   (`RueCore.step_safeAt, ``step_safeAt_stmt),
   (`RueCore.step_type_safety, ``step_type_safety_stmt),
   (`RueCore.step_no_use_after_drop, ``step_no_use_after_drop_stmt),
-  -- the semantic equivalence of `eval` and `Step` (the calculus's adequacy)
+  -- the semantic equivalence of `eval` and `Step` (the calculus's semantic-equivalence lemma)
   (`RueCore.eval_big_to_small, ``eval_big_to_small_stmt),
   (`RueCore.run_sim, ``run_sim_stmt),
   (`RueCore.eval_small_to_big, ``eval_small_to_big_stmt),

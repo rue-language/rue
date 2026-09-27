@@ -193,7 +193,7 @@ def literatureTable : Array String := Id.run do
     "consequence along runs of the semantic invariant `step_safeAt` states, not the",
     "one-step lemma over a syntactic configuration typing, which the calculus does",
     "not define (RUE-2423 decides which §7 means). The `eval`/`Step` agreement the",
-    "calculus calls the adequacy lemma is, in the field's words, the semantic",
+    "calculus called the adequacy lemma before RUE-2466 is, in the field's words, the semantic",
     "equivalence of a definitional interpreter and a small-step semantics (Amin &",
     "Rompf; `../FIELD.md` §3); RUE-2466 renamed its Spec module's file to the",
     "field's name too, `RueCore.Spec.Equivalence`.",
