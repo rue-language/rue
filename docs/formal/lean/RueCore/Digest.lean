@@ -891,7 +891,7 @@ def renderTrust (theorems : Array (Item × Array Name)) (declared : Array Item) 
      "  counterpart of `valOf_inBounds`, which *is* proved, because",
      "  `val_{w,s}` is arithmetic while `rnd_w` is IEEE.",
      "- `arith_nan`, `narrow_nan`, `div_by_zero`, `zero_div_zero` — the",
-     "  behavioural clauses §6.4 spells out \"as consequences of `⊕_w`\"",
+     "  behavioural clauses §6.4 spells out \"as corollaries of `⊕_w`\"",
      "  (`3.12:22`, `3.12:19`). Each is true of IEEE 754 *and* of the",
      "  compiler, which is why the two NaN laws are the **weak** ones: a NaN",
      "  operand yields *a* NaN, sign unspecified. The standard promises no",

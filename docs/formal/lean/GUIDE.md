@@ -227,8 +227,8 @@ becomes the single statement "never `.refused`", which section 4's theorem
 proves. What the function owes the relation is an adequacy lemma (the two
 agree on every checked program), required before the mechanization gates
 anything (`../03-metatheory.md`, "How to read a theorem here"). Its first
-half, soundness, is proved (`eval_big_to_small`, below), and so is its second half,
-completeness modulo fuel (`eval_small_to_big`).
+half, the big-to-small direction, is proved (`eval_big_to_small`, below), and so is its
+second half, the small-to-big direction, modulo fuel (`eval_small_to_big`).
 
 **Two presentations of one dynamics.** The relation exists too:
 `Step.lean` defines `Step`, §6's `C → C'` itself, one constructor per §6
@@ -261,7 +261,7 @@ metatheory row and `Step.lean`'s module docstring give the same list:
   (D-Break) drop the cells past the loop's record;
 - the use plan is recovered from the store rather than read off `μ`;
 - a destructor is one trace event rather than a nested run;
-- aggregate introduction mints a value identity by reserving a `†` slot, as
+- aggregate introduction mints a object identity by reserving a `†` slot, as
   `eval` does, so the two presentations keep one store;
 - `Config.init` calls the entry point, so (D-Return-Main) is (D-Return)
   reaching its `call` frame;
@@ -666,7 +666,7 @@ it (`Gen.lean`, "Return and panic arms").
 
 Three theorems read the drop trace rather than the result. Each is here in
 one plain sentence, beside its Lean statement and a corpus program whose
-trace shows it. Every explain rendering (`explain/<case>.txt`) ends with an
+trace shows it. Every trace rendering (`explain/<case>.txt`) ends with an
 **identity ledger**: one line per owned identity, with the step that minted
 it, the steps that ended it and the steps whose destructor ran on it. That
 makes each claim something you can look at, not only something proved.

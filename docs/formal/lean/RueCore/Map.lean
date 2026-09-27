@@ -76,9 +76,9 @@ def milestones : List (Name × String) := [
   (``struct_carriesLinear_iff, "a struct's class carries `linear` iff a field's does — read off by the checker and by the destructure rules"),
   (``enum_carriesLinear_iff, "the same equation for an enum's variants"),
   -- eval/Step simulation
-  (``init_safeAt, "`Config.init` is semantically safe; the fundamental lemma `step_safeAt` inducts from"),
+  (``init_safeAt, "`Config.init` is semantically safe: syntactic type soundness, which `step_safeAt` inducts from"),
   (``eval_sim, "the simulation relation between `eval` and `Step`, proved for every expression, fuel and program"),
-  (``eval_steps_of_outOfFuel, "exhausted fuel is a run of that many `Step`s — completeness modulo fuel, behind `eval_small_to_big`"),
+  (``eval_steps_of_outOfFuel, "exhausted fuel is a run of that many `Step`s — the small-to-big direction modulo fuel, behind `eval_small_to_big`"),
   (``step_value_typed, "every value a reachable `Step` configuration carries is typed"),
   (``destructure_plain, "a monitor removes no behaviour: the declared-linear destructure's residue check changes no step it does not refuse"),
   (``unwindLocs_plain, "a monitor removes no behaviour: an unwind's drops are the same with or without the monitors"),

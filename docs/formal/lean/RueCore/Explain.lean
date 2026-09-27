@@ -184,7 +184,7 @@ def valTy : Val → Ty
   | .enum e _ _ _ => .enum e
   | .array T _ vs => .array T vs.length
 
-/-- (helper) A value identity, as the trace shows it: `#i` after the
+/-- (helper) A object identity, as the trace shows it: `#i` after the
 aggregate it names (`introVal`, `Dynamics.lean`). A copy of a `Copy` value
 carries its original's identity; `no_double_free` (`Trace.lean`) counts only
 the non-`Copy` ones, so a repeated identity on a `Copy` value is expected, and
@@ -227,7 +227,7 @@ partial def contentsLine : Contents → String
   | .array _ i cs => "[" ++ String.intercalate ", " (cs.map contentsLine) ++ "]" ++ idTag i
 
 /-- (helper) A store cell: its contents, or `†` — a retired binding, or the
-slot a minted value identity reserved (`introVal`), which never held a value. -/
+slot a minted object identity reserved (`introVal`), which never held a value. -/
 def cellLine : Cell → String
   | .full c => contentsLine c
   | .dead => "†"

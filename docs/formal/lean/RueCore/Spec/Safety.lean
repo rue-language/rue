@@ -73,7 +73,7 @@ and labels it so: what it rules out is what that monitor watches (R3 of
 has no statement (§6.13 is outside the fragment). Its `ProgramTyped`
 hypothesis is redundant: `run_no_use_after_drop` below proves the same
 conclusion for every program, checked or not, so this statement is not a
-consequence of typing; it is kept in §7's form, over checked programs
+corollary of typing; it is kept in §7's form, over checked programs
 (RUE-2496). -/
 def no_use_after_drop_stmt : Prop :=
   ∀ (M : FloatLaws) {P : Program} (_ : ProgramTyped P) (fuel : Nat),
@@ -82,7 +82,7 @@ def no_use_after_drop_stmt : Prop :=
 /-- **No use-after-drop, on every program** (§7 "No use-after-drop / no leak
 of drops", "never read afterward"; RUE-2496): `run` never refuses with
 `useAfterDrop`, at any fuel and any float operations (not only a `FloatLaws`), **whether or not the program is
-checked**. The property is structural rather than a consequence of typing: a
+checked**. The property is structural rather than a corollary of typing: a
 binding's cell is minted fresh and retired only when the scope that bound it
 ends, after which nothing names it, and a scope record owes each cell once.
 So `no_use_after_drop`'s `ProgramTyped` is redundant for a run from the

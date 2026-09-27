@@ -85,11 +85,11 @@ Design commitments carried over from §6:
   `@dbg`'s own event (`dbg v`) is the other half of §6.12's observable
   output; those two are what a printed Rue program can see, in the one
   trace order they happened in.
-* Every aggregate value carries a **value identity**, minted at its
-  introduction ("Value identities" below), so each drop event says *which*
+* Every aggregate value carries a **object identity**, minted at its
+  introduction ("Object identities" below), so each drop event says *which*
   value it dropped, not only what it looked like.
 
-## Value identities (RUE-2323)
+## Object identities (RUE-2323)
 
 §6.1 gives allocations identities and values none: two `S1 { 1 }` values are
 the same term. To state §7's no-double-free bullet over the trace — "every
@@ -178,7 +178,7 @@ path. A selected path may pass through an index step
 on the syntax: the plan is decided by the types along the path, index steps
 included.
 
-**The residue monitor.** §6.3 excludes a linear residue by the
+**The linear-leak monitor.** §6.3 excludes a linear residue by the
 (Use-Declared-Linear-Destructure) premise "before this redex can fire", so the
 paper machine has nothing to check. `dropResidue` checks anyway, refusing with
 `linearLeak` where a retained subtree still holds a live declared-`linear`
@@ -1361,7 +1361,7 @@ def OpRes.toRes (H : Store) : OpRes → EvalRes
   | .trap k => .panic k []
   | .confused => .refused .typeConfusion
 
-/-- **Aggregate introduction mints a value identity** ((D-Struct) and (D-Array)
+/-- **Aggregate introduction mints a object identity** ((D-Struct) and (D-Array)
 §6.5, (D-Enum-Intro) §6.6, and the repeat form): the new value's identity is
 `H.length`, the next index of the store, and that index is reserved by
 appending `†`. §6.1 draws every identity from one pool — "a fresh identity is

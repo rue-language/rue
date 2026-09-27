@@ -14,9 +14,9 @@ ADR-0097's decision 3 proves safety over the definitional interpreter `eval`
 and says that "a theorem about `eval` is a theorem about §6 only once the two
 are proved to agree". `Step.lean` mechanizes §6's reduction relation; this
 module proves the agreement in both directions. RUE-2289's part 2 is
-soundness: whatever `eval` answers with a value or a panic, §6's `→*` reaches
+the big-to-small direction: whatever `eval` answers with a value or a panic, §6's `→*` reaches
 too, with the same store, value and trace (`eval_big_to_small`). Part 3 is
-completeness modulo fuel: whatever terminal configuration §6's `→*` reaches,
+the small-to-big direction, modulo fuel: whatever terminal configuration §6's `→*` reaches,
 every fuel past the length of the run makes `eval` answer it
 (`eval_small_to_big`); `eval` exhausts every fuel exactly when §6 diverges
 (`eval_diverges_iff`); and "`eval` is never stuck" is "§6 is never stuck", in
@@ -109,8 +109,8 @@ Part 4 derives §7's first bullet in §6's terms. `step_progress` is
 configuration `→*` reaches reduces or has halted. Preservation is stated for a
 *semantic* configuration typing, `Config.SafeAt`: a configuration is typed at
 `T` when nothing it reaches is stuck and every value it halts with has type
-`T`. Its one-step preservation is by construction, and the fundamental lemma
-`init_safeAt` — a checked program's initial configuration is typed at its
+`T`. Its one-step preservation is by construction, and syntactic type
+soundness, `init_safeAt` — a checked program's initial configuration is typed at its
 entry type — is `soundness` (through `run_safe`) carried to §6 by
 `eval_small_to_big`. `step_type_safety` puts the three together at every
 horizon: §6 has run `n` steps, or has halted with a well-typed value, or with
@@ -980,7 +980,7 @@ theorem sim_loop (IH : SimIH M P fuel) (e : Expr) :
 
 end forms
 
-/-! ## Soundness of `eval` with respect to `Step` -/
+/-! ## The big-to-small direction: `eval` to `Step` -/
 
 /-- **`eval` is simulated by §6's `→*`** (RUE-2289 part 2, ADR-0097 decision
 3), for every expression, store, frame and fuel, on every program: a value, a
@@ -1056,7 +1056,7 @@ so it answers a value, a panic or `outOfFuel`; a value is reached by §6's
 `→*` from the initial configuration as a terminal configuration with the same
 store and trace, and a panic as `↯κ` after the same trace (§6.2, §6.12).
 `.refused` is outside the correspondence and does not occur here; `outOfFuel`
-is not a state of §6's machine. The converse, completeness modulo fuel, is
+is not a state of §6's machine. The converse, the small-to-big direction modulo fuel, is
 `eval_small_to_big`. -/
 theorem eval_big_to_small (M : FloatLaws) {P : Program} (h : ProgramTyped P) (fuel : Nat) :
     (∀ w, run M.toFloatSig P fuel ≠ .refused w) ∧
@@ -1689,7 +1689,7 @@ theorem eval_steps_of_outOfFuel (M : FloatSig) (P : Program) (fuel : Nat) : Long
     | ret e => exact long_ret IH e
     | loop e => exact long_loop IH e
 
-/-! ## Completeness of `eval` modulo fuel -/
+/-! ## The small-to-big direction: `Step` to `eval`, modulo fuel -/
 
 /-- Prefixing a trace never makes an unwinding `break` (helper). -/
 theorem EvalRes.withTrace_ne_broke {r : EvalRes} {t : List Event}
@@ -1754,7 +1754,7 @@ theorem run_classify {M : FloatSig} {P : Program} {T : Config} (hT : Steps M P C
   | returned H v tr => exact absurd hr (run_ne_returned M H v tr)
   | broke H sc tr => exact absurd hr (run_ne_broke M H sc tr)
 
-/-- **Completeness of `eval` modulo fuel, on every program** (RUE-2289 part
+/-- **The small-to-big direction, modulo fuel, on every program** (RUE-2289 part
 3, ADR-0097 decision 3; §6.2, §6.12). If §6's `→*` takes the initial
 configuration to `✓` — a value at an empty stack — then at every fuel past
 the number of steps, `run` answers that value with the same store and trace,
@@ -1780,7 +1780,7 @@ theorem run_small_to_big (M : FloatSig) (P : Program) :
     · cases he; exact .inl hr
     · exact .inr ⟨w, hr⟩
 
-/-- **Completeness of `eval` modulo fuel** (RUE-2289 part 3; ADR-0097
+/-- **The small-to-big direction of `eval`, modulo fuel** (RUE-2289 part 3; ADR-0097
 decision 3: "a theorem about `eval` is a theorem about §6 only once the two
 are proved to agree"). For a program `check` accepts (`ProgramTyped`,
 RUE-2314's domain): if §6's `→*` takes the initial configuration to a
@@ -1893,7 +1893,7 @@ directions, so the metatheory can cite a theorem in §7's own terms.
 `Config.SafeAt T C` says every configuration `C` reaches is terminal or
 steps, and every value it halts with has type `T`. Progress and preservation
 of `SafeAt` hold by construction, as in any semantic-typing proof; the content
-is the fundamental lemma `init_safeAt` — a checked program's initial
+is syntactic type soundness, `init_safeAt` — a checked program's initial
 configuration is safe at its entry type — and that is `soundness` carried to
 §6 by adequacy. A *syntactic* configuration typing `⊢ C : T` (a typed store, a
 typed frame stack with a Σ per suspended caller, and one preservation case per
@@ -1919,7 +1919,7 @@ theorem Config.SafeAt.steps {M : FloatSig} {P : Program} {T : Ty} {C C' : Config
     (h : C.SafeAt M P T) (hs : Steps M P C C') : C'.SafeAt M P T :=
   ⟨fun D hD => h.1 D (hs.trans hD), fun H φ v tr hD => h.2 H φ v tr (hs.trans hD)⟩
 
-/-- **The fundamental lemma: a checked program starts typed** (§7, first
+/-- **Syntactic type soundness: a checked program starts typed** (§7, first
 bullet; §6.12's initial configuration). For a program `check` accepts, the
 initial configuration is safe at the entry point's declared return type. The
 "never stuck" half is `step_never_stuck_of_run` given `no_refusal`; the

@@ -514,7 +514,7 @@ Two static restrictions bound *which ordinary partial moves* may be made:
 
 That is the entire notion. Everything the prose enumerated is now a corollary:
 
-| Prose rule | Now a consequence of §4.2 |
+| Prose rule | Now a corollary of §4.2 |
 |---|---|
 | `3.8:5` use-after-move is an error | using `p` requires `p` Owned (§5); a moved `p` is MovedOut |
 | `3.8:7` moved when assigned / passed / returned | all three are value contexts ⇒ uses ⇒ moves (for non-Copy) |
@@ -1042,7 +1042,7 @@ ordinary `let` whose binding scope is the call, so §5.6 governs it unchanged:
 if `class(T)` is droppable the drop is scheduled at the call's exit, and if
 `residual-linear(Σ, x_fresh, T)` the program is **ill-formed** — which is the
 right answer, since `x_fresh` is unnameable and so can never be consumed. The
-must-consume rejection of `f(borrow make_token())` is thus a consequence of
+must-consume rejection of `f(borrow make_token())` is thus a corollary of
 §5.6, not an added premise.
 
 The elaboration is a function of the *argument's syntax alone*: it commits to
@@ -1301,7 +1301,7 @@ loop's entry: a loop-local binding's scope ends within the iteration, so it
 never survives to be compared or joined.
 
 A delivery enters `Δ` only from a derivation that reaches its edge. That is
-not a side condition on the rules but a consequence of their shape: the bottom
+not a side condition on the rules but a corollary of their shape: the bottom
 rules ((Strict-Bottom), (Seq-Bottom), (Let-Bottom), (Return-Bottom),
 (Call-Bottom), (Panic-Operand), (Loop-Div)) type nothing past a diverging
 subexpression, so an edge in unreachable syntax has no derivation and delivers
@@ -1488,7 +1488,7 @@ which remains outside this rule's scope.
 > (Loop-Div-Backedge) had no such premise although the compiler enforces it
 > (E0205 "moved in a previous iteration" in `loop { eat(v0); }`). The
 > deliveries `Δ` are now a component of every judgment (§5.3): reachability is
-> a consequence of the bottom rules typing nothing past a diverging
+> a corollary of the bottom rules typing nothing past a diverging
 > subexpression, every delivery carries its state, the diverge delivery of a
 > loop carries its loop-head state, and both `loop` forms type their body at
 > that state. Against the old text, three verdicts changed:
@@ -2356,7 +2356,7 @@ None of `(D-Arith-Trap)`, `(D-Div-Zero)`, or `(D-Div-Overflow)` applies to a
 float redex: each is stated over `n_T` at an integer `T`, so its premises are
 never met. That is exactly the divergence `3.12:22` names — the integer
 division rule "does not apply to floating-point operands" — and `3.12:23`'s
-answer for overflow. Spelled out, as *consequences of* `⊕_w` rather than as
+answer for overflow. Spelled out, as *corollaries of* `⊕_w` rather than as
 extra rules:
 
 ```
@@ -2451,7 +2451,7 @@ Equality also reaches values through the container **searches** §6.13.3 leaves 
 compositions rather than writing out (`index_of`, `contains`): those evaluate `≟`
 and so inherit this answer without naming `≈`. A buffer holding a `NaN` does not
 report that it `contains` one, for the same reason the aggregate around a `NaN`
-is not equal to itself. That is a consequence of the rule, not an exception to
+is not equal to itself. That is a corollary of the rule, not an exception to
 it, and it is why prose `4.3:3g`'s pointer at `@total_cmp` is advice about
 comparison rather than about the current search methods — the total order itself
 is `(D-Total-Cmp)` below, and a container that needs reflexivity uses it.

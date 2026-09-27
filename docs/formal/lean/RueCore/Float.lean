@@ -639,7 +639,7 @@ Mechanized, that lemma splits three ways.
   because `val_{w,s}` is arithmetic and `rnd_w` is IEEE.
 
 Behavioural laws join them, quoted from §6.4's own "spelled out, as
-consequences of `⊕_w`" list: they are what a *witness* for the one float trap
+corollaries of `⊕_w`" list: they are what a *witness* for the one float trap
 rests on, so that no witness has to compute with a concrete model.
 
 The two NaN laws are deliberately the **weak** ones: a NaN operand makes the
@@ -678,7 +678,7 @@ structure FloatLaws extends FloatSig where
   /-- **Closure of the narrowing cast** (`(D-Float-Cast)`, `3.12:19`). -/
   narrow_wf : ∀ f, f.Wf .w64 → (toFloatSig.narrow f).Wf .w32
   /-- **A NaN operand yields a NaN** (IEEE 754, and §6.4 lists it among the
-  consequences of `⊕_w`). The *sign* is deliberately left open: IEEE 754 says
+  corollaries of `⊕_w`). The *sign* is deliberately left open: IEEE 754 says
   only that a NaN comes out, both of Rue's targets propagate the operand's
   sign rather than substituting `σ_NaN`, and `3.12:44` fixes `σ_NaN` for a NaN
   an invalid operation *creates* — which `zero_div_zero` below is. -/

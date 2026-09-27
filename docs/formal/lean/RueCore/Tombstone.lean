@@ -21,7 +21,7 @@ fire (`Examples.lean`), and the Spec's counter-example `Sharp.tombstoned_cell`
 is one such configuration, not reached from `Config.init`.
 
 **The invariant** is structural, not a typing fact. `†` enters the store in
-two ways only: as the reserved slot of a minted value identity (`introVal`),
+two ways only: as the reserved slot of a minted object identity (`introVal`),
 which no binding names, and when a scope teardown retires the cells its
 scope record owes a drop (`dropRetire`, `unwindLocs`, and `Step`'s plain
 versions). Every binding cell is minted fresh at the end of the store and
@@ -97,7 +97,7 @@ theorem Grow.trans {H H₁ H₂ : Store} (h₁ : Grow H H₁) (h₂ : Grow H₁ 
   ⟨Nat.le_trans h₁.1 h₂.1, fun ℓ h => h₂.2 ℓ (h₁.2 ℓ h)⟩
 
 /-- Allocation appends, so it grows the store: a binding cell (§6.7, §6.9) or a
-value identity's reserved `†` slot (`introVal`) (helper). -/
+object identity's reserved `†` slot (`introVal`) (helper). -/
 theorem Grow.append (H H' : Store) : Grow H (H ++ H') :=
   ⟨by simp, fun _ h => h.append H'⟩
 
@@ -450,7 +450,7 @@ theorem OpRes.toRes_live {H : Store} {φ : Activation} (o : OpRes) : LivePost H 
   | trap k => trivial
   | confused => simp [OpRes.toRes, LivePost]
 
-/-- Minting a value identity appends a `†` slot no binding names (helper). -/
+/-- Minting a object identity appends a `†` slot no binding names (helper). -/
 theorem introVal_live {D : Decls} {H : Store} {φ : Activation} (mk : Nat → Val) :
     LivePost H φ (introVal D H mk) := by
   unfold introVal

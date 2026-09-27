@@ -104,10 +104,10 @@ representation; none changes what a checked program does.
   `eval` recovers it, rather than read off elaboration's `μ` annotation.
 * **A destructor is one trace event** (`Event.dtor`), as in `eval`, rather
   than §6.11's nested run of the `drop fn` body.
-* **Aggregate introduction mints a value identity** (RUE-2323), as `eval`'s
+* **Aggregate introduction mints a object identity** (RUE-2323), as `eval`'s
   `introVal` does: (D-Struct), (D-Enum-Intro), (D-Array) and the repeat form
   append a `†` slot to the store and give the new value its index. §6.1 has
-  no value identities; they exist so the trace can say which value a drop
+  no object identities; they exist so the trace can say which value a drop
   was of (`Trace.lean`), and minting them the same way in both presentations
   keeps the adequacy proofs' relation between stores an equality.
 * **The entry point is called.** `Config.init` calls function 0 with no
@@ -324,7 +324,7 @@ def plainUnwind (D : Decls) (H : Store) : List Nat → Except Refusal (Store × 
 
 /-- §6.3's `drop*` on the residue as §6.3 writes it: each retained subtree's
 marker (`residueDropEvent`, RUE-2427) and §6.11's walk, left to right, with no
-residue monitor (helper). -/
+linear-leak monitor (helper). -/
 def plainResidue (D : Decls) (ℓ : Nat) : List Contents → Except Refusal (List Event)
   | [] => .ok []
   | r :: rs =>
@@ -336,7 +336,7 @@ def plainResidue (D : Decls) (ℓ : Nat) : List Contents → Except Refusal (Lis
           | .ok evs' => .ok (residueDropEvent D ℓ r ++ evs ++ evs')
 
 /-- §6.3's `destructure(H, ℓ@π_d, π_s)` as §6.3 writes it: `split`, then
-`drop*` on the residue left to right, with no residue monitor — the
+`drop*` on the residue left to right, with no linear-leak monitor — the
 (Use-Declared-Linear-Destructure) premise excluded a linear residue before
 (D-Use-Declared-Linear) can fire — and then the path's shell consumed
 (`consume`, RUE-2427), exactly as `eval`'s `Contents.destructure` records it

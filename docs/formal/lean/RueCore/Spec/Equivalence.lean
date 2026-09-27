@@ -29,7 +29,7 @@ HOL-IMP names them (`big_to_small`, `small_to_big`).
 
 namespace RueCore.Spec
 
-/-- **`eval` is sound for `Step`**, the interpreter-to-small-step direction of
+/-- **The big-to-small direction, `eval` to `Step`**: the interpreter-to-small-step direction of
 the semantic equivalence (§7's adequacy sentence; ADR-0097). For a
 checked program, `run` is never stuck, and its values and panics are reached
 by `→*` from `Config.init` with the same store and trace. -/
@@ -49,7 +49,7 @@ def run_sim_stmt : Prop :=
       Steps M P Config.init (.run H Activation.empty [] (.ret v) tr)) ∧
     (∀ k tr, run M P fuel = .panic k tr → Steps M P Config.init (.panic k tr))
 
-/-- **`eval` is complete for `Step`, modulo fuel**, the small-step-to-interpreter
+/-- **The small-to-big direction, `Step` to `eval`, modulo fuel**: the small-step-to-interpreter
 direction of the semantic equivalence (§7's adequacy sentence).
 For a checked program, a value or panic `→*` reaches is `run`'s answer at
 every large enough fuel. -/

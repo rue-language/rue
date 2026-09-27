@@ -424,7 +424,7 @@ theorem unwindLocs_plain {D : Decls} : ∀ {H : Store} {ls : List Nat} {r : Stor
           simp only [unwindLocs_plain heq']
           exact h
 
-/-- The residue monitor passes only where the plain `drop*` of the residue
+/-- The linear-leak monitor passes only where the plain `drop*` of the residue
 succeeds with the same trace (helper). -/
 theorem dropResidue_plain {D : Decls} {ℓ : Nat} : ∀ {rs : List Contents} {evs : List Event},
     dropResidue D ℓ rs = .ok evs → plainResidue D ℓ rs = .ok evs
@@ -444,7 +444,7 @@ theorem dropResidue_plain {D : Decls} {ℓ : Nat} : ∀ {rs : List Contents} {ev
             simp only [dropResidue_plain heq']
             exact h
 
-/-- **The residue monitor only removes behaviour** (RUE-2314): where
+/-- **The linear-leak monitor only removes behaviour** (RUE-2314): where
 `eval`'s monitored `destructure` succeeds, §6.3's monitor-free
 `destructure` succeeds with the same leaf and trace. -/
 theorem destructure_plain {D : Decls} {ℓ : Nat} {c : Contents} {πs : List Nat}
