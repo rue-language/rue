@@ -192,7 +192,7 @@ shape both equations solve at more than one assignment
 declaration's qualifier is the unique solution of its equation (`class_unique`).
 The calculus states the equations but not this side condition; §3 gains the
 paragraph in RUE-2334, and `3.0:5` is the normative form it mechanizes.
-`checkNoCycle` (`Checker/Defs.lean`) decides it by peeling. -/
+`checkNoCycle` (`Checker/Defs.lean`) decides it by a topological sort. -/
 
 /-- A declaration of either kind, named the way a type names it: the domain of
 `3.0:5`'s "contains by value" relation. -/

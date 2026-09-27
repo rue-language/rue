@@ -148,7 +148,7 @@ shape both equations solve at more than one assignment
 declaration's qualifier is the unique solution of its equation (`class_unique`).
 The calculus states the equations but not this side condition; §3 gains the
 paragraph in RUE-2334, and `3.0:5` is the normative form it mechanizes.
-`checkNoCycle` (`Checker/Defs.lean`) decides it by peeling. -/
+`checkNoCycle` (`Checker/Defs.lean`) decides it by a topological sort. -/
 
 /-- Two environments that give the same qualifier to every declaration a type
 names by value give that type the same qualifier: `qual([T; n])` is §3's lift of
