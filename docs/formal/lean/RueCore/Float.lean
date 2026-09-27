@@ -3,7 +3,7 @@ module
 @[expose] public section
 
 /-!
-# RueCore.Float — `𝔽_w`, the rendering, and the `FloatLaws` interface
+# RueCore.Float — `𝔽_w`, the rendering, and the `FloatLaws` algebraic specification
 
 §2's representation decision, mechanized: a value of `float(w)` is an
 **abstract IEEE 754 binary-`w` datum, not a bit pattern**. `FloatDatum` is
@@ -562,7 +562,7 @@ deriving DecidableEq, Repr
 
 /-- The operations of §6.4 whose result is `rnd_w` of a value that need not lie
 in `𝔽_w`, and the target parameter `σ_NaN` they *create* NaNs at. §2 fixes both
-per target rather than per rule, so they are the interface the development is
+per target rather than per rule, so they are the signature the development is
 parameterized over; every exact operation is a function of this module
 instead. -/
 structure FloatSig where
@@ -642,7 +642,7 @@ Behavioural laws join them, quoted from §6.4's own "spelled out, as
 corollaries of `⊕_w`" list: they are what a *witness* for the one float trap
 rests on, so that no witness has to compute with a concrete model.
 
-The two NaN laws are deliberately the **weak** ones: a NaN operand makes the
+The two NaN laws are deliberately the **NaN-unspecified** ones: a NaN operand makes the
 result *a* NaN, and nothing is assumed about which NaN. IEEE 754 guarantees no
 more than that, and neither does any target Rue has: x86-64 and AArch64 both
 *propagate* a NaN operand, sign and all, and reserve `σ_NaN` for a NaN an
@@ -653,7 +653,7 @@ propagates the first NaN operand's sign, as both targets do) and checked
 against the compiler case by case, never a theorem here. §9 item 5 (RUE-2283)
 is where the target-defined part is tracked. -/
 
-/-- **§7's "totality of the float operations", as an interface.** A
+/-- **§7's "totality of the float operations", as an algebraic specification.** A
 `FloatSig` together with the laws §7 owes for floats and §6.4 quotes from
 `3.12:9`, `3.12:22` and `3.12:44`. Every field is a statement that is true of
 IEEE 754 *and* of the compiler — which is why the NaN laws below say only that

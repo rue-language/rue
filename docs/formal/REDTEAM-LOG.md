@@ -136,7 +136,7 @@ Read the same way by the red agent and by us, with no gap either found:
 - The typing rules checked premise by premise against §5 (the use, drop,
   assign, index-write, seq, let, return, loop and match rules, and `WfFn`
   against (Fn)), as far as the signature-only helpers allowed (R6).
-- Docs: type safety for closed checked programs under any float model; the
+- Docs: type safety for closed checked programs under any model of the float algebraic specification; the
   interpreter/step-relation agreement in both directions for checked programs;
   the CI and fuel disclaimers in `lean/README.md`.
 
@@ -356,7 +356,7 @@ What the mutants could not get past:
     cell. Recorded as the one reason in `Spec.sharpnessReasons`. (Since
     proved, by RUE-2496: `run_no_use_after_drop` and `step_no_use_after_drop`,
     `lean/RueCore/Tombstone.lean`, state it with no typing hypothesis, over `run`
-    at every fuel and float model and over `Step` from `Config.init`. The
+    at every fuel and every model of the float algebraic specification and over `Step` from `Config.init`. The
     invariant is that every cell the frame's environment names or its scope
     record owes a drop is live and owed once; over `Step`, for every
     suspended caller's frame too. The reason in `Spec.sharpnessReasons` now

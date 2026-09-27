@@ -177,7 +177,7 @@ inductive StoreTyping (D : Decls) : Ctx → Env → Store → Prop where
 
 /-- `FrameProperty ρ H H'`: the store only grew, and every cell that was already
 allocated and that `ρ` does not name has the contents it had. This is the
-frame-locality property a call needs — a callee's cells are minted above the
+frame property a call needs — a callee's cells are minted above the
 caller's whole store (§6.9's (D-Call)), so the caller's bindings are outside
 the callee's `ρ` and survive the call untouched. -/
 def FrameProperty (ρ : Env) (H H' : Store) : Prop :=

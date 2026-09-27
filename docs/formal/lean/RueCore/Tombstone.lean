@@ -11,7 +11,7 @@ public import RueCore.Step.Lemmas
 cell (§6.1), and `step` names the same stuck state. This module proves that
 neither is ever reached from a program's start, **checked or not**
 (RUE-2496): `run_no_use_after_drop` over the interpreter at every fuel and
-float model, and `step_no_use_after_drop` over §6's relation from
+every model of the float algebraic specification, and `step_no_use_after_drop` over §6's relation from
 `Config.init`. Neither has a typing hypothesis. `no_use_after_drop`
 (`Soundness.lean`) states the first for checked programs, as a corollary of
 §7's invariant; these say its `ProgramTyped` hypothesis is redundant for runs

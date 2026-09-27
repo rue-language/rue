@@ -92,7 +92,7 @@ def milestones : List (Name × String) := [
   (``reachable_nested, "scopes nest, a pending `endscope` being the tail of its record"),
   (``reachable_stackDiscipline, "the registration stack is dropped newest-first"),
   (``pendingSafe_needed, "the RUE-2316 carve-out (a by-value argument a sibling's `return` destroys) is load-bearing, not vacuous"),
-  (``roundRat_wf, "rounding an exact rational lands in 𝔽_w — the float model's closure law the non-vacuity witness rests on")
+  (``roundRat_wf, "rounding an exact rational lands in 𝔽_w — the float algebraic specification's closure law the non-vacuity witness rests on")
 ]
 
 /-- (helper) The milestone names alone, without their reasons. -/
