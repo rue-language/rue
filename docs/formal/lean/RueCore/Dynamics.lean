@@ -43,7 +43,7 @@ Design commitments carried over from §6:
     (which is what `soundness` needs), at the price that `eval` and §6
     differ on statically invalid input.
   - `ownedUnderCopy` is a fourth monitor of the same kind (RUE-2323): the
-    **copy-closure** check (`Contents.copyClosed`) at aggregate introduction
+    **copy-closure** check (`Contents.copyContained`) at aggregate introduction
     and at an assignment. §6.5's (D-Struct) builds whatever its initializers
     produced and relies on (Struct-Intro) §5.8 to have made a `Copy`
     struct's fields `Copy`; on a program §5 rejects, an owned value can sit
@@ -78,7 +78,7 @@ Design commitments carried over from §6:
   (`dropTemp v`) — the §6.7 temporary-death analog — and, nested under
   either, every user destructor §6.11 runs (`dtor s v`). A declared-linear
   destructure's residue drops each retained subtree under a `drop ℓ r`
-  marker of its own (`residueMark`), and the shell a `match` or a destructure
+  marker of its own (`residueDropEvent`), and the shell a `match` or a destructure
   consumes is recorded by a `consume` event (RUE-2427), so every way an owned
   value's life ends is in the trace (`drop_exactly_once`,
   `TraceExact.lean`). Beside them
@@ -118,8 +118,8 @@ non-`Copy` nodes (`Contents.own`, `Trace/Defs.lean`), which are never copied.
 
 A place is a root binding and a path of field and constant-index steps
 (`Place`, `Syntax.lean`),
-and §6.3 navigates it into the stored contents: `H(ℓ)@π` is `readAt` and
-`H[ℓ@π ↦ ⊘]` is `writeAt`. (D-Use-Move) writes `⊘` at exactly the
+and §6.3 navigates it into the stored contents: `H(ℓ)@π` is `getAt` and
+`H[ℓ@π ↦ ⊘]` is `setAt`. (D-Use-Move) writes `⊘` at exactly the
 sub-position moved — the whole cell for a whole-place use, one field for a
 projection, which is the **partial move** of §4.2 — so the later scope-exit
 drop of `ℓ` skips it and cannot free it a second time. That skip is
@@ -137,7 +137,7 @@ An **array**'s contents is its element type and one contents per element, and
 §6.11 drops those in **ascending index order** (`3.9:15`, `3.8:73`) with no
 destructor of its own to run first — `3.9:14` gives `[T; n]` a destructor
 exactly when `T` has one. A constant index is a step of `π` like a field slot
-(`Place.idx`, `Syntax.lean`), so `readAt`/`writeAt` navigate it with the same
+(`Place.idx`, `Syntax.lean`), so `getAt`/`setAt` navigate it with the same
 two lines; what a *dynamic* index needs instead is a bounds check, below.
 
 Both linear monitors read the **residue** rather than a type. §6.7's and
@@ -211,7 +211,7 @@ array literal's elements. So does a fourth position, an assignment's
 right-hand side while the target's indices run after it (`5.2:14`, §6.2's
 `assign p[ v̄, E, … ] = v`), which `indexWrite` threads through `bind`
 rather than `evalArgs`. Such a value lives in no cell and in no scope
-record — between the `use` that produced it and the `mintParams` that gives a
+record — between the `use` that produced it and the `freshParams` that gives a
 by-value argument one (§6.9's (D-Call)), between an initializer and the
 `mkStruct`/`mkArray` that would have aggregated it, or between a right-hand
 side and the store that would have written it. If a later sibling unwinds
@@ -437,25 +437,25 @@ class is `Copy` but whose members are not, or an assignment that writes an
 owned value under a `Copy` node, is a shape no well-typed program produces;
 the machine refuses it (`ownedUnderCopy`) rather than build a duplicable
 owner, and `soundness` proves a checked program never reaches the refusal
-(`HasTy.copyClosed`, `ContentsTy.copyClosed`, `Soundness.lean`). It is a
+(`HasTy.copyContained`, `ContentsTy.copyContained`, `Soundness.lean`). It is a
 **monitor** in the module docstring's sense — §6's (D-Struct) would build the
 value — and it is what makes `no_double_free`'s conservation law hold without
 a typing derivation (`Trace.lean`) (helper). -/
-def Contents.copyClosed (D : Decls) : Contents → Bool
+def Contents.copyContained (D : Decls) : Contents → Bool
   | .movedOut | .int _ _ _ | .float _ _ | .bool _ | .unit => true
   | .struct s _ cs =>
-      if D.classOf s = .copy then Contents.allCopyList D cs else Contents.copyClosedList D cs
+      if D.classOf s = .copy then Contents.allCopyList D cs else Contents.copyContainedList D cs
   | .enum e _ _ cs =>
       if D.enumClassOf e = .copy then Contents.allCopyList D cs
-      else Contents.copyClosedList D cs
+      else Contents.copyContainedList D cs
   | .array T _ cs =>
       if Ty.qual D (.array T cs.length) = .copy then Contents.allCopyList D cs
-      else Contents.copyClosedList D cs
+      else Contents.copyContainedList D cs
 
-/-- `copyClosed` over a field, payload or element list (helper). -/
-def Contents.copyClosedList (D : Decls) : List Contents → Bool
+/-- `copyContained` over a field, payload or element list (helper). -/
+def Contents.copyContainedList (D : Decls) : List Contents → Bool
   | [] => true
-  | c :: cs => Contents.copyClosed D c && Contents.copyClosedList D cs
+  | c :: cs => Contents.copyContained D c && Contents.copyContainedList D cs
 end
 
 mutual
@@ -496,18 +496,18 @@ end
 
 /-- `H[ℓ@π ↦ c']` (§6.3's (D-Use-Move), §6.8's `place_write`): replace the
 sub-position at a path. `none` is a step that is not a field of what is
-stored, which is the same navigation `readAt` refuses with `typeConfusion` —
+stored, which is the same navigation `getAt` refuses with `typeConfusion` —
 so every `eval` arm that writes has already read at the same path, and its
 `none` case is unreachable rather than a second refusal (helper). -/
-def Contents.writeAt : Contents → List Nat → Contents → Option Contents
+def Contents.setAt : Contents → List Nat → Contents → Option Contents
   | _, [], new => some new
   | .struct s i cs, f :: π, new =>
       (match cs[f]? with
-       | some c => (Contents.writeAt c π new).map fun c' => .struct s i (cs.set f c')
+       | some c => (Contents.setAt c π new).map fun c' => .struct s i (cs.set f c')
        | none => none)
   | .array T i cs, f :: π, new =>
       (match cs[f]? with
-       | some c => (Contents.writeAt c π new).map fun c' => .array T i (cs.set f c')
+       | some c => (Contents.setAt c π new).map fun c' => .array T i (cs.set f c')
        | none => none)
   | _, _ :: _, _ => none
   -- An enum node has no field step: a payload is reached by a `match` arm's
@@ -618,7 +618,7 @@ inductive Refusal where
   /-- An owned value under a `Copy` node (§3: a `Copy` type's fields, payloads
   and elements are `Copy`, `3.8:18`, `6.3:19`) — the shape a copy would
   duplicate an owner through, which §7's no-double-free bullet forbids. The
-  copy-closure monitor (`Contents.copyClosed`) refuses it where it could be
+  copy-closure monitor (`Contents.copyContained`) refuses it where it could be
   built: at aggregate introduction and at an assignment (RUE-2323). -/
   | ownedUnderCopy
 deriving DecidableEq, Repr
@@ -627,12 +627,12 @@ deriving DecidableEq, Repr
 with path left to walk is the use of a moved-out place (§7's first bullet); a
 step that is not a field of what is stored is a shape no well-typed program
 produces (helper). -/
-def Contents.readAt : Contents → List Nat → Except Refusal Contents
+def Contents.getAt : Contents → List Nat → Except Refusal Contents
   | c, [] => .ok c
   | .movedOut, _ :: _ => .error .useAfterMove
   | .struct _ _ cs, f :: π =>
       (match cs[f]? with
-       | some c => Contents.readAt c π
+       | some c => Contents.getAt c π
        | none => .error .typeConfusion)
   -- A **constant** index step (`Place.idx`): the element is at `cs[c]`, and
   -- `Ty.atPath` has already checked `c < n` (`7.1:9`'s compile-time bounds
@@ -642,7 +642,7 @@ def Contents.readAt : Contents → List Nat → Except Refusal Contents
   -- path it resolved to.
   | .array _ _ cs, f :: π =>
       (match cs[f]? with
-       | some c => Contents.readAt c π
+       | some c => Contents.getAt c π
        | none => .error .typeConfusion)
   | _, _ :: _ => .error .typeConfusion
 
@@ -670,7 +670,7 @@ taken left to right, each bounds-checked at the array it indexes before the
 next is looked at; the index *values* were all computed before the first
 check, which is the compiler's order too (probe r11: `a[id(5)][id(0)]` prints
 `5` and `0`, then traps). Once resolved, the place is an ordinary constant
-path, and §6.3's `readAt` and §6.8's `writeAt` take it from there (helper). -/
+path, and §6.3's `getAt` and §6.8's `setAt` take it from there (helper). -/
 def Contents.resolveDyn : Contents → List Int → List (List Nat) → DynStep
   | _, [], [] => .ok []
   | .array _ _ cs, i :: is, π :: πs =>
@@ -678,7 +678,7 @@ def Contents.resolveDyn : Contents → List Int → List (List Nat) → DynStep
         (match cs[i.toNat]? with
          | none => .refused .typeConfusion
          | some c =>
-           match c.readAt π with
+           match c.getAt π with
            | .error w => .refused w
            | .ok c' =>
              match c'.resolveDyn is πs with
@@ -722,7 +722,7 @@ def dynPlace (H : Store) (φ : Activation) (p : Place) (vs : List Val) (πs : Li
       | none => .refused .unbound
       | some .dead => .refused .useAfterDrop
       | some (.full c) =>
-        match c.readAt p.path with
+        match c.getAt p.path with
         | .error w => .refused w
         | .ok sub =>
           match sub.resolveDyn is πs with
@@ -965,7 +965,7 @@ after it* — nested residue before a later sibling (probe d14), and plain
 declaration order where the leaf is a direct field (probe d13).
 
 An empty path selects the whole aggregate and retains nothing: the leaf "is not
-residue". A `⊘` with path left to walk is `useAfterMove`, as `readAt`'s is; a
+residue". A `⊘` with path left to walk is `useAfterMove`, as `getAt`'s is; a
 step that is not a field of what is stored is a shape no well-typed program
 produces. An **array** step is §5.1's own clause — "at an array step, visit
 elements in ascending constant-index order, recurse into the selected element,
@@ -1005,12 +1005,12 @@ being destructured is a sub-position of `ℓ` being dropped, which is exactly
 what `@drop(x.f)` records as `drop ℓ sub`, so its drop starts with the same
 `drop ℓ r` marker — when `r` is not `Copy`, as `dropCell` records one. A
 `Copy` subtree has no drop glue and gets no marker (helper). -/
-def residueMark (D : Decls) (ℓ : Nat) (r : Contents) : List Event :=
+def residueDropEvent (D : Decls) (ℓ : Nat) (r : Contents) : List Event :=
   if r.qual D = .copy then [] else [.drop ℓ r]
 
 /-- §6.3's `drop*` applied to `[r_1, …, r_m]` **left to right**, so "each
 legally droppable residue is destroyed immediately and exactly once". Each
-element's drop is its marker (`residueMark`) and then §6.11's walk of it.
+element's drop is its marker (`residueDropEvent`) and then §6.11's walk of it.
 
 The `residualLinear` test is the monitor this machine adds and §6.3 does not
 need: §5.1's `¬ linear-residue(S, π_s)` premise has already excluded a linear
@@ -1035,7 +1035,7 @@ def dropResidue (D : Decls) (ℓ : Nat) : List Contents → Except Refusal (List
         | .ok evs =>
             match dropResidue D ℓ rs with
             | .error w => .error w
-            | .ok evs' => .ok (residueMark D ℓ r ++ evs ++ evs')
+            | .ok evs' => .ok (residueDropEvent D ℓ r ++ evs ++ evs')
 
 mutual
 /-- **The consumed shell of a destructure** (RUE-2427): the nodes on the
@@ -1080,7 +1080,7 @@ def Contents.destructure (D : Decls) (ℓ : Nat) (c : Contents) (πs : List Nat)
 well-typed residue, which is what keeps the drop-order statements closed under
 the new redex. -/
 def dropResidueEvents (D : Decls) (ℓ : Nat) (rs : List Contents) : List Event :=
-  rs.flatMap (fun r => residueMark D ℓ r ++ dropEvents D r)
+  rs.flatMap (fun r => residueDropEvent D ℓ r ++ dropEvents D r)
 
 /-- A `match` consumes a non-`Copy` scrutinee's **shell** (RUE-2427): the enum
 node, its payload already bound to the arm's cells. The event names the node
@@ -1158,10 +1158,10 @@ and the locations in creation order — the callee's entry scope record, which
 owes a drop for exactly these cells. The callee's environment is its reverse,
 because `Env` (like `Ctx`) lists the innermost binder first and the last
 parameter is the innermost. -/
-def mintParams : Store → List Val → Store × List Nat
+def freshParams : Store → List Val → Store × List Nat
   | H, [] => (H, [])
   | H, v :: vs =>
-      let (H', locs) := mintParams (H ++ [.full (Contents.ofVal v)]) vs
+      let (H', locs) := freshParams (H ++ [.full (Contents.ofVal v)]) vs
       (H', H.length :: locs)
 
 /-- The outcome of evaluating an argument list: the store, the argument values
@@ -1373,10 +1373,10 @@ binds it; it is never read. The identity travels with the value — through
 cells and a `match` arm's payload cells — and the drop trace records it
 (`Event`), which is what `no_double_free` (`Trace.lean`) counts.
 
-The copy-closure monitor (`Contents.copyClosed`) runs here, on the finished
+The copy-closure monitor (`Contents.copyContained`) runs here, on the finished
 value (helper). -/
 def introVal (D : Decls) (H : Store) (mk : Nat → Val) : EvalRes :=
-  if (Contents.ofVal (mk H.length)).copyClosed D then .ok (H ++ [.dead]) (mk H.length) []
+  if (Contents.ofVal (mk H.length)).copyContained D then .ok (H ++ [.dead]) (mk H.length) []
   else .refused .ownedUnderCopy
 
 /-- The interpreter, over a `FloatSig` (`Float.lean`): §2 fixes `rnd_w` and
@@ -1440,7 +1440,7 @@ def eval (M : FloatSig) : Nat → Program → Store → Activation → Expr → 
         | some (.full c) =>
           match c.declaredPlan P.decls p.path with
           | some (πd, πs) =>
-            (match c.readAt πd with
+            (match c.getAt πd with
              | .error w => .refused w
              | .ok cd =>
                match cd.destructure P.decls ℓ πs with
@@ -1449,11 +1449,11 @@ def eval (M : FloatSig) : Nat → Program → Store → Activation → Expr → 
                  match leaf.toVal with
                  | none => .refused .useAfterMove
                  | some v =>
-                   match c.writeAt πd .movedOut with
+                   match c.setAt πd .movedOut with
                    | none => .refused .typeConfusion
                    | some c' => .ok (H.set ℓ (.full c')) v evs)
           | none =>
-            match c.readAt p.path with
+            match c.getAt p.path with
             | .error w => .refused w
             | .ok sub =>
               match sub.toVal with
@@ -1461,7 +1461,7 @@ def eval (M : FloatSig) : Nat → Program → Store → Activation → Expr → 
               | some v =>
                   if v.qual P.decls = .copy then .ok H v []
                   else
-                    match c.writeAt p.path .movedOut with
+                    match c.setAt p.path .movedOut with
                     | none => .refused .typeConfusion
                     | some c' => .ok (H.set ℓ (.full c')) v []
   | fuel + 1, P, H, φ, .binop op e₁ e₂ =>
@@ -1539,13 +1539,13 @@ def eval (M : FloatSig) : Nat → Program → Store → Activation → Expr → 
              -- The payload components are bound to fresh cells exactly as
              -- (D-Let) §6.7 binds one: appended to the frame's innermost scope
              -- record *and* owed to the arm's `endscope([ℓ1,…,ℓa])` marker,
-             -- which the arm's normal path below runs. `mintParams` is the same
+             -- which the arm's normal path below runs. `freshParams` is the same
              -- minting (D-Call) §6.9 performs, and the two `reverse`s are the
              -- same one it needs: a payload tuple is written left to right while
              -- `Env` lists the innermost binder first.
              -- The scrutinee's shell is consumed here, before the arm runs
              -- (`matchConsume`, RUE-2427): its payload now lives in the cells.
-             let minted := mintParams H₀ vs
+             let minted := freshParams H₀ vs
              EvalRes.withTrace (matchConsume P.decls e k i vs) <|
              (eval M fuel P minted.1
                  { env := minted.2.reverse ++ φ.env, scope := φ.scope ++ minted.2 }
@@ -1608,7 +1608,7 @@ def eval (M : FloatSig) : Nat → Program → Store → Activation → Expr → 
            | .refused w => .refused w
            | .bounds => .panic .bounds []
            | .at _ _ sub ρ =>
-             match sub.readAt ρ with
+             match sub.getAt ρ with
              | .error w => .refused w
              | .ok leaf =>
                match leaf.toVal with
@@ -1639,7 +1639,7 @@ def eval (M : FloatSig) : Nat → Program → Store → Activation → Expr → 
             | .refused w => .refused w
             | .bounds => .panic .bounds []
             | .at ℓ c sub ρ =>
-              match sub.readAt ρ with
+              match sub.getAt ρ with
               | .error w => .refused w
               | .ok old =>
                 if old.residualLinear P.decls then .refused .linearOverwrite
@@ -1647,13 +1647,13 @@ def eval (M : FloatSig) : Nat → Program → Store → Activation → Expr → 
                   match dropCell P.decls ℓ old with
                   | .error w => .refused w
                   | .ok evs =>
-                    match sub.writeAt ρ (Contents.ofVal v) with
+                    match sub.setAt ρ (Contents.ofVal v) with
                     | none => .refused .typeConfusion
                     | some sub' =>
-                      match c.writeAt p.path sub' with
+                      match c.setAt p.path sub' with
                       | none => .refused .typeConfusion
                       | some c' =>
-                        if c'.copyClosed P.decls then .ok (H₂.set ℓ (.full c')) .unit evs
+                        if c'.copyContained P.decls then .ok (H₂.set ℓ (.full c')) .unit evs
                         else .refused .ownedUnderCopy
   | fuel + 1, P, H, φ, .indexDrop p idx πs =>
       -- §6.11's `@drop(p)` at a `Copy` place below a dynamic index. A `Copy`
@@ -1691,7 +1691,7 @@ def eval (M : FloatSig) : Nat → Program → Store → Activation → Expr → 
         | some (.full c) =>
           match c.declaredPlan P.decls p.path with
           | some (πd, πs) =>
-            (match c.readAt πd with
+            (match c.getAt πd with
              | .error w => .refused w
              | .ok cd =>
                match cd.destructure P.decls ℓ πs with
@@ -1701,11 +1701,11 @@ def eval (M : FloatSig) : Nat → Program → Store → Activation → Expr → 
                  match dropCell P.decls ℓ leaf with
                  | .error w => .refused w
                  | .ok levs =>
-                   match c.writeAt πd .movedOut with
+                   match c.setAt πd .movedOut with
                    | none => .refused .typeConfusion
                    | some c' => .ok (H.set ℓ (.full c')) .unit (evs ++ levs))
           | none =>
-            match c.readAt p.path with
+            match c.getAt p.path with
             | .error w => .refused w
             | .ok sub =>
               if sub.isMovedOut then .refused .useAfterMove else
@@ -1714,7 +1714,7 @@ def eval (M : FloatSig) : Nat → Program → Store → Activation → Expr → 
               | .ok evs =>
                   if sub.qual P.decls = .copy then .ok H .unit []
                   else
-                    match c.writeAt p.path .movedOut with
+                    match c.setAt p.path .movedOut with
                     | none => .refused .typeConfusion
                     | some c' => .ok (H.set ℓ (.full c')) .unit evs
   | fuel + 1, P, H, φ, .letIn _m e₁ e₂ =>
@@ -1742,7 +1742,7 @@ def eval (M : FloatSig) : Nat → Program → Store → Activation → Expr → 
           | none => .refused .unbound
           | some .dead => .refused .useAfterDrop
           | some (.full c) =>
-            match c.readAt p.path with
+            match c.getAt p.path with
             | .error w => .refused w
             | .ok old =>
                 if old.residualLinear P.decls then .refused .linearOverwrite   -- 3.8:77
@@ -1750,11 +1750,11 @@ def eval (M : FloatSig) : Nat → Program → Store → Activation → Expr → 
                   match dropCell P.decls ℓ old with
                   | .error w => .refused w
                   | .ok evs =>
-                      match c.writeAt p.path (Contents.ofVal v) with
+                      match c.setAt p.path (Contents.ofVal v) with
                       | none => .refused .typeConfusion
                       | some c' =>
-                          -- The copy-closure monitor (`Contents.copyClosed`).
-                          if c'.copyClosed P.decls then .ok (H₁.set ℓ (.full c')) .unit evs
+                          -- The copy-closure monitor (`Contents.copyContained`).
+                          if c'.copyContained P.decls then .ok (H₁.set ℓ (.full c')) .unit evs
                           else .refused .ownedUnderCopy
   | fuel + 1, P, H, φ, .seq e₁ e₂ =>
       (eval M fuel P H φ e₁).bind fun H₁ v₁ =>
@@ -1781,7 +1781,7 @@ def eval (M : FloatSig) : Nat → Program → Store → Activation → Expr → 
             if fd.params.length = vs.length then
               -- (D-Call): one fresh cell per by-value argument; the callee's
               -- entry scope owes a drop for exactly those cells.
-              let minted := mintParams H₁ vs
+              let minted := freshParams H₁ vs
               let φg : Activation := { env := minted.2.reverse, scope := minted.2 }
               (eval M fuel P minted.1 φg fd.body).bindCall fun H₃ v =>
                 -- (D-Return-Value): the body became a value; pop the frame,

@@ -57,7 +57,7 @@ def storeOwn (D : Decls) (H : Store) : List Nat := H.flatMap (Cell.own D)
 
 /-- Every live cell of the store is copy-closed (helper). -/
 def StoreCC (D : Decls) (H : Store) : Prop :=
-  ∀ (ℓ : Nat) (c : Contents), H[ℓ]? = some (Cell.full c) → c.copyClosed D = true
+  ∀ (ℓ : Nat) (c : Contents), H[ℓ]? = some (Cell.full c) → c.copyContained D = true
 
 /-- Multiset inclusion, read by counts: every identity occurs in `l₁` at most
 as often as in `l₂` (helper). -/
@@ -111,14 +111,14 @@ a `@dbg` projects to nothing. `freedIds` and `dtorIds` are the two projections
 §7's bullet is about (`freed_measure`, `dtor_measure`) (helper). -/
 structure TraceMeasure (D : Decls) (F : Event → List Nat) : Prop where
   /-- §6.11's walk, with no marker: a destructure's `Copy` residue subtree
-  (§6.3), which `residueMark` gives no marker. -/
-  walk : ∀ {c : Contents} {evs : List Event}, c.copyClosed D = true →
+  (§6.3), which `residueDropEvent` gives no marker. -/
+  walk : ∀ {c : Contents} {evs : List Event}, c.copyContained D = true →
     dropContents D c = .ok evs → IdLe (evs.flatMap F) (c.own D)
   /-- A binding's drop: its `drop ℓ c` marker, then the walk (§6.11). -/
-  marker : ∀ {ℓ : Nat} {c : Contents} {evs : List Event}, c.copyClosed D = true →
+  marker : ∀ {ℓ : Nat} {c : Contents} {evs : List Event}, c.copyContained D = true →
     dropContents D c = .ok evs → IdLe (F (.drop ℓ c) ++ evs.flatMap F) (c.own D)
   /-- A discarded temporary: its `dropTemp v` marker, then the walk (§6.7). -/
-  temp : ∀ {v : Val} {evs : List Event}, (Contents.ofVal v).copyClosed D = true →
+  temp : ∀ {v : Val} {evs : List Event}, (Contents.ofVal v).copyContained D = true →
     dropContents D (Contents.ofVal v) = .ok evs → IdLe (F (.dropTemp v) ++ evs.flatMap F) (v.own D)
   /-- A consumption ends at most its shell (RUE-2427). -/
   consume : ∀ c, IdLe (F (.consume c)) (c.own D)
@@ -134,7 +134,7 @@ so its minted range is existential; a refusal and exhausted fuel promise
 nothing (helper). -/
 def Cons (D : Decls) (F : Event → List Nat) (H : Store) (X : List Nat) : EvalRes → Prop
   | .ok H' v tr | .returned H' v tr =>
-      H.length ≤ H'.length ∧ StoreCC D H' ∧ (Contents.ofVal v).copyClosed D = true ∧
+      H.length ≤ H'.length ∧ StoreCC D H' ∧ (Contents.ofVal v).copyContained D = true ∧
       ∀ a, (storeOwn D H').count a + (v.own D).count a + (tr.flatMap F).count a
         ≤ (storeOwn D H).count a + X.count a + (Fresh H H').count a
   | .broke H' _ tr =>
@@ -220,7 +220,7 @@ and nothing is lost or duplicated. Identities minted during the evaluation
 refusal and exhausted fuel promise nothing (helper). -/
 def Exact (D : Decls) (H : Store) (X : List Nat) : EvalRes → Prop
   | .ok H' v tr | .returned H' v tr =>
-      H.length ≤ H'.length ∧ StoreCC D H' ∧ (Contents.ofVal v).copyClosed D = true ∧
+      H.length ≤ H'.length ∧ StoreCC D H' ∧ (Contents.ofVal v).copyContained D = true ∧
       ∀ a, a < H.length → (storeOwn D H').count a + (v.own D).count a + (freedIds D tr).count a
         = (storeOwn D H).count a + X.count a
   | .broke H' _ tr =>

@@ -270,7 +270,7 @@ would duplicate an owner through: over `S0 = @copy struct { x0: i64 }` and
 @drop(p.x0); @drop(q.x0); 0` (`Trace.lean`'s `dupProgram`). It is not
 `ProgramTyped`, and `eval` refuses it with `ownedUnderCopy`, at the literal:
 `no_violation`'s conclusion fails once `ProgramTyped` is dropped, and a machine
-without the copy-closure monitor (`Contents.copyClosed` in `introVal`) makes
+without the copy-closure monitor (`Contents.copyContained` in `introVal`) makes
 this statement false. -/
 def copy_stmt : Prop :=
   ∀ B : Expr, B =

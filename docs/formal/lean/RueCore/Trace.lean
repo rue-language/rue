@@ -51,7 +51,7 @@ drops, a `Copy` value owns nothing, and §6.11's `⊘`-skip is what keeps a
 moved-out position from being counted twice — "this single skip is what makes
 double-free impossible".
 
-What the law needs from the program is **copy closure** (`Contents.copyClosed`):
+What the law needs from the program is **copy closure** (`Contents.copyContained`):
 nothing owned hides under a `Copy` node, or a copy would duplicate it. §3 makes
 that a property of every well-typed value, and the machine enforces it with a
 monitor at aggregate introduction and assignment (`Dynamics.lean`), so the law
@@ -105,49 +105,49 @@ theorem Contents.allCopyList_own {D : Decls} :
       simp [Contents.ownList, Contents.allCopy_own h.1, Contents.allCopyList_own h.2]
 
 /-- A copy-closed node that is `Copy` is `Copy` all the way down (helper). -/
-theorem Contents.copyClosed_allCopy {D : Decls} {c : Contents} (hc : c.copyClosed D = true)
+theorem Contents.copyContained_allCopy {D : Decls} {c : Contents} (hc : c.copyContained D = true)
     (hm : c.qual D = .copy) : c.allCopy D = true := by
-  cases c <;> simp_all [Contents.copyClosed, Contents.qual, Contents.allCopy]
+  cases c <;> simp_all [Contents.copyContained, Contents.qual, Contents.allCopy]
 
 mutual
 /-- All-`Copy` contents is copy-closed (helper). -/
-theorem Contents.allCopy_copyClosed {D : Decls} :
-    ∀ {c : Contents}, c.allCopy D = true → c.copyClosed D = true
+theorem Contents.allCopy_copyContained {D : Decls} :
+    ∀ {c : Contents}, c.allCopy D = true → c.copyContained D = true
   | .movedOut, _ | .int _ _ _, _ | .float _ _, _ | .bool _, _ | .unit, _ => rfl
   | .struct s i cs, h => by
       simp only [Contents.allCopy, Bool.and_eq_true, decide_eq_true_eq] at h
-      simp [Contents.copyClosed, h.1, h.2]
+      simp [Contents.copyContained, h.1, h.2]
   | .enum e k i cs, h => by
       simp only [Contents.allCopy, Bool.and_eq_true, decide_eq_true_eq] at h
-      simp [Contents.copyClosed, h.1, h.2]
+      simp [Contents.copyContained, h.1, h.2]
   | .array T i cs, h => by
       simp only [Contents.allCopy, Bool.and_eq_true, decide_eq_true_eq] at h
-      simp [Contents.copyClosed, h.1, h.2]
+      simp [Contents.copyContained, h.1, h.2]
 
 /-- The same over a list (helper). -/
-theorem Contents.allCopyList_copyClosedList {D : Decls} :
-    ∀ {cs : List Contents}, Contents.allCopyList D cs = true → Contents.copyClosedList D cs = true
+theorem Contents.allCopyList_copyContainedList {D : Decls} :
+    ∀ {cs : List Contents}, Contents.allCopyList D cs = true → Contents.copyContainedList D cs = true
   | [], _ => rfl
   | c :: cs, h => by
       simp only [Contents.allCopyList, Bool.and_eq_true] at h
-      simp [Contents.copyClosedList, Contents.allCopy_copyClosed h.1,
-        Contents.allCopyList_copyClosedList h.2]
+      simp [Contents.copyContainedList, Contents.allCopy_copyContained h.1,
+        Contents.allCopyList_copyContainedList h.2]
 end
 
 /-- A member of a copy-closed list is copy-closed (helper). -/
-theorem Contents.copyClosedList_index {D : Decls} :
+theorem Contents.copyContainedList_index {D : Decls} :
     ∀ {cs : List Contents} {f : Nat} {c : Contents},
-      Contents.copyClosedList D cs = true → cs[f]? = some c → c.copyClosed D = true
+      Contents.copyContainedList D cs = true → cs[f]? = some c → c.copyContained D = true
   | [], _, _, _, h => by simp at h
   | c₀ :: cs, 0, c, h, hg => by
       simp only [List.getElem?_cons_zero, Option.some_inj] at hg
       subst hg
-      simp only [Contents.copyClosedList, Bool.and_eq_true] at h
+      simp only [Contents.copyContainedList, Bool.and_eq_true] at h
       exact h.1
   | c₀ :: cs, f + 1, c, h, hg => by
       simp only [List.getElem?_cons_succ] at hg
-      simp only [Contents.copyClosedList, Bool.and_eq_true] at h
-      exact Contents.copyClosedList_index h.2 hg
+      simp only [Contents.copyContainedList, Bool.and_eq_true] at h
+      exact Contents.copyContainedList_index h.2 hg
 
 /-- A member of an all-`Copy` list is all-`Copy` (helper). -/
 theorem Contents.allCopyList_index {D : Decls} :
@@ -165,17 +165,17 @@ theorem Contents.allCopyList_index {D : Decls} :
       exact Contents.allCopyList_index h.2 hg
 
 /-- Writing a copy-closed member keeps a copy-closed list so (helper). -/
-theorem Contents.copyClosedList_set {D : Decls} :
+theorem Contents.copyContainedList_set {D : Decls} :
     ∀ {cs : List Contents} (f : Nat) {c : Contents},
-      Contents.copyClosedList D cs = true → c.copyClosed D = true →
-      Contents.copyClosedList D (cs.set f c) = true
+      Contents.copyContainedList D cs = true → c.copyContained D = true →
+      Contents.copyContainedList D (cs.set f c) = true
   | [], _, _, h, _ => by simpa using h
   | c₀ :: cs, 0, c, h, hc => by
-      simp only [Contents.copyClosedList, Bool.and_eq_true] at h
-      simp [Contents.copyClosedList, hc, h.2]
+      simp only [Contents.copyContainedList, Bool.and_eq_true] at h
+      simp [Contents.copyContainedList, hc, h.2]
   | c₀ :: cs, f + 1, c, h, hc => by
-      simp only [Contents.copyClosedList, Bool.and_eq_true] at h
-      simp [Contents.copyClosedList, h.1, Contents.copyClosedList_set f h.2 hc]
+      simp only [Contents.copyContainedList, Bool.and_eq_true] at h
+      simp [Contents.copyContainedList, h.1, Contents.copyContainedList_set f h.2 hc]
 
 /-- Writing an all-`Copy` member keeps an all-`Copy` list so (helper). -/
 theorem Contents.allCopyList_set {D : Decls} :
@@ -243,180 +243,180 @@ end
 /-! ## Paths: a read, a write, and what they own -/
 
 /-- A position read out of an all-`Copy` contents is all-`Copy` (helper). -/
-theorem Contents.readAt_allCopy {D : Decls} : ∀ (π : List Nat) {c sub : Contents},
-    c.allCopy D = true → c.readAt π = .ok sub → sub.allCopy D = true
-  | [], c, sub, h, hr => by simp [Contents.readAt] at hr; subst hr; exact h
+theorem Contents.getAt_allCopy {D : Decls} : ∀ (π : List Nat) {c sub : Contents},
+    c.allCopy D = true → c.getAt π = .ok sub → sub.allCopy D = true
+  | [], c, sub, h, hr => by simp [Contents.getAt] at hr; subst hr; exact h
   | f :: π, c, sub, h, hr => by
       cases c with
       | struct s i cs =>
-          simp only [Contents.readAt] at hr
+          simp only [Contents.getAt] at hr
           split at hr
           · rename_i cf hcf
             simp only [Contents.allCopy, Bool.and_eq_true] at h
-            exact Contents.readAt_allCopy π (Contents.allCopyList_index h.2 hcf) hr
+            exact Contents.getAt_allCopy π (Contents.allCopyList_index h.2 hcf) hr
           · cases hr
       | array T i cs =>
-          simp only [Contents.readAt] at hr
+          simp only [Contents.getAt] at hr
           split at hr
           · rename_i cf hcf
             simp only [Contents.allCopy, Bool.and_eq_true] at h
-            exact Contents.readAt_allCopy π (Contents.allCopyList_index h.2 hcf) hr
+            exact Contents.getAt_allCopy π (Contents.allCopyList_index h.2 hcf) hr
           · cases hr
-      | _ => simp [Contents.readAt] at hr
+      | _ => simp [Contents.getAt] at hr
 
 /-- A position read out of a copy-closed contents is copy-closed (helper). -/
-theorem Contents.readAt_copyClosed {D : Decls} : ∀ (π : List Nat) {c sub : Contents},
-    c.copyClosed D = true → c.readAt π = .ok sub → sub.copyClosed D = true
-  | [], c, sub, h, hr => by simp [Contents.readAt] at hr; subst hr; exact h
+theorem Contents.getAt_copyContained {D : Decls} : ∀ (π : List Nat) {c sub : Contents},
+    c.copyContained D = true → c.getAt π = .ok sub → sub.copyContained D = true
+  | [], c, sub, h, hr => by simp [Contents.getAt] at hr; subst hr; exact h
   | f :: π, c, sub, h, hr => by
       cases c with
       | struct s i cs =>
-          simp only [Contents.readAt] at hr
+          simp only [Contents.getAt] at hr
           split at hr
           · rename_i cf hcf
-            simp only [Contents.copyClosed] at h
+            simp only [Contents.copyContained] at h
             split at h
-            · exact Contents.allCopy_copyClosed
-                (Contents.readAt_allCopy π (Contents.allCopyList_index h hcf) hr)
-            · exact Contents.readAt_copyClosed π (Contents.copyClosedList_index h hcf) hr
+            · exact Contents.allCopy_copyContained
+                (Contents.getAt_allCopy π (Contents.allCopyList_index h hcf) hr)
+            · exact Contents.getAt_copyContained π (Contents.copyContainedList_index h hcf) hr
           · cases hr
       | array T i cs =>
-          simp only [Contents.readAt] at hr
+          simp only [Contents.getAt] at hr
           split at hr
           · rename_i cf hcf
-            simp only [Contents.copyClosed] at h
+            simp only [Contents.copyContained] at h
             split at h
-            · exact Contents.allCopy_copyClosed
-                (Contents.readAt_allCopy π (Contents.allCopyList_index h hcf) hr)
-            · exact Contents.readAt_copyClosed π (Contents.copyClosedList_index h hcf) hr
+            · exact Contents.allCopy_copyContained
+                (Contents.getAt_allCopy π (Contents.allCopyList_index h hcf) hr)
+            · exact Contents.getAt_copyContained π (Contents.copyContainedList_index h hcf) hr
           · cases hr
-      | _ => simp [Contents.readAt] at hr
+      | _ => simp [Contents.getAt] at hr
 
 /-- Writing all-`Copy` contents into all-`Copy` contents keeps it so (helper). -/
-theorem Contents.writeAt_allCopy {D : Decls} : ∀ (π : List Nat) {c new c' : Contents},
-    c.allCopy D = true → new.allCopy D = true → c.writeAt π new = some c' →
+theorem Contents.setAt_allCopy {D : Decls} : ∀ (π : List Nat) {c new c' : Contents},
+    c.allCopy D = true → new.allCopy D = true → c.setAt π new = some c' →
     c'.allCopy D = true
-  | [], c, new, c', _, hn, hw => by simp [Contents.writeAt] at hw; subst hw; exact hn
+  | [], c, new, c', _, hn, hw => by simp [Contents.setAt] at hw; subst hw; exact hn
   | f :: π, c, new, c', h, hn, hw => by
       cases c with
       | struct s i cs =>
-          simp only [Contents.writeAt] at hw
+          simp only [Contents.setAt] at hw
           split at hw
           · rename_i cf hcf
             simp only [Option.map_eq_some_iff] at hw
             obtain ⟨cf', hw', rfl⟩ := hw
             simp only [Contents.allCopy, Bool.and_eq_true] at h ⊢
             exact ⟨h.1, Contents.allCopyList_set f h.2
-              (Contents.writeAt_allCopy π (Contents.allCopyList_index h.2 hcf) hn hw')⟩
+              (Contents.setAt_allCopy π (Contents.allCopyList_index h.2 hcf) hn hw')⟩
           · cases hw
       | array T i cs =>
-          simp only [Contents.writeAt] at hw
+          simp only [Contents.setAt] at hw
           split at hw
           · rename_i cf hcf
             simp only [Option.map_eq_some_iff] at hw
             obtain ⟨cf', hw', rfl⟩ := hw
             simp only [Contents.allCopy, Bool.and_eq_true, List.length_set] at h ⊢
             exact ⟨h.1, Contents.allCopyList_set f h.2
-              (Contents.writeAt_allCopy π (Contents.allCopyList_index h.2 hcf) hn hw')⟩
+              (Contents.setAt_allCopy π (Contents.allCopyList_index h.2 hcf) hn hw')⟩
           · cases hw
-      | _ => simp [Contents.writeAt] at hw
+      | _ => simp [Contents.setAt] at hw
 
 /-- **A `⊘` write keeps copy closure** (§6.3's `H[ℓ@π ↦ ⊘]`): `⊘` is
 all-`Copy`, so it may sit under any node (helper). -/
-theorem Contents.writeAt_copyClosed {D : Decls} : ∀ (π : List Nat) {c new c' : Contents},
-    c.copyClosed D = true → new.allCopy D = true → c.writeAt π new = some c' →
-    c'.copyClosed D = true
+theorem Contents.setAt_copyContained {D : Decls} : ∀ (π : List Nat) {c new c' : Contents},
+    c.copyContained D = true → new.allCopy D = true → c.setAt π new = some c' →
+    c'.copyContained D = true
   | [], c, new, c', _, hn, hw => by
-      simp [Contents.writeAt] at hw; subst hw; exact Contents.allCopy_copyClosed hn
+      simp [Contents.setAt] at hw; subst hw; exact Contents.allCopy_copyContained hn
   | f :: π, c, new, c', h, hn, hw => by
       cases c with
       | struct s i cs =>
-          simp only [Contents.writeAt] at hw
+          simp only [Contents.setAt] at hw
           split at hw
           · rename_i cf hcf
             simp only [Option.map_eq_some_iff] at hw
             obtain ⟨cf', hw', rfl⟩ := hw
-            simp only [Contents.copyClosed] at h ⊢
+            simp only [Contents.copyContained] at h ⊢
             split at h
             · rename_i hc
               rw [if_pos hc]
               exact Contents.allCopyList_set f h
-                (Contents.writeAt_allCopy π (Contents.allCopyList_index h hcf) hn hw')
+                (Contents.setAt_allCopy π (Contents.allCopyList_index h hcf) hn hw')
             · rename_i hc
               rw [if_neg hc]
-              exact Contents.copyClosedList_set f h
-                (Contents.writeAt_copyClosed π (Contents.copyClosedList_index h hcf) hn hw')
+              exact Contents.copyContainedList_set f h
+                (Contents.setAt_copyContained π (Contents.copyContainedList_index h hcf) hn hw')
           · cases hw
       | array T i cs =>
-          simp only [Contents.writeAt] at hw
+          simp only [Contents.setAt] at hw
           split at hw
           · rename_i cf hcf
             simp only [Option.map_eq_some_iff] at hw
             obtain ⟨cf', hw', rfl⟩ := hw
-            simp only [Contents.copyClosed, List.length_set] at h ⊢
+            simp only [Contents.copyContained, List.length_set] at h ⊢
             split at h
             · rename_i hc
               rw [if_pos hc]
               exact Contents.allCopyList_set f h
-                (Contents.writeAt_allCopy π (Contents.allCopyList_index h hcf) hn hw')
+                (Contents.setAt_allCopy π (Contents.allCopyList_index h hcf) hn hw')
             · rename_i hc
               rw [if_neg hc]
-              exact Contents.copyClosedList_set f h
-                (Contents.writeAt_copyClosed π (Contents.copyClosedList_index h hcf) hn hw')
+              exact Contents.copyContainedList_set f h
+                (Contents.setAt_copyContained π (Contents.copyContainedList_index h hcf) hn hw')
           · cases hw
-      | _ => simp [Contents.writeAt] at hw
+      | _ => simp [Contents.setAt] at hw
 
 /-- **A write at a path, counted**: the contents after the write owns what it
 owned before, less what sat at the path, plus what was written. This is §6.3's
 move (write `⊘`, hand the old sub-tree on) and §6.8's store (drop the old
 sub-tree, write the new value) read as a ledger. Below a `Copy` node both
 sides own nothing there, which is where copy closure is needed (helper). -/
-theorem Contents.writeAt_own {D : Decls} (a : Nat) : ∀ (π : List Nat) {c sub new c' : Contents},
-    c.copyClosed D = true → c.readAt π = .ok sub → c.writeAt π new = some c' →
+theorem Contents.setAt_own {D : Decls} (a : Nat) : ∀ (π : List Nat) {c sub new c' : Contents},
+    c.copyContained D = true → c.getAt π = .ok sub → c.setAt π new = some c' →
     (c'.own D).count a + (sub.own D).count a ≤ (c.own D).count a + (new.own D).count a
   | [], c, sub, new, c', _, hr, hw => by
-      simp [Contents.readAt] at hr; simp [Contents.writeAt] at hw; subst hr; subst hw; omega
+      simp [Contents.getAt] at hr; simp [Contents.setAt] at hw; subst hr; subst hw; omega
   | f :: π, c, sub, new, c', hcc, hr, hw => by
       cases c with
       | struct s i cs =>
-          simp only [Contents.readAt] at hr
-          simp only [Contents.writeAt] at hw
+          simp only [Contents.getAt] at hr
+          simp only [Contents.setAt] at hw
           split at hr
           · rename_i cf hcf
             rw [hcf] at hw
             simp only [Option.map_eq_some_iff] at hw
             obtain ⟨cf', hw', rfl⟩ := hw
-            simp only [Contents.copyClosed] at hcc
+            simp only [Contents.copyContained] at hcc
             by_cases hc : D.classOf s = .copy
             · rw [if_pos hc] at hcc
-              have hsub := Contents.readAt_allCopy π (Contents.allCopyList_index hcc hcf) hr
+              have hsub := Contents.getAt_allCopy π (Contents.allCopyList_index hcc hcf) hr
               simp [Contents.own, hc, Contents.allCopy_own hsub]
             · rw [if_neg hc] at hcc
-              have ih := Contents.writeAt_own a π (Contents.copyClosedList_index hcc hcf) hr hw'
+              have ih := Contents.setAt_own a π (Contents.copyContainedList_index hcc hcf) hr hw'
               have hset := Contents.ownList_set_count (D := D) a cf' hcf
               simp only [Contents.own, if_neg hc, List.count_cons]
               omega
           · cases hr
       | array T i cs =>
-          simp only [Contents.readAt] at hr
-          simp only [Contents.writeAt] at hw
+          simp only [Contents.getAt] at hr
+          simp only [Contents.setAt] at hw
           split at hr
           · rename_i cf hcf
             rw [hcf] at hw
             simp only [Option.map_eq_some_iff] at hw
             obtain ⟨cf', hw', rfl⟩ := hw
-            simp only [Contents.copyClosed] at hcc
+            simp only [Contents.copyContained] at hcc
             by_cases hc : Ty.qual D (.array T cs.length) = .copy
             · rw [if_pos hc] at hcc
-              have hsub := Contents.readAt_allCopy π (Contents.allCopyList_index hcc hcf) hr
+              have hsub := Contents.getAt_allCopy π (Contents.allCopyList_index hcc hcf) hr
               simp [Contents.own, hc, Contents.allCopy_own hsub]
             · rw [if_neg hc] at hcc
-              have ih := Contents.writeAt_own a π (Contents.copyClosedList_index hcc hcf) hr hw'
+              have ih := Contents.setAt_own a π (Contents.copyContainedList_index hcc hcf) hr hw'
               have hset := Contents.ownList_set_count (D := D) a cf' hcf
               simp only [Contents.own, List.length_set, if_neg hc, List.count_cons]
               omega
           · cases hr
-      | _ => simp [Contents.readAt] at hr
+      | _ => simp [Contents.getAt] at hr
 
 /-! ## The store, counted -/
 
@@ -452,7 +452,7 @@ theorem StoreCC.append {D : Decls} {H ext : Store} (h : StoreCC D H) (he : Store
   · rw [List.getElem?_append_right (by omega)] at hc; exact he _ c hc
 
 /-- A store of one copy-closed cell is copy-closed (helper). -/
-theorem StoreCC.single {D : Decls} {c : Contents} (h : c.copyClosed D = true) :
+theorem StoreCC.single {D : Decls} {c : Contents} (h : c.copyContained D = true) :
     StoreCC D [.full c] := by
   intro ℓ c' hc
   cases ℓ with
@@ -468,7 +468,7 @@ theorem StoreCC.dead {D : Decls} : StoreCC D [.dead] := by
 
 /-- Writing a copy-closed cell keeps the store copy-closed (helper). -/
 theorem StoreCC.set {D : Decls} {H : Store} {ℓ : Nat} {c : Contents} (h : StoreCC D H)
-    (hc : c.copyClosed D = true) : StoreCC D (H.set ℓ (.full c)) := by
+    (hc : c.copyContained D = true) : StoreCC D (H.set ℓ (.full c)) := by
   intro ℓ' c' hc'
   by_cases he : ℓ = ℓ'
   · subst he
@@ -602,7 +602,7 @@ a `Copy` node emits nothing either, because a destructor-bearing struct is
 never `Copy` (helper). -/
 theorem dropContents_dtor {D : Decls} (hdt : DtorNotCopy D) (a : Nat) :
     ∀ {c : Contents} {evs : List Event},
-      c.copyClosed D = true → dropContents D c = .ok evs →
+      c.copyContained D = true → dropContents D c = .ok evs →
         (dtorIds evs).count a ≤ (c.own D).count a
   | .movedOut, _, _, h | .int _ _ _, _, _, h | .float _ _, _, _, h | .bool _, _, _, h
   | .unit, _, _, h => by
@@ -610,9 +610,9 @@ theorem dropContents_dtor {D : Decls} (hdt : DtorNotCopy D) (a : Nat) :
   | .struct s i cs, evs, hcc, h => by
       by_cases hc : D.classOf s = .copy
       · have hac : (Contents.struct s i cs).allCopy D = true :=
-          Contents.copyClosed_allCopy hcc (by simpa [Contents.qual] using hc)
+          Contents.copyContained_allCopy hcc (by simpa [Contents.qual] using hc)
         rw [dropContents_allCopy_dtor hdt hac h]; simp
-      · simp only [Contents.copyClosed, if_neg hc] at hcc
+      · simp only [Contents.copyContained, if_neg hc] at hcc
         simp only [dropContents] at h
         split at h
         · cases h
@@ -633,9 +633,9 @@ theorem dropContents_dtor {D : Decls} (hdt : DtorNotCopy D) (a : Nat) :
   | .enum e k i cs, evs, hcc, h => by
       by_cases hc : D.enumClassOf e = .copy
       · have hac : (Contents.enum e k i cs).allCopy D = true :=
-          Contents.copyClosed_allCopy hcc (by simpa [Contents.qual] using hc)
+          Contents.copyContained_allCopy hcc (by simpa [Contents.qual] using hc)
         rw [dropContents_allCopy_dtor hdt hac h]; simp
-      · simp only [Contents.copyClosed, if_neg hc] at hcc
+      · simp only [Contents.copyContained, if_neg hc] at hcc
         simp only [dropContents] at h
         have ih := dropContentsList_dtor hdt a hcc h
         simp only [Contents.own, if_neg hc, List.count_cons]
@@ -643,9 +643,9 @@ theorem dropContents_dtor {D : Decls} (hdt : DtorNotCopy D) (a : Nat) :
   | .array T i cs, evs, hcc, h => by
       by_cases hc : Ty.qual D (.array T cs.length) = .copy
       · have hac : (Contents.array T i cs).allCopy D = true :=
-          Contents.copyClosed_allCopy hcc (by simpa [Contents.qual] using hc)
+          Contents.copyContained_allCopy hcc (by simpa [Contents.qual] using hc)
         rw [dropContents_allCopy_dtor hdt hac h]; simp
-      · simp only [Contents.copyClosed, if_neg hc] at hcc
+      · simp only [Contents.copyContained, if_neg hc] at hcc
         simp only [dropContents] at h
         have ih := dropContentsList_dtor hdt a hcc h
         simp only [Contents.own, if_neg hc, List.count_cons]
@@ -654,11 +654,11 @@ theorem dropContents_dtor {D : Decls} (hdt : DtorNotCopy D) (a : Nat) :
 /-- The same over a list (helper). -/
 theorem dropContentsList_dtor {D : Decls} (hdt : DtorNotCopy D) (a : Nat) :
     ∀ {cs : List Contents} {evs : List Event},
-      Contents.copyClosedList D cs = true → dropContentsList D cs = .ok evs →
+      Contents.copyContainedList D cs = true → dropContentsList D cs = .ok evs →
         (dtorIds evs).count a ≤ (Contents.ownList D cs).count a
   | [], _, _, h => by simp [dropContentsList] at h; subst h; simp [dtorIds]
   | c :: cs, _, hcc, h => by
-      simp only [Contents.copyClosedList, Bool.and_eq_true] at hcc
+      simp only [Contents.copyContainedList, Bool.and_eq_true] at hcc
       simp only [dropContentsList] at h
       split at h
       · cases h
@@ -699,7 +699,7 @@ theorem dtor_measure {D : Decls} (hdt : DtorNotCopy D) : TraceMeasure D Event.dt
 /-- A binding's drop (`dropCell`, §6.11), counted: nothing for a `Copy` cell,
 the marker and the walk otherwise (helper). -/
 theorem dropCell_measure {D : Decls} {F : Event → List Nat} (hF : TraceMeasure D F)
-    {ℓ : Nat} {c : Contents} {evs : List Event} (hc : c.copyClosed D = true)
+    {ℓ : Nat} {c : Contents} {evs : List Event} (hc : c.copyContained D = true)
     (h : dropCell D ℓ c = .ok evs) : IdLe (evs.flatMap F) (c.own D) := by
   unfold dropCell at h
   split at h
@@ -762,13 +762,13 @@ theorem unwindLocs_measure {D : Decls} {F : Event → List Nat} (hF : TraceMeasu
           simp only [List.flatMap_append, List.count_append]
           omega
 
-/-- One residue subtree's drop — its marker (`residueMark`), then §6.11's
+/-- One residue subtree's drop — its marker (`residueDropEvent`), then §6.11's
 walk — counted (helper). -/
-theorem residueMark_measure {D : Decls} {F : Event → List Nat} (hF : TraceMeasure D F)
-    {ℓ : Nat} {r : Contents} {evs : List Event} (hcc : r.copyClosed D = true)
+theorem residueDropEvent_measure {D : Decls} {F : Event → List Nat} (hF : TraceMeasure D F)
+    {ℓ : Nat} {r : Contents} {evs : List Event} (hcc : r.copyContained D = true)
     (h : dropContents D r = .ok evs) :
-    IdLe ((residueMark D ℓ r ++ evs).flatMap F) (r.own D) := by
-  unfold residueMark
+    IdLe ((residueDropEvent D ℓ r ++ evs).flatMap F) (r.own D) := by
+  unfold residueDropEvent
   split
   · simpa using hF.walk hcc h
   · intro a
@@ -777,11 +777,11 @@ theorem residueMark_measure {D : Decls} {F : Event → List Nat} (hF : TraceMeas
 
 /-- `drop*` over a destructure's residue (§6.3), counted (helper). -/
 theorem dropResidue_measure {D : Decls} {F : Event → List Nat} (hF : TraceMeasure D F)
-    {ℓ : Nat} : ∀ {rs : List Contents} {evs : List Event}, Contents.copyClosedList D rs = true →
+    {ℓ : Nat} : ∀ {rs : List Contents} {evs : List Event}, Contents.copyContainedList D rs = true →
       dropResidue D ℓ rs = .ok evs → IdLe (evs.flatMap F) (Contents.ownList D rs)
   | [], _, _, h => by simp [dropResidue] at h; subst h; intro a; simp
   | r :: rs, evs, hcc, h => by
-      simp only [Contents.copyClosedList, Bool.and_eq_true] at hcc
+      simp only [Contents.copyContainedList, Bool.and_eq_true] at hcc
       simp only [dropResidue] at h
       split at h
       · cases h
@@ -793,7 +793,7 @@ theorem dropResidue_measure {D : Decls} {F : Event → List Nat} (hF : TraceMeas
           · rename_i e₂ h₂
             cases h
             intro a
-            have := residueMark_measure hF (ℓ := ℓ) hcc.1 h₁ a
+            have := residueDropEvent_measure hF (ℓ := ℓ) hcc.1 h₁ a
             have := dropResidue_measure hF hcc.2 h₂ a
             simp only [List.flatMap_append, List.count_append, Contents.ownList] at *
             omega
@@ -807,13 +807,13 @@ theorem Contents.ownList_append (D : Decls) :
   | [], _ => rfl
   | c :: l₁, l₂ => by simp [Contents.ownList, Contents.ownList_append D l₁ l₂]
 
-/-- `copyClosedList` distributes over concatenation (helper). -/
-theorem Contents.copyClosedList_append (D : Decls) :
-    ∀ (l₁ l₂ : List Contents), Contents.copyClosedList D (l₁ ++ l₂)
-      = (Contents.copyClosedList D l₁ && Contents.copyClosedList D l₂)
-  | [], _ => by simp [Contents.copyClosedList]
+/-- `copyContainedList` distributes over concatenation (helper). -/
+theorem Contents.copyContainedList_append (D : Decls) :
+    ∀ (l₁ l₂ : List Contents), Contents.copyContainedList D (l₁ ++ l₂)
+      = (Contents.copyContainedList D l₁ && Contents.copyContainedList D l₂)
+  | [], _ => by simp [Contents.copyContainedList]
   | c :: l₁, l₂ => by
-      simp [Contents.copyClosedList, Contents.copyClosedList_append D l₁ l₂, Bool.and_assoc]
+      simp [Contents.copyContainedList, Contents.copyContainedList_append D l₁ l₂, Bool.and_assoc]
 
 /-- `allCopyList` distributes over concatenation (helper). -/
 theorem Contents.allCopyList_append (D : Decls) :
@@ -873,9 +873,9 @@ mutual
 what the consumed place owned — the nodes on the path between them are
 consumed — and both stay copy-closed (helper). -/
 theorem Contents.splitResidue_own {D : Decls} (a : Nat) : ∀ (π : List Nat) {c leaf : Contents}
-    {rs : List Contents}, c.copyClosed D = true → c.splitResidue D π = .ok (leaf, rs) →
+    {rs : List Contents}, c.copyContained D = true → c.splitResidue D π = .ok (leaf, rs) →
     (leaf.own D).count a + (Contents.ownList D rs).count a ≤ (c.own D).count a ∧
-      leaf.copyClosed D = true ∧ Contents.copyClosedList D rs = true
+      leaf.copyContained D = true ∧ Contents.copyContainedList D rs = true
   | [], c, leaf, rs, h, hs => by
       simp [Contents.splitResidue] at hs; obtain ⟨rfl, rfl⟩ := hs
       exact ⟨by simp [Contents.ownList], h, rfl⟩
@@ -883,11 +883,11 @@ theorem Contents.splitResidue_own {D : Decls} (a : Nat) : ∀ (π : List Nat) {c
       cases c with
       | struct s i cs =>
           simp only [Contents.splitResidue] at hs
-          simp only [Contents.copyClosed] at h
+          simp only [Contents.copyContained] at h
           split at h
           · rename_i hc
             obtain ⟨hl, hr⟩ := Contents.splitFields_allCopy cs f π h hs
-            refine ⟨?_, Contents.allCopy_copyClosed hl, Contents.allCopyList_copyClosedList hr⟩
+            refine ⟨?_, Contents.allCopy_copyContained hl, Contents.allCopyList_copyContainedList hr⟩
             simp [Contents.allCopy_own hl, Contents.allCopyList_own hr]
           · rename_i hc
             obtain ⟨hn, hl, hr⟩ := Contents.splitFields_own a cs f π h hs
@@ -896,11 +896,11 @@ theorem Contents.splitResidue_own {D : Decls} (a : Nat) : ∀ (π : List Nat) {c
             omega
       | array T i cs =>
           simp only [Contents.splitResidue] at hs
-          simp only [Contents.copyClosed] at h
+          simp only [Contents.copyContained] at h
           split at h
           · rename_i hc
             obtain ⟨hl, hr⟩ := Contents.splitFields_allCopy cs f π h hs
-            refine ⟨?_, Contents.allCopy_copyClosed hl, Contents.allCopyList_copyClosedList hr⟩
+            refine ⟨?_, Contents.allCopy_copyContained hl, Contents.allCopyList_copyContainedList hr⟩
             simp [Contents.allCopy_own hl, Contents.allCopyList_own hr]
           · rename_i hc
             obtain ⟨hn, hl, hr⟩ := Contents.splitFields_own a cs f π h hs
@@ -912,31 +912,31 @@ theorem Contents.splitResidue_own {D : Decls} (a : Nat) : ∀ (π : List Nat) {c
 /-- The same at `split`'s field step (helper). -/
 theorem Contents.splitFields_own {D : Decls} (a : Nat) : ∀ (cs : List Contents) (f : Nat)
     (π : List Nat) {leaf : Contents} {rs : List Contents},
-    Contents.copyClosedList D cs = true → Contents.splitFields D cs f π = .ok (leaf, rs) →
+    Contents.copyContainedList D cs = true → Contents.splitFields D cs f π = .ok (leaf, rs) →
     (leaf.own D).count a + (Contents.ownList D rs).count a
         ≤ (Contents.ownList D cs).count a ∧
-      leaf.copyClosed D = true ∧ Contents.copyClosedList D rs = true
+      leaf.copyContained D = true ∧ Contents.copyContainedList D rs = true
   | [], _, _, _, _, _, hs => by simp [Contents.splitFields] at hs
   | c :: cs, 0, π, leaf, rs, h, hs => by
-      simp only [Contents.copyClosedList, Bool.and_eq_true] at h
+      simp only [Contents.copyContainedList, Bool.and_eq_true] at h
       simp only [Contents.splitFields] at hs
       split at hs
       · cases hs
       · rename_i leaf' inner hsr
         cases hs
         obtain ⟨hn, hl, hi⟩ := Contents.splitResidue_own a π h.1 hsr
-        refine ⟨?_, hl, by rw [Contents.copyClosedList_append, hi, h.2]; rfl⟩
+        refine ⟨?_, hl, by rw [Contents.copyContainedList_append, hi, h.2]; rfl⟩
         simp only [Contents.ownList_append, Contents.ownList, List.count_append]
         omega
   | c :: cs, f + 1, π, leaf, rs, h, hs => by
-      simp only [Contents.copyClosedList, Bool.and_eq_true] at h
+      simp only [Contents.copyContainedList, Bool.and_eq_true] at h
       simp only [Contents.splitFields] at hs
       split at hs
       · cases hs
       · rename_i leaf' rest hsf
         cases hs
         obtain ⟨hn, hl, hr⟩ := Contents.splitFields_own a cs f π h.2 hsf
-        refine ⟨?_, hl, by simp [Contents.copyClosedList, h.1, hr]⟩
+        refine ⟨?_, hl, by simp [Contents.copyContainedList, h.1, hr]⟩
         simp only [Contents.ownList, List.count_append]
         omega
 end
@@ -960,7 +960,7 @@ leaf, the residue and the path's shell (`Contents.pathOnly`) together own
 exactly what the consumed place owned — every owned node of it is in exactly
 one of the three (helper). -/
 theorem Contents.pathOnly_own {D : Decls} (a : Nat) : ∀ (π : List Nat) {c leaf : Contents}
-    {rs : List Contents}, c.copyClosed D = true → c.splitResidue D π = .ok (leaf, rs) →
+    {rs : List Contents}, c.copyContained D = true → c.splitResidue D π = .ok (leaf, rs) →
     (leaf.own D).count a + (Contents.ownList D rs).count a + ((c.pathOnly π).own D).count a
       = (c.own D).count a
   | [], c, leaf, rs, _, hs => by
@@ -970,7 +970,7 @@ theorem Contents.pathOnly_own {D : Decls} (a : Nat) : ∀ (π : List Nat) {c lea
       cases c with
       | struct s i cs =>
           simp only [Contents.splitResidue] at hs
-          simp only [Contents.copyClosed] at h
+          simp only [Contents.copyContained] at h
           split at h
           · rename_i hc
             obtain ⟨hl, hr⟩ := Contents.splitFields_allCopy cs f π h hs
@@ -982,7 +982,7 @@ theorem Contents.pathOnly_own {D : Decls} (a : Nat) : ∀ (π : List Nat) {c lea
             omega
       | array T i cs =>
           simp only [Contents.splitResidue] at hs
-          simp only [Contents.copyClosed] at h
+          simp only [Contents.copyContained] at h
           split at h
           · rename_i hc
             obtain ⟨hl, hr⟩ := Contents.splitFields_allCopy cs f π h hs
@@ -998,13 +998,13 @@ theorem Contents.pathOnly_own {D : Decls} (a : Nat) : ∀ (π : List Nat) {c lea
 /-- The same at `split`'s member step (helper). -/
 theorem Contents.pathOnlyFields_own {D : Decls} (a : Nat) : ∀ (cs : List Contents) (f : Nat)
     (π : List Nat) {leaf : Contents} {rs : List Contents},
-    Contents.copyClosedList D cs = true → Contents.splitFields D cs f π = .ok (leaf, rs) →
+    Contents.copyContainedList D cs = true → Contents.splitFields D cs f π = .ok (leaf, rs) →
     (leaf.own D).count a + (Contents.ownList D rs).count a
         + (Contents.ownList D (Contents.pathOnlyFields cs f π)).count a
       = (Contents.ownList D cs).count a
   | [], _, _, _, _, _, hs => by simp [Contents.splitFields] at hs
   | c :: cs, 0, π, leaf, rs, h, hs => by
-      simp only [Contents.copyClosedList, Bool.and_eq_true] at h
+      simp only [Contents.copyContainedList, Bool.and_eq_true] at h
       simp only [Contents.splitFields] at hs
       split at hs
       · cases hs
@@ -1015,7 +1015,7 @@ theorem Contents.pathOnlyFields_own {D : Decls} (a : Nat) : ∀ (cs : List Conte
           Contents.ownList_movedOuts, List.count_append, List.count_nil]
         omega
   | c :: cs, f + 1, π, leaf, rs, h, hs => by
-      simp only [Contents.copyClosedList, Bool.and_eq_true] at h
+      simp only [Contents.copyContainedList, Bool.and_eq_true] at h
       simp only [Contents.splitFields] at hs
       split at hs
       · cases hs
@@ -1032,9 +1032,9 @@ it runs and the shell it consumes together account for at most what the
 consumed place owned (helper). -/
 theorem Contents.destructure_measure {D : Decls} {F : Event → List Nat} (hF : TraceMeasure D F)
     {ℓ : Nat} {cd leaf : Contents} {πs : List Nat} {evs : List Event}
-    (hcc : cd.copyClosed D = true) (h : cd.destructure D ℓ πs = .ok (leaf, evs)) :
+    (hcc : cd.copyContained D = true) (h : cd.destructure D ℓ πs = .ok (leaf, evs)) :
     (∀ a, (leaf.own D).count a + (evs.flatMap F).count a ≤ (cd.own D).count a) ∧
-      leaf.copyClosed D = true := by
+      leaf.copyContained D = true := by
   unfold Contents.destructure at h
   split at h
   · cases h
@@ -1155,7 +1155,7 @@ into a context that keeps it holding the operand's value, keeps it
 (helper). -/
 theorem Cons.bind {D : Decls} {F : Event → List Nat} {H : Store} {X : List Nat}
     {r : EvalRes} {k : Store → Val → EvalRes} (hr : Cons D F H X r)
-    (hk : ∀ H₁ v tr, r = .ok H₁ v tr → StoreCC D H₁ → (Contents.ofVal v).copyClosed D = true →
+    (hk : ∀ H₁ v tr, r = .ok H₁ v tr → StoreCC D H₁ → (Contents.ofVal v).copyContained D = true →
       Cons D F H₁ (v.own D) (k H₁ v)) :
     Cons D F H X (r.bind k) := by
   cases r with
@@ -1172,7 +1172,7 @@ theorem Cons.bind {D : Decls} {F : Event → List Nat} {H : Store} {X : List Nat
 becoming the call's value (helper). -/
 theorem Cons.absorb {D : Decls} {F : Event → List Nat} {H : Store} {X : List Nat}
     {r : EvalRes} {k : Store → Val → EvalRes} (hr : Cons D F H X r)
-    (hk : ∀ H₁ v tr, r = .ok H₁ v tr → StoreCC D H₁ → (Contents.ofVal v).copyClosed D = true →
+    (hk : ∀ H₁ v tr, r = .ok H₁ v tr → StoreCC D H₁ → (Contents.ofVal v).copyContained D = true →
       Cons D F H₁ (v.own D) (k H₁ v)) :
     Cons D F H X (r.bindCall k) := by
   cases r with
@@ -1187,7 +1187,7 @@ theorem Cons.absorb {D : Decls} {F : Event → List Nat} {H : Store} {X : List N
 
 /-- A value produced where the store is, owning nothing held (helper). -/
 theorem Cons.pure {D : Decls} {F : Event → List Nat} {H : Store} {X : List Nat} {v : Val}
-    (hcc : StoreCC D H) (hv : (Contents.ofVal v).copyClosed D = true)
+    (hcc : StoreCC D H) (hv : (Contents.ofVal v).copyContained D = true)
     (ho : ∀ a, (v.own D).count a ≤ X.count a) : Cons D F H X (.ok H v []) :=
   ⟨Nat.le_refl _, hcc, hv, fun a => by have := ho a; simp; omega⟩
 
@@ -1198,7 +1198,7 @@ def Val.scalar : Val → Prop
 
 /-- A scalar's ledger (helper). -/
 theorem Val.scalar_own {D : Decls} {v : Val} (h : v.scalar) :
-    v.own D = [] ∧ (Contents.ofVal v).copyClosed D = true := by
+    v.own D = [] ∧ (Contents.ofVal v).copyContained D = true := by
   cases v with
   | int => exact ⟨rfl, rfl⟩
   | float => exact ⟨rfl, rfl⟩
@@ -1288,11 +1288,11 @@ theorem Contents.ownList_replicate {D : Decls} {v : Val} (h : v.qual D = .copy) 
       simp only [List.replicate_succ, Contents.ownList_ofVals_cons, Val.own_of_copy h,
         Contents.ownList_replicate h n, List.nil_append]
 
-/-- The store `mintParams` leaves owns the store's identities and the
+/-- The store `freshParams` leaves owns the store's identities and the
 arguments' (§6.9's (D-Call), §6.6's (D-Match)) (helper). -/
-theorem storeOwn_mintParams (D : Decls) (H : Store) (vs : List Val) :
-    storeOwn D (mintParams H vs).1 = storeOwn D H ++ Contents.ownList D (Contents.ofVals vs) := by
-  rw [mintParams_store, storeOwn_append]
+theorem storeOwn_freshParams (D : Decls) (H : Store) (vs : List Val) :
+    storeOwn D (freshParams H vs).1 = storeOwn D H ++ Contents.ownList D (Contents.ofVals vs) := by
+  rw [freshParams_store, storeOwn_append]
   congr 1
   induction vs with
   | nil => rfl
@@ -1300,26 +1300,26 @@ theorem storeOwn_mintParams (D : Decls) (H : Store) (vs : List Val) :
       simp only [List.map_cons, storeOwn, List.flatMap_cons, Cell.own] at ih ⊢
       rw [ih]; rfl
 
-/-- The cells `mintParams` adds are copy-closed when the arguments are
+/-- The cells `freshParams` adds are copy-closed when the arguments are
 (helper). -/
-theorem StoreCC.mintParams {D : Decls} {H : Store} {vs : List Val} (h : StoreCC D H)
-    (hv : Contents.copyClosedList D (Contents.ofVals vs) = true) :
-    StoreCC D (RueCore.mintParams H vs).1 := by
-  rw [mintParams_store]
+theorem StoreCC.freshParams {D : Decls} {H : Store} {vs : List Val} (h : StoreCC D H)
+    (hv : Contents.copyContainedList D (Contents.ofVals vs) = true) :
+    StoreCC D (RueCore.freshParams H vs).1 := by
+  rw [freshParams_store]
   refine h.append ?_
   induction vs with
   | nil => intro ℓ c hc; simp at hc
   | cons v vs ih =>
-      simp only [Contents.ofVals, Contents.copyClosedList, Bool.and_eq_true] at hv
+      simp only [Contents.ofVals, Contents.copyContainedList, Bool.and_eq_true] at hv
       intro ℓ c hc
       cases ℓ with
       | zero => simp at hc; subst hc; exact hv.1
       | succ ℓ => simp only [List.map_cons, List.getElem?_cons_succ] at hc; exact ih hv.2 ℓ c hc
 
-/-- The store `mintParams` leaves is the old one grown (helper). -/
-theorem mintParams_length (H : Store) (vs : List Val) :
-    (mintParams H vs).1.length = H.length + vs.length := by
-  rw [mintParams_store]; simp
+/-- The store `freshParams` leaves is the old one grown (helper). -/
+theorem freshParams_length (H : Store) (vs : List Val) :
+    (freshParams H vs).1.length = H.length + vs.length := by
+  rw [freshParams_store]; simp
 
 /-- An aggregate owns at most its members' identities and its own (helper). -/
 theorem Contents.own_struct_le (D : Decls) (s i : Nat) (cs : List Contents) (a : Nat) :
@@ -1339,13 +1339,13 @@ theorem Contents.own_array_le (D : Decls) (T : Ty) (i : Nat) (cs : List Contents
 /-- An enum owns at least its payload, and a copy-closed one's payload is
 copy-closed — what (D-Match) §6.6 hands the arm's cells (helper). -/
 theorem Contents.enum_payload {D : Decls} {e k i : Nat} {cs : List Contents}
-    (h : (Contents.enum e k i cs).copyClosed D = true) (a : Nat) :
+    (h : (Contents.enum e k i cs).copyContained D = true) (a : Nat) :
     (Contents.ownList D cs).count a ≤ ((Contents.enum e k i cs).own D).count a ∧
-      Contents.copyClosedList D cs = true := by
-  simp only [Contents.copyClosed] at h
+      Contents.copyContainedList D cs = true := by
+  simp only [Contents.copyContained] at h
   split at h
   · rename_i hc
-    refine ⟨by simp [Contents.allCopyList_own h], Contents.allCopyList_copyClosedList h⟩
+    refine ⟨by simp [Contents.allCopyList_own h], Contents.allCopyList_copyContainedList h⟩
   · rename_i hc
     refine ⟨by simp [Contents.own, hc, List.count_cons], h⟩
 
@@ -1354,12 +1354,12 @@ receive and the shell `matchConsume` ends together account for at most the
 scrutinee — the payload moves, the shell ends, nothing is duplicated
 (helper). -/
 theorem matchConsume_measure {D : Decls} {F : Event → List Nat} (hF : TraceMeasure D F)
-    {e k i : Nat} {vs : List Val} (h : (Contents.enum e k i (Contents.ofVals vs)).copyClosed D = true)
+    {e k i : Nat} {vs : List Val} (h : (Contents.enum e k i (Contents.ofVals vs)).copyContained D = true)
     (a : Nat) :
     (Contents.ownList D (Contents.ofVals vs)).count a + ((matchConsume D e k i vs).flatMap F).count a
       ≤ ((Contents.enum e k i (Contents.ofVals vs)).own D).count a := by
   unfold matchConsume
-  simp only [Contents.copyClosed] at h
+  simp only [Contents.copyContained] at h
   split
   · rename_i hc
     rw [if_pos hc] at h
@@ -1391,7 +1391,7 @@ theorem Cons.intro {D : Decls} {F : Event → List Nat} {H : Store} {Y : List Na
 /-- What `dynPlace` lands on is a live cell and a read of it (helper). -/
 theorem dynPlace_at {H : Store} {φ : Activation} {p : Place} {vs : List Val} {πs : List (List Nat)}
     {ℓ : Nat} {c sub : Contents} {ρ : List Nat} (h : dynPlace H φ p vs πs = .at ℓ c sub ρ) :
-    H[ℓ]? = some (.full c) ∧ c.readAt p.path = .ok sub := by
+    H[ℓ]? = some (.full c) ∧ c.getAt p.path = .ok sub := by
   unfold dynPlace at h
   split at h
   · cases h
@@ -1414,7 +1414,7 @@ theorem dynPlace_at {H : Store} {φ : Activation} {p : Place} {vs : List Val} {�
 def ArgsCons (D : Decls) (F : Event → List Nat) (H : Store) : ArgsRes → Prop
   | .ok H' vs tr =>
       H.length ≤ H'.length ∧ StoreCC D H' ∧
-      Contents.copyClosedList D (Contents.ofVals vs) = true ∧
+      Contents.copyContainedList D (Contents.ofVals vs) = true ∧
       ∀ a, (storeOwn D H').count a + (Contents.ownList D (Contents.ofVals vs)).count a +
           (tr.flatMap F).count a ≤ (storeOwn D H).count a + (Fresh H H').count a
   | .abort r => Cons D F H [] r
@@ -1442,7 +1442,7 @@ theorem evalArgs_cons {D : Decls} {F : Event → List Nat} {ev : Store → Expr 
               dsimp only
               obtain ⟨l₂, c₂, v₂, i₂⟩ := h₂
               refine ⟨Nat.le_trans l₁ l₂, c₂, ?_, fun a => ?_⟩
-              · simp [Contents.ofVals, Contents.copyClosedList, v₁, v₂]
+              · simp [Contents.ofVals, Contents.copyContainedList, v₁, v₂]
               · have := i₁ a; have := i₂ a; have := Fresh.count_trans l₁ l₂ a
                 simp only [Contents.ownList_ofVals_cons, List.flatMap_append, List.count_append]
                 simp only [List.count_nil] at *
@@ -1471,15 +1471,15 @@ place owned, and the place now holds `⊘` — so the identity moved, it did not
 multiply (helper). -/
 theorem Cons.move {D : Decls} {F : Event → List Nat} {H : Store} {X : List Nat} {ℓ : Nat}
     {c c' sub : Contents} {π : List Nat} {v : Val} (hcc : StoreCC D H)
-    (hc : H[ℓ]? = some (.full c)) (hr : c.readAt π = .ok sub)
-    (hw : c.writeAt π .movedOut = some c') (hv : sub.toVal = some v) :
+    (hc : H[ℓ]? = some (.full c)) (hr : c.getAt π = .ok sub)
+    (hw : c.setAt π .movedOut = some c') (hv : sub.toVal = some v) :
     Cons D F H X (.ok (H.set ℓ (.full c')) v []) := by
   have hccc := hcc ℓ c hc
   have hsub : Contents.ofVal v = sub := Contents.ofVal_toVal hv
-  refine ⟨by simp, hcc.set (Contents.writeAt_copyClosed π hccc rfl hw), ?_, fun a => ?_⟩
-  · rw [hsub]; exact Contents.readAt_copyClosed π hccc hr
+  refine ⟨by simp, hcc.set (Contents.setAt_copyContained π hccc rfl hw), ?_, fun a => ?_⟩
+  · rw [hsub]; exact Contents.getAt_copyContained π hccc hr
   · have h1 := storeOwn_set_count D a (.full c') hc
-    have h2 := Contents.writeAt_own a π hccc hr hw
+    have h2 := Contents.setAt_own a π hccc hr hw
     simp only [Cell.own, Contents.own, List.count_nil] at h1 h2
     simp only [Val.own, hsub, List.flatMap_nil, List.count_nil]
     omega
@@ -1490,17 +1490,17 @@ residue dropped together account for the consumed place, which becomes `⊘`
 theorem Cons.destructure {D : Decls} {F : Event → List Nat} (hF : TraceMeasure D F)
     {H : Store} {X : List Nat} {ℓ : Nat} {c c' cd leaf : Contents} {πd πs : List Nat}
     {v : Val} {evs : List Event} (hcc : StoreCC D H) (hc : H[ℓ]? = some (.full c))
-    (hr : c.readAt πd = .ok cd) (hd : cd.destructure D ℓ πs = .ok (leaf, evs))
-    (hv : leaf.toVal = some v) (hw : c.writeAt πd .movedOut = some c') :
+    (hr : c.getAt πd = .ok cd) (hd : cd.destructure D ℓ πs = .ok (leaf, evs))
+    (hv : leaf.toVal = some v) (hw : c.setAt πd .movedOut = some c') :
     Cons D F H X (.ok (H.set ℓ (.full c')) v evs) := by
   have hccc := hcc ℓ c hc
-  have hcd := Contents.readAt_copyClosed πd hccc hr
+  have hcd := Contents.getAt_copyContained πd hccc hr
   obtain ⟨hm, hl⟩ := Contents.destructure_measure hF hcd hd
   have hsub : Contents.ofVal v = leaf := Contents.ofVal_toVal hv
-  refine ⟨by simp, hcc.set (Contents.writeAt_copyClosed πd hccc rfl hw), by rw [hsub]; exact hl,
+  refine ⟨by simp, hcc.set (Contents.setAt_copyContained πd hccc rfl hw), by rw [hsub]; exact hl,
     fun a => ?_⟩
   have h1 := storeOwn_set_count D a (.full c') hc
-  have h2 := Contents.writeAt_own a πd hccc hr hw
+  have h2 := Contents.setAt_own a πd hccc hr hw
   have h3 := hm a
   simp only [Cell.own, Contents.own, List.count_nil] at h1 h2
   simp only [Val.own, hsub]
@@ -1511,14 +1511,14 @@ place becomes `⊘`, so what the trace frees leaves the store (helper). -/
 theorem Cons.dropPlace {D : Decls} {F : Event → List Nat} (hF : TraceMeasure D F)
     {H : Store} {X : List Nat} {ℓ : Nat} {c c' sub : Contents} {π : List Nat}
     {evs : List Event} (hcc : StoreCC D H) (hc : H[ℓ]? = some (.full c))
-    (hr : c.readAt π = .ok sub) (hd : dropCell D ℓ sub = .ok evs)
-    (hw : c.writeAt π .movedOut = some c') :
+    (hr : c.getAt π = .ok sub) (hd : dropCell D ℓ sub = .ok evs)
+    (hw : c.setAt π .movedOut = some c') :
     Cons D F H X (.ok (H.set ℓ (.full c')) .unit evs) := by
   have hccc := hcc ℓ c hc
-  have hsub := Contents.readAt_copyClosed π hccc hr
-  refine ⟨by simp, hcc.set (Contents.writeAt_copyClosed π hccc rfl hw), rfl, fun a => ?_⟩
+  have hsub := Contents.getAt_copyContained π hccc hr
+  refine ⟨by simp, hcc.set (Contents.setAt_copyContained π hccc rfl hw), rfl, fun a => ?_⟩
   have h1 := storeOwn_set_count D a (.full c') hc
-  have h2 := Contents.writeAt_own a π hccc hr hw
+  have h2 := Contents.setAt_own a π hccc hr hw
   have h3 := dropCell_measure hF hsub hd a
   simp only [Cell.own, Contents.own, List.count_nil] at h1 h2
   simp only [Val.own, Contents.ofVal, Contents.own, List.count_nil]
@@ -1529,15 +1529,15 @@ leaf, then `⊘` at the consumed place (helper). -/
 theorem Cons.dropDeclared {D : Decls} {F : Event → List Nat} (hF : TraceMeasure D F)
     {H : Store} {X : List Nat} {ℓ : Nat} {c c' cd leaf : Contents} {πd πs : List Nat}
     {evs levs : List Event} (hcc : StoreCC D H) (hc : H[ℓ]? = some (.full c))
-    (hr : c.readAt πd = .ok cd) (hd : cd.destructure D ℓ πs = .ok (leaf, evs))
-    (hl : dropCell D ℓ leaf = .ok levs) (hw : c.writeAt πd .movedOut = some c') :
+    (hr : c.getAt πd = .ok cd) (hd : cd.destructure D ℓ πs = .ok (leaf, evs))
+    (hl : dropCell D ℓ leaf = .ok levs) (hw : c.setAt πd .movedOut = some c') :
     Cons D F H X (.ok (H.set ℓ (.full c')) .unit (evs ++ levs)) := by
   have hccc := hcc ℓ c hc
-  have hcd := Contents.readAt_copyClosed πd hccc hr
+  have hcd := Contents.getAt_copyContained πd hccc hr
   obtain ⟨hm, hlc⟩ := Contents.destructure_measure hF hcd hd
-  refine ⟨by simp, hcc.set (Contents.writeAt_copyClosed πd hccc rfl hw), rfl, fun a => ?_⟩
+  refine ⟨by simp, hcc.set (Contents.setAt_copyContained πd hccc rfl hw), rfl, fun a => ?_⟩
   have h1 := storeOwn_set_count D a (.full c') hc
-  have h2 := Contents.writeAt_own a πd hccc hr hw
+  have h2 := Contents.setAt_own a πd hccc hr hw
   have h3 := hm a
   have h4 := dropCell_measure hF hlc hl a
   simp only [Cell.own, Contents.own, List.count_nil] at h1 h2
@@ -1550,14 +1550,14 @@ and the held value takes its position (helper). -/
 theorem Cons.assign {D : Decls} {F : Event → List Nat} (hF : TraceMeasure D F)
     {H : Store} {Y : List Nat} {ℓ : Nat} {c c' old : Contents} {π : List Nat} {v : Val}
     {evs : List Event} (hcc : StoreCC D H) (hc : H[ℓ]? = some (.full c))
-    (hr : c.readAt π = .ok old) (hd : dropCell D ℓ old = .ok evs)
-    (hw : c.writeAt π (Contents.ofVal v) = some c') (hc' : c'.copyClosed D = true) :
+    (hr : c.getAt π = .ok old) (hd : dropCell D ℓ old = .ok evs)
+    (hw : c.setAt π (Contents.ofVal v) = some c') (hc' : c'.copyContained D = true) :
     Cons D F H (v.own D ++ Y) (.ok (H.set ℓ (.full c')) .unit evs) := by
   have hccc := hcc ℓ c hc
-  have hold := Contents.readAt_copyClosed π hccc hr
+  have hold := Contents.getAt_copyContained π hccc hr
   refine ⟨by simp, hcc.set hc', rfl, fun a => ?_⟩
   have h1 := storeOwn_set_count D a (.full c') hc
-  have h2 := Contents.writeAt_own a π hccc hr hw
+  have h2 := Contents.setAt_own a π hccc hr hw
   have h3 := dropCell_measure hF hold hd a
   simp only [Cell.own] at h1
   simp only [List.count_append, Fresh.set, Val.own_unit, List.count_nil]
@@ -1569,17 +1569,17 @@ the index resolved to, one level down (helper). -/
 theorem Cons.assignDyn {D : Decls} {F : Event → List Nat} (hF : TraceMeasure D F)
     {H : Store} {Y : List Nat} {ℓ : Nat} {c c' sub sub' old : Contents} {π ρ : List Nat}
     {v : Val} {evs : List Event} (hcc : StoreCC D H) (hc : H[ℓ]? = some (.full c))
-    (hr : c.readAt π = .ok sub) (hr' : sub.readAt ρ = .ok old)
-    (hd : dropCell D ℓ old = .ok evs) (hw' : sub.writeAt ρ (Contents.ofVal v) = some sub')
-    (hw : c.writeAt π sub' = some c') (hc' : c'.copyClosed D = true) :
+    (hr : c.getAt π = .ok sub) (hr' : sub.getAt ρ = .ok old)
+    (hd : dropCell D ℓ old = .ok evs) (hw' : sub.setAt ρ (Contents.ofVal v) = some sub')
+    (hw : c.setAt π sub' = some c') (hc' : c'.copyContained D = true) :
     Cons D F H (v.own D ++ Y) (.ok (H.set ℓ (.full c')) .unit evs) := by
   have hccc := hcc ℓ c hc
-  have hsub := Contents.readAt_copyClosed π hccc hr
-  have hold := Contents.readAt_copyClosed ρ hsub hr'
+  have hsub := Contents.getAt_copyContained π hccc hr
+  have hold := Contents.getAt_copyContained ρ hsub hr'
   refine ⟨by simp, hcc.set hc', rfl, fun a => ?_⟩
   have h1 := storeOwn_set_count D a (.full c') hc
-  have h2 := Contents.writeAt_own a π hccc hr hw
-  have h2' := Contents.writeAt_own a ρ hsub hr' hw'
+  have h2 := Contents.setAt_own a π hccc hr hw
+  have h2' := Contents.setAt_own a ρ hsub hr' hw'
   have h3 := dropCell_measure hF hold hd a
   simp only [Cell.own] at h1
   simp only [List.count_append, Fresh.set, Val.own_unit, List.count_nil]
@@ -1590,7 +1590,7 @@ theorem Cons.assignDyn {D : Decls} {F : Event → List Nat} (hF : TraceMeasure D
 a ledger (helper). -/
 theorem Cons.unwind {D : Decls} {F : Event → List Nat} (hF : TraceMeasure D F)
     {H : Store} {v : Val} {ls : List Nat} (hcc : StoreCC D H)
-    (hv : (Contents.ofVal v).copyClosed D = true) :
+    (hv : (Contents.ofVal v).copyContained D = true) :
     Cons D F H (v.own D)
       (match unwindLocs D H ls with
        | .error w => .refused w
@@ -1664,7 +1664,7 @@ theorem eval_conserves (M : FloatSig) {P : Program} {F : Event → List Nat}
                   · rename_i hm
                     have hsub := Contents.ofVal_toVal hv
                     refine Cons.pure hcc ?_ (fun a => by simp [Val.own_of_copy hm])
-                    rw [hsub]; exact Contents.readAt_copyClosed _ (hcc ℓ c hc) hr
+                    rw [hsub]; exact Contents.getAt_copyContained _ (hcc ℓ c hc) hr
                   · split
                     · trivial
                     · rename_i c' hw
@@ -1736,15 +1736,15 @@ theorem eval_conserves (M : FloatSig) {P : Program} {F : Event → List Nat}
           · trivial
           · rename_i body harm
             have hpay := Contents.enum_payload hv
-            refine Cons.prefix (H₁ := (mintParams H₀ vs).1) (Y := []) ?_ ?_ ?_
-            · rw [mintParams_length]; omega
+            refine Cons.prefix (H₁ := (freshParams H₀ vs).1) (Y := []) ?_ ?_ ?_
+            · rw [freshParams_length]; omega
             · intro a
               have := matchConsume_measure hF hv a
-              rw [storeOwn_mintParams]
+              rw [storeOwn_freshParams]
               simp only [List.count_append, List.count_nil]
               show _ ≤ _ + ((Contents.enum e k i (Contents.ofVals vs)).own P.decls).count a + _
               omega
-            · exact Cons.bind (ih _ _ body (hc₀.mintParams (hpay 0).2))
+            · exact Cons.bind (ih _ _ body (hc₀.freshParams (hpay 0).2))
                 (fun H₂ v₂ _ _ hc₂ hv₂ => Cons.unwind hF hc₂ hv₂)
         | _ => trivial
     | mkArray T args =>
@@ -1797,8 +1797,8 @@ theorem eval_conserves (M : FloatSig) {P : Program} {F : Event → List Nat}
                 · rename_i hm
                   refine Cons.pure c₁ ?_ (fun a => by simp [Val.own_of_copy hm])
                   rw [Contents.ofVal_toVal hv]
-                  exact Contents.readAt_copyClosed ρ
-                    (Contents.readAt_copyClosed _ (c₁ ℓ c hc) hr) hr'
+                  exact Contents.getAt_copyContained ρ
+                    (Contents.getAt_copyContained _ (c₁ ℓ c hc) hr) hr'
                 · trivial
     | indexWrite p idx πs e₁ =>
         simp only [eval]
@@ -1951,13 +1951,13 @@ theorem eval_conserves (M : FloatSig) {P : Program} {F : Event → List Nat}
           · trivial
           · rename_i fd hfd
             split
-            · refine Cons.shift (H₁ := (mintParams H₁ vs).1) (Y := []) ?_ ?_ ?_
-              · rw [mintParams_length]; omega
+            · refine Cons.shift (H₁ := (freshParams H₁ vs).1) (Y := []) ?_ ?_ ?_
+              · rw [freshParams_length]; omega
               · intro a
-                rw [storeOwn_mintParams]
+                rw [storeOwn_freshParams]
                 simp only [List.count_append, List.count_nil]
                 omega
-              · refine Cons.absorb (ih _ _ fd.body (c₁.mintParams cv₁))
+              · refine Cons.absorb (ih _ _ fd.body (c₁.freshParams cv₁))
                   (fun H₃ v _ _ hc₃ hv₃ => ?_)
                 simp only [runAllScopeDrops]
                 exact Cons.unwind hF hc₃ hv₃
@@ -2078,7 +2078,7 @@ trees those markers free (`freedIds`), a declared-linear destructure's
 residue and a consumed shell included (RUE-2427). Holds unconditionally, for
 every program, no hypothesis at all: the machine refuses the one shape — an
 owned value hidden under a `Copy` node — that would let a copy duplicate it
-(`Contents.copyClosed`). -/
+(`Contents.copyContained`). -/
 theorem freed_once (M : FloatSig) (P : Program) (fuel : Nat) :
     ∀ a, (freedIds P.decls (run M P fuel).trace).count a ≤ 1 :=
   run_trace_once M (freed_measure P.decls) fuel
@@ -2156,7 +2156,7 @@ def dupProgram : Program :=
 example : checkProgram dupProgram = false := by rfl
 
 /-- `eval` refuses it where the owned value would go under the `Copy` node
-(`Contents.copyClosed`). -/
+(`Contents.copyContained`). -/
 example : run Float.exactOps dupProgram 100 = .refused .ownedUnderCopy := by rfl
 
 /-- **§6's relation, with no monitor, frees one identity twice**: `S1 #0` is

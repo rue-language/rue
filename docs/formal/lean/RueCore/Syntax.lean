@@ -122,7 +122,7 @@ rather than from the place's spelling (its docstring says why). The compiler
 reports its failures as E0904 (probes `a6`, `a6b`, `a9`, `e1`, `e2`, `e4`).
 
 Nothing new is needed of the dynamics. A constant index is a step of `π` like
-a field slot, so `readAt`/`writeAt` already navigate it, the `⊘` (D-Use-Move)
+a field slot, so `getAt`/`setAt` already navigate it, the `⊘` (D-Use-Move)
 writes at the element *is* `3.8:73`'s per-path drop flag, and §6.11's
 `⊘`-skip over an array's elements is the element-wise drop (probes `a1`,
 `a4`/`a4b`, `a8`, `b19`).

@@ -439,7 +439,7 @@ end, every bound past its length finds the end (`eval_complete`).
 
 There is one place where the theorems say less than "never a violation"
 suggests, and it concerns `return` and `break`, not fuel. A by-value
-argument's value sits in no cell and no scope record until `mintParams` gives
+argument's value sits in no cell and no scope record until `freshParams` gives
 it one. If a *later* argument of the same call unwinds by `return` or `break`,
 (D-Return) §6.9 or (D-Break) §6.10 discards the earlier value with the
 evaluation context. No drop runs and no monitor fires,
@@ -500,7 +500,7 @@ Two lemmas turn the clause into what the proof uses:
   exactly what §5.6's `residual-linear` computes. After a partial move the
   obligation is the *residue*'s on both sides, which is the residue-keyed
   obligation model (RUE-1591) and what the compiler does.
-- `ContentsOwnTyping.readAt` and `ContentsOwnTyping.writeAt`: navigating a path
+- `ContentsOwnTyping.getAt` and `ContentsOwnTyping.setAt`: navigating a path
   agrees on the two sides. Wherever Σ has a state for the path (wherever no
   proper prefix of it is `MovedOut`, (Owned-Base) §5.1), the store reaches a
   sub-position, and writing a matching state and contents there leaves the

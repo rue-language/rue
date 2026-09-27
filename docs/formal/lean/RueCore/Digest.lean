@@ -175,7 +175,7 @@ doc-comment, and the body is read in the module named beside it: `eval`,
 `check` and `explain` are what the limit is for.
 
 The limit is **20** because the array arms of RUE-2322 pushed seven
-definitions over the previous 15 — `Contents.readAt`, `Contents.writeAt`,
+definitions over the previous 15 — `Contents.getAt`, `Contents.setAt`,
 `Contents.residualLinear`, `dropEvents`, `residualLinear`,
 `residualLinearBelow` and `OwnSt.fieldStates` — and three of those are the
 linearity predicates this file's own preamble promises to print ("a signature

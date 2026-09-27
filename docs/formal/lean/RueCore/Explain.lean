@@ -2331,7 +2331,7 @@ shows the value with it (`idTag`); an aggregate the copy-closure monitor
 refuses is refused here too. -/
 def tracedIntro (P : Program) (kids : List Step) (d : Nat) (Θ : List Ty) (R : Ty) (e : Expr)
     (rule : String) (H H₁ : Store) (tr : List Event) (mk : Nat → Val) : Trace :=
-  if (Contents.ofVal (mk H₁.length)).copyClosed P.decls then
+  if (Contents.ofVal (mk H₁.length)).copyContained P.decls then
     traced kids d Θ R e (rule ++ " (mint " ++ idTag H₁.length ++ ")") H (H₁ ++ [.dead]) []
       (.value (mk H₁.length)) (.ok (H₁ ++ [.dead]) (mk H₁.length) tr)
   else refused kids d Θ R e rule H .ownedUnderCopy
@@ -2456,7 +2456,7 @@ def traceEval (M : FloatSig) (P : Program) :
         | some (.full c) =>
           match c.declaredPlan P.decls pl.path with
           | some (πd, πs) =>
-            (match c.readAt πd with
+            (match c.getAt πd with
              | .error w => refused [] d Θ R (.use pl) "(D-Use-Declared-Linear) §6.3" H w
              | .ok cd =>
                match cd.destructure P.decls ℓ πs with
@@ -2466,14 +2466,14 @@ def traceEval (M : FloatSig) (P : Program) :
                  | none =>
                      refused [] d Θ R (.use pl) "(D-Use-Declared-Linear) §6.3" H .useAfterMove
                  | some v =>
-                   match c.writeAt πd .movedOut with
+                   match c.setAt πd .movedOut with
                    | none =>
                        refused [] d Θ R (.use pl) "(D-Use-Declared-Linear) §6.3" H .typeConfusion
                    | some c' =>
                        traced [] d Θ R (.use pl) "(D-Use-Declared-Linear) §6.3" H
                          (H.set ℓ (.full c')) evs (.value v) (.ok (H.set ℓ (.full c')) v evs))
           | none =>
-            match c.readAt pl.path with
+            match c.getAt pl.path with
             | .error w => refused [] d Θ R (.use pl) "(D-Use-Copy)/(D-Use-Move) §6.3" H w
             | .ok sub =>
               match sub.toVal with
@@ -2483,7 +2483,7 @@ def traceEval (M : FloatSig) (P : Program) :
                   if v.qual P.decls = .copy then
                     traced [] d Θ R (.use pl) "(D-Use-Copy) §6.3" H H [] (.value v) (.ok H v [])
                   else
-                    match c.writeAt pl.path .movedOut with
+                    match c.setAt pl.path .movedOut with
                     | none =>
                         refused [] d Θ R (.use pl) "(D-Use-Move) §6.3" H .typeConfusion
                     | some c' =>
@@ -2499,7 +2499,7 @@ def traceEval (M : FloatSig) (P : Program) :
         | some (.full c) =>
           match c.declaredPlan P.decls pl.path with
           | some (πd, πs) =>
-            (match c.readAt πd with
+            (match c.getAt πd with
              | .error w =>
                  refused [] d Θ R (.drop pl) "@drop §6.11 at a declared-linear plan (§6.3)" H w
              | .ok cd =>
@@ -2515,7 +2515,7 @@ def traceEval (M : FloatSig) (P : Program) :
                  | .error w =>
                      refused [] d Θ R (.drop pl) "@drop §6.11 at a declared-linear plan (§6.3)" H w
                  | .ok levs =>
-                   match c.writeAt πd .movedOut with
+                   match c.setAt πd .movedOut with
                    | none =>
                        refused [] d Θ R (.drop pl) "@drop §6.11 at a declared-linear plan (§6.3)"
                          H .typeConfusion
@@ -2524,7 +2524,7 @@ def traceEval (M : FloatSig) (P : Program) :
                          H (H.set ℓ (.full c')) (evs ++ levs) (.value .unit)
                          (.ok (H.set ℓ (.full c')) .unit (evs ++ levs)))
           | none =>
-            match c.readAt pl.path with
+            match c.getAt pl.path with
             | .error w => refused [] d Θ R (.drop pl) "@drop §6.11" H w
             | .ok sub =>
               if sub.isMovedOut then refused [] d Θ R (.drop pl) "@drop §6.11" H .useAfterMove else
@@ -2535,7 +2535,7 @@ def traceEval (M : FloatSig) (P : Program) :
                      traced [] d Θ R (.drop pl) "@drop §6.11 (Copy: no glue)" H H [] (.value .unit)
                        (.ok H .unit [])
                    else
-                     match c.writeAt pl.path .movedOut with
+                     match c.setAt pl.path .movedOut with
                      | none => refused [] d Θ R (.drop pl) "@drop §6.11" H .typeConfusion
                      | some c' =>
                          traced [] d Θ R (.drop pl) "@drop §6.11" H (H.set ℓ (.full c'))
@@ -2651,7 +2651,7 @@ def traceEval (M : FloatSig) (P : Program) :
              | none =>
                  refused t₀.steps d Θ R (.«match» scrut arms) "(D-Match) §6.6" H .typeConfusion
              | some body =>
-               let minted := mintParams H₀ vs
+               let minted := freshParams H₀ vs
                let mc := matchConsume P.decls e k i vs
                let bind := adminStep (d + 1) Θ R (.«match» scrut arms)
                  "(D-Match) §6.6 (bind the arm's payload)"
@@ -2706,7 +2706,7 @@ def traceEval (M : FloatSig) (P : Program) :
                "(D-Index-Trap) §6.5 — the bounds trap of §6.12" H H₁ []
                (.panicked .bounds) (.panic .bounds tr)
          | .at _ _ sub ρ =>
-           match sub.readAt ρ with
+           match sub.getAt ρ with
            | .error w => refused ta.steps d Θ R (.indexRead pl idx πs) rule H w
            | .ok leaf =>
              match leaf.toVal with
@@ -2744,7 +2744,7 @@ def traceEval (M : FloatSig) (P : Program) :
                    "(D-Index-Trap) §6.5 — the bounds trap of §6.12" H H₂ []
                    (.panicked .bounds) (.panic .bounds (tr₁ ++ tr₂))
              | .at ℓ c sub ρ =>
-               match sub.readAt ρ with
+               match sub.getAt ρ with
                | .error w =>
                    refused (t₁.steps ++ ta.steps) d Θ R (.indexWrite pl idx πs e) rule H w
                | .ok old =>
@@ -2756,17 +2756,17 @@ def traceEval (M : FloatSig) (P : Program) :
                    | .error w =>
                        refused (t₁.steps ++ ta.steps) d Θ R (.indexWrite pl idx πs e) rule H w
                    | .ok evs =>
-                     match sub.writeAt ρ (Contents.ofVal v) with
+                     match sub.setAt ρ (Contents.ofVal v) with
                      | none =>
                          refused (t₁.steps ++ ta.steps) d Θ R (.indexWrite pl idx πs e)
                            rule H .typeConfusion
                      | some sub' =>
-                       match c.writeAt pl.path sub' with
+                       match c.setAt pl.path sub' with
                        | none =>
                            refused (t₁.steps ++ ta.steps) d Θ R (.indexWrite pl idx πs e)
                              rule H .typeConfusion
                        | some c' =>
-                         if c'.copyClosed P.decls then
+                         if c'.copyContained P.decls then
                            traced (t₁.steps ++ ta.steps) d Θ R (.indexWrite pl idx πs e)
                              (if old.isMovedOut then
                                 rule ++ " (reinitialization, 3.8:55)"
@@ -2818,7 +2818,7 @@ def traceEval (M : FloatSig) (P : Program) :
              | some .dead =>
                  refused t.steps d Θ R (.assign pl e) "(D-Assign) §6.8" H .useAfterDrop
              | some (.full c) =>
-               match c.readAt pl.path with
+               match c.getAt pl.path with
                | .error w => refused t.steps d Θ R (.assign pl e) "(D-Assign) §6.8" H w
                | .ok old =>
                    if old.residualLinear P.decls then
@@ -2827,12 +2827,12 @@ def traceEval (M : FloatSig) (P : Program) :
                      match dropCell P.decls ℓ old with
                      | .error w => refused t.steps d Θ R (.assign pl e) "(D-Assign) §6.8" H w
                      | .ok evs =>
-                         match c.writeAt pl.path (Contents.ofVal v) with
+                         match c.setAt pl.path (Contents.ofVal v) with
                          | none =>
                              refused t.steps d Θ R (.assign pl e) "(D-Assign) §6.8" H
                                .typeConfusion
                          | some c' =>
-                           if c'.copyClosed P.decls then
+                           if c'.copyContained P.decls then
                              traced t.steps d Θ R (.assign pl e)
                                (if old.isMovedOut then "(D-Assign) §6.8 (reinitialization, 3.8:55)"
                                 else "(D-Assign) §6.8 (overwrite-drop)")
@@ -2925,7 +2925,7 @@ def traceEval (M : FloatSig) (P : Program) :
         | none => refused ta.steps d Θ R (.call f args) "(D-Call) §6.9" H .unbound
         | some fd =>
           if fd.params.length = vs.length then
-            let minted := mintParams H₁ vs
+            let minted := freshParams H₁ vs
             let φg : Activation := { env := minted.2.reverse, scope := minted.2 }
             let push := adminStep (d + 1) Θ R (.call f args) "(D-Call) §6.9 (push the frame)"
               (fnHeader f fd ++ "  with " ++ locsLine minted.2)

@@ -780,11 +780,11 @@ theorem sim_match (IH : SimIH M P fuel) (scrut : Expr) (arms : List Expr) :
     · trivial
     · rename_i body hbody
       -- (D-Match) records the shell's consumption as it binds the payload.
-      refine Sim.withTrace (C₂ := fun K tr => evalConf (mintParams H₀ vs).1
-          { env := (mintParams H₀ vs).2.reverse ++ φ.env, scope := φ.scope ++ (mintParams H₀ vs).2 }
-          body (.endscope (mintParams H₀ vs).2 :: K) tr)
+      refine Sim.withTrace (C₂ := fun K tr => evalConf (freshParams H₀ vs).1
+          { env := (freshParams H₀ vs).2.reverse ++ φ.env, scope := φ.scope ++ (freshParams H₀ vs).2 }
+          body (.endscope (freshParams H₀ vs).2 :: K) tr)
         (fun _ _ => Steps.single (.«match» hbody rfl)) ?_
-      refine Sim.bind (F := .endscope (mintParams H₀ vs).2) (fun _ => ⟨rfl, rfl⟩)
+      refine Sim.bind (F := .endscope (freshParams H₀ vs).2) (fun _ => ⟨rfl, rfl⟩)
         (fun _ _ => .refl _) (IH _ _ body) ?_
       intro H₂ v₂ _ _
       split
@@ -792,8 +792,8 @@ theorem sim_match (IH : SimIH M P fuel) (scrut : Expr) (arms : List Expr) :
       · rename_i H₃ evs hu
         intro K tr
         have := Steps.single (M := M) (P := P) (.endScope (K := K) (tr := tr) (v := v₂)
-          (φ := { env := (mintParams H₀ vs).2.reverse ++ φ.env,
-                  scope := φ.scope ++ (mintParams H₀ vs).2 }) (unwindLocs_plain hu))
+          (φ := { env := (freshParams H₀ vs).2.reverse ++ φ.env,
+                  scope := φ.scope ++ (freshParams H₀ vs).2 }) (unwindLocs_plain hu))
         rwa [Activation.unwindScope_push] at this
   · trivial
 
@@ -1415,11 +1415,11 @@ theorem long_match (IH : LongIH M P fuel) (scrut : Expr) (arms : List Expr) :
     · rename_i body hbody
       rw [EvalRes.withTrace_outOfFuel_iff] at hk
       refine Long.mono (Nat.le_succ _) (Long.pre1
-        (C₂ := fun K tr => evalConf (mintParams H₀ vs).1
-          { env := (mintParams H₀ vs).2.reverse ++ φ.env, scope := φ.scope ++ (mintParams H₀ vs).2 }
-          body (.endscope (mintParams H₀ vs).2 :: K) tr)
+        (C₂ := fun K tr => evalConf (freshParams H₀ vs).1
+          { env := (freshParams H₀ vs).2.reverse ++ φ.env, scope := φ.scope ++ (freshParams H₀ vs).2 }
+          body (.endscope (freshParams H₀ vs).2 :: K) tr)
         (fun K tr => ⟨_, _, .«match» hbody rfl, .refl _⟩)
-        (Long.bind0 (F := .endscope (mintParams H₀ vs).2) (eval_sim M P fuel _ _ body)
+        (Long.bind0 (F := .endscope (freshParams H₀ vs).2) (eval_sim M P fuel _ _ body)
           (IH _ _ body) ?_ hk))
       never_oof
   · simp at hk
@@ -1586,12 +1586,12 @@ theorem long_call (IH : LongIH M P fuel) (f : Nat) (args : List Expr) :
     · rename_i fd hfd
       split at h
       · rename_i hlen
-        have hb : eval M fuel P (mintParams H₁ vs).1
-            { env := (mintParams H₁ vs).2.reverse, scope := (mintParams H₁ vs).2 } fd.body =
+        have hb : eval M fuel P (freshParams H₁ vs).1
+            { env := (freshParams H₁ vs).2.reverse, scope := (freshParams H₁ vs).2 } fd.body =
               .outOfFuel := by
           revert h
-          cases eval M fuel P (mintParams H₁ vs).1
-              { env := (mintParams H₁ vs).2.reverse, scope := (mintParams H₁ vs).2 } fd.body
+          cases eval M fuel P (freshParams H₁ vs).1
+              { env := (freshParams H₁ vs).2.reverse, scope := (freshParams H₁ vs).2 } fd.body
           all_goals simp only [EvalRes.bindCall, EvalRes.withTrace_outOfFuel_iff, imp_self]
           all_goals (try split)
           all_goals simp

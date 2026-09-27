@@ -107,7 +107,7 @@ theorem not_exact_cc {D : Decls} {H H' : Store} {v : Val} {tr : List Event} {Y :
   fun he => h he.2.1
 
 /-- A one-cell store is copy-closed when its cell is (helper). -/
-theorem storeCC_one {D : Decls} {c : Contents} (h : c.copyClosed D = true) : StoreCC D [.full c] := by
+theorem storeCC_one {D : Decls} {c : Contents} (h : c.copyContained D = true) : StoreCC D [.full c] := by
   intro ℓ c' h'
   match ℓ, h' with
   | 0, h' => cases h'; exact h
