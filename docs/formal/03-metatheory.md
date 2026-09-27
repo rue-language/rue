@@ -632,7 +632,7 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
   raises when a linear value would be leaked, overwritten while live, or
   discarded. The leak half covers three edges: a `let`'s scope exit, an activation record's
   normal pop (a by-value parameter the callee never consumed — (Fn) §5.8's
-  second clause, `3.8:62`), and a `return`'s `⊥_exit` unwind. The frame-pop
+  second clause, `3.8:62`), and a `return`'s `⊥_exit` unwind. The activation-record-pop
   edge is reached only through `Examples.lean`'s kernel-checked
   `run linearParamLeaked … = .refused .linearLeak`: differential testing cannot exercise
   it, because the compiler rejects that program (E0406) before anything runs.

@@ -152,7 +152,7 @@ SYNTAX_FORMS: Dict[Tuple[str, str], Tuple[str, List[str], str]] = {
         "(§5.7, §5.8) but `never` is not a type of the judgment: every rule §5.7 "
         "types at `never` — `ret`, `retBot`, `panic`, `brk`, `loopDiv`, `seqBot`, "
         "`letBot`, `iteBot`, `matchBot` — folds (Sub-Never) in by concluding at any "
-        "type, with §5.3's `⊥` as its outgoing result, which is sound because "
+        "type, with §5.3's `⊥` as its output result, which is sound because "
         "`never` has no values (`3.4:1`) and needs no `HasTy` case. The checker's "
         "`TyOrNever.never` is the type's algorithmic image",
     ),
@@ -161,7 +161,7 @@ SYNTAX_FORMS: Dict[Tuple[str, str], Tuple[str, List[str], str]] = {
         ["Ty.struct", "StructDecl"],
         "a monomorphic struct declared by the program: named fields by position, "
         "the `@copy`/`linear` attribute, and whether it declares a destructor, with "
-        "`class(S)` the field join of §3 (`WfStructs` is the equation). A field is "
+        "`qual(S)` the field join of §3 (`WfStructs` is the equation). A field is "
         "projected by its declaration slot (`p . f` below), so §5.6's obligation is "
         "per-path; no generics",
     ),
@@ -169,7 +169,7 @@ SYNTAX_FORMS: Dict[Tuple[str, str], Tuple[str, List[str], str]] = {
         "partial",
         ["Ty.enum", "EnumDecl"],
         "a monomorphic enum declared by the program: one payload tuple per variant "
-        "in declaration order, with `class(E)` the payload join over every variant "
+        "in declaration order, with `qual(E)` the payload join over every variant "
         "(`6.3:19`; `WfEnums` is the equation). An enum declares no attribute and no "
         "destructor, and its payload is reached only by a `match` arm's binding, never "
         "by a path — §5.6 tracks no path into one; no generics",
@@ -178,8 +178,8 @@ SYNTAX_FORMS: Dict[Tuple[str, str], Tuple[str, List[str], str]] = {
         "yes",
         ["Ty.array"],
         "the fixed-length array, whose length elaboration has already folded to a "
-        "constant (`7.1:14`), with §3's four-line class table as `Ty.qual`'s array "
-        "arm — `Copy` whenever `class(T)` is, and `Affine` for a zero-length array "
+        "constant (`7.1:14`), with §3's four-line qualifier table as `Ty.qual`'s array "
+        "arm — `Copy` whenever `qual(T)` is, and `Affine` for a zero-length array "
         "of a non-`Copy` element (`3.8:74`, RUE-526); `Ty.tyNames` is what makes an "
         "`[S; k]` field name `S` for `3.0:5`'s acyclicity condition",
     ),
@@ -196,7 +196,7 @@ SYNTAX_FORMS: Dict[Tuple[str, str], Tuple[str, List[str], str]] = {
         "field projection by declaration slot (`3.6:15`: elaboration resolves the "
         "field name), so a use of it is §4.2's partial move (`3.8:22`), an "
         "assignment reinitializes the subtree (`3.8:55`) and a `@drop` of it "
-        "leaves a hole §6.11's walk skips (`3.8:60`; `3.8:73` is the "
+        "leaves a moved-out part §6.11's walk skips (`3.8:60`; `3.8:73` is the "
         "array-element form of the same rule); where the path has a proper "
         "prefix of declared-`linear` struct type, §4.2's `Declared(d, π_s)` "
         "plan applies instead (`declaredPrefix`) and "
@@ -367,16 +367,16 @@ SYNTAX_FORMS: Dict[Tuple[str, str], Tuple[str, List[str], str]] = {
         "(Loop-Div-Backedge) and (Loop-Div) §5.7 in `loopDiv`, (Loop-Break) in "
         "`loopBreak` (a reachable exit) and `loopBreakDiv` (none), each typing the "
         "body once at the loop-head state `LoopHead`; §6.10's dynamics in `eval`, "
-        "where each turn spends fuel. The scope record stays one list: the loop "
-        "reads the length it had at entry rather than pushing a record, and a "
+        "where each turn spends fuel. The drop scope stays one list: the loop "
+        "reads the length it had at entry rather than pushing a drop scope, and a "
         "`break`'s unwind drops the cells past it",
     ),
     ("e", "break"): (
         "yes",
         ["Expr.brk", "Typed.brk"],
         "nullary, as §2 writes it (`4.8:22`: `break expr` is a compile-time error); "
-        "(Break) §5.7 delivers the whole context at the edge, and (D-Break) §6.10 "
-        "hands the loop the frame's scope record",
+        "(Break) §5.7 completes abruptly with the whole context at the edge, and "
+        "(D-Break) §6.10 hands the loop the activation record's drop scope",
     ),
     ("e", "return e"): (
         "yes",

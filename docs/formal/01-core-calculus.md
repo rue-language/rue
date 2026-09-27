@@ -1853,7 +1853,7 @@ and leave Σ unchanged, per §5.4.
 
   Γ ⊢ g : (T₁, ..., Tₘ) → Tr       m = |a₁, ..., aₘ|       Tr = never
   Γ;Σᵢ₋₁;Λᵢ₋₁ ⊢ aᵢ ⇒ Uᵢ ⊣ Ωᵢ       (1 ≤ i ≤ m), with Σ₀ = Σ and Λ₀ = Λ
-  Ωᵢ = Σᵢ;Δᵢ for every argument reached before the first non-continuing one
+  Ωᵢ = Σᵢ;Δᵢ for every argument reached before the first one that cannot complete normally
   Δ_args = union of the Δᵢ of the arguments reached
   Δ_call = Δ_args ∪ {⟨diverge, Σm⟩}  if every argument continues (Σm = the state after the last)
             Δ_args                    otherwise
