@@ -74,7 +74,7 @@ evaluation, not per run; the whole-run form is `whole_program_exactly_once`
 def drop_exactly_once_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program} (_ : ProgramTyped P)
     (_ : P.pendingSafe = true) {fuel : Nat} {R : Ty} {Γ : Ctx} {e : Expr} {T : Ty} {Ω : Out}
-    {φ : Frame} {H : Store} (_ : Typed P R Γ e T Ω) (_ : FrameMatches P.decls Γ φ H)
+    {φ : Activation} {H : Store} (_ : Typed P R Γ e T Ω) (_ : FrameMatches P.decls Γ φ H)
     (_ : StoreCC P.decls H) (_ : e.pendingSafe = true),
     (∀ w, eval M.toFloatSig fuel P H φ e ≠ .stuck w) ∧
       Exact P.decls H [] (eval M.toFloatSig fuel P H φ e) ∧
@@ -90,7 +90,7 @@ says the values a form mints mid-evaluation are covered too. -/
 def rest_exactly_once_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program} (_ : ProgramTyped P)
     (_ : P.pendingSafe = true) {fuel : Nat} {R : Ty} {Γ : Ctx} {e : Expr} {T : Ty} {Ω : Out}
-    {φ : Frame} {H : Store} (_ : Typed P R Γ e T Ω) (_ : FrameMatches P.decls Γ φ H)
+    {φ : Activation} {H : Store} (_ : Typed P R Γ e T Ω) (_ : FrameMatches P.decls Γ φ H)
     (_ : StoreCC P.decls H) (_ : e.pendingSafe = true)
     {H₁ : Store} {vs : List Val} {tr : List Event} (_ : Lead M.toFloatSig P fuel H φ H₁ vs tr e)
     {r : EvalRes} (_ : eval M.toFloatSig (fuel + 1) P H φ e = r.withTrace tr),
@@ -115,7 +115,7 @@ what it abandons is not ended), and nothing about a run that never finishes
 def whole_program_exactly_once_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program} (_ : ProgramTyped P) (_ : P.pendingSafe = true)
     {C : Config} (_ : Steps M.toFloatSig P Config.init C) {a : Nat} (_ : a ∈ C.held P.decls)
-    {H : Store} {φ : Frame} {v : Val} {tr : List Event}
+    {H : Store} {φ : Activation} {v : Val} {tr : List Event}
     (_ : Steps M.toFloatSig P C (.run H φ [] (.ret v) tr)),
     (v.own P.decls).count a + (freedIds P.decls tr).count a = 1
 

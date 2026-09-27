@@ -43,7 +43,7 @@ never `returned` or `broke`), the three linear theorems `no_linear_leak`,
 `no_linear_overwrite` and `no_linear_discard`, and the kernel-checked examples
 that each monitor fires. The closure extractor also missed five definitions
 reached only through dot notation (`Decls.classOf`, `Decls.enumClassOf`,
-`Decls.Names`, `Frame.popScope`, `FloatLit.exact`). Four of the statement
+`Decls.Names`, `Activation.unwindScope`, `FloatLit.exact`). Four of the statement
 agent's findings are artefacts of that and are dropped below. REDTEAM.md now
 requires the packet to carry every theorem §7 and the metatheory cite.
 
@@ -117,7 +117,7 @@ Read the same way by the red agent and by us, with no gap either found:
   `Contents.toVal`, a dead cell fails `rootCell`), operand confusion (no rule
   for `OpRes.confused`) and an uncovered `match` tag.
 - `step_type_safety`: equal to §7's type-safety bullet on the fragment
-  (slightly stronger: the halting frame is `Frame.empty`).
+  (slightly stronger: the halting frame is `Activation.empty`).
 - `eval_complete` and `eval_diverges_iff`: the two directions of the
   big-step/small-step equivalence (FIELD.md §3) for terminating and diverging
   runs; `eval_diverges_iff`'s backward direction has content no other

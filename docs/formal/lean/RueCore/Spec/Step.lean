@@ -85,7 +85,7 @@ def step_type_safety_stmt : Prop :=
   ∀ (M : FloatModel) {P : Program} (_ : ProgramTyped P),
     ∃ fd, P.fns[0]? = some fd ∧ ∀ n,
       (∃ D, StepsN M.toFloatSig P n Config.init D) ∨
-      (∃ H v tr, Steps M.toFloatSig P Config.init (.run H Frame.empty [] (.ret v) tr) ∧
+      (∃ H v tr, Steps M.toFloatSig P Config.init (.run H Activation.empty [] (.ret v) tr) ∧
         HasTy P.decls v fd.ret) ∨
       (∃ κ tr, Steps M.toFloatSig P Config.init (.panic κ tr))
 

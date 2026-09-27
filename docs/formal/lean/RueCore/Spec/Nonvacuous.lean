@@ -58,7 +58,7 @@ copy-closed (`StoreCC`). With a program's typed body this is the frame and
 store the evaluation statements (`soundness`, `drop_exactly_once`,
 `rest_exactly_once`) are applied at by the witnesses below. -/
 def empty_frame_stmt : Prop :=
-  ∀ D : Decls, FrameMatches D [] Frame.empty [] ∧ StoreCC D []
+  ∀ D : Decls, FrameMatches D [] Activation.empty [] ∧ StoreCC D []
 
 /-- **An open term in a live frame** (§6.1, §7): the evaluation statements apply
 beyond the empty frame. Over the witnesses' declarations, `@drop(s); 1` is
@@ -121,12 +121,12 @@ def dtor_stmt : Prop :=
         c.fits (.int .w64 .signed) = true ∧ Typed P (.int .w64 .signed) [] B (.int .w64 .signed) Ω) ∧
       DtorNotCopy P.decls ∧ (∃ C, Step Float.exactOps P Config.init C) ∧
       (∀ fuel w, run Float.exactOps P fuel ≠ .stuck w) ∧
-      2 ≤ (freedIds P.decls (eval Float.exactOps 200 P [] Frame.empty B).trace).length ∧
-      (∃ H₁ vs tr, ∃ r : EvalRes, Lead Float.exactOps P 200 [] Frame.empty H₁ vs tr B ∧
-        eval Float.exactOps 201 P [] Frame.empty B = r.withTrace tr ∧
+      2 ≤ (freedIds P.decls (eval Float.exactOps 200 P [] Activation.empty B).trace).length ∧
+      (∃ H₁ vs tr, ∃ r : EvalRes, Lead Float.exactOps P 200 [] Activation.empty H₁ vs tr B ∧
+        eval Float.exactOps 201 P [] Activation.empty B = r.withTrace tr ∧
         Contents.ownList P.decls (Contents.ofVals vs) ≠ []) ∧
       ∃ H v tr, run Float.exactOps P 200 = .ok H v tr ∧
-        Steps Float.exactOps P Config.init (.run H Frame.empty [] (.ret v) tr) ∧
+        Steps Float.exactOps P Config.init (.run H Activation.empty [] (.ret v) tr) ∧
         2 ≤ (freedIds P.decls tr).length ∧ 2 ≤ (dtorIds tr).length
 
 /-- **A checked program with a declared-linear value** (§5.6, §7; construct class:
@@ -150,7 +150,7 @@ def linear_stmt : Prop :=
       (∃ c Ω, check P (.int .w64 .signed) [] B = some (c, Ω) ∧
         c.fits (.int .w64 .signed) = true ∧ Typed P (.int .w64 .signed) [] B (.int .w64 .signed) Ω) ∧
       ∃ H v tr, run Float.exactOps P 200 = .ok H v tr ∧
-        Steps Float.exactOps P Config.init (.run H Frame.empty [] (.ret v) tr) ∧
+        Steps Float.exactOps P Config.init (.run H Activation.empty [] (.ret v) tr) ∧
         2 ≤ (freedIds P.decls tr).length
 
 /-- **A checked program with a loop that turns three times** (§5.7, §6.10; construct class:
@@ -178,7 +178,7 @@ def loop_stmt : Prop :=
       (∃ c Ω, check P (.int .w64 .signed) [] B = some (c, Ω) ∧
         c.fits (.int .w64 .signed) = true ∧ Typed P (.int .w64 .signed) [] B (.int .w64 .signed) Ω) ∧
       ∃ H v tr, run Float.exactOps P 200 = .ok H v tr ∧
-        Steps Float.exactOps P Config.init (.run H Frame.empty [] (.ret v) tr) ∧
+        Steps Float.exactOps P Config.init (.run H Activation.empty [] (.ret v) tr) ∧
         3 ≤ (dtorIds tr).length
 
 /-- **A checked program with an array** (§6.5, §6.11; construct class: arrays; the corpus
@@ -203,7 +203,7 @@ def array_stmt : Prop :=
       (∃ c Ω, check P (.int .w64 .signed) [] B = some (c, Ω) ∧
         c.fits (.int .w64 .signed) = true ∧ Typed P (.int .w64 .signed) [] B (.int .w64 .signed) Ω) ∧
       ∃ H v tr, run Float.exactOps P 200 = .ok H v tr ∧
-        Steps Float.exactOps P Config.init (.run H Frame.empty [] (.ret v) tr) ∧
+        Steps Float.exactOps P Config.init (.run H Activation.empty [] (.ret v) tr) ∧
         2 ≤ (dtorIds tr).length
 
 /-- **A checked program with an enum and a `match`** (§5.5, §6.6; construct class: enums with
@@ -227,7 +227,7 @@ def enum_match_stmt : Prop :=
       (∃ c Ω, check P (.int .w64 .signed) [] B = some (c, Ω) ∧
         c.fits (.int .w64 .signed) = true ∧ Typed P (.int .w64 .signed) [] B (.int .w64 .signed) Ω) ∧
       ∃ H v tr, run Float.exactOps P 200 = .ok H v tr ∧
-        Steps Float.exactOps P Config.init (.run H Frame.empty [] (.ret v) tr) ∧
+        Steps Float.exactOps P Config.init (.run H Activation.empty [] (.ret v) tr) ∧
         2 ≤ (freedIds P.decls tr).length ∧ 1 ≤ (dtorIds tr).length
 
 /-- **A checked program with an early `return`** (§6.9; construct class: early
@@ -251,7 +251,7 @@ def early_return_stmt : Prop :=
       (∃ c Ω, check P (.int .w64 .signed) [] B = some (c, Ω) ∧
         c.fits (.int .w64 .signed) = true ∧ Typed P (.int .w64 .signed) [] B (.int .w64 .signed) Ω) ∧
       ∃ H v tr, run Float.exactOps P 200 = .ok H v tr ∧
-        Steps Float.exactOps P Config.init (.run H Frame.empty [] (.ret v) tr) ∧
+        Steps Float.exactOps P Config.init (.run H Activation.empty [] (.ret v) tr) ∧
         v = .int .w64 .signed 7 ∧ 2 ≤ (dtorIds tr).length
 
 /-- **A checked program that panics** (construct class: `@panic`;
@@ -298,7 +298,7 @@ def float_stmt : Prop :=
       (∃ c Ω, check P (.float .w64) [] B = some (c, Ω) ∧
         c.fits (.float .w64) = true ∧ Typed P (.float .w64) [] B (.float .w64) Ω) ∧
       ∃ H v tr, run Float.exactOps P 200 = .ok H v tr ∧
-        Steps Float.exactOps P Config.init (.run H Frame.empty [] (.ret v) tr) ∧
+        Steps Float.exactOps P Config.init (.run H Activation.empty [] (.ret v) tr) ∧
         v = .float .w64 (.num false 15 (-1))
 
 /-- **A checked program that diverges** (§6.10; the loop with no `break`). `loop
@@ -375,7 +375,7 @@ def whole_drops_stmt : Prop :=
         fns := [{ params := [], ret := .int .w64 .signed, body := B }] } →
       checkProgram P = true ∧ ProgramTyped P ∧ P.pendingSafe = true ∧
       ∃ C, Steps Float.exactOps P Config.init C ∧ 0 ∈ C.held P.decls ∧ 2 ∈ C.held P.decls ∧
-        ∃ H v tr, Steps Float.exactOps P C (.run H Frame.empty [] (.ret v) tr) ∧
+        ∃ H v tr, Steps Float.exactOps P C (.run H Activation.empty [] (.ret v) tr) ∧
           (freedIds P.decls tr).count 0 = 1 ∧ (freedIds P.decls tr).count 2 = 1
 
 /-- **A run whose result is an owned value** (§7, over a whole program;
@@ -394,7 +394,7 @@ def whole_result_stmt : Prop :=
         fns := [{ params := [], ret := .struct 0, body := .mkStruct 0 [.intLit .w64 .signed 7] }] } →
     checkProgram P = true ∧ ProgramTyped P ∧ P.pendingSafe = true ∧
     ∃ C, Steps Float.exactOps P Config.init C ∧ 0 ∈ C.held P.decls ∧
-      ∃ H v tr, Steps Float.exactOps P C (.run H Frame.empty [] (.ret v) tr) ∧
+      ∃ H v tr, Steps Float.exactOps P C (.run H Activation.empty [] (.ret v) tr) ∧
         (v.own P.decls).count 0 = 1 ∧ freedIds P.decls tr = []
 
 end RueCore.Spec.Nonvacuous

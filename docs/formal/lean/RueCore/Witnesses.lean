@@ -45,7 +45,7 @@ theorem affineScopeDrop_both_ways (M : FloatSig) :
       .ok [.dead, .dead] (.int .w64 .signed 1)
         [.drop 1 (.struct 1 0 [.int .w64 .signed 7]), .dtor 1 (.struct 1 0 [.int .w64 .signed 7])] ∧
     Steps M affineScopeDropProgram Config.init
-      (.run [.dead, .dead] Frame.empty [] (.ret (.int .w64 .signed 1))
+      (.run [.dead, .dead] Activation.empty [] (.ret (.int .w64 .signed 1))
         [.drop 1 (.struct 1 0 [.int .w64 .signed 7]), .dtor 1 (.struct 1 0 [.int .w64 .signed 7])]) := by
   refine ⟨rfl, rfl, ?_⟩
   refine .step .callEnter ?_
@@ -504,7 +504,7 @@ makes `@drop` of a `⊘` place a no-op (`demo_dropMoved_runs`, above).
 theorem dropMoved_refused (M : FloatSig) :
     (∃ H, Steps M (demoProgram (.letIn false demoS
         (.letIn false (.use (.var 0)) (.seq (.drop (.var 1)) (demoI32 0))))) Config.init
-      (.run H Frame.empty [] (.ret (.int .w32 .signed 0))
+      (.run H Activation.empty [] (.ret (.int .w32 .signed 0))
         [.drop 2 (demoSc 0), .dtor 0 (demoSc 0)])) ∧
     run M (demoProgram (.letIn false demoS
         (.letIn false (.use (.var 0)) (.seq (.drop (.var 1)) (demoI32 0))))) 100 =
@@ -517,7 +517,7 @@ through `run_sim` — `let x = 40; x + 2` reaches `✓42` with the `let`'s cell
 retired and nothing printed (§6.7, §6.9, §6.12). -/
 theorem letAddProgram_sound (M : FloatSig) :
     Steps M letAddProgram Config.init
-      (.run [.dead] Frame.empty [] (.ret (.int .w32 .signed 42)) []) :=
+      (.run [.dead] Activation.empty [] (.ret (.int .w32 .signed 42)) []) :=
   (run_sim M letAddProgram 100).1 _ _ _ rfl
 
 /-! ## The checker rejects each error class (RUE-2469)

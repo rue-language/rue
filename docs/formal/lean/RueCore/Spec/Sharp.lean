@@ -106,17 +106,17 @@ def stuck_stmt : Prop :=
       checkProgram P = false ∧ ¬ ProgramTyped P ∧ ¬ WfProgram P ∧
       (∃ fd, P.fns[0]? = some fd ∧ fd.params = []) ∧
       P.pendingSafe = true ∧ (Expr.call 0 []).pendingSafe = true ∧
-      FrameMatches P.decls [] Frame.empty [] ∧ StoreCC P.decls [] ∧
+      FrameMatches P.decls [] Activation.empty [] ∧ StoreCC P.decls [] ∧
       (∃ c Ω, check P (.int .w64 .signed) [] (.call 0 []) = some (c, Ω) ∧ c.fits (.int .w64 .signed) = true ∧
         Typed P (.int .w64 .signed) [] (.call 0 []) (.int .w64 .signed) Ω ∧
-        ¬ EvalOk P.decls (.int .w64 .signed) (.int .w64 .signed) Ω.norm Ω.brk Frame.empty []
-          (eval Float.exactOps 200 P [] Frame.empty (.call 0 []))) ∧
-      Lead Float.exactOps P 200 [] Frame.empty [] [] [] (.call 0 []) ∧
-      eval Float.exactOps 200 P [] Frame.empty (.call 0 []) = .stuck .useAfterMove ∧
-      eval Float.exactOps 201 P [] Frame.empty (.call 0 []) = .stuck .useAfterMove ∧
-      eval Float.exactOps 201 P [] Frame.empty (.call 0 []) =
+        ¬ EvalOk P.decls (.int .w64 .signed) (.int .w64 .signed) Ω.norm Ω.brk Activation.empty []
+          (eval Float.exactOps 200 P [] Activation.empty (.call 0 []))) ∧
+      Lead Float.exactOps P 200 [] Activation.empty [] [] [] (.call 0 []) ∧
+      eval Float.exactOps 200 P [] Activation.empty (.call 0 []) = .stuck .useAfterMove ∧
+      eval Float.exactOps 201 P [] Activation.empty (.call 0 []) = .stuck .useAfterMove ∧
+      eval Float.exactOps 201 P [] Activation.empty (.call 0 []) =
         (EvalRes.stuck .useAfterMove).withTrace [] ∧
-      (∀ n, run Float.exactOps P n = eval Float.exactOps n P [] Frame.empty (.call 0 [])) ∧
+      (∀ n, run Float.exactOps P n = eval Float.exactOps n P [] Activation.empty (.call 0 [])) ∧
       run Float.exactOps P 200 = .stuck .useAfterMove ∧ run Float.exactOps P 0 = .outOfFuel ∧
       ¬ (run Float.exactOps P 200 = .outOfFuel ∨ (∃ k tr, run Float.exactOps P 200 = .panic k tr) ∨
         ∃ H v tr, run Float.exactOps P 200 = .ok H v tr ∧ HasTy P.decls v (.int .w64 .signed))
@@ -148,7 +148,7 @@ def stuck_step_stmt : Prop :=
         ∀ C, Steps Float.exactOps P Config.init C → C.SafeAt Float.exactOps P fd.ret) ∧
       ¬ (∃ fd, P.fns[0]? = some fd ∧ ∀ n,
         (∃ D, StepsN Float.exactOps P n Config.init D) ∨
-        (∃ H v tr, Steps Float.exactOps P Config.init (.run H Frame.empty [] (.ret v) tr) ∧
+        (∃ H v tr, Steps Float.exactOps P Config.init (.run H Activation.empty [] (.ret v) tr) ∧
           HasTy P.decls v fd.ret) ∨
         (∃ κ tr, Steps Float.exactOps P Config.init (.panic κ tr))) ∧
       ¬ ∀ fuel, ∃ w', run Float.exactOps P fuel = .stuck w'
@@ -183,15 +183,15 @@ def typed_stmt : Prop :=
         .letIn false (.mkStruct 0 [.intLit .w64 .signed 1])
         (.seq (.drop (.var 0)) (.use (.proj (.var 0) 0))) →
       ProgramTyped P ∧ WfProgram P ∧ P.pendingSafe = true ∧ e.pendingSafe = true ∧
-      FrameMatches P.decls [] Frame.empty [] ∧ StoreCC P.decls [] ∧
+      FrameMatches P.decls [] Activation.empty [] ∧ StoreCC P.decls [] ∧
       check P (.int .w64 .signed) [] e = none ∧ (∀ (T : Ty) (Ω : Out), ¬ Typed P (.int .w64 .signed) [] e T Ω) ∧
-      Lead Float.exactOps P 200 [] Frame.empty [.dead] [.struct 0 0 [.int .w64 .signed 1]] [] e ∧
-      eval Float.exactOps 200 P [] Frame.empty e = .stuck .useAfterMove ∧
-      eval Float.exactOps 201 P [] Frame.empty e = .stuck .useAfterMove ∧
-      eval Float.exactOps 201 P [] Frame.empty e = (EvalRes.stuck .useAfterMove).withTrace [] ∧
+      Lead Float.exactOps P 200 [] Activation.empty [.dead] [.struct 0 0 [.int .w64 .signed 1]] [] e ∧
+      eval Float.exactOps 200 P [] Activation.empty e = .stuck .useAfterMove ∧
+      eval Float.exactOps 201 P [] Activation.empty e = .stuck .useAfterMove ∧
+      eval Float.exactOps 201 P [] Activation.empty e = (EvalRes.stuck .useAfterMove).withTrace [] ∧
       CTy.never.fits (.int .w64 .signed) = true ∧
-      ∀ (T : Ty) (Ω : Out), ¬ EvalOk P.decls T (.int .w64 .signed) Ω.norm Ω.brk Frame.empty []
-        (eval Float.exactOps 200 P [] Frame.empty e)
+      ∀ (T : Ty) (Ω : Out), ¬ EvalOk P.decls T (.int .w64 .signed) Ω.norm Ω.brk Activation.empty []
+        (eval Float.exactOps 200 P [] Activation.empty e)
 
 /-- **A typed expression run in a frame that does not match its context**
 (§7 sharpness, RUE-2485). `1; x`, typed by `check` in the context `x : i64` over
@@ -218,13 +218,13 @@ def frame_stmt : Prop :=
       ProgramTyped P ∧ WfProgram P ∧ P.pendingSafe = true ∧ e.pendingSafe = true ∧ StoreCC P.decls [] ∧
       (∃ c Ω, check P (.int .w64 .signed) [{ ty := .int .w64 .signed, mu := false, st := .owned }] e = some (c, Ω) ∧
         c.fits (.int .w64 .signed) = true ∧ Typed P (.int .w64 .signed) [{ ty := .int .w64 .signed, mu := false, st := .owned }] e (.int .w64 .signed) Ω ∧
-        ¬ EvalOk P.decls (.int .w64 .signed) (.int .w64 .signed) Ω.norm Ω.brk Frame.empty []
-          (eval Float.exactOps 200 P [] Frame.empty e)) ∧
-      ¬ FrameMatches P.decls [{ ty := .int .w64 .signed, mu := false, st := .owned }] Frame.empty [] ∧
-      Lead Float.exactOps P 200 [] Frame.empty [] [.int .w64 .signed 1] [] e ∧
-      eval Float.exactOps 200 P [] Frame.empty e = .stuck .unbound ∧
-      eval Float.exactOps 201 P [] Frame.empty e = .stuck .unbound ∧
-      eval Float.exactOps 201 P [] Frame.empty e = (EvalRes.stuck .unbound).withTrace []
+        ¬ EvalOk P.decls (.int .w64 .signed) (.int .w64 .signed) Ω.norm Ω.brk Activation.empty []
+          (eval Float.exactOps 200 P [] Activation.empty e)) ∧
+      ¬ FrameMatches P.decls [{ ty := .int .w64 .signed, mu := false, st := .owned }] Activation.empty [] ∧
+      Lead Float.exactOps P 200 [] Activation.empty [] [.int .w64 .signed 1] [] e ∧
+      eval Float.exactOps 200 P [] Activation.empty e = .stuck .unbound ∧
+      eval Float.exactOps 201 P [] Activation.empty e = .stuck .unbound ∧
+      eval Float.exactOps 201 P [] Activation.empty e = (EvalRes.stuck .unbound).withTrace []
 
 /-- **A well-formed program with no entry point** (§7 sharpness, RUE-2485). The
 program with the witnesses' declarations and no function is `WfProgram`, and
@@ -396,9 +396,9 @@ def fuel_stmt : Prop :=
                 { attr := .linear, fields := [.int .w64 .signed], dtor := false, cls := .linear }],
             enums := [{ variants := [[.struct 0], []], cls := .affine }] },
         fns := [{ params := [], ret := .int .w64 .signed, body := B }] } →
-      ProgramTyped P ∧ (∀ n, run Float.exactOps P n = eval Float.exactOps n P [] Frame.empty (.call 0 [])) ∧ run Float.exactOps P 0 = .outOfFuel ∧
+      ProgramTyped P ∧ (∀ n, run Float.exactOps P n = eval Float.exactOps n P [] Activation.empty (.call 0 [])) ∧ run Float.exactOps P 0 = .outOfFuel ∧
       ∃ H v tr, run Float.exactOps P 200 = .ok H v tr ∧
-        Steps Float.exactOps P Config.init (.run H Frame.empty [] (.ret v) tr) ∧
+        Steps Float.exactOps P Config.init (.run H Activation.empty [] (.ret v) tr) ∧
         ¬ (200 ≤ 0) ∧ 0 ≤ 200 ∧ run Float.exactOps P 0 ≠ run Float.exactOps P 200 ∧
         (∀ w, run Float.exactOps P 200 ≠ .stuck w) ∧
         ¬ ∀ fuel, run Float.exactOps P fuel = .ok H v tr ∨ ∃ w, run Float.exactOps P fuel = .stuck w
@@ -578,14 +578,14 @@ def store_cc_stmt : Prop :=
         fns := [{ params := [], ret := .int .w64 .signed, body := B }] } →
     ∀ e : Expr, e = .seq (.intLit .w64 .signed 1) (.intLit .w64 .signed 2) →
       ProgramTyped P ∧ P.pendingSafe = true ∧ e.pendingSafe = true ∧
-      FrameMatches P.decls [] Frame.empty [.full (.array (.int .w64 .signed) 0 [.struct 0 1 [.int .w64 .signed 1]])] ∧ ¬ StoreCC P.decls [.full (.array (.int .w64 .signed) 0 [.struct 0 1 [.int .w64 .signed 1]])] ∧
+      FrameMatches P.decls [] Activation.empty [.full (.array (.int .w64 .signed) 0 [.struct 0 1 [.int .w64 .signed 1]])] ∧ ¬ StoreCC P.decls [.full (.array (.int .w64 .signed) 0 [.struct 0 1 [.int .w64 .signed 1]])] ∧
       (∃ c Ω, check P (.int .w64 .signed) [] e = some (c, Ω) ∧ c.fits (.int .w64 .signed) = true ∧
         Typed P (.int .w64 .signed) [] e (.int .w64 .signed) Ω) ∧
-      Lead Float.exactOps P 200 [.full (.array (.int .w64 .signed) 0 [.struct 0 1 [.int .w64 .signed 1]])] Frame.empty [.full (.array (.int .w64 .signed) 0 [.struct 0 1 [.int .w64 .signed 1]])] [.int .w64 .signed 1] [] e ∧
-      eval Float.exactOps 201 P [.full (.array (.int .w64 .signed) 0 [.struct 0 1 [.int .w64 .signed 1]])] Frame.empty e = (eval Float.exactOps 201 P [.full (.array (.int .w64 .signed) 0 [.struct 0 1 [.int .w64 .signed 1]])] Frame.empty e).withTrace [] ∧
-      ¬ Exact P.decls [.full (.array (.int .w64 .signed) 0 [.struct 0 1 [.int .w64 .signed 1]])] [] (eval Float.exactOps 200 P [.full (.array (.int .w64 .signed) 0 [.struct 0 1 [.int .w64 .signed 1]])] Frame.empty e) ∧
+      Lead Float.exactOps P 200 [.full (.array (.int .w64 .signed) 0 [.struct 0 1 [.int .w64 .signed 1]])] Activation.empty [.full (.array (.int .w64 .signed) 0 [.struct 0 1 [.int .w64 .signed 1]])] [.int .w64 .signed 1] [] e ∧
+      eval Float.exactOps 201 P [.full (.array (.int .w64 .signed) 0 [.struct 0 1 [.int .w64 .signed 1]])] Activation.empty e = (eval Float.exactOps 201 P [.full (.array (.int .w64 .signed) 0 [.struct 0 1 [.int .w64 .signed 1]])] Activation.empty e).withTrace [] ∧
+      ¬ Exact P.decls [.full (.array (.int .w64 .signed) 0 [.struct 0 1 [.int .w64 .signed 1]])] [] (eval Float.exactOps 200 P [.full (.array (.int .w64 .signed) 0 [.struct 0 1 [.int .w64 .signed 1]])] Activation.empty e) ∧
       ¬ Exact P.decls [.full (.array (.int .w64 .signed) 0 [.struct 0 1 [.int .w64 .signed 1]])] (Contents.ownList P.decls (Contents.ofVals [.int .w64 .signed 1]))
-        (eval Float.exactOps 201 P [.full (.array (.int .w64 .signed) 0 [.struct 0 1 [.int .w64 .signed 1]])] Frame.empty e)
+        (eval Float.exactOps 201 P [.full (.array (.int .w64 .signed) 0 [.struct 0 1 [.int .w64 .signed 1]])] Activation.empty e)
 
 /-- **A `Lead` that did not happen** (§7 sharpness, RUE-2485). For the body of
 `Nonvacuous.dtor`, run from the empty frame, take the store `ℓ0 ↦ S0 { 1 }`
@@ -605,15 +605,15 @@ def no_lead_stmt : Prop :=
             enums := [{ variants := [[.struct 0], []], cls := .affine }] },
         fns := [{ params := [], ret := .int .w64 .signed, body := B }] } →
       ProgramTyped P ∧ P.pendingSafe = true ∧ B.pendingSafe = true ∧
-      FrameMatches P.decls [] Frame.empty [] ∧ StoreCC P.decls [] ∧
+      FrameMatches P.decls [] Activation.empty [] ∧ StoreCC P.decls [] ∧
       (∃ c Ω, check P (.int .w64 .signed) [] B = some (c, Ω) ∧ c.fits (.int .w64 .signed) = true ∧
         Typed P (.int .w64 .signed) [] B (.int .w64 .signed) Ω) ∧
-      ¬ Lead Float.exactOps P 200 [] Frame.empty [.full (.struct 0 0 [.int .w64 .signed 1])]
+      ¬ Lead Float.exactOps P 200 [] Activation.empty [.full (.struct 0 0 [.int .w64 .signed 1])]
         [.struct 0 0 [.int .w64 .signed 1]] [] B ∧
-      eval Float.exactOps 201 P [] Frame.empty B = (eval Float.exactOps 201 P [] Frame.empty B).withTrace [] ∧
+      eval Float.exactOps 201 P [] Activation.empty B = (eval Float.exactOps 201 P [] Activation.empty B).withTrace [] ∧
       ¬ Exact P.decls [.full (.struct 0 0 [.int .w64 .signed 1])]
         (Contents.ownList P.decls (Contents.ofVals [.struct 0 0 [.int .w64 .signed 1]]))
-        (eval Float.exactOps 201 P [] Frame.empty B)
+        (eval Float.exactOps 201 P [] Activation.empty B)
 
 /-- **A result that is not the evaluation's** (§7 sharpness, RUE-2485). For the body
 of `Nonvacuous.dtor`, whose leading operand has a `Lead`, a refusal is not
@@ -632,11 +632,11 @@ def no_eval_stmt : Prop :=
             enums := [{ variants := [[.struct 0], []], cls := .affine }] },
         fns := [{ params := [], ret := .int .w64 .signed, body := B }] } →
       ProgramTyped P ∧ P.pendingSafe = true ∧ B.pendingSafe = true ∧
-      FrameMatches P.decls [] Frame.empty [] ∧ StoreCC P.decls [] ∧
+      FrameMatches P.decls [] Activation.empty [] ∧ StoreCC P.decls [] ∧
       (∃ c Ω, check P (.int .w64 .signed) [] B = some (c, Ω) ∧ c.fits (.int .w64 .signed) = true ∧
         Typed P (.int .w64 .signed) [] B (.int .w64 .signed) Ω) ∧
-      ∃ H₁ vs tr, Lead Float.exactOps P 200 [] Frame.empty H₁ vs tr B ∧
-        ∀ w, eval Float.exactOps 201 P [] Frame.empty B ≠ (EvalRes.stuck w).withTrace tr
+      ∃ H₁ vs tr, Lead Float.exactOps P 200 [] Activation.empty H₁ vs tr B ∧
+        ∀ w, eval Float.exactOps 201 P [] Activation.empty B ≠ (EvalRes.stuck w).withTrace tr
 
 /-- **A value §6's relation does not reach** (§7 sharpness, RUE-2485). For the
 checked program of `Nonvacuous.dtor`, the terminal configuration with the
@@ -660,7 +660,7 @@ def unreached_stmt : Prop :=
             enums := [{ variants := [[.struct 0], []], cls := .affine }] },
         fns := [{ params := [], ret := .int .w64 .signed, body := B }] } →
       ProgramTyped P ∧
-      ¬ Steps Float.exactOps P Config.init (.run [] Frame.empty [] (.ret (.int .w64 .signed 8)) [.dtor 0 (.struct 0 0 [.int .w64 .signed 1])]) ∧
+      ¬ Steps Float.exactOps P Config.init (.run [] Activation.empty [] (.ret (.int .w64 .signed 8)) [.dtor 0 (.struct 0 0 [.int .w64 .signed 1])]) ∧
       run Float.exactOps P 200 ≠ .ok [] (.int .w64 .signed 8) [.dtor 0 (.struct 0 0 [.int .w64 .signed 1])] ∧
       ¬ Blocks P.decls [.dtor 0 (.struct 0 0 [.int .w64 .signed 1])] ∧
       ¬ ∃ n, ∀ fuel, n < fuel → run Float.exactOps P fuel = .ok [] (.int .w64 .signed 8) [.dtor 0 (.struct 0 0 [.int .w64 .signed 1])] ∨
@@ -734,13 +734,13 @@ def not_a_step_stmt : Prop :=
                 { attr := .linear, fields := [.int .w64 .signed], dtor := false, cls := .linear }],
             enums := [{ variants := [[.struct 0], []], cls := .affine }] },
         fns := [{ params := [], ret := .int .w64 .signed, body := B }] } →
-      ProgramTyped P ∧ ∃ H v tr, Steps Float.exactOps P Config.init (.run H Frame.empty [] (.ret v) tr) ∧
-        tr ≠ [] ∧ ¬ Step Float.exactOps P (.run H Frame.empty [] (.ret v) tr) (.panic .user []) ∧
-        ¬ ∃ evs, (Config.panic .user []).trace = (Config.run H Frame.empty [] (.ret v) tr).trace ++ evs ∧
+      ProgramTyped P ∧ ∃ H v tr, Steps Float.exactOps P Config.init (.run H Activation.empty [] (.ret v) tr) ∧
+        tr ≠ [] ∧ ¬ Step Float.exactOps P (.run H Activation.empty [] (.ret v) tr) (.panic .user []) ∧
+        ¬ ∃ evs, (Config.panic .user []).trace = (Config.run H Activation.empty [] (.ret v) tr).trace ++ evs ∧
           NewestFirst (dropLocs evs) ∧
-          Lifo (Config.run H Frame.empty [] (.ret v) tr).stack (Config.panic .user []).stack
+          Lifo (Config.run H Activation.empty [] (.ret v) tr).stack (Config.panic .user []).stack
             (dropLocs evs) ∧
-          (Config.run H Frame.empty [] (.ret v) tr).stack.Pairwise (· < ·)
+          (Config.run H Activation.empty [] (.ret v) tr).stack.Pairwise (· < ·)
 
 /-- **The initial configuration, which steps** (§7 sharpness, RUE-2485). For the
 checked program of `Nonvacuous.dtor`, `Config.init` steps to the argument
@@ -760,8 +760,8 @@ def init_steps_stmt : Prop :=
                 { attr := .linear, fields := [.int .w64 .signed], dtor := false, cls := .linear }],
             enums := [{ variants := [[.struct 0], []], cls := .affine }] },
         fns := [{ params := [], ret := .int .w64 .signed, body := B }] } →
-      ProgramTyped P ∧ Step Float.exactOps P Config.init (.run [] Frame.empty [] (.args (.call 0) [] []) []) ∧ ¬ Step Float.exactOps P Config.init Config.init ∧
-      ((.run [] Frame.empty [] (.args (.call 0) [] []) []) : Config) ≠ Config.init ∧ ¬ Config.init.Terminal ∧
+      ProgramTyped P ∧ Step Float.exactOps P Config.init (.run [] Activation.empty [] (.args (.call 0) [] []) []) ∧ ¬ Step Float.exactOps P Config.init Config.init ∧
+      ((.run [] Activation.empty [] (.args (.call 0) [] []) []) : Config) ≠ Config.init ∧ ¬ Config.init.Terminal ∧
       ¬ Config.init.Stuck Float.exactOps P .linearLeak ∧ Violation.isStuckState .linearLeak = false ∧
       Steps Float.exactOps P Config.init Config.init ∧
       ¬ ∃ n, ∀ fuel, n < fuel → ∃ w', run Float.exactOps P fuel = .stuck w'
@@ -784,11 +784,11 @@ def unreachable_stuck_stmt : Prop :=
                 { attr := .linear, fields := [.int .w64 .signed], dtor := false, cls := .linear }],
             enums := [{ variants := [[.struct 0], []], cls := .affine }] },
         fns := [{ params := [], ret := .int .w64 .signed, body := B }] } →
-      ProgramTyped P ∧ ((.run [] Frame.empty [] (.eval (.use (.var 0))) []) : Config).Stuck Float.exactOps P .unbound ∧
-      ¬ Steps Float.exactOps P Config.init (.run [] Frame.empty [] (.eval (.use (.var 0))) []) ∧
+      ProgramTyped P ∧ ((.run [] Activation.empty [] (.eval (.use (.var 0))) []) : Config).Stuck Float.exactOps P .unbound ∧
+      ¬ Steps Float.exactOps P Config.init (.run [] Activation.empty [] (.eval (.use (.var 0))) []) ∧
       (∀ fuel w, run Float.exactOps P fuel ≠ .stuck w) ∧
-      ¬ (((.run [] Frame.empty [] (.eval (.use (.var 0))) []) : Config).Terminal ∨ ∃ C', Step Float.exactOps P (.run [] Frame.empty [] (.eval (.use (.var 0))) []) C') ∧
-      (∀ T, ¬ ((.run [] Frame.empty [] (.eval (.use (.var 0))) []) : Config).SafeAt Float.exactOps P T) ∧
+      ¬ (((.run [] Activation.empty [] (.eval (.use (.var 0))) []) : Config).Terminal ∨ ∃ C', Step Float.exactOps P (.run [] Activation.empty [] (.eval (.use (.var 0))) []) C') ∧
+      (∀ T, ¬ ((.run [] Activation.empty [] (.eval (.use (.var 0))) []) : Config).SafeAt Float.exactOps P T) ∧
       ¬ (∀ C, C.Terminal ∨ ∃ C', Step Float.exactOps P C C') ∧
       ¬ ∃ n, ∀ fuel, n < fuel → ∃ w', run Float.exactOps P fuel = .stuck w'
 
@@ -909,9 +909,9 @@ def ill_typed_halt_stmt : Prop :=
                 { attr := .linear, fields := [.int .w64 .signed], dtor := false, cls := .linear }],
             enums := [{ variants := [[.struct 0], []], cls := .affine }] },
         fns := [{ params := [], ret := .int .w64 .signed, body := B }] } →
-      ProgramTyped P ∧ ((.run [] Frame.empty [] (.ret (.bool true)) []) : Config).Terminal ∧
-      ¬ Steps Float.exactOps P Config.init (.run [] Frame.empty [] (.ret (.bool true)) []) ∧
-      ¬ ((.run [] Frame.empty [] (.ret (.bool true)) []) : Config).SafeAt Float.exactOps P
+      ProgramTyped P ∧ ((.run [] Activation.empty [] (.ret (.bool true)) []) : Config).Terminal ∧
+      ¬ Steps Float.exactOps P Config.init (.run [] Activation.empty [] (.ret (.bool true)) []) ∧
+      ¬ ((.run [] Activation.empty [] (.ret (.bool true)) []) : Config).SafeAt Float.exactOps P
         (.int .w64 .signed)
 
 /-- **A halted configuration with an `i64` out of range, not reached** (§7
@@ -933,11 +933,11 @@ def out_of_range_halt_stmt : Prop :=
             enums := [{ variants := [[.struct 0], []], cls := .affine }] },
         fns := [{ params := [], ret := .int .w64 .signed, body := B }] } →
       ProgramTyped P ∧
-      ((.run [] Frame.empty [] (.ret (.int .w64 .signed 9223372036854775808)) []) : Config).Terminal ∧
+      ((.run [] Activation.empty [] (.ret (.int .w64 .signed 9223372036854775808)) []) : Config).Terminal ∧
       ¬ HasTy P.decls (.int .w64 .signed 9223372036854775808) (.int .w64 .signed) ∧
       ¬ Steps Float.exactOps P Config.init
-        (.run [] Frame.empty [] (.ret (.int .w64 .signed 9223372036854775808)) []) ∧
-      ¬ ((.run [] Frame.empty [] (.ret (.int .w64 .signed 9223372036854775808)) []) : Config).SafeAt
+        (.run [] Activation.empty [] (.ret (.int .w64 .signed 9223372036854775808)) []) ∧
+      ¬ ((.run [] Activation.empty [] (.ret (.int .w64 .signed 9223372036854775808)) []) : Config).SafeAt
         Float.exactOps P (.int .w64 .signed)
 
 /-- **Halted configurations with a datum outside `𝔽_f64`, not reached** (§7
@@ -965,17 +965,17 @@ def float_halt_stmt : Prop :=
         fns := [{ params := [], ret := .float .w64, body := B }] } →
       ProgramTyped P ∧
       (∃ H tr, Steps Float.exactOps P Config.init
-        (.run H Frame.empty [] (.ret (.float .w64 (.num false 15 (-1)))) tr)) ∧
+        (.run H Activation.empty [] (.ret (.float .w64 (.num false 15 (-1)))) tr)) ∧
       ¬ (FloatDatum.num false 30 (-2)).Wf .w64 ∧ ¬ (FloatDatum.num false 1 (-1075)).Wf .w64 ∧
-      ((.run [] Frame.empty [] (.ret (.float .w64 (.num false 30 (-2)))) []) : Config).Terminal ∧
-      ((.run [] Frame.empty [] (.ret (.float .w64 (.num false 1 (-1075)))) []) : Config).Terminal ∧
+      ((.run [] Activation.empty [] (.ret (.float .w64 (.num false 30 (-2)))) []) : Config).Terminal ∧
+      ((.run [] Activation.empty [] (.ret (.float .w64 (.num false 1 (-1075)))) []) : Config).Terminal ∧
       ¬ Steps Float.exactOps P Config.init
-        (.run [] Frame.empty [] (.ret (.float .w64 (.num false 30 (-2)))) []) ∧
+        (.run [] Activation.empty [] (.ret (.float .w64 (.num false 30 (-2)))) []) ∧
       ¬ Steps Float.exactOps P Config.init
-        (.run [] Frame.empty [] (.ret (.float .w64 (.num false 1 (-1075)))) []) ∧
-      ¬ ((.run [] Frame.empty [] (.ret (.float .w64 (.num false 30 (-2)))) []) : Config).SafeAt
+        (.run [] Activation.empty [] (.ret (.float .w64 (.num false 1 (-1075)))) []) ∧
+      ¬ ((.run [] Activation.empty [] (.ret (.float .w64 (.num false 30 (-2)))) []) : Config).SafeAt
         Float.exactOps P (.float .w64) ∧
-      ¬ ((.run [] Frame.empty [] (.ret (.float .w64 (.num false 1 (-1075)))) []) : Config).SafeAt
+      ¬ ((.run [] Activation.empty [] (.ret (.float .w64 (.num false 1 (-1075)))) []) : Config).SafeAt
         Float.exactOps P (.float .w64)
 
 /-- **An owned value hidden under a `Copy` node, lost** (§7 sharpness,
@@ -1001,7 +1001,7 @@ def copy_leak_stmt : Prop :=
         fns := [{ params := [], ret := .int .w64 .signed, body := B }] } →
       checkProgram P = false ∧ ¬ ProgramTyped P ∧ P.pendingSafe = true ∧
       ∃ C, Steps Float.exactOps P Config.init C ∧ 0 ∈ C.held P.decls ∧
-        ∃ H v tr, Steps Float.exactOps P C (.run H Frame.empty [] (.ret v) tr) ∧
+        ∃ H v tr, Steps Float.exactOps P C (.run H Activation.empty [] (.ret v) tr) ∧
           (v.own P.decls).count 0 + (freedIds P.decls tr).count 0 = 0
 
 /-- **A pending argument discarded by a `return`** (§7 sharpness, RUE-2478;
@@ -1028,7 +1028,7 @@ def pending_leak_stmt : Prop :=
                   body := .seq (.drop (.var 1)) (.use (.var 0)) }] } →
     checkProgram P = true ∧ ProgramTyped P ∧ P.pendingSafe = false ∧
     ∃ C, Steps Float.exactOps P Config.init C ∧ 0 ∈ C.held P.decls ∧
-      ∃ H v tr, Steps Float.exactOps P C (.run H Frame.empty [] (.ret v) tr) ∧
+      ∃ H v tr, Steps Float.exactOps P C (.run H Activation.empty [] (.ret v) tr) ∧
         (v.own P.decls).count 0 + (freedIds P.decls tr).count 0 = 0
 
 /-- **A configuration holding a value no run holds** (§7 sharpness, RUE-2478).
@@ -1052,8 +1052,8 @@ def unreached_held_stmt : Prop :=
         fns := [{ params := [], ret := .int .w64 .signed, body := B }] } →
       ProgramTyped P ∧ P.pendingSafe = true ∧
       ¬ Steps Float.exactOps P Config.init
-        (.run [.full (.struct 0 5 [.int .w64 .signed 1])] Frame.empty [] (.ret (.int .w64 .signed 0)) []) ∧
-      5 ∈ (Config.run [.full (.struct 0 5 [.int .w64 .signed 1])] Frame.empty []
+        (.run [.full (.struct 0 5 [.int .w64 .signed 1])] Activation.empty [] (.ret (.int .w64 .signed 0)) []) ∧
+      5 ∈ (Config.run [.full (.struct 0 5 [.int .w64 .signed 1])] Activation.empty []
         (.ret (.int .w64 .signed 0)) []).held P.decls ∧
       ((Val.int .w64 .signed 0).own P.decls).count 5 + (freedIds P.decls []).count 5 = 0
 
@@ -1076,7 +1076,7 @@ def unheld_stmt : Prop :=
             enums := [{ variants := [[.struct 0], []], cls := .affine }] },
         fns := [{ params := [], ret := .int .w64 .signed, body := B }] } →
       ProgramTyped P ∧ P.pendingSafe = true ∧ 1 ∉ Config.init.held P.decls ∧
-      ∃ H v tr, Steps Float.exactOps P Config.init (.run H Frame.empty [] (.ret v) tr) ∧
+      ∃ H v tr, Steps Float.exactOps P Config.init (.run H Activation.empty [] (.ret v) tr) ∧
         (v.own P.decls).count 1 + (freedIds P.decls tr).count 1 = 0
 
 /-- **A finished configuration the run does not reach** (§7 sharpness,
@@ -1099,7 +1099,7 @@ def off_run_stmt : Prop :=
         fns := [{ params := [], ret := .int .w64 .signed, body := B }] } →
       ProgramTyped P ∧ P.pendingSafe = true ∧
       ∃ C, Steps Float.exactOps P Config.init C ∧ 0 ∈ C.held P.decls ∧
-        ¬ Steps Float.exactOps P C (.run [] Frame.empty [] (.ret (.int .w64 .signed 3)) []) ∧
+        ¬ Steps Float.exactOps P C (.run [] Activation.empty [] (.ret (.int .w64 .signed 3)) []) ∧
         ((Val.int .w64 .signed 3).own P.decls).count 0 + (freedIds P.decls []).count 0 = 0
 
 end RueCore.Spec.Sharp

@@ -25,7 +25,7 @@ converse modulo fuel, is `eval_complete` (`Adequacy.lean`).
 `K ::= halt | ret(E, φ)·K | loopβ(e, φ)·K` and the evaluation context `E` of
 §6.2 inside `e`. Here:
 
-* `H` and `φ` are the interpreter's own `Store` and `Frame`, so the adequacy
+* `H` and `φ` are the interpreter's own `Store` and `Activation`, so the adequacy
   proofs relate the two presentations without translating a store.
 * `K` and the `E` inside `e` are **one list of frames** (`Kont`): each frame
   is one production of §6.2's `E` grammar with its hole on top, and the
@@ -88,7 +88,7 @@ representation; none changes what a checked program does.
   because elaboration α-renames binders and a dead name is never looked up.
   Bindings here are de Bruijn indices, so (D-EndScope) resumes in `⟨ρ; s minus
   ℓ̄⟩` by popping the marker's cells off the front of the environment and the
-  end of the scope record (`Frame.popScope`), which (D-Let) and (D-Match) put
+  end of the scope record (`Activation.unwindScope`), which (D-Let) and (D-Match) put
   there.
 * **The loop boundary keeps its context** (a calculus finding, recorded in
   RUE-2324's report). §6.10's `loopβ(e, φ)` records no context, so under
@@ -163,7 +163,7 @@ namespace RueCore
 dynamic place's indices `p[ v̄, E, ē ]` — share one frame, and this tag says
 which form the list belongs to. `indexWrite` carries the right-hand side's
 value, which §6.2's `assign p = E` reduced before the indices (`5.2:14`). -/
-inductive ArgsTag where
+inductive ArgsFrame where
   | struct (s : Nat)
   | enum (e : Nat) (k : Nat)
   | array (elem : Ty)
@@ -194,7 +194,7 @@ inductive Kont where
   | dbg
   /-- An argument list's next hole, `…( v̄, E, ē )` (§6.2): the values
   already reduced and the expressions still to come. -/
-  | args (t : ArgsTag) (vs : List Val) (es : List Expr)
+  | args (t : ArgsFrame) (vs : List Val) (es : List Expr)
   /-- `[ E; n ]`, the surface repeat form's operand (`7.1:39`). -/
   | repeatArray (elem : Ty) (n : Nat)
   /-- `assign p[ ē ] = E` (§6.2): the right-hand side first (`5.2:14`). -/
@@ -216,10 +216,10 @@ inductive Kont where
   | endscope (ℓs : List Nat)
   /-- `loopβ(e, φ)` (§6.1, §6.10): the loop's body and the frame each turn
   starts in; `break` unwinds to here. -/
-  | loop (e : Expr) (φ : Frame)
+  | loop (e : Expr) (φ : Activation)
   /-- `ret(E, φ)` (§6.1, §6.9): a caller suspended in frame `φ`, its context
   `E` the frames below this one. -/
-  | call (φ : Frame)
+  | call (φ : Activation)
 deriving Repr
 
 /-- What the top of a configuration is doing: reducing an expression, handing
@@ -228,7 +228,7 @@ argument list towards its next hole or its redex (§6.2's list contexts). -/
 inductive Focus where
   | eval (e : Expr)
   | ret (v : Val)
-  | args (t : ArgsTag) (vs : List Val) (es : List Expr)
+  | args (t : ArgsFrame) (vs : List Val) (es : List Expr)
 deriving Repr
 
 /-- §6.1's machine configuration. `run H φ K f tr` is `⟨H ; φ ; K ; e⟩`, with
@@ -237,7 +237,7 @@ the output the trapping program had produced. `✓n` is not a separate
 constructor: it is a `run` with an empty stack and a value in focus
 (`Config.Terminal`), from which (Result-Ok) reads the exit code. -/
 inductive Config where
-  | run (H : Store) (φ : Frame) (K : List Kont) (f : Focus) (tr : List Event)
+  | run (H : Store) (φ : Activation) (K : List Kont) (f : Focus) (tr : List Event)
   | panic (k : PanicKind) (tr : List Event)
 deriving Repr
 
@@ -265,13 +265,13 @@ def Config.Terminal : Config → Prop
 (D-Let) and (D-Match) put them at the front of the environment (de Bruijn
 indices) and at the end of the scope record, so closing the marker drops them
 from both by count (helper). -/
-def Frame.popScope (φ : Frame) (n : Nat) : Frame :=
+def Activation.unwindScope (φ : Activation) (n : Nat) : Activation :=
   { env := φ.env.drop n, scope := φ.scope.take (φ.scope.length - n) }
 
 /-- The nearest `ret(E, φ)` below the top: its frame and the stack under it.
 (D-Return) discards everything above it — context frames, pending `endscope`
 markers and loop boundaries alike (§6.9) (helper). -/
-def Kont.toCall : List Kont → Option (Frame × List Kont)
+def Kont.toCall : List Kont → Option (Activation × List Kont)
   | [] => none
   | .call φ :: K => some (φ, K)
   | _ :: K => Kont.toCall K
@@ -279,7 +279,7 @@ def Kont.toCall : List Kont → Option (Frame × List Kont)
 /-- The nearest `loopβ(e, φ)` below the top, provided no `ret(E, φ)` comes
 first: "a `break` in a callee would be ill-formed" (§6.10), so a `break` with
 no loop in its own frame has no rule (helper). -/
-def Kont.toLoop : List Kont → Option (Frame × List Kont)
+def Kont.toLoop : List Kont → Option (Activation × List Kont)
   | [] => none
   | .loop _ φ :: K => some (φ, K)
   | .call _ :: _ => none
@@ -288,7 +288,7 @@ def Kont.toLoop : List Kont → Option (Frame × List Kont)
 /-- The root cell of a place: `ρ(root(p)) = ℓ` and `H(ℓ)` live (§6.3). An
 unbound index is `unbound` and a retired cell is `useAfterDrop`, §6's stuck
 states for both (helper). -/
-def rootCell (H : Store) (φ : Frame) (i : Nat) : Except Violation (Nat × Contents) :=
+def rootCell (H : Store) (φ : Activation) (i : Nat) : Except Violation (Nat × Contents) :=
   match φ.env[i]? with
   | none => .error .unbound
   | some ℓ =>
@@ -635,11 +635,11 @@ inductive Step (M : FloatSig) (P : Program) : Config → Config → Prop where
           (.endscope [H.length] :: K) (.eval e₂) tr)
   /-- (D-EndScope) §6.7: the body is a value; drop-retire the marker's cells
   newest-first and resume in `⟨ρ; s minus ℓ̄⟩`: the marker's cells popped off
-  the environment and the scope record by count (`Frame.popScope`). -/
+  the environment and the scope record by count (`Activation.unwindScope`). -/
   | endScope {H φ K tr ℓs v H' evs} :
       plainUnwind P.decls H ℓs.reverse = .ok (H', evs) →
       Step M P (.run H φ (.endscope ℓs :: K) (.ret v) tr)
-        (.run H' (φ.popScope ℓs.length) K (.ret v) (tr ++ evs))
+        (.run H' (φ.unwindScope ℓs.length) K (.ret v) (tr ++ evs))
   /-- (Search) §6.2 into `E ; e2`. -/
   | seqEnter {H φ K tr e₁ e₂} :
       Step M P (.run H φ K (.eval (.seq e₁ e₂)) tr) (.run H φ (.seq e₂ :: K) (.eval e₁) tr)
@@ -770,7 +770,7 @@ deriving Repr
 /-- `step` at an expression in focus: the literal rules of §6.3, the place
 rules of §6.3 and §6.11, (D-Panic) §6.12, (D-Loop-Enter) and (D-Break)
 §6.10, and every (Search) enter rule of §6.2 (helper). -/
-def stepEval (M : FloatSig) (P : Program) (H : Store) (φ : Frame) (K : List Kont)
+def stepEval (M : FloatSig) (P : Program) (H : Store) (φ : Activation) (K : List Kont)
     (tr : List Event) : Expr → StepOut
   | .intLit w s n => .next (.run H φ K (.ret (.int w s n)) tr)
   | .floatLit w l => .next (.run H φ K (.ret (.float w (M.ofLit w l.sig l.negExp l.e))) tr)
@@ -869,8 +869,8 @@ def stepEval (M : FloatSig) (P : Program) (H : Store) (φ : Frame) (K : List Kon
 /-- `step` at a completed argument list: (D-Struct), (D-Enum-Intro),
 (D-Array), (D-Call), and (D-Index)/(D-Index-Trap) with (D-Assign) at a
 dynamic place (helper). -/
-def stepArgs (P : Program) (H : Store) (φ : Frame) (K : List Kont) (tr : List Event)
-    (vs : List Val) : ArgsTag → StepOut
+def stepArgs (P : Program) (H : Store) (φ : Activation) (K : List Kont) (tr : List Event)
+    (vs : List Val) : ArgsFrame → StepOut
   | .struct s =>
     match P.decls.structs[s]? with
     | none => .stuck .unbound
@@ -944,7 +944,7 @@ def stepArgs (P : Program) (H : Store) (φ : Frame) (K : List Kont) (tr : List E
 
 /-- An operator's outcome as a step: a value plugs the hole, a trap is
 (Panic-Lift) §6.2, and a wrong-shaped operand is stuck (helper). -/
-def OpRes.toStep (H : Store) (φ : Frame) (K : List Kont) (tr : List Event) : OpRes → StepOut
+def OpRes.toStep (H : Store) (φ : Activation) (K : List Kont) (tr : List Event) : OpRes → StepOut
   | .val v => .next (.run H φ K (.ret v) tr)
   | .trap κ => .next (.panic κ tr)
   | .confused => .stuck .typeConfusion
@@ -953,7 +953,7 @@ def OpRes.toStep (H : Store) (φ : Frame) (K : List Kont) (tr : List Event) : Op
 of §6.2 and the redexes that fire there — §6.4's operators, (D-Match),
 (D-If-T)/(D-If-F), (D-Let), (D-EndScope), (D-Seq), (D-Assign),
 (D-Return-Value), (D-Return) and (D-Loop-Iter) (helper). -/
-def stepRet (M : FloatSig) (P : Program) (H : Store) (φ : Frame) (K : List Kont)
+def stepRet (M : FloatSig) (P : Program) (H : Store) (φ : Activation) (K : List Kont)
     (tr : List Event) (v : Val) : Kont → StepOut
   | .binopL op e₂ => .next (.run H φ (.binopR op v :: K) (.eval e₂) tr)
   | .binopR op v₁ => (evalBinOp M op v₁ v).toStep H φ K tr
@@ -1017,7 +1017,7 @@ def stepRet (M : FloatSig) (P : Program) (H : Store) (φ : Frame) (K : List Kont
   | .endscope ℓs =>
     match plainUnwind P.decls H ℓs.reverse with
     | .error w => .stuck w
-    | .ok (H', evs) => .next (.run H' (φ.popScope ℓs.length) K (.ret v) (tr ++ evs))
+    | .ok (H', evs) => .next (.run H' (φ.unwindScope ℓs.length) K (.ret v) (tr ++ evs))
   | .loop e φs =>
     match v with
     | .unit =>

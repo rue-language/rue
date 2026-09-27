@@ -144,7 +144,7 @@ reduction relation between them. `Dynamics.lean` gives the same dynamics as a
 definitional interpreter:
 
 ```lean
-def eval (M : FloatSig) : Nat → Program → Store → Frame → Expr → EvalRes
+def eval (M : FloatSig) : Nat → Program → Store → Activation → Expr → EvalRes
 def run (M : FloatSig) (P : Program) (fuel : Nat) : EvalRes :=
   eval M fuel P [] { env := [], scope := [] } (.call 0 [])
 ```
@@ -520,7 +520,7 @@ It is stated as an invariant for two reasons:
   no two bindings share one. That is why §7's no-use-after-drop bullet follows
   from the invariant rather than from a fact about closed expressions, and why
   no unwind touches a `†` cell or retires one twice.
-- It stops being free when `Frame.scope` becomes the *stack* §6.1 specifies,
+- It stops being free when `Activation.scope` becomes the *stack* §6.1 specifies,
   where scopes are pushed and popped independently of the binder chain and σ
   and ρ are two books to keep in step. That is the shape for which the
   calculus keeps σ beside ρ (RUE-1277). This fragment does not have it:

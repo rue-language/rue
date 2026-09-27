@@ -2430,7 +2430,7 @@ result. `d` is the nesting depth, `Θ` the binder types in scope and `R` the
 enclosing function's return type, all of which travel with `φ` so each row
 prints its expression with the source's names. -/
 def traceEval (M : FloatSig) (P : Program) :
-    Nat → Nat → List Ty → Ty → Store → Frame → Expr → Trace
+    Nat → Nat → List Ty → Ty → Store → Activation → Expr → Trace
   | 0, d, Θ, R, H, _, e =>
       traced [] d Θ R e "out of fuel — the interpreter stopped early (ADR-0097)" H H []
         .exhausted .outOfFuel
@@ -2926,7 +2926,7 @@ def traceEval (M : FloatSig) (P : Program) :
         | some fd =>
           if fd.params.length = vs.length then
             let minted := mintParams H₁ vs
-            let φg : Frame := { env := minted.2.reverse, scope := minted.2 }
+            let φg : Activation := { env := minted.2.reverse, scope := minted.2 }
             let push := adminStep (d + 1) Θ R (.call f args) "(D-Call) §6.9 (push the frame)"
               (fnHeader f fd ++ "  with " ++ locsLine minted.2)
               H₁ minted.1 [] (.value .unit)
@@ -2968,7 +2968,7 @@ reproduces `eval fuel P H φ e` exactly, so a rendered step table can never
 report an outcome — a value, an unwinding `return`, a §6.12 trap, a refusal,
 or exhausted fuel — the interpreter does not produce. -/
 theorem traceEval_res (M : FloatSig) {P : Program} : ∀ (fuel : Nat) (d : Nat) (Θ : List Ty)
-    (R : Ty) (H : Store) (φ : Frame) (e : Expr),
+    (R : Ty) (H : Store) (φ : Activation) (e : Expr),
     (traceEval M P fuel d Θ R H φ e).res = eval M fuel P H φ e := by
   intro fuel
   induction fuel with

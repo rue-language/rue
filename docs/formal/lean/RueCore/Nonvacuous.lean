@@ -69,7 +69,7 @@ theorem exact_model :
 
 /-- `Spec.Nonvacuous.empty_frame_stmt`, proved: §7's hypotheses, satisfied (RUE-2469). -/
 theorem empty_frame :
-    ∀ D : Decls, FrameMatches D [] Frame.empty [] ∧ StoreCC D [] :=
+    ∀ D : Decls, FrameMatches D [] Activation.empty [] ∧ StoreCC D [] :=
   fun _ => ⟨frameMatches_empty, fun _ _ hc => by simp at hc⟩
 
 /-- `Spec.Nonvacuous.open_frame_stmt`, proved: §7's hypotheses, satisfied (RUE-2469). -/
@@ -123,12 +123,12 @@ theorem dtor :
         c.fits (.int .w64 .signed) = true ∧ Typed P (.int .w64 .signed) [] B (.int .w64 .signed) Ω) ∧
       DtorNotCopy P.decls ∧ (∃ C, Step Float.exactOps P Config.init C) ∧
       (∀ fuel w, run Float.exactOps P fuel ≠ .stuck w) ∧
-      2 ≤ (freedIds P.decls (eval Float.exactOps 200 P [] Frame.empty B).trace).length ∧
-      (∃ H₁ vs tr, ∃ r : EvalRes, Lead Float.exactOps P 200 [] Frame.empty H₁ vs tr B ∧
-        eval Float.exactOps 201 P [] Frame.empty B = r.withTrace tr ∧
+      2 ≤ (freedIds P.decls (eval Float.exactOps 200 P [] Activation.empty B).trace).length ∧
+      (∃ H₁ vs tr, ∃ r : EvalRes, Lead Float.exactOps P 200 [] Activation.empty H₁ vs tr B ∧
+        eval Float.exactOps 201 P [] Activation.empty B = r.withTrace tr ∧
         Contents.ownList P.decls (Contents.ofVals vs) ≠ []) ∧
       ∃ H v tr, run Float.exactOps P 200 = .ok H v tr ∧
-        Steps Float.exactOps P Config.init (.run H Frame.empty [] (.ret v) tr) ∧
+        Steps Float.exactOps P Config.init (.run H Activation.empty [] (.ret v) tr) ∧
         2 ≤ (freedIds P.decls tr).length ∧ 2 ≤ (dtorIds tr).length := by
   intro B hB P hPe
   subst hB
@@ -157,7 +157,7 @@ theorem linear :
       (∃ c Ω, check P (.int .w64 .signed) [] B = some (c, Ω) ∧
         c.fits (.int .w64 .signed) = true ∧ Typed P (.int .w64 .signed) [] B (.int .w64 .signed) Ω) ∧
       ∃ H v tr, run Float.exactOps P 200 = .ok H v tr ∧
-        Steps Float.exactOps P Config.init (.run H Frame.empty [] (.ret v) tr) ∧
+        Steps Float.exactOps P Config.init (.run H Activation.empty [] (.ret v) tr) ∧
         2 ≤ (freedIds P.decls tr).length := by
   intro B hB P hPe
   subst hB
@@ -188,7 +188,7 @@ theorem loop :
       (∃ c Ω, check P (.int .w64 .signed) [] B = some (c, Ω) ∧
         c.fits (.int .w64 .signed) = true ∧ Typed P (.int .w64 .signed) [] B (.int .w64 .signed) Ω) ∧
       ∃ H v tr, run Float.exactOps P 200 = .ok H v tr ∧
-        Steps Float.exactOps P Config.init (.run H Frame.empty [] (.ret v) tr) ∧
+        Steps Float.exactOps P Config.init (.run H Activation.empty [] (.ret v) tr) ∧
         3 ≤ (dtorIds tr).length := by
   intro B hB P hPe
   subst hB
@@ -216,7 +216,7 @@ theorem array :
       (∃ c Ω, check P (.int .w64 .signed) [] B = some (c, Ω) ∧
         c.fits (.int .w64 .signed) = true ∧ Typed P (.int .w64 .signed) [] B (.int .w64 .signed) Ω) ∧
       ∃ H v tr, run Float.exactOps P 200 = .ok H v tr ∧
-        Steps Float.exactOps P Config.init (.run H Frame.empty [] (.ret v) tr) ∧
+        Steps Float.exactOps P Config.init (.run H Activation.empty [] (.ret v) tr) ∧
         2 ≤ (dtorIds tr).length := by
   intro B hB P hPe
   subst hB
@@ -242,7 +242,7 @@ theorem enum_match :
       (∃ c Ω, check P (.int .w64 .signed) [] B = some (c, Ω) ∧
         c.fits (.int .w64 .signed) = true ∧ Typed P (.int .w64 .signed) [] B (.int .w64 .signed) Ω) ∧
       ∃ H v tr, run Float.exactOps P 200 = .ok H v tr ∧
-        Steps Float.exactOps P Config.init (.run H Frame.empty [] (.ret v) tr) ∧
+        Steps Float.exactOps P Config.init (.run H Activation.empty [] (.ret v) tr) ∧
         2 ≤ (freedIds P.decls tr).length ∧ 1 ≤ (dtorIds tr).length := by
   intro B hB P hPe
   subst hB
@@ -269,7 +269,7 @@ theorem early_return :
       (∃ c Ω, check P (.int .w64 .signed) [] B = some (c, Ω) ∧
         c.fits (.int .w64 .signed) = true ∧ Typed P (.int .w64 .signed) [] B (.int .w64 .signed) Ω) ∧
       ∃ H v tr, run Float.exactOps P 200 = .ok H v tr ∧
-        Steps Float.exactOps P Config.init (.run H Frame.empty [] (.ret v) tr) ∧
+        Steps Float.exactOps P Config.init (.run H Activation.empty [] (.ret v) tr) ∧
         v = .int .w64 .signed 7 ∧ 2 ≤ (dtorIds tr).length := by
   intro B hB P hPe
   subst hB
@@ -322,7 +322,7 @@ theorem float :
       (∃ c Ω, check P (.float .w64) [] B = some (c, Ω) ∧
         c.fits (.float .w64) = true ∧ Typed P (.float .w64) [] B (.float .w64) Ω) ∧
       ∃ H v tr, run Float.exactOps P 200 = .ok H v tr ∧
-        Steps Float.exactOps P Config.init (.run H Frame.empty [] (.ret v) tr) ∧
+        Steps Float.exactOps P Config.init (.run H Activation.empty [] (.ret v) tr) ∧
         v = .float .w64 (.num false 15 (-1)) := by
   intro B hB P hPe
   subst hB
@@ -446,7 +446,7 @@ theorem whole_drops :
         fns := [{ params := [], ret := .int .w64 .signed, body := B }] } →
       checkProgram P = true ∧ ProgramTyped P ∧ P.pendingSafe = true ∧
       ∃ C, Steps Float.exactOps P Config.init C ∧ 0 ∈ C.held P.decls ∧ 2 ∈ C.held P.decls ∧
-        ∃ H v tr, Steps Float.exactOps P C (.run H Frame.empty [] (.ret v) tr) ∧
+        ∃ H v tr, Steps Float.exactOps P C (.run H Activation.empty [] (.ret v) tr) ∧
           (freedIds P.decls tr).count 0 = 1 ∧ (freedIds P.decls tr).count 2 = 1 := by
   intro B hB P hPe
   subst hB
@@ -467,7 +467,7 @@ theorem whole_result :
         fns := [{ params := [], ret := .struct 0, body := .mkStruct 0 [.intLit .w64 .signed 7] }] } →
     checkProgram P = true ∧ ProgramTyped P ∧ P.pendingSafe = true ∧
     ∃ C, Steps Float.exactOps P Config.init C ∧ 0 ∈ C.held P.decls ∧
-      ∃ H v tr, Steps Float.exactOps P C (.run H Frame.empty [] (.ret v) tr) ∧
+      ∃ H v tr, Steps Float.exactOps P C (.run H Activation.empty [] (.ret v) tr) ∧
         (v.own P.decls).count 0 = 1 ∧ freedIds P.decls tr = [] := by
   intro P hPe
   have h1 : checkProgram P = true := by rw [hPe]; rfl
