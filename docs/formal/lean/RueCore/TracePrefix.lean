@@ -30,7 +30,7 @@ was minted. A trap is the one outcome that keeps a trace without a store, and
 the law says of it only that the trace owns at most the start plus some
 range of fresh identities (`Cons`'s `panic` clause).
 
-`eval_steps_of_outOfFuel` (`Adequacy.lean`) turns exhausted fuel into a run of
+`eval_steps_of_outOfFuel` (`Equivalence.lean`) turns exhausted fuel into a run of
 §6's relation at least that long. This module strengthens it by that same
 ledger (`LongC`): if `eval` exhausts `fuel` from a copy-closed store, §6's
 relation has a run of at least `fuel` steps from the expression in focus,

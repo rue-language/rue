@@ -3,12 +3,12 @@ module
 public import RueCore.Step
 public import RueCore.Step.Lemmas
 public import RueCore.Soundness
-public import RueCore.Adequacy.Defs
+public import RueCore.Equivalence.Defs
 
 @[expose] public section
 
 /-!
-# RueCore.Adequacy — `eval` is adequate to §6's `Step`, both ways
+# RueCore.Equivalence — `eval` is adequate to §6's `Step`, both ways
 
 ADR-0097's decision 3 proves safety over the definitional interpreter `eval`
 and says that "a theorem about `eval` is a theorem about §6 only once the two
@@ -119,7 +119,7 @@ per `Step` constructor, would be a second safety proof and is not claimed.
 `affineScopeDrop_both_ways` is one corpus program in both presentations, the
 GUIDE's worked instance.
 
-`Activation.empty`, `StepsN` and `Config.SafeAt` are in `Adequacy/Defs.lean`, the
+`Activation.empty`, `StepsN` and `Config.SafeAt` are in `Equivalence/Defs.lean`, the
 definitions layer; `affineScopeDrop_both_ways`, one corpus program traced
 both ways, is in `Witnesses.lean` (README, "Layers").
 -/

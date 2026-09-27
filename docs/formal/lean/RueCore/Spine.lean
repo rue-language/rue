@@ -6,10 +6,10 @@ public import RueCore.Checker
 public import RueCore.Trace
 public import RueCore.TraceExact
 public import RueCore.TraceOrder
-public import RueCore.Retire
+public import RueCore.Tombstone
 public import RueCore.TracePrefix
 public import RueCore.TraceWhole
-public import RueCore.Adequacy
+public import RueCore.Equivalence
 public import RueCore.Nonvacuous
 public import RueCore.Sharp
 

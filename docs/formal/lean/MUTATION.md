@@ -59,7 +59,7 @@ modules — **and, since RUE-2490, the statement vocabulary itself**: L0's
   `HasTy`, `ContentsTy`, `ContentsOwnTyping`, `ActivationTyping`, `EvalOk`.
 * `Trace/Defs.lean` (RUE-2490): what the trace theorems are stated over —
   `Exact`, `Blocks`, `StackDiscipline`, `StrictStackOrder`, `Config.Ordered`.
-* `Adequacy/Defs.lean` (RUE-2490): what the adequacy theorems are stated
+* `Equivalence/Defs.lean` (RUE-2490): what the adequacy theorems are stated
   over — `Config.SafeAt`, `StepsN`.
 * `Float.lean` (RUE-2490): `FloatDatum.Wf`, the float counterpart of
   `InBounds`.
@@ -133,7 +133,7 @@ fails on it, in this order:
    ("The spec pass", below);
 2. **proof**: `lake build` fails in a theorem of the proof modules (layer L2:
    `Statics/Lemmas`, `Dynamics/Lemmas`, `Step/Lemmas`, `Soundness`,
-   `Checker`, `Trace`, `Adequacy`, `TraceExact`, `TraceOrder`, `Spine`, ...),
+   `Checker`, `Trace`, `Equivalence`, `TraceExact`, `TraceOrder`, `Spine`, ...),
    and no candidate statement rests on the failure;
 3. **witness**: the build fails only in layer L3 (`Examples`, `Witnesses`,
    `Corpus`, `Print`, `Explain`) or in an `example`;
@@ -568,7 +568,7 @@ A line number is given only for a module the pass leaves as written.
 | 50 | `step-usecopy-nondet` | §6.3 | (D-Use-Copy), Step only | copy-check | spec: `Step.det` (hyp), `Config.stuck_iff` (↔/¬), `Config.trichotomy` (concl) +45 more +42 Glue | 90/92; via `Step.step_eq`, `sim_use` | survived | (same) | a stated property is false | two `Step` rules apply to one non-Copy use: `Step.det` | 71 |
 | 51 | `bounds-off-by-one` | §6.5 | (D-Index-Trap) | off-by-one | spec: `soundness` (term), `drop_exactly_once` (term), `drop_glue_order` (hyp/term) +49 more +63 Glue | 115/161; via `inBoundsIdx_eq_true` | witness: `Examples.lean` example (l. 1175) | corpus: `array_bounds_trap_at_len`, `array_zero_length_dyn_trap` +1 | a stated property is false | an index equal to the length passes the check and the read fails (`typeConfusion`): `soundness` | 37 |
 | 52 | `bounds-negative` | §6.5 | (D-Index-Trap) | bounds | spec: `no_refusal` (term), `soundness` (term), `drop_exactly_once` (term) +49 more +63 Glue | 115/161; via `Contents.resolveDyn_ok` | witness: `Examples.lean` example (l. 1106) | corpus: `array_dyn_write_trap`, `array_dyn_write_trap_negative` | a stated property is false | `no_refusal`, `soundness` and the rest of the safety spine are false (RUE-2499's spec pass; kernel-checked refutation, scratch/rue-2499/refute/bounds-negative-T.lean): `let a: [i64; 0] = []; a[-1]` is checked, `-1 < 0` passes the test, and element `0` of an empty array is a `typeConfusion`. The first reading, 'a negative index reads element 0', missed the empty array | 40 |
-| 53 | `bounds-stuck` | §6.5 | (D-Index-Trap) | bounds | spec: `soundness` (term), `drop_exactly_once` (term), `drop_glue_order` (hyp/term) +52 more +64 Glue | 119/161; via `soundness`, `Retire.dynPlace_ne_uad` | witness: `Examples.lean` example (l. 1101) | corpus: `array_bounds_trap`, `array_bounds_trap_at_len` +6 | a stated property is false | an out-of-range index is a stuck state: `soundness` | 39 |
+| 53 | `bounds-stuck` | §6.5 | (D-Index-Trap) | bounds | spec: `soundness` (term), `drop_exactly_once` (term), `drop_glue_order` (hyp/term) +52 more +64 Glue | 119/161; via `soundness`, `Tombstone.dynPlace_ne_uad` | witness: `Examples.lean` example (l. 1101) | corpus: `array_bounds_trap`, `array_bounds_trap_at_len` +6 | a stated property is false | an out-of-range index is a stuck state: `soundness` | 39 |
 | 54 | `repeat-count` | §6.5 | array repeat | off-by-one | spec: `soundness` (term), `drop_exactly_once` (term), `drop_glue_order` (hyp) +51 more +63 Glue | 117/161; via `soundness`, `eval_conserves`, `rest_step` | Explain mirror: `traceEval_res` (`Explain.lean`) | bridge: `gen_7_156` +2 | a stated property is false | `[v; n]` builds `n + 1` elements, not a value of `[T; n]`: `soundness` | 81 |
 | 55 | `overflow-wrap` | §6.4 | (D-Arith-Trap) | trap | spec: `drop_exactly_once` (term), `drop_glue_order` (hyp/term), `drop_order` (hyp/term) +51 more +63 Glue | 117/161; via `intResult_res`, `intResult_scalar` | witness: `Examples.lean` example (l. 3370) | corpus: `i64_min_times_neg1`, `i8_div_min_by_neg_one` +4 | every statement holds | wraparound yields an in-range value: safe, and the spine states safety, not the arithmetic | 42 |
 | 56 | `divzero-kind` | §6.4 | (D-Div-Trap) | trap | spec: `drop_exactly_once` (term), `drop_glue_order` (hyp/term), `drop_order` (hyp/term) +49 more +63 Glue | 115/161; via `binOpInt_res` | witness: `Examples.lean` example (l. 3411) | corpus: `dbg_before_trap`, `div_zero` +1 | every statement holds | a trap of the wrong kind is still a defined trap | 40 |
@@ -913,7 +913,7 @@ need a non-vacuity witness that states `ActivationTyping`/`StoreCC` positively
    cadence could rerun the analysis per milestone. The coordinator decides.
 5. **[Formal/Assurance] The statement-vocabulary mutants, and what they still
    need (RUE-2490; done by RUE-2499 and RUE-2500).** 15 mutants over `Soundness/Defs`, `Trace/Defs`,
-   `Adequacy/Defs` and `Float` (["RUE-2490: the statement vocabulary and
+   `Equivalence/Defs` and `Float` (["RUE-2490: the statement vocabulary and
    Float"](#rue-2490-the-statement-vocabulary-and-float)) found the analysis
    cannot see the Spec layer for these mutants at all: `Sharp.lean`,
    `Nonvacuous.lean`, `Spine.lean` and both `Glue.lean` files are layer 3, so

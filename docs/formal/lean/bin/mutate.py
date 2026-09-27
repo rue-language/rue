@@ -8,7 +8,7 @@ usage: mutate.py --work DIR [--src LEANDIR] [--only ID,...] [--redo] [--compiler
 
 Each mutant is a small, deliberate change to the semantics and the checker: the L0 modules
 `Syntax` and `Float`, and all seven of L1's modules (`Statics`, `Checker/Defs`, `Dynamics`,
-`Step`, `Soundness/Defs`, `Trace/Defs`, `Adequacy/Defs`; README, "Layers"), written as
+`Step`, `Soundness/Defs`, `Trace/Defs`, `Equivalence/Defs`; README, "Layers"), written as
 exact-text edits of the package's sources. The last four are what the headline statements are
 written *in* rather than *of*; mutating them is RUE-2490, and what should notice a wrong one is
 the Spec layer's non-vacuity witnesses and sharpness counter-examples, not a plain proof.
@@ -168,7 +168,7 @@ ST, CK, DY, SP, SX = ("RueCore/Statics.lean", "RueCore/Checker/Defs.lean",
 # RUE-2490: the statement vocabulary (SD, TD, AD) and Float (FL) — what the headline statements
 # are written in, not what they are stated of ("What is mutated" in MUTATION.md).
 SD, TD, AD, FL = ("RueCore/Soundness/Defs.lean", "RueCore/Trace/Defs.lean",
-                  "RueCore/Adequacy/Defs.lean", "RueCore/Float.lean")
+                  "RueCore/Equivalence/Defs.lean", "RueCore/Float.lean")
 
 # Operators (the issue's, plus two of the classic ones): premise = drop a premise (in a
 # `Typed` rule the premise is replaced by `True`, which is the same rule but keeps the
@@ -522,7 +522,7 @@ MUTANTS = [
          "       | some sd => Contents.residualLinearList D cs")],
       "the machine treats a declared-linear struct's obligation as its fields'"),
     # ---------------- RUE-2490: the statement vocabulary and Float ----------------
-    # These four modules (`Soundness/Defs`, `Trace/Defs`, `Adequacy/Defs`, `Float`) are what
+    # These four modules (`Soundness/Defs`, `Trace/Defs`, `Equivalence/Defs`, `Float`) are what
     # the headline statements are written *in*, not what they are stated *of* (MUTATION.md,
     # "What is mutated"). A wrong rule there weakens (or wrongly strengthens) the claim itself,
     # so what should notice it is the Spec layer's non-vacuity witnesses (`Nonvacuous*`) and

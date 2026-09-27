@@ -4,7 +4,7 @@ public import RueCore.Float
 public import RueCore.Checker.Defs
 public import RueCore.Soundness.Defs
 public import RueCore.Trace.Defs
-public import RueCore.Adequacy.Defs
+public import RueCore.Equivalence.Defs
 
 @[expose] public section
 

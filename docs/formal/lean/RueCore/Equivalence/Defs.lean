@@ -6,12 +6,12 @@ public import RueCore.Soundness.Defs
 @[expose] public section
 
 /-!
-# RueCore.Adequacy.Defs — what the adequacy theorems are stated over (layer L1)
+# RueCore.Equivalence.Defs — what the adequacy theorems are stated over (layer L1)
 
-The three definitions `Adequacy.lean`'s headline statements use beyond §6's
+The three definitions `Equivalence.lean`'s headline statements use beyond §6's
 `Step`: the entry point's empty frame (`Activation.empty`), counted runs
 (`StepsN`), and §7's semantic typing of a configuration (`Config.SafeAt`).
-They are moved here verbatim from `Adequacy.lean` (RUE-2456); the simulation
+They are moved here verbatim from `Equivalence.lean` (RUE-2456); the simulation
 relations its proofs are built from (`Sim`, `Long`) stay there, since no
 headline statement mentions them.
 -/

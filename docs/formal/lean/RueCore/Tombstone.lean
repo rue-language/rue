@@ -5,7 +5,7 @@ public import RueCore.Step.Lemmas
 @[expose] public section
 
 /-!
-# RueCore.Retire — no program reaches a retired cell (layer L2)
+# RueCore.Tombstone — no program reaches a retired cell (layer L2)
 
 `useAfterDrop` is the refusal `eval` raises when it reaches a retired (`†`)
 cell (§6.1), and `step` names the same stuck state. This module proves that
@@ -27,7 +27,7 @@ scope record owes a drop (`dropRetire`, `unwindLocs`, and `Step`'s plain
 versions). Every binding cell is minted fresh at the end of the store and
 bound at once, and a scope record lists each cell once. So:
 
-* over `eval` (`Retire.eval_live`): if every cell the frame's environment and
+* over `eval` (`Tombstone.eval_live`): if every cell the frame's environment and
   scope record name is live, and the record owes each cell once
   (`LiveActivation`), then an evaluation that yields a value retired no cell that
   was live before it; an unwinding `return` retired at most the frame's
@@ -35,7 +35,7 @@ bound at once, and a scope record lists each cell once. So:
   the frame's record extended by distinct fresh cells, still live; and no
   refusal is `useAfterDrop` (`LivePost`). The induction is on fuel, one case
   per `eval` rule, and the empty frame of `run` starts it.
-* over `Step` (`Retire.step_live`): every configuration keeps the stack's
+* over `Step` (`Tombstone.step_live`): every configuration keeps the stack's
   shape (`Shape`: an `endscope` marker or a loop boundary sits under a frame
   that extends its own at the end of the scope record, and every frame's
   environment is its record reversed), and every cell owed a drop by the
@@ -55,7 +55,7 @@ the fragment, Phase D, RUE-2238) add references as a second way to name one,
 and there the property is expected to rest on the statics again.
 -/
 
-namespace RueCore.Retire
+namespace RueCore.Tombstone
 
 /-! ## The invariant over `eval` -/
 
@@ -1462,11 +1462,11 @@ theorem steps_live {M : FloatSig} {P : Program} {C C' : Config} (hs : Steps M P 
       rw [step_iff.mp h₁] at this
       exact ih this
 
-end RueCore.Retire
+end RueCore.Tombstone
 
 namespace RueCore
 
-open Retire
+open Tombstone
 
 /-- **No use-after-drop, on every program** (§7 "No use-after-drop / no leak
 of drops", "never read afterward"; §6.9): `run` never refuses with
@@ -1474,7 +1474,7 @@ of drops", "never read afterward"; §6.9): `run` never refuses with
 theorem run_no_use_after_drop (M : FloatSig) (P : Program) (fuel : Nat) :
     run M P fuel ≠ .refused .useAfterDrop := by
   intro h
-  have := Retire.eval_live M P fuel [] { env := [], scope := [] } (.call 0 [])
+  have := Tombstone.eval_live M P fuel [] { env := [], scope := [] } (.call 0 [])
     ⟨fun _ h => absurd h List.not_mem_nil, fun _ h => absurd h List.not_mem_nil,
       List.nodup_nil⟩
   unfold run at h
@@ -1487,7 +1487,7 @@ cell, checked or not. -/
 theorem step_no_use_after_drop (M : FloatSig) (P : Program) {C : Config}
     (h : Steps M P Config.init C) : ¬ C.Stuck M P .useAfterDrop := by
   intro hs
-  have hl := Retire.step_live M P (Retire.steps_live h ⟨rfl, List.nodup_nil, fun _ h => absurd h List.not_mem_nil⟩)
+  have hl := Tombstone.step_live M P (Tombstone.steps_live h ⟨rfl, List.nodup_nil, fun _ h => absurd h List.not_mem_nil⟩)
   unfold Config.Stuck at hs
   rw [hs] at hl
   exact hl rfl

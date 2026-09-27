@@ -359,7 +359,7 @@ it has two rows.
 | total predicate | A relation that holds or fails for every pair of inputs | none fetched | — | ours, pending audit | 01 §6.4 |
 | invariant; the invariant | A property every reachable state satisfies, which the safety proof carries | none; FIELD §2: store typing, the invariant a syntactic proof carries ([FIELD §2][F2]) | `ActivationTyping` | ours, pending audit | 01 §6.7; 03 “Type safety”; lean/README “How to read this, with …”; GUIDE “How to read this guide”; `Statics` |
 | `StoreTyping`; `ActivationTyping`; `ContentsOwnTyping` | The invariant: each cell agrees with its binding's type and ownership state | [FIELD §2][F2]: "`StoreTyping`" differs, partial | `StoreTyping`, `ActivationTyping`, `ContentsOwnTyping` | ours, pending audit | 03 “Type safety”; lean/README “How to read this, with …”; GUIDE §3; MUTATION “What is mutated”; `Syntax` |
-| `SafeAt`; `Config.SafeAt` | Nothing reachable from a configuration is stuck, and every halted value is typed | [FIELD §2][F2]: `safe(e)` (Timany §2.4), partial | `Config.SafeAt` | ours, pending audit | 03 “Type safety”; lean/README “Layers”; GUIDE “One program, traced both ways”; MUTATION “What is mutated”; `Adequacy.Defs` |
+| `SafeAt`; `Config.SafeAt` | Nothing reachable from a configuration is stuck, and every halted value is typed | [FIELD §2][F2]: `safe(e)` (Timany §2.4), partial | `Config.SafeAt` | ours, pending audit | 03 “Type safety”; lean/README “Layers”; GUIDE “One program, traced both ways”; MUTATION “What is mutated”; `Equivalence.Defs` |
 | fundamental lemma | Our name for "a checked program's initial configuration is `SafeAt`" | [FIELD §2][F2]: "fundamental lemma" differs, partial | — | ours, pending audit | 03 “Type safety”; lean/README “What is mechanized” |
 | locality; `FrameProperty` | An evaluation grows the store and changes no cell outside its frame's own | none | `FrameProperty` | ours, pending audit | 03 “Type safety”; lean/README “How to read this, with …”; GUIDE §3; `Soundness.Defs` |
 | conservation law | What the final store, result and trace own is at most what the start owned plus what was created | none | `Exact` | ours, pending audit | 03 “No double-free”; lean/README “What is mechanized”; GUIDE §4; `Dynamics` |
@@ -935,9 +935,9 @@ documents rely on.
 | `Kont.own` | `Trace.Defs` | The owned identities one stack frame holds pending: a binary operator's left value, a list context's reduced values | helper | lean/README “What is mechanized” |
 | `Focus.own` | `Trace.Defs` | The owned identities the value or values in focus hold | helper | lean/README “What is mechanized” |
 | `Config.held` | `Trace.Defs` | Every owned identity a configuration holds: in its cells, in focus, and pending on its control stack; nothing at a trap | ours, pending audit | lean/README “What is mechanized”; GUIDE “The three trace theorems, one …” |
-| `Activation.empty` | `Adequacy.Defs` | The empty frame the entry point is called from | helper | lean/README “What is mechanized”; `Adequacy.Defs` |
-| `StepsN` | `Adequacy.Defs` | `→ⁿ`: exactly `n` steps of §6's reduction | helper | lean/README “What is mechanized”; MUTATION “What is mutated”; `Adequacy.Defs` |
-| `Config.SafeAt` | `Adequacy.Defs` | Every configuration reachable from `C` steps or has halted, and every final value has type `T` (§7) | ours, pending audit | 03 “Type safety”; lean/README “Layers”; GUIDE “One program, traced both ways”; MUTATION “What is mutated”; `Adequacy.Defs` |
+| `Activation.empty` | `Equivalence.Defs` | The empty frame the entry point is called from | helper | lean/README “What is mechanized”; `Equivalence.Defs` |
+| `StepsN` | `Equivalence.Defs` | `→ⁿ`: exactly `n` steps of §6's reduction | helper | lean/README “What is mechanized”; MUTATION “What is mutated”; `Equivalence.Defs` |
+| `Config.SafeAt` | `Equivalence.Defs` | Every configuration reachable from `C` steps or has halted, and every final value has type `T` (§7) | ours, pending audit | 03 “Type safety”; lean/README “Layers”; GUIDE “One program, traced both ways”; MUTATION “What is mutated”; `Equivalence.Defs` |
 
 ## Emphasis, not terms
 

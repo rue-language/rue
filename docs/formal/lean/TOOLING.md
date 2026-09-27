@@ -102,7 +102,7 @@ procedure by hand: its `commands/<name>.md` names the scripts and the order.
   tactics with `;`, which the golf policy counts as separate lines.
 - Golfing opportunities: `lean4-skills-find-golfable` found none in
   TraceOrder (18 across the package, in `Soundness`, `TraceExact`, `Float`,
-  `Float/Lemmas`, `Statics/Lemmas` and `Adequacy`).
+  `Float/Lemmas`, `Statics/Lemmas` and `Equivalence`).
   `lean4-skills-find-exact-candidates` found 12 anchors (1 high, 11 low). It
   names the high one `range`; the declaration is `range'_increasing`.
 - Layer 2 (advisory): nothing that is not already a package convention.
@@ -150,7 +150,7 @@ axiom step, and the plugin's axiom checker would pass the result. So every
 golf or lemma replacement in this package is followed by our axiom gate.
 
 Beyond golf, the anchors at `reachable_ordered` and `reachable_nested` point
-at a refactor: both, and `steps_live` in `Retire.lean`, prove "a property every
+at a refactor: both, and `steps_live` in `Tombstone.lean`, prove "a property every
 `Step` preserves holds along `Steps`" by the same six-line induction. One
 shared lemma beside `Steps` would replace the three (RUE-2471's scope).
 

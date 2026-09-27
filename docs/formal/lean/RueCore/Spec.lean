@@ -4,7 +4,7 @@ public import RueCore.Spec.Safety
 public import RueCore.Spec.Checker
 public import RueCore.Spec.Trace
 public import RueCore.Spec.Step
-public import RueCore.Spec.Adequacy
+public import RueCore.Spec.Equivalence
 public import RueCore.Spec.Nonvacuous
 public import RueCore.Spec.Sharp
 
@@ -24,7 +24,7 @@ definitions they unfold to (`TRUST.md`, "Trusted base") and nothing else:
 * `Spec/Checker.lean` — the executable checker decides the typing hypothesis;
 * `Spec/Trace.lean` — no double free, exactly-once drops, and drop order;
 * `Spec/Step.lean` — §6's relation's own properties, and §7 over it;
-* `Spec/Adequacy.lean` — `eval` and §6's relation agree: their semantic
+* `Spec/Equivalence.lean` — `eval` and §6's relation agree: their semantic
   equivalence, the calculus's adequacy lemma.
 
 Beside them, `Spec/Nonvacuous.lean` holds the non-vacuity witnesses

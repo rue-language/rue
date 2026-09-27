@@ -195,8 +195,8 @@ def literatureTable : Array String := Id.run do
     "not define (RUE-2423 decides which §7 means). The `eval`/`Step` agreement the",
     "calculus calls the adequacy lemma is, in the field's words, the semantic",
     "equivalence of a definitional interpreter and a small-step semantics (Amin &",
-    "Rompf; `../FIELD.md` §3); its Spec module keeps the file name",
-    "`RueCore.Spec.Adequacy`, and its title uses the field's name.",
+    "Rompf; `../FIELD.md` §3); RUE-2466 renamed its Spec module's file to the",
+    "field's name too, `RueCore.Spec.Equivalence`.",
     "",
     "| Theorem | Literature (`../FIELD.md`) | Ours | Difference |",
     "|---|---|---|---|"]

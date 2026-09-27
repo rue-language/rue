@@ -3763,7 +3763,7 @@ too — `run-all-scope-drops` walks the frame's scope record. No program
 reaches the guard from `run`'s start, checked or not: a binding's cell is
 minted fresh and retired only when its scope ends, after which nothing names
 it, and a scope record owes each cell once (`run_no_use_after_drop`,
-`step_no_use_after_drop`, `Retire.lean`, RUE-2496). So the witnesses below
+`step_no_use_after_drop`, `Tombstone.lean`, RUE-2496). So the witnesses below
 start the machine in an open state — a store holding one retired cell and a
 frame naming it — which is the state the guard exists for.
 -/
