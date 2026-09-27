@@ -9,7 +9,7 @@ of the language's static and dynamic semantics. It exists to serve two purposes
 the prose specification (`docs/spec/`) cannot:
 
 1. **Implementation completeness.** Enough detail that a second, independent
-   compiler could be built to be *behaviorally compatible* with the reference
+   compiler could be built to have the same observable behavior as the reference
    compiler — not by reading our source, but by reading this.
 2. **Verifiability.** Written as judgments and reduction rules, so that
    properties — above all Rue's central claim, *memory safety without a garbage

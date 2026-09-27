@@ -1009,7 +1009,7 @@ A call evaluates its arguments and then, for the duration of the call, holds
 ```
 
 While `(root(p), _) ∈ Λ`, `p` and every path under/over it may not be moved
-(`Use-Move` premise) nor, for a shared loan, mutated. Loan consistency is
+(`Use-Move` premise) nor, for a shared loan, mutated. The law of exclusivity is
 deliberately **root-granular**: a loan of any projection or subrange covers the
 entire root, so two `inout` loans of disjoint fields or ranges of the same root
 are ill-formed. This is a conservative static rule; future `split_at_mut`-style
@@ -1145,7 +1145,7 @@ provenance `⊥_exit`, `⊥_diverge`, or `⊥_panic`) and are excluded from the
 state join, as with `if`; only the first two retain the conservative non-panic
 residual check.
 
-The core `match` is deliberately the **canonical form only**: an enum
+The core `match` is deliberately the **match-compilation form**: an enum
 scrutinee, exactly one arm per variant, no wildcards, no guards. Everything
 else the surface `match` chapter (4.7) allows is an **elaboration obligation**
 (`02-elaboration.md`), stated here so the gap is not silent (RUE-526): a
@@ -1957,7 +1957,7 @@ a mode-bearing place, not a value:
 The **full expression** of an occurrence (RUE-1279 — the loan extent above,
 previously undefined) is the largest enclosing §2 expression that is not itself
 a proper subexpression of another: walk outward from the occurrence and stop at
-the first *sequencing position* — the bound expression `e1` of
+the first *full-expression position* — the bound expression `e1` of
 `let μ x = e1; e2`, the discarded `e1` of `e1; e2`, the right-hand side of
 `assign`, the operand of `return`, the scrutinee of an `if`/`match`, or an
 entire arm body, loop body, or function body. The expression occupying that
@@ -2095,7 +2095,7 @@ A discriminant-only enum value `Kj⟨⟩` is stored as its bare tag (the oracle'
 `Value::Int` tag); a payload-carrying `Kj⟨v1..va⟩` as the tagged aggregate
 (`Value::Aggregate`, RUE-285).
 
-Four **scope helpers** on frames, used by the rules below, all defined in terms of
+Four **unwinding helpers** on frames, used by the rules below, all defined in terms of
 the drop relation `drop(H, ℓ)` of §6.11 (which is itself a no-op on a `⊘` or
 `Copy` cell, so these fold harmlessly over non-droppable bindings):
 
@@ -2441,7 +2441,7 @@ statements in this document — `(D-Eq)` here and the container equations of
 §6.13.4 — and neither appeals to reflexivity: `(D-Eq)` only forwards `≈`'s truth
 value into a `bool`, and `≟` neither moves nor drops its operands (§4.1, §6.3),
 so no ownership, drop, or progress obligation is stated in terms of `v ≈ v`. The
-two `a == a` remarks in §5.4 and §5.8 are claims about **loan consistency**, not
+two `a == a` remarks in §5.4 and §5.8 are claims about **the law of exclusivity**, not
 about the value produced, and the meta-level `=` of `(D-Use-Shared-Read)` and of
 §7's preservation statement is identity on model values, which stays reflexive
 whatever IEEE says. A leaf whose equality is irreflexive therefore invalidates no
@@ -3081,7 +3081,7 @@ global allocator, an allocation algorithm, arenas or pages, address
 arithmetic, or a reclamation policy. Those are runtime/library concerns (the
 allocator design is RUE-878); an allocation here is an identity plus cells
 plus liveness, nothing more. The payoff is stated in §7: use-after-free
-becomes a *progress violation* — the safety theorems become falsifiable, and
+becomes a *stuck state* — the safety theorems become falsifiable, and
 provable, for exactly the types real programs use (the vacuity RUE-390
 reported).
 

@@ -760,6 +760,9 @@ Copeland 1986 **(record)**; the Swift performance guide; Rust's
 | "copy-on-write" (01 §6.13.4: a literal-backed `StrBuf` copies its cells into a fresh buffer on its first mutation; formerly "literal promotion") | copy-on-write (Swift); clone-on-write (Rust `Cow`) | clear: Rust's `Cow` is the same shape, borrowed data made owned on the first mutation |
 | "UTF-8 decoder methods" (01 §6.13.4; formerly "decode family") | UTF-8 decoder (WHATWG Encoding) | clear |
 | "memory block", "block store", `BlockId` (01 §6.1, §6.13; formerly "abstract allocation", "allocation store", `AllocId`) | memory block, block reference (CompCert, Leroy & Blazy) | clear: an identity with cells, not an address, never reused |
+| "match-compilation form" (01 §5.5: the core `match` has one arm per variant, in order, with plain bindings; formerly "canonical form only") | match compilation; the switch node of a decision tree (Maranget §3) | partial: ours is one switch on one enum scrutinee, the form elaboration must compile every surface `match` into, and it has no default case |
+| "field-sensitive obligations" (the metatheory's leak check; formerly "paths and per-field obligations") | field-sensitive (Pearce, Kelly & Hankin) | partial: the word is from pointer analysis; the idea, per-path obligations, is also RFC 320's drop obligations (§5 above) |
+| "unwinding helpers" (01 §6.1; formerly "scope helpers") | stack unwinding (cppreference) | partial: ours close drop scopes on every scope exit, not only on an exception; the `return`/`break` exits are the unwinding case |
 
 ---
 
