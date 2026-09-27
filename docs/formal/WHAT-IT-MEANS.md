@@ -29,7 +29,7 @@ The modelled fragment has integers, floats, `bool`, structs, enums with
 `match`, fixed-length arrays, `let`, assignment, `if`, `loop`, functions
 called by value, `return`, `@panic` and `@dbg`.
 
-It does **not** have, for example, borrows or `inout` parameters,
+It does **not** have borrows or `inout` parameters,
 heap storage behind growable containers, strings, methods, equality
 comparisons, `&&`/`||`, `while`/`for`/`continue`, generics, `comptime`, or
 most of the standard library. Borrows and the heap are planned (RUE-2238, RUE-2240).
@@ -75,20 +75,21 @@ specification**:
 4. Every verdict and output must match.
 
 Inputs: 171 hand-written programs and 1,200 generated ones, as of
-2026-09-25. All the generated cases agree.
+2026-09-25. All generated cases agree.
 
 A disagreement means the compiler, model, spec or printer is wrong; a person
 decides which. At least nine were compiler bugs, all fixed
 (RUE-2290, RUE-2318, RUE-2335, RUE-2341, RUE-2344, RUE-2345, RUE-2347,
 RUE-2348, RUE-2449); others became spec questions. Of 21 re-introduced
-compiler bugs and classic mutants, the comparison kills all 20 inside the
-fragment ([lean/BRIDGE-SENSITIVITY.md](lean/BRIDGE-SENSITIVITY.md)).
+compiler bugs and classic mutants, all 20 inside the fragment are killed, some
+only by seeds written for them
+([lean/BRIDGE-SENSITIVITY.md](lean/BRIDGE-SENSITIVITY.md)).
 
 One hand-written case knowingly disagrees: the spec forbids `a[0] = a[0]`, the
-compiler accepts it, and the decision is open (RUE-2346).
+compiler accepts it; the decision is open (RUE-2346).
 
-This follows **verification-guided development**, as AWS did for Cedar, at a
-far smaller scale.
+This follows **verification-guided development**, like AWS's Cedar, at far
+smaller scale.
 
 ## What that does and does not guarantee
 
