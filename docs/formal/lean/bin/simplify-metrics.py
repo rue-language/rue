@@ -315,7 +315,7 @@ def report(lean_dir, args):
             parts.append("{} unused `simp` arguments (lines {})".format(
                 w["simp"], ", ".join(str(x) for x in w["simpLines"])))
         for k, v in sorted(w["kinds"].items()):
-            parts.append("{} × {}".format(v, k))
+            parts.append("{} x {}".format(v, k))
         o.append("* `{}` ({}): {}".format(src[mod]["path"], layer.get(mod, "?"), "; ".join(parts)))
     if not any_w:
         o.append("None.")
@@ -366,7 +366,7 @@ def report(lean_dir, args):
 
     o.append("## Duplicated lemma shapes")
     o.append("")
-    o.append("Exact: the same statement up to α-equivalence (universe and binder names, binder "
+    o.append("Exact: the same statement up to alpha-equivalence (universe and binder names, binder "
              "annotations and metadata erased).")
     o.append("")
     o += render_groups(env["exact"])
