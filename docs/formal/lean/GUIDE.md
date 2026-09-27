@@ -761,7 +761,7 @@ theorem drop_order (M : FloatLaws) (h : ProgramTyped P) :
 Both halves are over §6's `Step`.
 
 - **Within a value.** `Blocks` is a grammar: a trace is a sequence of
-  `@dbg` lines, consumptions, and drop markers, each marker followed by
+  `@dbg` lines, consume events, and drop markers, each marker followed by
   exactly §6.11's walk of what it names (`dropEvents`). That is the
   destructor first, then the fields in declaration order, an array's
   elements ascending, and an enum's active payload only. A destructor event
@@ -1462,7 +1462,7 @@ marker ends any of them again.
 is `ContentsOwnTyping` again. The output is `10`, `1`, `2`, `20`, then the
 value `5`: the residue drops **at the access** rather than at scope exit, and
 `explain/destructure_residue_order.txt` shows both drops and the
-consumption on its one (D-Use-Declared-Linear) §6.3 row. Where the selected path passes through a
+consume event on its one (D-Use-Declared-Linear) §6.3 row. Where the selected path passes through a
 nested struct, the nested residue comes before the later sibling
 (`destructure_nested_residue`); where the form is `@drop` rather than a use,
 §6.11 drops the selected leaf *after* the residue

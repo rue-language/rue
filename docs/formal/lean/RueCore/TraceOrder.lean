@@ -20,7 +20,7 @@ conjunction.
 elements in ascending index order (`3.9:15`, `3.8:73`), and an enum's
 **active** payload only (`6.3:20`), every `⊘` skipped. `dropEvents` is that
 order written as a function. `Blocks` is a grammar over whole traces: a trace
-is a sequence of blocks, each a `@dbg` line, a consumption, or a drop marker
+is a sequence of blocks, each a `@dbg` line, a consume event, or a drop marker
 (`drop ℓ c`, `dropTemp v`) followed by **exactly** §6.11's walk of what the
 marker names. The grammar has no other place for a destructor event, so a
 trace in it runs every destructor inside the walk of the marker before it,
@@ -72,7 +72,7 @@ reachable from `Config.init`:
 
 `Blocks` ties each marker to its walk, not to the cell: fidelity to what the
 cell held is `dropCell` reading `H(ℓ)` and the exactly-once ledger
-(`TraceExact.lean`). A consumption carries no walk, so on a program the
+(`TraceExact.lean`). A consume event carries no walk, so on a program the
 checker rejects a destructor-bearing node can be consumed without its
 destructor running (`destructure_under_dtor`, which `3.9:34` makes E0456);
 the grammar accepts that trace. And "an enum's active payload only" is how
@@ -357,7 +357,7 @@ theorem destructure_blocks {D : Decls} (hdt : DtorNotCopy D) {ℓ : Nat} {cd lea
       exact (dropResidue_blocks hdt (Contents.splitResidue_own 0 πs hcc hs).2.2 hd).append
         (.consume .nil)
 
-/-- (D-Match)'s consumption is a block or nothing (helper). -/
+/-- (D-Match)'s consume event is a block or nothing (helper). -/
 theorem matchConsume_blocks {D : Decls} {e k i : Nat} {vs : List Val} :
     DropGlueBlocks D (matchConsume D e k i vs) := by
   unfold matchConsume

@@ -7,7 +7,7 @@ import RueCore.Trace
 The step table shows a run row by row; the ledger turns it sideways, one row
 per **owned identity** (`Contents.own`, `Trace/Defs.lean`): the step that minted
 it, every step whose trace ended it — a `drop` marker, a discarded
-temporary's `dropTemp`, or a consumption, the three ends `freedIds` counts —
+temporary's `dropTemp`, or a consume event, the three ends `freedIds` counts —
 and every step whose destructor ran on it (`dtorIds`). "Exactly once"
 (`drop_exactly_once`, `TraceExact.lean`) is then something a reader sees: one
 entry in the *ended* column per identity. So is the order (`drop_order`,

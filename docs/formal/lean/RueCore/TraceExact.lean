@@ -26,7 +26,7 @@ way an owned value's life ends has one:
   §6.11, §6.7, §6.8), and a declared-`linear` destructure's residue (§6.3),
   which drops each retained subtree with the same marker;
 * a discarded temporary (`dropTemp v`, §6.7);
-* a **consumption** (`consume c`): the dead remainder a `match` leaves once its payload
+* a **consume event** (`consume c`): the dead remainder a `match` leaves once its payload
   is bound (§6.6), and the path from `d` to the leaf a destructure leaves once
   the leaf is handed on and the residue dropped (§6.3). Neither runs a drop of
   its own — every member has already gone somewhere — but the value's life
@@ -604,7 +604,7 @@ theorem dropResidue_freed {D : Decls} {ℓ : Nat} : ∀ {rs : List Contents} {ev
             rfl
 
 /-- **§6.3's destructure, counted exactly**: the leaf it hands on and what its
-trace ends — the residue's drops and the path's consumption — are exactly
+trace ends — the residue's drops and the path's consume event — are exactly
 what the consumed place owned (helper). -/
 theorem Contents.destructure_exact {D : Decls} {ℓ : Nat} {cd leaf : Contents} {πs : List Nat}
     {evs : List Event} (hcc : cd.copyContained D = true) (h : cd.destructure D ℓ πs = .ok (leaf, evs))
@@ -673,7 +673,7 @@ theorem unwindLocs_exact {D : Decls} : ∀ {H H' : Store} {ls : List Nat} {evs :
           rw [freedIds_append, List.count_append]
           omega
 
-/-- **(D-Match)'s consumption, counted exactly** (RUE-2427): the payload the
+/-- **(D-Match)'s consume event, counted exactly** (RUE-2427): the payload the
 arm's cells receive and the dead remainder `matchConsume` ends are exactly the
 scrutinee (helper). -/
 theorem matchConsume_exact {D : Decls} {e k i : Nat} {vs : List Val}
@@ -2458,7 +2458,7 @@ never refused, and when it completes normally or abruptly by `return` or
 * **every owned identity the store held at the start** is in exactly one
   place: in a cell that already existed, part of the result, or ended in the
   trace exactly as many times as it was held — by a drop, a discarded
-  temporary, a residue drop, or a consumption (`Exact`);
+  temporary, a residue drop, or a consume event (`Exact`);
 * **every cell the evaluation allocated is tombstoned** (`Tidy`): a `let`'s at
   its `endscope` (§6.7), a `match` arm's at the arm's end (§6.6), a callee's
   at its activation record pop (§6.9) — except, for an unwinding `break`, the cells its
@@ -2587,7 +2587,7 @@ held — the loop's lead is its body breaking, so the unwind is that loop's rest
 (`breakLeak_rejected`) — values `drop_exactly_once` alone never sees, because
 no evaluation starts holding them (`letDropDeleted_rejected`). Every place the
 machine ends an owned value — an `endscope`, a discard, an activation record pop, a
-`return`'s σ-walk, a `break`'s unwind, a consumption, an overwrite or `@drop`
+`return`'s σ-walk, a `break`'s unwind, a consume event, an overwrite or `@drop`
 — lies inside the window of a statement that already counts the value: the
 rest of the form that bound or received it, the rest of the loop a `break`
 unwinds to, or an evaluation that started holding it. So the two theorems

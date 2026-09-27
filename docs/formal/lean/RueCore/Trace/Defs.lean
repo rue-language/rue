@@ -120,7 +120,7 @@ structure TraceMeasure (D : Decls) (F : Event → List Nat) : Prop where
   /-- A discarded temporary: its `dropTemp v` marker, then the walk (§6.7). -/
   temp : ∀ {v : Val} {evs : List Event}, (Contents.ofVal v).copyContained D = true →
     dropContents D (Contents.ofVal v) = .ok evs → IdLe (F (.dropTemp v) ++ evs.flatMap F) (v.own D)
-  /-- A consumption ends at most its dead remainder (RUE-2427). -/
+  /-- A consume event ends at most its dead remainder (RUE-2427). -/
   consume : ∀ c, IdLe (F (.consume c)) (c.own D)
   /-- `@dbg` frees nothing. -/
   dbg : ∀ v, F (.dbg v) = []
@@ -285,7 +285,7 @@ def Settled (φ : Activation) (H₁ : Store) : EvalRes → Prop
   | .panic _ _ | .refused _ | .outOfFuel => True
 
 /-- **§6.11's order, as a grammar over the trace.** A trace is a sequence of
-blocks: a `@dbg` line, a consumption (`consume c`, which runs no drop of its
+blocks: a `@dbg` line, a consume event (`consume c`, which runs no drop of its
 own), or a drop marker followed by exactly the events §6.11's walk of what it
 names emits (`dropEvents`) — for a binding's drop `drop ℓ c`, the contents
 `c`, and for a discarded temporary `dropTemp v`, the value `v`. A destructor
@@ -357,7 +357,7 @@ end
 
 /-- **§6.11's order as a grammar over the trace, stated independently of the
 machine** (RUE-2487). The same block grammar as `Blocks` — a `@dbg` line, a
-consumption, or a drop marker followed by its drop's events — except that a
+consume event, or a drop marker followed by its drop's events — except that a
 drop's events are given by §6.11's rules (`DropGlue`) rather than by the
 function `dropEvents` the machine's walk is proved equal to. So a trace in
 this grammar runs each value's destructor first, then its fields in

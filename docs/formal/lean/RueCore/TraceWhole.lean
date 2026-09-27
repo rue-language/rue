@@ -1553,7 +1553,7 @@ configuration `C` §6's relation reaches from `Config.init` and any owned
 identity `a` it holds (`Config.held`: in a cell, in focus, or pending on the
 control stack). If the run from `C` terminates with a value — `✓v`, a value at
 an empty stack — then `a` is ended exactly once in the final trace (a drop, a
-discarded temporary's drop, or a consumption: `freedIds`) or is part of the
+discarded temporary's drop, or a consume event: `freedIds`) or is part of the
 final value, and not both. So no owned value the run ever holds is lost, and
 none is ended twice. A panic carries no claim: §6.12's trap runs no drop
 (§5.7's `⊥_panic` edge), so what it abandons is abandoned by design, and

@@ -258,7 +258,7 @@ def ledgerHtml (P : Program) (rows : List (Nat × Step)) (res : EvalRes) : Strin
     if ns.isEmpty then "—" else String.intercalate ", " (ns.map Ledger.rowRef)
   tagc "p" "lead"
     ("One row per owned identity: the step that minted it, the steps that ended it " ++
-     "(a drop marker, a discarded temporary, a consumption), and the steps whose " ++
+     "(a drop marker, a discarded temporary, a consume event), and the steps whose " ++
      "destructor ran on it. <code>drop_exactly_once</code> is one entry in the ended " ++
      "column per identity. Read in row order, and [n.k] (the k-th end of row n) " ++
      "inside a row, the ends are the trace's order, which <code>drop_order</code> " ++

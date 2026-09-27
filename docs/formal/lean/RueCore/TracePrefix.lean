@@ -39,7 +39,7 @@ it owns at most the start plus a range of fresh identities. The proof follows
 `eval_steps_of_outOfFuel` form by form; where that proof walks through an
 operand that finished (`eval_sim`'s `ok` clause), this one adds the operand's
 ledger from `eval_conserves`, and where a step of its own emits events — a
-temporary's drop (D-Seq), a `match`'s consumption and payload cells, a call's
+temporary's drop (D-Seq), a `match`'s consume event and payload cells, a call's
 parameter cells — it adds the same ledger `eval_conserves` uses for that step.
 Typing is not read: like `eval_conserves`, the law holds of every program,
 at every fuel `eval` does not refuse.

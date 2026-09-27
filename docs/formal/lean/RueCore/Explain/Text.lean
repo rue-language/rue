@@ -148,7 +148,7 @@ def ledgerLines (P : Program) (rows : List (Nat × Step)) (res : EvalRes) : List
       pad 12 (if e.dtors.isEmpty then "—" else String.intercalate ", " (e.dtors.map Ledger.rowRef)) ++
       Ledger.verdict P.decls res e
   ["One line per owned identity: the step that minted it, the steps that ended",
-   "it (a drop marker, a discarded temporary, a consumption), and the steps whose",
+   "it (a drop marker, a discarded temporary, a consume event), and the steps whose",
    "destructor ran on it. `drop_exactly_once` is one entry in the ended column",
    "per identity. Read in row order, and `[n.k]` (the k-th end of row n) inside a",
    "row, the ends are the trace's order, which `drop_order` fixes: a value's",

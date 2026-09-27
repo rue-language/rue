@@ -127,7 +127,7 @@ representation; none changes what a checked program does.
   is "necessarily `⟨⟩`"; any other value is stuck (`typeConfusion`) rather
   than discarded without a drop, as in `eval`. (Dbg) §5.8 and §5.7's `unit`
   body keep a checked program away from both.
-* **Consumption is recorded** (RUE-2427). (D-Match) appends a `consume` event
+* **The consume event is recorded** (RUE-2427). (D-Match) appends a `consume` event
   for a non-`Copy` scrutinee's dead remainder (`matchConsume`), and the destructure
   drops each retained subtree under a `drop ℓ r` marker and then consumes the
   path's dead remainder (`plainDestructure`), exactly as `eval` does, so the two
