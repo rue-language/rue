@@ -20,19 +20,19 @@ incoming edge from `Step.det` depends on it.
 ```mermaid
 flowchart BT
   subgraph RueCore_Adequacy["RueCore.Adequacy (L2 proofs)"]
-    eval_complete["eval_complete"]
+    eval_big_to_small["eval_big_to_small"]
     eval_diverges_iff["eval_diverges_iff"]
     eval_sim["eval_sim"]
-    eval_sound["eval_sound"]
+    eval_small_to_big["eval_small_to_big"]
     eval_steps_of_outOfFuel["eval_steps_of_outOfFuel"]
     init_safeAt["init_safeAt"]
-    never_stuck_iff["never_stuck_iff"]
-    run_complete["run_complete"]
+    never_refused_iff["never_refused_iff"]
+    run_refused_of_step_stuck["run_refused_of_step_stuck"]
     run_sim["run_sim"]
-    run_stuck_of_step_stuck["run_stuck_of_step_stuck"]
+    run_small_to_big["run_small_to_big"]
     step_never_stuck_of_run["step_never_stuck_of_run"]
-    step_preservation["step_preservation"]
     step_progress["step_progress"]
+    step_safeAt["step_safeAt"]
     step_type_safety["step_type_safety"]
     step_value_typed["step_value_typed"]
   end
@@ -56,9 +56,9 @@ flowchart BT
     no_linear_leak["no_linear_leak"]
     no_linear_overwrite["no_linear_overwrite"]
     no_masking["no_masking"]
+    no_refusal["no_refusal"]
     no_use_after_drop["no_use_after_drop"]
     no_use_after_move["no_use_after_move"]
-    no_violation["no_violation"]
     run_ne_returned["run_ne_returned"]
     run_safe["run_safe"]
     soundness["soundness"]
@@ -116,13 +116,13 @@ flowchart BT
   Step_det --> eval_diverges_iff
   Step_det --> eval_sim
   Step_det --> eval_steps_of_outOfFuel
-  Step_det --> run_complete
-  Step_det --> run_stuck_of_step_stuck
+  Step_det --> run_refused_of_step_stuck
+  Step_det --> run_small_to_big
   Step_det --> step_no_double_free
   Step_det --> whole_program_exactly_once
   Step_terminal --> eval_diverges_iff
-  Step_terminal --> run_complete
-  Step_terminal --> run_stuck_of_step_stuck
+  Step_terminal --> run_refused_of_step_stuck
+  Step_terminal --> run_small_to_big
   Step_terminal --> step_no_double_free
   Step_terminal --> whole_program_exactly_once
   Typed_wf --> soundness
@@ -131,10 +131,6 @@ flowchart BT
   destructure_plain --> eval_sim
   destructure_plain --> whole_program_exactly_once
   dtor_once --> no_double_free
-  eval_complete --> drop_glue_order
-  eval_complete --> init_safeAt
-  eval_complete --> step_blocks
-  eval_complete --> whole_program_exactly_once
   eval_conserves --> drop_glue_order
   eval_conserves --> dtor_once
   eval_conserves --> freed_once
@@ -144,31 +140,35 @@ flowchart BT
   eval_sim --> eval_steps_of_outOfFuel
   eval_sim --> run_sim
   eval_sim --> step_no_double_free
+  eval_small_to_big --> drop_glue_order
+  eval_small_to_big --> init_safeAt
+  eval_small_to_big --> step_blocks
+  eval_small_to_big --> whole_program_exactly_once
   eval_steps_of_outOfFuel --> eval_diverges_iff
-  eval_steps_of_outOfFuel --> run_complete
-  eval_steps_of_outOfFuel --> run_stuck_of_step_stuck
+  eval_steps_of_outOfFuel --> run_refused_of_step_stuck
+  eval_steps_of_outOfFuel --> run_small_to_big
   eval_steps_of_outOfFuel --> step_type_safety
   eval_tidy --> drop_exactly_once
   eval_tidy --> rest_exactly_once
   eval_tidy --> whole_program_exactly_once
   freed_once --> no_double_free
   fuel_mono --> no_masking
-  init_safeAt --> step_preservation
+  init_safeAt --> step_safeAt
   init_safeAt --> step_value_typed
   loop_exit_ok --> soundness
-  no_violation --> eval_complete
-  no_violation --> eval_diverges_iff
-  no_violation --> eval_sound
-  no_violation --> init_safeAt
-  no_violation --> never_stuck_iff
-  no_violation --> no_double_free
-  no_violation --> no_linear_discard
-  no_violation --> no_linear_leak
-  no_violation --> no_linear_overwrite
-  no_violation --> no_use_after_drop
-  no_violation --> no_use_after_move
-  no_violation --> step_no_double_free
-  no_violation --> step_progress
+  no_refusal --> eval_big_to_small
+  no_refusal --> eval_diverges_iff
+  no_refusal --> eval_small_to_big
+  no_refusal --> init_safeAt
+  no_refusal --> never_refused_iff
+  no_refusal --> no_double_free
+  no_refusal --> no_linear_discard
+  no_refusal --> no_linear_leak
+  no_refusal --> no_linear_overwrite
+  no_refusal --> no_use_after_drop
+  no_refusal --> no_use_after_move
+  no_refusal --> step_no_double_free
+  no_refusal --> step_progress
   reachable_nested --> drop_order
   reachable_nested --> reachable_stackDiscipline
   reachable_ordered --> drop_order
@@ -177,22 +177,22 @@ flowchart BT
   rest_step --> rest_exactly_once
   rest_step --> whole_program_exactly_once
   run_blocks --> step_blocks
-  run_complete --> eval_complete
   run_ne_returned --> eval_diverges_iff
-  run_ne_returned --> run_complete
+  run_ne_returned --> run_refused_of_step_stuck
   run_ne_returned --> run_safe
-  run_ne_returned --> run_stuck_of_step_stuck
+  run_ne_returned --> run_small_to_big
   run_ne_returned --> step_no_double_free
+  run_refused_of_step_stuck --> step_never_stuck_of_run
   run_safe --> init_safeAt
-  run_safe --> no_violation
+  run_safe --> no_refusal
   run_safe --> step_type_safety
+  run_sim --> eval_big_to_small
   run_sim --> eval_diverges_iff
-  run_sim --> eval_sound
-  run_sim --> run_complete
-  run_sim --> run_stuck_of_step_stuck
+  run_sim --> run_refused_of_step_stuck
+  run_sim --> run_small_to_big
   run_sim --> step_no_double_free
   run_sim --> step_type_safety
-  run_stuck_of_step_stuck --> step_never_stuck_of_run
+  run_small_to_big --> eval_small_to_big
   soundness --> drop_exactly_once
   soundness --> rest_exactly_once
   soundness --> run_safe
@@ -201,7 +201,7 @@ flowchart BT
   step_iff --> Config_trichotomy
   step_iff --> step_no_use_after_drop
   step_never_stuck_of_run --> init_safeAt
-  step_never_stuck_of_run --> never_stuck_iff
+  step_never_stuck_of_run --> never_refused_iff
   step_never_stuck_of_run --> step_progress
   struct_carriesLinear_iff --> Ctx_joinAll_perm
   unwindLocs_plain --> eval_sim
@@ -225,9 +225,9 @@ helper theorems `Map.walk` counted under it before the next marked node:
 | `class_unique` | §3's class assignment is unique; every derivation that reads a class off a type leans on this | 90 | 14 |
 | `struct_carriesLinear_iff` | a struct's class carries `linear` iff a field's does — read off by the checker and by the destructure rules | 42 | 9 |
 | `enum_carriesLinear_iff` | the same equation for an enum's variants | 23 | 11 |
-| `init_safeAt` | `Config.init` is semantically safe; the fundamental lemma `step_preservation` inducts from | 18 | 2 |
+| `init_safeAt` | `Config.init` is semantically safe; the fundamental lemma `step_safeAt` inducts from | 18 | 2 |
 | `eval_sim` | the simulation relation between `eval` and `Step`, proved for every expression, fuel and program | 46 | 60 |
-| `eval_steps_of_outOfFuel` | exhausted fuel is a run of that many `Step`s — completeness modulo fuel, behind `eval_complete` | 42 | 63 |
+| `eval_steps_of_outOfFuel` | exhausted fuel is a run of that many `Step`s — completeness modulo fuel, behind `eval_small_to_big` | 42 | 63 |
 | `step_value_typed` | every value a reachable `Step` configuration carries is typed | 10 | 0 |
 | `destructure_plain` | a monitor removes no behaviour: the declared-linear destructure's residue check changes no step it does not refuse | 18 | 1 |
 | `unwindLocs_plain` | a monitor removes no behaviour: an unwind's drops are the same with or without the monitors | 19 | 1 |
@@ -652,11 +652,11 @@ flowchart BT
 
 </details>
 
-### `no_violation`
+### `no_refusal`
 
 ```mermaid
 flowchart BT
-  thm["no_violation"]
+  thm["no_refusal"]
   subgraph defs_["Definitions the statement depends on"]
     Activation["Activation<br/>§6.1, §6.9"] -.-> thm
     ArgsRes["ArgsRes<br/>§6.2"] -.-> thm
@@ -689,7 +689,7 @@ flowchart BT
 (172 more definitions the statement depends on, past the 25 cap.)
 
 <details>
-<summary>All 197 definitions no_violation's statement depends on</summary>
+<summary>All 197 definitions no_refusal's statement depends on</summary>
 
 [`Activation`](#def-Activation), [`ArgsRes`](#def-ArgsRes), [`Attr`](#def-Attr), [`Attr.lift`](#def-Attr_lift), [`BinOp`](#def-BinOp), [`BinOp.floatAdmits`](#def-BinOp_floatAdmits), [`BinOp.intAdmits`](#def-BinOp_intAdmits), [`BinOp.isCompare`](#def-BinOp_isCompare), [`BinOp.resultTy`](#def-BinOp_resultTy), [`Cell`](#def-Cell), [`Contents`](#def-Contents), [`Contents.allCopyList`](#def-Contents_allCopyList), [`Contents.copyContained`](#def-Contents_copyContained), [`Contents.declaredLinear`](#def-Contents_declaredLinear), [`Contents.declaredPlan`](#def-Contents_declaredPlan), [`Contents.destructure`](#def-Contents_destructure), [`Contents.getAt`](#def-Contents_getAt), [`Contents.isMovedOut`](#def-Contents_isMovedOut), [`Contents.ofVal`](#def-Contents_ofVal), [`Contents.pathOnly`](#def-Contents_pathOnly), [`Contents.qual`](#def-Contents_qual), [`Contents.residualLinear`](#def-Contents_residualLinear), [`Contents.resolveDyn`](#def-Contents_resolveDyn), [`Contents.setAt`](#def-Contents_setAt), [`Contents.splitResidue`](#def-Contents_splitResidue), [`Contents.toVal`](#def-Contents_toVal), [`Ctx`](#def-Ctx), [`Ctx.Wf`](#def-Ctx_Wf), [`Ctx.join`](#def-Ctx_join), [`Ctx.joinAll`](#def-Ctx_joinAll), [`Ctx.joinFold`](#def-Ctx_joinFold), [`Ctx.joinOpt`](#def-Ctx_joinOpt), [`Ctx.joinOpts`](#def-Ctx_joinOpts), [`Ctx.loopLocals`](#def-Ctx_loopLocals), [`Ctx.outsideLoop`](#def-Ctx_outsideLoop), [`Decls`](#def-Decls), [`Decls.ByValueEdge`](#def-Decls_ByValueEdge), [`Decls.byValue`](#def-Decls_byValue), [`Decls.classOf`](#def-Decls_classOf), [`Decls.enumClassOf`](#def-Decls_enumClassOf), [`DynPlace`](#def-DynPlace), [`DynStep`](#def-DynStep), [`Entry`](#def-Entry), [`Entry.join`](#def-Entry_join), [`Entry.setSt`](#def-Entry_setSt), [`Entry.wf`](#def-Entry_wf), [`EnumDecl`](#def-EnumDecl), [`EnumDecl.Wf`](#def-EnumDecl_Wf), [`EnumDecl.payloadJoin`](#def-EnumDecl_payloadJoin), [`Env`](#def-Env), [`EvalRes`](#def-EvalRes), [`EvalRes.bind`](#def-EvalRes_bind), [`EvalRes.bindCall`](#def-EvalRes_bindCall), [`EvalRes.withTrace`](#def-EvalRes_withTrace), [`Event`](#def-Event), [`Expr`](#def-Expr), [`Expr.breaks`](#def-Expr_breaks), [`FloatArith`](#def-FloatArith), [`FloatDatum`](#def-FloatDatum), [`FloatDatum.Wf`](#def-FloatDatum_Wf), [`FloatDatum.isNaN`](#def-FloatDatum_isNaN), [`FloatDatum.le`](#def-FloatDatum_le), [`FloatDatum.lt`](#def-FloatDatum_lt), [`FloatDatum.negate`](#def-FloatDatum_negate), [`FloatDatum.roundOp`](#def-FloatDatum_roundOp), [`FloatDatum.succMag`](#def-FloatDatum_succMag), [`FloatDatum.toIntIn`](#def-FloatDatum_toIntIn), [`FloatDatum.totalCmp`](#def-FloatDatum_totalCmp), [`FloatDatum.totalRank`](#def-FloatDatum_totalRank), [`FloatDatum.truncToInt`](#def-FloatDatum_truncToInt), [`FloatDatum.widen`](#def-FloatDatum_widen), [`FloatIntrin`](#def-FloatIntrin), [`FloatIntrin.floatSrc`](#def-FloatIntrin_floatSrc), [`FloatIntrin.resTy`](#def-FloatIntrin_resTy), [`FloatLaws`](#def-FloatLaws), [`FloatLit`](#def-FloatLit), [`FloatLit.RoundsFinite`](#def-FloatLit_RoundsFinite), [`FloatLit.exact`](#def-FloatLit_exact), [`FloatRoundOp`](#def-FloatRoundOp), [`FloatSig`](#def-FloatSig), [`FloatSig.cast`](#def-FloatSig_cast), [`FloatSig.roundIntrin`](#def-FloatSig_roundIntrin), [`FloatUnIntrin`](#def-FloatUnIntrin), [`FloatWidth`](#def-FloatWidth), [`FloatWidth.eMin`](#def-FloatWidth_eMin), [`FloatWidth.eTop`](#def-FloatWidth_eTop), [`FloatWidth.overflowNum`](#def-FloatWidth_overflowNum), [`FloatWidth.prec`](#def-FloatWidth_prec), [`FnDef`](#def-FnDef), [`InBounds`](#def-InBounds), [`IntWidth`](#def-IntWidth), [`IntWidth.bits`](#def-IntWidth_bits), [`IntWidth.modulus`](#def-IntWidth_modulus), [`LoopHead`](#def-LoopHead), [`NoResidualLinear`](#def-NoResidualLinear), [`OpRes`](#def-OpRes), [`OpRes.toRes`](#def-OpRes_toRes), [`Out`](#def-Out), [`Out.merge`](#def-Out_merge), [`OwnSt`](#def-OwnSt), [`OwnSt.fieldAt`](#def-OwnSt_fieldAt), [`OwnSt.fieldStates`](#def-OwnSt_fieldStates), [`OwnSt.fullyOwned`](#def-OwnSt_fullyOwned), [`OwnSt.get`](#def-OwnSt_get), [`OwnSt.isOwned`](#def-OwnSt_isOwned), [`OwnSt.join`](#def-OwnSt_join), [`OwnSt.setAt`](#def-OwnSt_setAt), [`OwnSt.setField`](#def-OwnSt_setField), [`OwnSt.wf`](#def-OwnSt_wf), [`PanicKind`](#def-PanicKind), [`Param`](#def-Param), [`Place`](#def-Place), [`Place.path`](#def-Place_path), [`Place.root`](#def-Place_root), [`Program`](#def-Program), [`ProgramTyped`](#def-ProgramTyped), [`Qual`](#def-Qual), [`Qual.join`](#def-Qual_join), [`Qual.rank`](#def-Qual_rank), [`Refusal`](#def-Refusal), [`Sign`](#def-Sign), [`Store`](#def-Store), [`StructDecl`](#def-StructDecl), [`StructDecl.Wf`](#def-StructDecl_Wf), [`StructDecl.baseOf`](#def-StructDecl_baseOf), [`Ty`](#def-Ty), [`Ty.atDyn`](#def-Ty_atDyn), [`Ty.atPath`](#def-Ty_atPath), [`Ty.declaredLinear`](#def-Ty_declaredLinear), [`Ty.dynNoDeclared`](#def-Ty_dynNoDeclared), [`Ty.fieldAt`](#def-Ty_fieldAt), [`Ty.isInt`](#def-Ty_isInt), [`Ty.observable`](#def-Ty_observable), [`Ty.qual`](#def-Ty_qual), [`Ty.tyNames`](#def-Ty_tyNames), [`TyName`](#def-TyName), [`Typed`](#def-Typed), [`TypedArgs`](#def-TypedArgs), [`TypedArms`](#def-TypedArms), [`UnOp`](#def-UnOp), [`Val`](#def-Val), [`Val.ints`](#def-Val_ints), [`Val.observable`](#def-Val_observable), [`Val.qual`](#def-Val_qual), [`WfByValueEdge`](#def-WfByValueEdge), [`WfDecls`](#def-WfDecls), [`WfEnums`](#def-WfEnums), [`WfFn`](#def-WfFn), [`WfProgram`](#def-WfProgram), [`WfStructs`](#def-WfStructs), [`anyLinearOther`](#def-anyLinearOther), [`arrayPrefix`](#def-arrayPrefix), [`assignArrayOk`](#def-assignArrayOk), [`binOpFloat`](#def-binOpFloat), [`binOpInt`](#def-binOpInt), [`bitsOf`](#def-bitsOf), [`canonAux`](#def-canonAux), [`canonNum`](#def-canonNum), [`cmpScaled`](#def-cmpScaled), [`declaredPrefix`](#def-declaredPrefix), [`dropCell`](#def-dropCell), [`dropContents`](#def-dropContents), [`dropResidue`](#def-dropResidue), [`dropRetire`](#def-dropRetire), [`dynPlace`](#def-dynPlace), [`eval`](#def-eval), [`evalArgs`](#def-evalArgs), [`evalBinOp`](#def-evalBinOp), [`evalFintrin`](#def-evalFintrin), [`evalIntCast`](#def-evalIntCast), [`evalUnOp`](#def-evalUnOp), [`extendArm`](#def-extendArm), [`fnCtx`](#def-fnCtx), [`freshParams`](#def-freshParams), [`inBoundsIdx`](#def-inBoundsIdx), [`intMax`](#def-intMax), [`intMin`](#def-intMin), [`intResult`](#def-intResult), [`introVal`](#def-introVal), [`linearResidue`](#def-linearResidue), [`magCmp`](#def-magCmp), [`matchConsume`](#def-matchConsume), [`noArrayStep`](#def-noArrayStep), [`noDtorPrefix`](#def-noDtorPrefix), [`ownedJoinable`](#def-ownedJoinable), [`ownedJoinableList`](#def-ownedJoinableList), [`residualLinear`](#def-residualLinear), [`residualLinearBelow`](#def-residualLinearBelow), [`residualLinearFields`](#def-residualLinearFields), [`residueDropEvent`](#def-residueDropEvent), [`rootIdxOnly`](#def-rootIdxOnly), [`run`](#def-run), [`runAllScopeDrops`](#def-runAllScopeDrops), [`shiftAmount`](#def-shiftAmount), [`unwindLocs`](#def-unwindLocs), [`valOf`](#def-valOf), [`wrapInt`](#def-wrapInt)
 
@@ -1890,11 +1890,11 @@ flowchart BT
 
 </details>
 
-### `step_preservation`
+### `step_safeAt`
 
 ```mermaid
 flowchart BT
-  thm["step_preservation"]
+  thm["step_safeAt"]
   subgraph mile["Milestone ancestors"]
     init_safeAt["init_safeAt"] --> thm
   end
@@ -1930,7 +1930,7 @@ flowchart BT
 (172 more definitions the statement depends on, past the 25 cap.)
 
 <details>
-<summary>All 197 definitions step_preservation's statement depends on</summary>
+<summary>All 197 definitions step_safeAt's statement depends on</summary>
 
 [`Activation`](#def-Activation), [`Activation.unwindScope`](#def-Activation_unwindScope), [`ArgsFrame`](#def-ArgsFrame), [`Attr`](#def-Attr), [`Attr.lift`](#def-Attr_lift), [`BinOp`](#def-BinOp), [`BinOp.floatAdmits`](#def-BinOp_floatAdmits), [`BinOp.intAdmits`](#def-BinOp_intAdmits), [`BinOp.isCompare`](#def-BinOp_isCompare), [`BinOp.resultTy`](#def-BinOp_resultTy), [`Cell`](#def-Cell), [`Config`](#def-Config), [`Config.SafeAt`](#def-Config_SafeAt), [`Config.Terminal`](#def-Config_Terminal), [`Config.init`](#def-Config_init), [`Contents`](#def-Contents), [`Contents.declaredLinear`](#def-Contents_declaredLinear), [`Contents.declaredPlan`](#def-Contents_declaredPlan), [`Contents.getAt`](#def-Contents_getAt), [`Contents.ofVal`](#def-Contents_ofVal), [`Contents.pathOnly`](#def-Contents_pathOnly), [`Contents.qual`](#def-Contents_qual), [`Contents.resolveDyn`](#def-Contents_resolveDyn), [`Contents.setAt`](#def-Contents_setAt), [`Contents.splitResidue`](#def-Contents_splitResidue), [`Contents.toVal`](#def-Contents_toVal), [`Ctx`](#def-Ctx), [`Ctx.Wf`](#def-Ctx_Wf), [`Ctx.join`](#def-Ctx_join), [`Ctx.joinAll`](#def-Ctx_joinAll), [`Ctx.joinFold`](#def-Ctx_joinFold), [`Ctx.joinOpt`](#def-Ctx_joinOpt), [`Ctx.joinOpts`](#def-Ctx_joinOpts), [`Ctx.loopLocals`](#def-Ctx_loopLocals), [`Ctx.outsideLoop`](#def-Ctx_outsideLoop), [`Decls`](#def-Decls), [`Decls.ByValueEdge`](#def-Decls_ByValueEdge), [`Decls.byValue`](#def-Decls_byValue), [`Decls.classOf`](#def-Decls_classOf), [`Decls.enumClassOf`](#def-Decls_enumClassOf), [`DynPlace`](#def-DynPlace), [`DynStep`](#def-DynStep), [`Entry`](#def-Entry), [`Entry.join`](#def-Entry_join), [`Entry.setSt`](#def-Entry_setSt), [`Entry.wf`](#def-Entry_wf), [`EnumDecl`](#def-EnumDecl), [`EnumDecl.Wf`](#def-EnumDecl_Wf), [`EnumDecl.payloadJoin`](#def-EnumDecl_payloadJoin), [`Env`](#def-Env), [`Event`](#def-Event), [`Expr`](#def-Expr), [`Expr.breaks`](#def-Expr_breaks), [`FloatArith`](#def-FloatArith), [`FloatDatum`](#def-FloatDatum), [`FloatDatum.Wf`](#def-FloatDatum_Wf), [`FloatDatum.isNaN`](#def-FloatDatum_isNaN), [`FloatDatum.le`](#def-FloatDatum_le), [`FloatDatum.lt`](#def-FloatDatum_lt), [`FloatDatum.negate`](#def-FloatDatum_negate), [`FloatDatum.roundOp`](#def-FloatDatum_roundOp), [`FloatDatum.succMag`](#def-FloatDatum_succMag), [`FloatDatum.toIntIn`](#def-FloatDatum_toIntIn), [`FloatDatum.totalCmp`](#def-FloatDatum_totalCmp), [`FloatDatum.totalRank`](#def-FloatDatum_totalRank), [`FloatDatum.truncToInt`](#def-FloatDatum_truncToInt), [`FloatDatum.widen`](#def-FloatDatum_widen), [`FloatIntrin`](#def-FloatIntrin), [`FloatIntrin.floatSrc`](#def-FloatIntrin_floatSrc), [`FloatIntrin.resTy`](#def-FloatIntrin_resTy), [`FloatLaws`](#def-FloatLaws), [`FloatLit`](#def-FloatLit), [`FloatLit.RoundsFinite`](#def-FloatLit_RoundsFinite), [`FloatLit.exact`](#def-FloatLit_exact), [`FloatRoundOp`](#def-FloatRoundOp), [`FloatSig`](#def-FloatSig), [`FloatSig.cast`](#def-FloatSig_cast), [`FloatSig.roundIntrin`](#def-FloatSig_roundIntrin), [`FloatUnIntrin`](#def-FloatUnIntrin), [`FloatWidth`](#def-FloatWidth), [`FloatWidth.eMin`](#def-FloatWidth_eMin), [`FloatWidth.eTop`](#def-FloatWidth_eTop), [`FloatWidth.overflowNum`](#def-FloatWidth_overflowNum), [`FloatWidth.prec`](#def-FloatWidth_prec), [`FnDef`](#def-FnDef), [`Focus`](#def-Focus), [`HasTy`](#def-HasTy), [`HasTys`](#def-HasTys), [`InBounds`](#def-InBounds), [`IntWidth`](#def-IntWidth), [`IntWidth.bits`](#def-IntWidth_bits), [`IntWidth.modulus`](#def-IntWidth_modulus), [`Kont`](#def-Kont), [`Kont.toCall`](#def-Kont_toCall), [`Kont.toLoop`](#def-Kont_toLoop), [`LoopHead`](#def-LoopHead), [`NoResidualLinear`](#def-NoResidualLinear), [`OpRes`](#def-OpRes), [`Out`](#def-Out), [`Out.merge`](#def-Out_merge), [`OwnSt`](#def-OwnSt), [`OwnSt.fieldAt`](#def-OwnSt_fieldAt), [`OwnSt.fieldStates`](#def-OwnSt_fieldStates), [`OwnSt.fullyOwned`](#def-OwnSt_fullyOwned), [`OwnSt.get`](#def-OwnSt_get), [`OwnSt.isOwned`](#def-OwnSt_isOwned), [`OwnSt.join`](#def-OwnSt_join), [`OwnSt.setAt`](#def-OwnSt_setAt), [`OwnSt.setField`](#def-OwnSt_setField), [`OwnSt.wf`](#def-OwnSt_wf), [`PanicKind`](#def-PanicKind), [`Param`](#def-Param), [`Place`](#def-Place), [`Place.path`](#def-Place_path), [`Place.root`](#def-Place_root), [`Program`](#def-Program), [`ProgramTyped`](#def-ProgramTyped), [`Qual`](#def-Qual), [`Qual.join`](#def-Qual_join), [`Qual.rank`](#def-Qual_rank), [`Refusal`](#def-Refusal), [`Sign`](#def-Sign), [`Step`](#def-Step), [`Steps`](#def-Steps), [`Store`](#def-Store), [`StructDecl`](#def-StructDecl), [`StructDecl.Wf`](#def-StructDecl_Wf), [`StructDecl.baseOf`](#def-StructDecl_baseOf), [`Ty`](#def-Ty), [`Ty.atDyn`](#def-Ty_atDyn), [`Ty.atPath`](#def-Ty_atPath), [`Ty.declaredLinear`](#def-Ty_declaredLinear), [`Ty.dynNoDeclared`](#def-Ty_dynNoDeclared), [`Ty.fieldAt`](#def-Ty_fieldAt), [`Ty.isInt`](#def-Ty_isInt), [`Ty.observable`](#def-Ty_observable), [`Ty.qual`](#def-Ty_qual), [`Ty.tyNames`](#def-Ty_tyNames), [`TyName`](#def-TyName), [`Typed`](#def-Typed), [`TypedArgs`](#def-TypedArgs), [`TypedArms`](#def-TypedArms), [`UnOp`](#def-UnOp), [`Val`](#def-Val), [`Val.ints`](#def-Val_ints), [`Val.observable`](#def-Val_observable), [`Val.qual`](#def-Val_qual), [`WfByValueEdge`](#def-WfByValueEdge), [`WfDecls`](#def-WfDecls), [`WfEnums`](#def-WfEnums), [`WfFn`](#def-WfFn), [`WfProgram`](#def-WfProgram), [`WfStructs`](#def-WfStructs), [`anyLinearOther`](#def-anyLinearOther), [`arrayPrefix`](#def-arrayPrefix), [`assignArrayOk`](#def-assignArrayOk), [`binOpFloat`](#def-binOpFloat), [`binOpInt`](#def-binOpInt), [`bitsOf`](#def-bitsOf), [`canonAux`](#def-canonAux), [`canonNum`](#def-canonNum), [`cmpScaled`](#def-cmpScaled), [`declaredPrefix`](#def-declaredPrefix), [`dropCell`](#def-dropCell), [`dropContents`](#def-dropContents), [`dynPlace`](#def-dynPlace), [`evalBinOp`](#def-evalBinOp), [`evalFintrin`](#def-evalFintrin), [`evalIntCast`](#def-evalIntCast), [`evalUnOp`](#def-evalUnOp), [`extendArm`](#def-extendArm), [`fnCtx`](#def-fnCtx), [`freshParams`](#def-freshParams), [`inBoundsIdx`](#def-inBoundsIdx), [`intMax`](#def-intMax), [`intMin`](#def-intMin), [`intResult`](#def-intResult), [`linearResidue`](#def-linearResidue), [`magCmp`](#def-magCmp), [`matchConsume`](#def-matchConsume), [`noArrayStep`](#def-noArrayStep), [`noDtorPrefix`](#def-noDtorPrefix), [`ownedJoinable`](#def-ownedJoinable), [`ownedJoinableList`](#def-ownedJoinableList), [`plainDestructure`](#def-plainDestructure), [`plainDropRetire`](#def-plainDropRetire), [`plainResidue`](#def-plainResidue), [`plainUnwind`](#def-plainUnwind), [`residualLinear`](#def-residualLinear), [`residualLinearBelow`](#def-residualLinearBelow), [`residualLinearFields`](#def-residualLinearFields), [`residueDropEvent`](#def-residueDropEvent), [`rootCell`](#def-rootCell), [`rootIdxOnly`](#def-rootIdxOnly), [`shiftAmount`](#def-shiftAmount), [`valOf`](#def-valOf), [`wrapInt`](#def-wrapInt)
 
@@ -2025,11 +2025,11 @@ flowchart BT
 
 </details>
 
-### `eval_sound`
+### `eval_big_to_small`
 
 ```mermaid
 flowchart BT
-  thm["eval_sound"]
+  thm["eval_big_to_small"]
   subgraph defs_["Definitions the statement depends on"]
     Activation["Activation<br/>§6.1, §6.9"] -.-> thm
     Activation_empty["Activation.empty"] -.-> thm
@@ -2062,7 +2062,7 @@ flowchart BT
 (188 more definitions the statement depends on, past the 25 cap.)
 
 <details>
-<summary>All 213 definitions eval_sound's statement depends on</summary>
+<summary>All 213 definitions eval_big_to_small's statement depends on</summary>
 
 [`Activation`](#def-Activation), [`Activation.empty`](#def-Activation_empty), [`Activation.unwindScope`](#def-Activation_unwindScope), [`ArgsFrame`](#def-ArgsFrame), [`ArgsRes`](#def-ArgsRes), [`Attr`](#def-Attr), [`Attr.lift`](#def-Attr_lift), [`BinOp`](#def-BinOp), [`BinOp.floatAdmits`](#def-BinOp_floatAdmits), [`BinOp.intAdmits`](#def-BinOp_intAdmits), [`BinOp.isCompare`](#def-BinOp_isCompare), [`BinOp.resultTy`](#def-BinOp_resultTy), [`Cell`](#def-Cell), [`Config`](#def-Config), [`Config.init`](#def-Config_init), [`Contents`](#def-Contents), [`Contents.allCopyList`](#def-Contents_allCopyList), [`Contents.copyContained`](#def-Contents_copyContained), [`Contents.declaredLinear`](#def-Contents_declaredLinear), [`Contents.declaredPlan`](#def-Contents_declaredPlan), [`Contents.destructure`](#def-Contents_destructure), [`Contents.getAt`](#def-Contents_getAt), [`Contents.isMovedOut`](#def-Contents_isMovedOut), [`Contents.ofVal`](#def-Contents_ofVal), [`Contents.pathOnly`](#def-Contents_pathOnly), [`Contents.qual`](#def-Contents_qual), [`Contents.residualLinear`](#def-Contents_residualLinear), [`Contents.resolveDyn`](#def-Contents_resolveDyn), [`Contents.setAt`](#def-Contents_setAt), [`Contents.splitResidue`](#def-Contents_splitResidue), [`Contents.toVal`](#def-Contents_toVal), [`Ctx`](#def-Ctx), [`Ctx.Wf`](#def-Ctx_Wf), [`Ctx.join`](#def-Ctx_join), [`Ctx.joinAll`](#def-Ctx_joinAll), [`Ctx.joinFold`](#def-Ctx_joinFold), [`Ctx.joinOpt`](#def-Ctx_joinOpt), [`Ctx.joinOpts`](#def-Ctx_joinOpts), [`Ctx.loopLocals`](#def-Ctx_loopLocals), [`Ctx.outsideLoop`](#def-Ctx_outsideLoop), [`Decls`](#def-Decls), [`Decls.ByValueEdge`](#def-Decls_ByValueEdge), [`Decls.byValue`](#def-Decls_byValue), [`Decls.classOf`](#def-Decls_classOf), [`Decls.enumClassOf`](#def-Decls_enumClassOf), [`DynPlace`](#def-DynPlace), [`DynStep`](#def-DynStep), [`Entry`](#def-Entry), [`Entry.join`](#def-Entry_join), [`Entry.setSt`](#def-Entry_setSt), [`Entry.wf`](#def-Entry_wf), [`EnumDecl`](#def-EnumDecl), [`EnumDecl.Wf`](#def-EnumDecl_Wf), [`EnumDecl.payloadJoin`](#def-EnumDecl_payloadJoin), [`Env`](#def-Env), [`EvalRes`](#def-EvalRes), [`EvalRes.bind`](#def-EvalRes_bind), [`EvalRes.bindCall`](#def-EvalRes_bindCall), [`EvalRes.withTrace`](#def-EvalRes_withTrace), [`Event`](#def-Event), [`Expr`](#def-Expr), [`Expr.breaks`](#def-Expr_breaks), [`FloatArith`](#def-FloatArith), [`FloatDatum`](#def-FloatDatum), [`FloatDatum.Wf`](#def-FloatDatum_Wf), [`FloatDatum.isNaN`](#def-FloatDatum_isNaN), [`FloatDatum.le`](#def-FloatDatum_le), [`FloatDatum.lt`](#def-FloatDatum_lt), [`FloatDatum.negate`](#def-FloatDatum_negate), [`FloatDatum.roundOp`](#def-FloatDatum_roundOp), [`FloatDatum.succMag`](#def-FloatDatum_succMag), [`FloatDatum.toIntIn`](#def-FloatDatum_toIntIn), [`FloatDatum.totalCmp`](#def-FloatDatum_totalCmp), [`FloatDatum.totalRank`](#def-FloatDatum_totalRank), [`FloatDatum.truncToInt`](#def-FloatDatum_truncToInt), [`FloatDatum.widen`](#def-FloatDatum_widen), [`FloatIntrin`](#def-FloatIntrin), [`FloatIntrin.floatSrc`](#def-FloatIntrin_floatSrc), [`FloatIntrin.resTy`](#def-FloatIntrin_resTy), [`FloatLaws`](#def-FloatLaws), [`FloatLit`](#def-FloatLit), [`FloatLit.RoundsFinite`](#def-FloatLit_RoundsFinite), [`FloatLit.exact`](#def-FloatLit_exact), [`FloatRoundOp`](#def-FloatRoundOp), [`FloatSig`](#def-FloatSig), [`FloatSig.cast`](#def-FloatSig_cast), [`FloatSig.roundIntrin`](#def-FloatSig_roundIntrin), [`FloatUnIntrin`](#def-FloatUnIntrin), [`FloatWidth`](#def-FloatWidth), [`FloatWidth.eMin`](#def-FloatWidth_eMin), [`FloatWidth.eTop`](#def-FloatWidth_eTop), [`FloatWidth.overflowNum`](#def-FloatWidth_overflowNum), [`FloatWidth.prec`](#def-FloatWidth_prec), [`FnDef`](#def-FnDef), [`Focus`](#def-Focus), [`InBounds`](#def-InBounds), [`IntWidth`](#def-IntWidth), [`IntWidth.bits`](#def-IntWidth_bits), [`IntWidth.modulus`](#def-IntWidth_modulus), [`Kont`](#def-Kont), [`Kont.toCall`](#def-Kont_toCall), [`Kont.toLoop`](#def-Kont_toLoop), [`LoopHead`](#def-LoopHead), [`NoResidualLinear`](#def-NoResidualLinear), [`OpRes`](#def-OpRes), [`OpRes.toRes`](#def-OpRes_toRes), [`Out`](#def-Out), [`Out.merge`](#def-Out_merge), [`OwnSt`](#def-OwnSt), [`OwnSt.fieldAt`](#def-OwnSt_fieldAt), [`OwnSt.fieldStates`](#def-OwnSt_fieldStates), [`OwnSt.fullyOwned`](#def-OwnSt_fullyOwned), [`OwnSt.get`](#def-OwnSt_get), [`OwnSt.isOwned`](#def-OwnSt_isOwned), [`OwnSt.join`](#def-OwnSt_join), [`OwnSt.setAt`](#def-OwnSt_setAt), [`OwnSt.setField`](#def-OwnSt_setField), [`OwnSt.wf`](#def-OwnSt_wf), [`PanicKind`](#def-PanicKind), [`Param`](#def-Param), [`Place`](#def-Place), [`Place.path`](#def-Place_path), [`Place.root`](#def-Place_root), [`Program`](#def-Program), [`ProgramTyped`](#def-ProgramTyped), [`Qual`](#def-Qual), [`Qual.join`](#def-Qual_join), [`Qual.rank`](#def-Qual_rank), [`Refusal`](#def-Refusal), [`Sign`](#def-Sign), [`Step`](#def-Step), [`Steps`](#def-Steps), [`Store`](#def-Store), [`StructDecl`](#def-StructDecl), [`StructDecl.Wf`](#def-StructDecl_Wf), [`StructDecl.baseOf`](#def-StructDecl_baseOf), [`Ty`](#def-Ty), [`Ty.atDyn`](#def-Ty_atDyn), [`Ty.atPath`](#def-Ty_atPath), [`Ty.declaredLinear`](#def-Ty_declaredLinear), [`Ty.dynNoDeclared`](#def-Ty_dynNoDeclared), [`Ty.fieldAt`](#def-Ty_fieldAt), [`Ty.isInt`](#def-Ty_isInt), [`Ty.observable`](#def-Ty_observable), [`Ty.qual`](#def-Ty_qual), [`Ty.tyNames`](#def-Ty_tyNames), [`TyName`](#def-TyName), [`Typed`](#def-Typed), [`TypedArgs`](#def-TypedArgs), [`TypedArms`](#def-TypedArms), [`UnOp`](#def-UnOp), [`Val`](#def-Val), [`Val.ints`](#def-Val_ints), [`Val.observable`](#def-Val_observable), [`Val.qual`](#def-Val_qual), [`WfByValueEdge`](#def-WfByValueEdge), [`WfDecls`](#def-WfDecls), [`WfEnums`](#def-WfEnums), [`WfFn`](#def-WfFn), [`WfProgram`](#def-WfProgram), [`WfStructs`](#def-WfStructs), [`anyLinearOther`](#def-anyLinearOther), [`arrayPrefix`](#def-arrayPrefix), [`assignArrayOk`](#def-assignArrayOk), [`binOpFloat`](#def-binOpFloat), [`binOpInt`](#def-binOpInt), [`bitsOf`](#def-bitsOf), [`canonAux`](#def-canonAux), [`canonNum`](#def-canonNum), [`cmpScaled`](#def-cmpScaled), [`declaredPrefix`](#def-declaredPrefix), [`dropCell`](#def-dropCell), [`dropContents`](#def-dropContents), [`dropResidue`](#def-dropResidue), [`dropRetire`](#def-dropRetire), [`dynPlace`](#def-dynPlace), [`eval`](#def-eval), [`evalArgs`](#def-evalArgs), [`evalBinOp`](#def-evalBinOp), [`evalFintrin`](#def-evalFintrin), [`evalIntCast`](#def-evalIntCast), [`evalUnOp`](#def-evalUnOp), [`extendArm`](#def-extendArm), [`fnCtx`](#def-fnCtx), [`freshParams`](#def-freshParams), [`inBoundsIdx`](#def-inBoundsIdx), [`intMax`](#def-intMax), [`intMin`](#def-intMin), [`intResult`](#def-intResult), [`introVal`](#def-introVal), [`linearResidue`](#def-linearResidue), [`magCmp`](#def-magCmp), [`matchConsume`](#def-matchConsume), [`noArrayStep`](#def-noArrayStep), [`noDtorPrefix`](#def-noDtorPrefix), [`ownedJoinable`](#def-ownedJoinable), [`ownedJoinableList`](#def-ownedJoinableList), [`plainDestructure`](#def-plainDestructure), [`plainDropRetire`](#def-plainDropRetire), [`plainResidue`](#def-plainResidue), [`plainUnwind`](#def-plainUnwind), [`residualLinear`](#def-residualLinear), [`residualLinearBelow`](#def-residualLinearBelow), [`residualLinearFields`](#def-residualLinearFields), [`residueDropEvent`](#def-residueDropEvent), [`rootCell`](#def-rootCell), [`rootIdxOnly`](#def-rootIdxOnly), [`run`](#def-run), [`runAllScopeDrops`](#def-runAllScopeDrops), [`shiftAmount`](#def-shiftAmount), [`unwindLocs`](#def-unwindLocs), [`valOf`](#def-valOf), [`wrapInt`](#def-wrapInt)
 
@@ -2114,11 +2114,11 @@ flowchart BT
 
 </details>
 
-### `eval_complete`
+### `eval_small_to_big`
 
 ```mermaid
 flowchart BT
-  thm["eval_complete"]
+  thm["eval_small_to_big"]
   subgraph defs_["Definitions the statement depends on"]
     Activation["Activation<br/>§6.1, §6.9"] -.-> thm
     Activation_unwindScope["Activation.unwindScope<br/>§6.7, (D-Let), (D-Match)"] -.-> thm
@@ -2151,17 +2151,17 @@ flowchart BT
 (187 more definitions the statement depends on, past the 25 cap.)
 
 <details>
-<summary>All 212 definitions eval_complete's statement depends on</summary>
+<summary>All 212 definitions eval_small_to_big's statement depends on</summary>
 
 [`Activation`](#def-Activation), [`Activation.unwindScope`](#def-Activation_unwindScope), [`ArgsFrame`](#def-ArgsFrame), [`ArgsRes`](#def-ArgsRes), [`Attr`](#def-Attr), [`Attr.lift`](#def-Attr_lift), [`BinOp`](#def-BinOp), [`BinOp.floatAdmits`](#def-BinOp_floatAdmits), [`BinOp.intAdmits`](#def-BinOp_intAdmits), [`BinOp.isCompare`](#def-BinOp_isCompare), [`BinOp.resultTy`](#def-BinOp_resultTy), [`Cell`](#def-Cell), [`Config`](#def-Config), [`Config.init`](#def-Config_init), [`Contents`](#def-Contents), [`Contents.allCopyList`](#def-Contents_allCopyList), [`Contents.copyContained`](#def-Contents_copyContained), [`Contents.declaredLinear`](#def-Contents_declaredLinear), [`Contents.declaredPlan`](#def-Contents_declaredPlan), [`Contents.destructure`](#def-Contents_destructure), [`Contents.getAt`](#def-Contents_getAt), [`Contents.isMovedOut`](#def-Contents_isMovedOut), [`Contents.ofVal`](#def-Contents_ofVal), [`Contents.pathOnly`](#def-Contents_pathOnly), [`Contents.qual`](#def-Contents_qual), [`Contents.residualLinear`](#def-Contents_residualLinear), [`Contents.resolveDyn`](#def-Contents_resolveDyn), [`Contents.setAt`](#def-Contents_setAt), [`Contents.splitResidue`](#def-Contents_splitResidue), [`Contents.toVal`](#def-Contents_toVal), [`Ctx`](#def-Ctx), [`Ctx.Wf`](#def-Ctx_Wf), [`Ctx.join`](#def-Ctx_join), [`Ctx.joinAll`](#def-Ctx_joinAll), [`Ctx.joinFold`](#def-Ctx_joinFold), [`Ctx.joinOpt`](#def-Ctx_joinOpt), [`Ctx.joinOpts`](#def-Ctx_joinOpts), [`Ctx.loopLocals`](#def-Ctx_loopLocals), [`Ctx.outsideLoop`](#def-Ctx_outsideLoop), [`Decls`](#def-Decls), [`Decls.ByValueEdge`](#def-Decls_ByValueEdge), [`Decls.byValue`](#def-Decls_byValue), [`Decls.classOf`](#def-Decls_classOf), [`Decls.enumClassOf`](#def-Decls_enumClassOf), [`DynPlace`](#def-DynPlace), [`DynStep`](#def-DynStep), [`Entry`](#def-Entry), [`Entry.join`](#def-Entry_join), [`Entry.setSt`](#def-Entry_setSt), [`Entry.wf`](#def-Entry_wf), [`EnumDecl`](#def-EnumDecl), [`EnumDecl.Wf`](#def-EnumDecl_Wf), [`EnumDecl.payloadJoin`](#def-EnumDecl_payloadJoin), [`Env`](#def-Env), [`EvalRes`](#def-EvalRes), [`EvalRes.bind`](#def-EvalRes_bind), [`EvalRes.bindCall`](#def-EvalRes_bindCall), [`EvalRes.withTrace`](#def-EvalRes_withTrace), [`Event`](#def-Event), [`Expr`](#def-Expr), [`Expr.breaks`](#def-Expr_breaks), [`FloatArith`](#def-FloatArith), [`FloatDatum`](#def-FloatDatum), [`FloatDatum.Wf`](#def-FloatDatum_Wf), [`FloatDatum.isNaN`](#def-FloatDatum_isNaN), [`FloatDatum.le`](#def-FloatDatum_le), [`FloatDatum.lt`](#def-FloatDatum_lt), [`FloatDatum.negate`](#def-FloatDatum_negate), [`FloatDatum.roundOp`](#def-FloatDatum_roundOp), [`FloatDatum.succMag`](#def-FloatDatum_succMag), [`FloatDatum.toIntIn`](#def-FloatDatum_toIntIn), [`FloatDatum.totalCmp`](#def-FloatDatum_totalCmp), [`FloatDatum.totalRank`](#def-FloatDatum_totalRank), [`FloatDatum.truncToInt`](#def-FloatDatum_truncToInt), [`FloatDatum.widen`](#def-FloatDatum_widen), [`FloatIntrin`](#def-FloatIntrin), [`FloatIntrin.floatSrc`](#def-FloatIntrin_floatSrc), [`FloatIntrin.resTy`](#def-FloatIntrin_resTy), [`FloatLaws`](#def-FloatLaws), [`FloatLit`](#def-FloatLit), [`FloatLit.RoundsFinite`](#def-FloatLit_RoundsFinite), [`FloatLit.exact`](#def-FloatLit_exact), [`FloatRoundOp`](#def-FloatRoundOp), [`FloatSig`](#def-FloatSig), [`FloatSig.cast`](#def-FloatSig_cast), [`FloatSig.roundIntrin`](#def-FloatSig_roundIntrin), [`FloatUnIntrin`](#def-FloatUnIntrin), [`FloatWidth`](#def-FloatWidth), [`FloatWidth.eMin`](#def-FloatWidth_eMin), [`FloatWidth.eTop`](#def-FloatWidth_eTop), [`FloatWidth.overflowNum`](#def-FloatWidth_overflowNum), [`FloatWidth.prec`](#def-FloatWidth_prec), [`FnDef`](#def-FnDef), [`Focus`](#def-Focus), [`InBounds`](#def-InBounds), [`IntWidth`](#def-IntWidth), [`IntWidth.bits`](#def-IntWidth_bits), [`IntWidth.modulus`](#def-IntWidth_modulus), [`Kont`](#def-Kont), [`Kont.toCall`](#def-Kont_toCall), [`Kont.toLoop`](#def-Kont_toLoop), [`LoopHead`](#def-LoopHead), [`NoResidualLinear`](#def-NoResidualLinear), [`OpRes`](#def-OpRes), [`OpRes.toRes`](#def-OpRes_toRes), [`Out`](#def-Out), [`Out.merge`](#def-Out_merge), [`OwnSt`](#def-OwnSt), [`OwnSt.fieldAt`](#def-OwnSt_fieldAt), [`OwnSt.fieldStates`](#def-OwnSt_fieldStates), [`OwnSt.fullyOwned`](#def-OwnSt_fullyOwned), [`OwnSt.get`](#def-OwnSt_get), [`OwnSt.isOwned`](#def-OwnSt_isOwned), [`OwnSt.join`](#def-OwnSt_join), [`OwnSt.setAt`](#def-OwnSt_setAt), [`OwnSt.setField`](#def-OwnSt_setField), [`OwnSt.wf`](#def-OwnSt_wf), [`PanicKind`](#def-PanicKind), [`Param`](#def-Param), [`Place`](#def-Place), [`Place.path`](#def-Place_path), [`Place.root`](#def-Place_root), [`Program`](#def-Program), [`ProgramTyped`](#def-ProgramTyped), [`Qual`](#def-Qual), [`Qual.join`](#def-Qual_join), [`Qual.rank`](#def-Qual_rank), [`Refusal`](#def-Refusal), [`Sign`](#def-Sign), [`Step`](#def-Step), [`Steps`](#def-Steps), [`Store`](#def-Store), [`StructDecl`](#def-StructDecl), [`StructDecl.Wf`](#def-StructDecl_Wf), [`StructDecl.baseOf`](#def-StructDecl_baseOf), [`Ty`](#def-Ty), [`Ty.atDyn`](#def-Ty_atDyn), [`Ty.atPath`](#def-Ty_atPath), [`Ty.declaredLinear`](#def-Ty_declaredLinear), [`Ty.dynNoDeclared`](#def-Ty_dynNoDeclared), [`Ty.fieldAt`](#def-Ty_fieldAt), [`Ty.isInt`](#def-Ty_isInt), [`Ty.observable`](#def-Ty_observable), [`Ty.qual`](#def-Ty_qual), [`Ty.tyNames`](#def-Ty_tyNames), [`TyName`](#def-TyName), [`Typed`](#def-Typed), [`TypedArgs`](#def-TypedArgs), [`TypedArms`](#def-TypedArms), [`UnOp`](#def-UnOp), [`Val`](#def-Val), [`Val.ints`](#def-Val_ints), [`Val.observable`](#def-Val_observable), [`Val.qual`](#def-Val_qual), [`WfByValueEdge`](#def-WfByValueEdge), [`WfDecls`](#def-WfDecls), [`WfEnums`](#def-WfEnums), [`WfFn`](#def-WfFn), [`WfProgram`](#def-WfProgram), [`WfStructs`](#def-WfStructs), [`anyLinearOther`](#def-anyLinearOther), [`arrayPrefix`](#def-arrayPrefix), [`assignArrayOk`](#def-assignArrayOk), [`binOpFloat`](#def-binOpFloat), [`binOpInt`](#def-binOpInt), [`bitsOf`](#def-bitsOf), [`canonAux`](#def-canonAux), [`canonNum`](#def-canonNum), [`cmpScaled`](#def-cmpScaled), [`declaredPrefix`](#def-declaredPrefix), [`dropCell`](#def-dropCell), [`dropContents`](#def-dropContents), [`dropResidue`](#def-dropResidue), [`dropRetire`](#def-dropRetire), [`dynPlace`](#def-dynPlace), [`eval`](#def-eval), [`evalArgs`](#def-evalArgs), [`evalBinOp`](#def-evalBinOp), [`evalFintrin`](#def-evalFintrin), [`evalIntCast`](#def-evalIntCast), [`evalUnOp`](#def-evalUnOp), [`extendArm`](#def-extendArm), [`fnCtx`](#def-fnCtx), [`freshParams`](#def-freshParams), [`inBoundsIdx`](#def-inBoundsIdx), [`intMax`](#def-intMax), [`intMin`](#def-intMin), [`intResult`](#def-intResult), [`introVal`](#def-introVal), [`linearResidue`](#def-linearResidue), [`magCmp`](#def-magCmp), [`matchConsume`](#def-matchConsume), [`noArrayStep`](#def-noArrayStep), [`noDtorPrefix`](#def-noDtorPrefix), [`ownedJoinable`](#def-ownedJoinable), [`ownedJoinableList`](#def-ownedJoinableList), [`plainDestructure`](#def-plainDestructure), [`plainDropRetire`](#def-plainDropRetire), [`plainResidue`](#def-plainResidue), [`plainUnwind`](#def-plainUnwind), [`residualLinear`](#def-residualLinear), [`residualLinearBelow`](#def-residualLinearBelow), [`residualLinearFields`](#def-residualLinearFields), [`residueDropEvent`](#def-residueDropEvent), [`rootCell`](#def-rootCell), [`rootIdxOnly`](#def-rootIdxOnly), [`run`](#def-run), [`runAllScopeDrops`](#def-runAllScopeDrops), [`shiftAmount`](#def-shiftAmount), [`unwindLocs`](#def-unwindLocs), [`valOf`](#def-valOf), [`wrapInt`](#def-wrapInt)
 
 </details>
 
-### `run_complete`
+### `run_small_to_big`
 
 ```mermaid
 flowchart BT
-  thm["run_complete"]
+  thm["run_small_to_big"]
   subgraph mile["Milestone ancestors"]
     eval_steps_of_outOfFuel["eval_steps_of_outOfFuel"] --> thm
   end
@@ -2197,17 +2197,17 @@ flowchart BT
 (102 more definitions the statement depends on, past the 25 cap.)
 
 <details>
-<summary>All 127 definitions run_complete's statement depends on</summary>
+<summary>All 127 definitions run_small_to_big's statement depends on</summary>
 
 [`Activation`](#def-Activation), [`Activation.unwindScope`](#def-Activation_unwindScope), [`ArgsFrame`](#def-ArgsFrame), [`ArgsRes`](#def-ArgsRes), [`Attr`](#def-Attr), [`BinOp`](#def-BinOp), [`Cell`](#def-Cell), [`Config`](#def-Config), [`Config.init`](#def-Config_init), [`Contents`](#def-Contents), [`Contents.allCopyList`](#def-Contents_allCopyList), [`Contents.copyContained`](#def-Contents_copyContained), [`Contents.declaredLinear`](#def-Contents_declaredLinear), [`Contents.declaredPlan`](#def-Contents_declaredPlan), [`Contents.destructure`](#def-Contents_destructure), [`Contents.getAt`](#def-Contents_getAt), [`Contents.isMovedOut`](#def-Contents_isMovedOut), [`Contents.ofVal`](#def-Contents_ofVal), [`Contents.pathOnly`](#def-Contents_pathOnly), [`Contents.qual`](#def-Contents_qual), [`Contents.residualLinear`](#def-Contents_residualLinear), [`Contents.resolveDyn`](#def-Contents_resolveDyn), [`Contents.setAt`](#def-Contents_setAt), [`Contents.splitResidue`](#def-Contents_splitResidue), [`Contents.toVal`](#def-Contents_toVal), [`Decls`](#def-Decls), [`Decls.classOf`](#def-Decls_classOf), [`Decls.enumClassOf`](#def-Decls_enumClassOf), [`DynPlace`](#def-DynPlace), [`DynStep`](#def-DynStep), [`EnumDecl`](#def-EnumDecl), [`Env`](#def-Env), [`EvalRes`](#def-EvalRes), [`EvalRes.bind`](#def-EvalRes_bind), [`EvalRes.bindCall`](#def-EvalRes_bindCall), [`EvalRes.withTrace`](#def-EvalRes_withTrace), [`Event`](#def-Event), [`Expr`](#def-Expr), [`FloatArith`](#def-FloatArith), [`FloatDatum`](#def-FloatDatum), [`FloatDatum.isNaN`](#def-FloatDatum_isNaN), [`FloatDatum.le`](#def-FloatDatum_le), [`FloatDatum.lt`](#def-FloatDatum_lt), [`FloatDatum.negate`](#def-FloatDatum_negate), [`FloatDatum.roundOp`](#def-FloatDatum_roundOp), [`FloatDatum.succMag`](#def-FloatDatum_succMag), [`FloatDatum.toIntIn`](#def-FloatDatum_toIntIn), [`FloatDatum.totalCmp`](#def-FloatDatum_totalCmp), [`FloatDatum.totalRank`](#def-FloatDatum_totalRank), [`FloatDatum.truncToInt`](#def-FloatDatum_truncToInt), [`FloatDatum.widen`](#def-FloatDatum_widen), [`FloatIntrin`](#def-FloatIntrin), [`FloatLit`](#def-FloatLit), [`FloatRoundOp`](#def-FloatRoundOp), [`FloatSig`](#def-FloatSig), [`FloatSig.cast`](#def-FloatSig_cast), [`FloatSig.roundIntrin`](#def-FloatSig_roundIntrin), [`FloatUnIntrin`](#def-FloatUnIntrin), [`FloatWidth`](#def-FloatWidth), [`FnDef`](#def-FnDef), [`Focus`](#def-Focus), [`InBounds`](#def-InBounds), [`IntWidth`](#def-IntWidth), [`IntWidth.bits`](#def-IntWidth_bits), [`IntWidth.modulus`](#def-IntWidth_modulus), [`Kont`](#def-Kont), [`Kont.toCall`](#def-Kont_toCall), [`Kont.toLoop`](#def-Kont_toLoop), [`OpRes`](#def-OpRes), [`OpRes.toRes`](#def-OpRes_toRes), [`PanicKind`](#def-PanicKind), [`Param`](#def-Param), [`Place`](#def-Place), [`Place.path`](#def-Place_path), [`Place.root`](#def-Place_root), [`Program`](#def-Program), [`Qual`](#def-Qual), [`Refusal`](#def-Refusal), [`Sign`](#def-Sign), [`Step`](#def-Step), [`Steps`](#def-Steps), [`Store`](#def-Store), [`StructDecl`](#def-StructDecl), [`Ty`](#def-Ty), [`Ty.qual`](#def-Ty_qual), [`UnOp`](#def-UnOp), [`Val`](#def-Val), [`Val.ints`](#def-Val_ints), [`Val.observable`](#def-Val_observable), [`Val.qual`](#def-Val_qual), [`binOpFloat`](#def-binOpFloat), [`binOpInt`](#def-binOpInt), [`bitsOf`](#def-bitsOf), [`canonAux`](#def-canonAux), [`canonNum`](#def-canonNum), [`cmpScaled`](#def-cmpScaled), [`dropCell`](#def-dropCell), [`dropContents`](#def-dropContents), [`dropResidue`](#def-dropResidue), [`dropRetire`](#def-dropRetire), [`dynPlace`](#def-dynPlace), [`eval`](#def-eval), [`evalArgs`](#def-evalArgs), [`evalBinOp`](#def-evalBinOp), [`evalFintrin`](#def-evalFintrin), [`evalIntCast`](#def-evalIntCast), [`evalUnOp`](#def-evalUnOp), [`freshParams`](#def-freshParams), [`inBoundsIdx`](#def-inBoundsIdx), [`intMax`](#def-intMax), [`intMin`](#def-intMin), [`intResult`](#def-intResult), [`introVal`](#def-introVal), [`magCmp`](#def-magCmp), [`matchConsume`](#def-matchConsume), [`plainDestructure`](#def-plainDestructure), [`plainDropRetire`](#def-plainDropRetire), [`plainResidue`](#def-plainResidue), [`plainUnwind`](#def-plainUnwind), [`residueDropEvent`](#def-residueDropEvent), [`rootCell`](#def-rootCell), [`run`](#def-run), [`runAllScopeDrops`](#def-runAllScopeDrops), [`shiftAmount`](#def-shiftAmount), [`unwindLocs`](#def-unwindLocs), [`valOf`](#def-valOf), [`wrapInt`](#def-wrapInt)
 
 </details>
 
-### `never_stuck_iff`
+### `never_refused_iff`
 
 ```mermaid
 flowchart BT
-  thm["never_stuck_iff"]
+  thm["never_refused_iff"]
   subgraph defs_["Definitions the statement depends on"]
     Activation["Activation<br/>§6.1, §6.9"] -.-> thm
     Activation_unwindScope["Activation.unwindScope<br/>§6.7, (D-Let), (D-Match)"] -.-> thm
@@ -2240,7 +2240,7 @@ flowchart BT
 (188 more definitions the statement depends on, past the 25 cap.)
 
 <details>
-<summary>All 213 definitions never_stuck_iff's statement depends on</summary>
+<summary>All 213 definitions never_refused_iff's statement depends on</summary>
 
 [`Activation`](#def-Activation), [`Activation.unwindScope`](#def-Activation_unwindScope), [`ArgsFrame`](#def-ArgsFrame), [`ArgsRes`](#def-ArgsRes), [`Attr`](#def-Attr), [`Attr.lift`](#def-Attr_lift), [`BinOp`](#def-BinOp), [`BinOp.floatAdmits`](#def-BinOp_floatAdmits), [`BinOp.intAdmits`](#def-BinOp_intAdmits), [`BinOp.isCompare`](#def-BinOp_isCompare), [`BinOp.resultTy`](#def-BinOp_resultTy), [`Cell`](#def-Cell), [`Config`](#def-Config), [`Config.Terminal`](#def-Config_Terminal), [`Config.init`](#def-Config_init), [`Contents`](#def-Contents), [`Contents.allCopyList`](#def-Contents_allCopyList), [`Contents.copyContained`](#def-Contents_copyContained), [`Contents.declaredLinear`](#def-Contents_declaredLinear), [`Contents.declaredPlan`](#def-Contents_declaredPlan), [`Contents.destructure`](#def-Contents_destructure), [`Contents.getAt`](#def-Contents_getAt), [`Contents.isMovedOut`](#def-Contents_isMovedOut), [`Contents.ofVal`](#def-Contents_ofVal), [`Contents.pathOnly`](#def-Contents_pathOnly), [`Contents.qual`](#def-Contents_qual), [`Contents.residualLinear`](#def-Contents_residualLinear), [`Contents.resolveDyn`](#def-Contents_resolveDyn), [`Contents.setAt`](#def-Contents_setAt), [`Contents.splitResidue`](#def-Contents_splitResidue), [`Contents.toVal`](#def-Contents_toVal), [`Ctx`](#def-Ctx), [`Ctx.Wf`](#def-Ctx_Wf), [`Ctx.join`](#def-Ctx_join), [`Ctx.joinAll`](#def-Ctx_joinAll), [`Ctx.joinFold`](#def-Ctx_joinFold), [`Ctx.joinOpt`](#def-Ctx_joinOpt), [`Ctx.joinOpts`](#def-Ctx_joinOpts), [`Ctx.loopLocals`](#def-Ctx_loopLocals), [`Ctx.outsideLoop`](#def-Ctx_outsideLoop), [`Decls`](#def-Decls), [`Decls.ByValueEdge`](#def-Decls_ByValueEdge), [`Decls.byValue`](#def-Decls_byValue), [`Decls.classOf`](#def-Decls_classOf), [`Decls.enumClassOf`](#def-Decls_enumClassOf), [`DynPlace`](#def-DynPlace), [`DynStep`](#def-DynStep), [`Entry`](#def-Entry), [`Entry.join`](#def-Entry_join), [`Entry.setSt`](#def-Entry_setSt), [`Entry.wf`](#def-Entry_wf), [`EnumDecl`](#def-EnumDecl), [`EnumDecl.Wf`](#def-EnumDecl_Wf), [`EnumDecl.payloadJoin`](#def-EnumDecl_payloadJoin), [`Env`](#def-Env), [`EvalRes`](#def-EvalRes), [`EvalRes.bind`](#def-EvalRes_bind), [`EvalRes.bindCall`](#def-EvalRes_bindCall), [`EvalRes.withTrace`](#def-EvalRes_withTrace), [`Event`](#def-Event), [`Expr`](#def-Expr), [`Expr.breaks`](#def-Expr_breaks), [`FloatArith`](#def-FloatArith), [`FloatDatum`](#def-FloatDatum), [`FloatDatum.Wf`](#def-FloatDatum_Wf), [`FloatDatum.isNaN`](#def-FloatDatum_isNaN), [`FloatDatum.le`](#def-FloatDatum_le), [`FloatDatum.lt`](#def-FloatDatum_lt), [`FloatDatum.negate`](#def-FloatDatum_negate), [`FloatDatum.roundOp`](#def-FloatDatum_roundOp), [`FloatDatum.succMag`](#def-FloatDatum_succMag), [`FloatDatum.toIntIn`](#def-FloatDatum_toIntIn), [`FloatDatum.totalCmp`](#def-FloatDatum_totalCmp), [`FloatDatum.totalRank`](#def-FloatDatum_totalRank), [`FloatDatum.truncToInt`](#def-FloatDatum_truncToInt), [`FloatDatum.widen`](#def-FloatDatum_widen), [`FloatIntrin`](#def-FloatIntrin), [`FloatIntrin.floatSrc`](#def-FloatIntrin_floatSrc), [`FloatIntrin.resTy`](#def-FloatIntrin_resTy), [`FloatLaws`](#def-FloatLaws), [`FloatLit`](#def-FloatLit), [`FloatLit.RoundsFinite`](#def-FloatLit_RoundsFinite), [`FloatLit.exact`](#def-FloatLit_exact), [`FloatRoundOp`](#def-FloatRoundOp), [`FloatSig`](#def-FloatSig), [`FloatSig.cast`](#def-FloatSig_cast), [`FloatSig.roundIntrin`](#def-FloatSig_roundIntrin), [`FloatUnIntrin`](#def-FloatUnIntrin), [`FloatWidth`](#def-FloatWidth), [`FloatWidth.eMin`](#def-FloatWidth_eMin), [`FloatWidth.eTop`](#def-FloatWidth_eTop), [`FloatWidth.overflowNum`](#def-FloatWidth_overflowNum), [`FloatWidth.prec`](#def-FloatWidth_prec), [`FnDef`](#def-FnDef), [`Focus`](#def-Focus), [`InBounds`](#def-InBounds), [`IntWidth`](#def-IntWidth), [`IntWidth.bits`](#def-IntWidth_bits), [`IntWidth.modulus`](#def-IntWidth_modulus), [`Kont`](#def-Kont), [`Kont.toCall`](#def-Kont_toCall), [`Kont.toLoop`](#def-Kont_toLoop), [`LoopHead`](#def-LoopHead), [`NoResidualLinear`](#def-NoResidualLinear), [`OpRes`](#def-OpRes), [`OpRes.toRes`](#def-OpRes_toRes), [`Out`](#def-Out), [`Out.merge`](#def-Out_merge), [`OwnSt`](#def-OwnSt), [`OwnSt.fieldAt`](#def-OwnSt_fieldAt), [`OwnSt.fieldStates`](#def-OwnSt_fieldStates), [`OwnSt.fullyOwned`](#def-OwnSt_fullyOwned), [`OwnSt.get`](#def-OwnSt_get), [`OwnSt.isOwned`](#def-OwnSt_isOwned), [`OwnSt.join`](#def-OwnSt_join), [`OwnSt.setAt`](#def-OwnSt_setAt), [`OwnSt.setField`](#def-OwnSt_setField), [`OwnSt.wf`](#def-OwnSt_wf), [`PanicKind`](#def-PanicKind), [`Param`](#def-Param), [`Place`](#def-Place), [`Place.path`](#def-Place_path), [`Place.root`](#def-Place_root), [`Program`](#def-Program), [`ProgramTyped`](#def-ProgramTyped), [`Qual`](#def-Qual), [`Qual.join`](#def-Qual_join), [`Qual.rank`](#def-Qual_rank), [`Refusal`](#def-Refusal), [`Sign`](#def-Sign), [`Step`](#def-Step), [`Steps`](#def-Steps), [`Store`](#def-Store), [`StructDecl`](#def-StructDecl), [`StructDecl.Wf`](#def-StructDecl_Wf), [`StructDecl.baseOf`](#def-StructDecl_baseOf), [`Ty`](#def-Ty), [`Ty.atDyn`](#def-Ty_atDyn), [`Ty.atPath`](#def-Ty_atPath), [`Ty.declaredLinear`](#def-Ty_declaredLinear), [`Ty.dynNoDeclared`](#def-Ty_dynNoDeclared), [`Ty.fieldAt`](#def-Ty_fieldAt), [`Ty.isInt`](#def-Ty_isInt), [`Ty.observable`](#def-Ty_observable), [`Ty.qual`](#def-Ty_qual), [`Ty.tyNames`](#def-Ty_tyNames), [`TyName`](#def-TyName), [`Typed`](#def-Typed), [`TypedArgs`](#def-TypedArgs), [`TypedArms`](#def-TypedArms), [`UnOp`](#def-UnOp), [`Val`](#def-Val), [`Val.ints`](#def-Val_ints), [`Val.observable`](#def-Val_observable), [`Val.qual`](#def-Val_qual), [`WfByValueEdge`](#def-WfByValueEdge), [`WfDecls`](#def-WfDecls), [`WfEnums`](#def-WfEnums), [`WfFn`](#def-WfFn), [`WfProgram`](#def-WfProgram), [`WfStructs`](#def-WfStructs), [`anyLinearOther`](#def-anyLinearOther), [`arrayPrefix`](#def-arrayPrefix), [`assignArrayOk`](#def-assignArrayOk), [`binOpFloat`](#def-binOpFloat), [`binOpInt`](#def-binOpInt), [`bitsOf`](#def-bitsOf), [`canonAux`](#def-canonAux), [`canonNum`](#def-canonNum), [`cmpScaled`](#def-cmpScaled), [`declaredPrefix`](#def-declaredPrefix), [`dropCell`](#def-dropCell), [`dropContents`](#def-dropContents), [`dropResidue`](#def-dropResidue), [`dropRetire`](#def-dropRetire), [`dynPlace`](#def-dynPlace), [`eval`](#def-eval), [`evalArgs`](#def-evalArgs), [`evalBinOp`](#def-evalBinOp), [`evalFintrin`](#def-evalFintrin), [`evalIntCast`](#def-evalIntCast), [`evalUnOp`](#def-evalUnOp), [`extendArm`](#def-extendArm), [`fnCtx`](#def-fnCtx), [`freshParams`](#def-freshParams), [`inBoundsIdx`](#def-inBoundsIdx), [`intMax`](#def-intMax), [`intMin`](#def-intMin), [`intResult`](#def-intResult), [`introVal`](#def-introVal), [`linearResidue`](#def-linearResidue), [`magCmp`](#def-magCmp), [`matchConsume`](#def-matchConsume), [`noArrayStep`](#def-noArrayStep), [`noDtorPrefix`](#def-noDtorPrefix), [`ownedJoinable`](#def-ownedJoinable), [`ownedJoinableList`](#def-ownedJoinableList), [`plainDestructure`](#def-plainDestructure), [`plainDropRetire`](#def-plainDropRetire), [`plainResidue`](#def-plainResidue), [`plainUnwind`](#def-plainUnwind), [`residualLinear`](#def-residualLinear), [`residualLinearBelow`](#def-residualLinearBelow), [`residualLinearFields`](#def-residualLinearFields), [`residueDropEvent`](#def-residueDropEvent), [`rootCell`](#def-rootCell), [`rootIdxOnly`](#def-rootIdxOnly), [`run`](#def-run), [`runAllScopeDrops`](#def-runAllScopeDrops), [`shiftAmount`](#def-shiftAmount), [`unwindLocs`](#def-unwindLocs), [`valOf`](#def-valOf), [`wrapInt`](#def-wrapInt)
 
@@ -2289,11 +2289,11 @@ flowchart BT
 
 </details>
 
-### `run_stuck_of_step_stuck`
+### `run_refused_of_step_stuck`
 
 ```mermaid
 flowchart BT
-  thm["run_stuck_of_step_stuck"]
+  thm["run_refused_of_step_stuck"]
   subgraph mile["Milestone ancestors"]
     eval_steps_of_outOfFuel["eval_steps_of_outOfFuel"] --> thm
   end
@@ -2329,7 +2329,7 @@ flowchart BT
 (109 more definitions the statement depends on, past the 25 cap.)
 
 <details>
-<summary>All 134 definitions run_stuck_of_step_stuck's statement depends on</summary>
+<summary>All 134 definitions run_refused_of_step_stuck's statement depends on</summary>
 
 [`Activation`](#def-Activation), [`Activation.unwindScope`](#def-Activation_unwindScope), [`ArgsFrame`](#def-ArgsFrame), [`ArgsRes`](#def-ArgsRes), [`Attr`](#def-Attr), [`BinOp`](#def-BinOp), [`Cell`](#def-Cell), [`Config`](#def-Config), [`Config.Stuck`](#def-Config_Stuck), [`Config.init`](#def-Config_init), [`Contents`](#def-Contents), [`Contents.allCopyList`](#def-Contents_allCopyList), [`Contents.copyContained`](#def-Contents_copyContained), [`Contents.declaredLinear`](#def-Contents_declaredLinear), [`Contents.declaredPlan`](#def-Contents_declaredPlan), [`Contents.destructure`](#def-Contents_destructure), [`Contents.getAt`](#def-Contents_getAt), [`Contents.isMovedOut`](#def-Contents_isMovedOut), [`Contents.ofVal`](#def-Contents_ofVal), [`Contents.pathOnly`](#def-Contents_pathOnly), [`Contents.qual`](#def-Contents_qual), [`Contents.residualLinear`](#def-Contents_residualLinear), [`Contents.resolveDyn`](#def-Contents_resolveDyn), [`Contents.setAt`](#def-Contents_setAt), [`Contents.splitResidue`](#def-Contents_splitResidue), [`Contents.toVal`](#def-Contents_toVal), [`Decls`](#def-Decls), [`Decls.classOf`](#def-Decls_classOf), [`Decls.enumClassOf`](#def-Decls_enumClassOf), [`DynPlace`](#def-DynPlace), [`DynStep`](#def-DynStep), [`EnumDecl`](#def-EnumDecl), [`Env`](#def-Env), [`EvalRes`](#def-EvalRes), [`EvalRes.bind`](#def-EvalRes_bind), [`EvalRes.bindCall`](#def-EvalRes_bindCall), [`EvalRes.withTrace`](#def-EvalRes_withTrace), [`Event`](#def-Event), [`Expr`](#def-Expr), [`FloatArith`](#def-FloatArith), [`FloatDatum`](#def-FloatDatum), [`FloatDatum.isNaN`](#def-FloatDatum_isNaN), [`FloatDatum.le`](#def-FloatDatum_le), [`FloatDatum.lt`](#def-FloatDatum_lt), [`FloatDatum.negate`](#def-FloatDatum_negate), [`FloatDatum.roundOp`](#def-FloatDatum_roundOp), [`FloatDatum.succMag`](#def-FloatDatum_succMag), [`FloatDatum.toIntIn`](#def-FloatDatum_toIntIn), [`FloatDatum.totalCmp`](#def-FloatDatum_totalCmp), [`FloatDatum.totalRank`](#def-FloatDatum_totalRank), [`FloatDatum.truncToInt`](#def-FloatDatum_truncToInt), [`FloatDatum.widen`](#def-FloatDatum_widen), [`FloatIntrin`](#def-FloatIntrin), [`FloatLit`](#def-FloatLit), [`FloatRoundOp`](#def-FloatRoundOp), [`FloatSig`](#def-FloatSig), [`FloatSig.cast`](#def-FloatSig_cast), [`FloatSig.roundIntrin`](#def-FloatSig_roundIntrin), [`FloatUnIntrin`](#def-FloatUnIntrin), [`FloatWidth`](#def-FloatWidth), [`FnDef`](#def-FnDef), [`Focus`](#def-Focus), [`InBounds`](#def-InBounds), [`IntWidth`](#def-IntWidth), [`IntWidth.bits`](#def-IntWidth_bits), [`IntWidth.modulus`](#def-IntWidth_modulus), [`Kont`](#def-Kont), [`Kont.toCall`](#def-Kont_toCall), [`Kont.toLoop`](#def-Kont_toLoop), [`OpRes`](#def-OpRes), [`OpRes.toRes`](#def-OpRes_toRes), [`OpRes.toStep`](#def-OpRes_toStep), [`PanicKind`](#def-PanicKind), [`Param`](#def-Param), [`Place`](#def-Place), [`Place.path`](#def-Place_path), [`Place.root`](#def-Place_root), [`Program`](#def-Program), [`Qual`](#def-Qual), [`Refusal`](#def-Refusal), [`Sign`](#def-Sign), [`Step`](#def-Step), [`StepOut`](#def-StepOut), [`Steps`](#def-Steps), [`Store`](#def-Store), [`StructDecl`](#def-StructDecl), [`Ty`](#def-Ty), [`Ty.qual`](#def-Ty_qual), [`UnOp`](#def-UnOp), [`Val`](#def-Val), [`Val.ints`](#def-Val_ints), [`Val.observable`](#def-Val_observable), [`Val.qual`](#def-Val_qual), [`binOpFloat`](#def-binOpFloat), [`binOpInt`](#def-binOpInt), [`bitsOf`](#def-bitsOf), [`canonAux`](#def-canonAux), [`canonNum`](#def-canonNum), [`cmpScaled`](#def-cmpScaled), [`dropCell`](#def-dropCell), [`dropContents`](#def-dropContents), [`dropResidue`](#def-dropResidue), [`dropRetire`](#def-dropRetire), [`dynPlace`](#def-dynPlace), [`eval`](#def-eval), [`evalArgs`](#def-evalArgs), [`evalBinOp`](#def-evalBinOp), [`evalFintrin`](#def-evalFintrin), [`evalIntCast`](#def-evalIntCast), [`evalUnOp`](#def-evalUnOp), [`freshParams`](#def-freshParams), [`inBoundsIdx`](#def-inBoundsIdx), [`intMax`](#def-intMax), [`intMin`](#def-intMin), [`intResult`](#def-intResult), [`introVal`](#def-introVal), [`magCmp`](#def-magCmp), [`matchConsume`](#def-matchConsume), [`plainDestructure`](#def-plainDestructure), [`plainDropRetire`](#def-plainDropRetire), [`plainResidue`](#def-plainResidue), [`plainUnwind`](#def-plainUnwind), [`residueDropEvent`](#def-residueDropEvent), [`rootCell`](#def-rootCell), [`run`](#def-run), [`runAllScopeDrops`](#def-runAllScopeDrops), [`shiftAmount`](#def-shiftAmount), [`step`](#def-step), [`stepArgs`](#def-stepArgs), [`stepEval`](#def-stepEval), [`stepRet`](#def-stepRet), [`unwindLocs`](#def-unwindLocs), [`valOf`](#def-valOf), [`wrapInt`](#def-wrapInt)
 
@@ -2418,7 +2418,7 @@ marked node.
 | --- | --- | --- | --- |
 | `soundness` | `RueCore.Soundness` | 861 | 309 |
 | `run_safe` | `RueCore.Soundness` | 24 | 2 |
-| `no_violation` | `RueCore.Soundness` | 46 | 3 |
+| `no_refusal` | `RueCore.Soundness` | 46 | 3 |
 | `no_use_after_move` | `RueCore.Soundness` | 3 | 0 |
 | `no_use_after_drop` | `RueCore.Soundness` | 12 | 0 |
 | `run_no_use_after_drop` | `RueCore.Retire` | 12 | 51 |
@@ -2446,16 +2446,16 @@ marked node.
 | `Config.stuck_iff` | `RueCore.Step.Lemmas` | 17 | 13 |
 | `step_stuck_isStuckState` | `RueCore.Step.Lemmas` | 48 | 27 |
 | `step_progress` | `RueCore.Adequacy` | 11 | 0 |
-| `step_preservation` | `RueCore.Adequacy` | 13 | 2 |
+| `step_safeAt` | `RueCore.Adequacy` | 13 | 2 |
 | `step_type_safety` | `RueCore.Adequacy` | 25 | 2 |
 | `step_no_use_after_drop` | `RueCore.Retire` | 10 | 57 |
-| `eval_sound` | `RueCore.Adequacy` | 17 | 0 |
+| `eval_big_to_small` | `RueCore.Adequacy` | 17 | 0 |
 | `run_sim` | `RueCore.Adequacy` | 18 | 0 |
-| `eval_complete` | `RueCore.Adequacy` | 23 | 0 |
-| `run_complete` | `RueCore.Adequacy` | 25 | 10 |
-| `never_stuck_iff` | `RueCore.Adequacy` | 14 | 0 |
+| `eval_small_to_big` | `RueCore.Adequacy` | 23 | 0 |
+| `run_small_to_big` | `RueCore.Adequacy` | 25 | 10 |
+| `never_refused_iff` | `RueCore.Adequacy` | 14 | 0 |
 | `step_never_stuck_of_run` | `RueCore.Adequacy` | 17 | 0 |
-| `run_stuck_of_step_stuck` | `RueCore.Adequacy` | 13 | 12 |
+| `run_refused_of_step_stuck` | `RueCore.Adequacy` | 13 | 12 |
 | `eval_diverges_iff` | `RueCore.Adequacy` | 26 | 8 |
 | `Typed.wf` | `RueCore.Statics.Lemmas` | 127 | 90 |
 | `Ctx.join_absorb` | `RueCore.Statics.Lemmas` | 23 | 28 |
