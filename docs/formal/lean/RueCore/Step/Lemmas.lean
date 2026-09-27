@@ -407,7 +407,7 @@ theorem dropRetire_plain {D : Decls} {H : Store} {ℓ : Nat} {r : Store × List 
 /-- **The leak monitor only removes behaviour** (RUE-2314): where
 `unwindLocs` — `run-scope-drops` with `eval`'s monitor — succeeds, §6's
 monitor-free `plainUnwind` succeeds with the same store and trace. Parts 2
-and 3 of the adequacy proof read every scope exit through this. -/
+and 3 of the semantic-equivalence proof read every scope exit through this. -/
 theorem unwindLocs_plain {D : Decls} : ∀ {H : Store} {ls : List Nat} {r : Store × List Event},
     unwindLocs D H ls = .ok r → plainUnwind D H ls = .ok r
   | _, [], _, h => by simpa [unwindLocs, plainUnwind] using h

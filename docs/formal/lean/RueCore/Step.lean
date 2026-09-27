@@ -10,7 +10,7 @@ public import RueCore.Dynamics
 `Dynamics.lean` presents §6 as a function: `eval` runs an expression to its
 end. This module presents it as §6 itself does, as a small-step relation
 `Step M P C C'` between machine configurations, one constructor per rule. The
-two presentations are of one dynamics; the adequacy theorems that say so are
+two presentations are of one dynamics; the semantic-equivalence theorems that say so are
 RUE-2289's parts 2 and 3. This module defines the relation (layer L1); what
 is cheap to prove about it — it is deterministic, a terminal configuration
 takes no step, and its stuck configurations are exactly the ones §6 leaves
@@ -25,7 +25,7 @@ converse modulo fuel, is `eval_small_to_big` (`Equivalence.lean`).
 `K ::= halt | ret(E, φ)·K | loopβ(e, φ)·K` and the evaluation context `E` of
 §6.2 inside `e`. Here:
 
-* `H` and `φ` are the interpreter's own `Store` and `Activation`, so the adequacy
+* `H` and `φ` are the interpreter's own `Store` and `Activation`, so the semantic-equivalence
   proofs relate the two presentations without translating a store.
 * `K` and the `E` inside `e` are **one list of frames** (`Kont`): each frame
   is one production of §6.2's `E` grammar with its hole on top, and the
@@ -110,7 +110,7 @@ representation; none changes what a checked program does.
   append a `†` slot to the store and give the new value its index. §6.1 has
   no object identities; they exist so the trace can say which value a drop
   was of (`Trace.lean`), and minting them the same way in both presentations
-  keeps the adequacy proofs' relation between stores an equality.
+  keeps the semantic-equivalence proofs' relation between stores an equality.
 * **The entry point is called.** `Config.init` calls function 0 with no
   arguments, so (D-Return-Main) is (D-Return) reaching the entry `call` frame
   and a body value there is (D-Return-Value). From §6.12's own initial

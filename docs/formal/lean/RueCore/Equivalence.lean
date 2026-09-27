@@ -8,7 +8,7 @@ public import RueCore.Equivalence.Defs
 @[expose] public section
 
 /-!
-# RueCore.Equivalence — `eval` is adequate to §6's `Step`, both ways
+# RueCore.Equivalence — `eval` is semantically equivalent to §6's `Step`, both ways
 
 ADR-0097's decision 3 proves safety over the definitional interpreter `eval`
 and says that "a theorem about `eval` is a theorem about §6 only once the two
@@ -1787,7 +1787,7 @@ RUE-2314's domain): if §6's `→*` takes the initial configuration to a
 terminal configuration — `✓`, a value at an empty stack, or `↯κ` — then some
 fuel makes `run` answer that outcome with the same store, value and trace,
 and so does every larger fuel (§6.2, §6.12). With `eval_big_to_small` this is
-adequacy in both directions: on checked programs, `run`'s values and panics
+semantic equivalence in both directions: on checked programs, `run`'s values and panics
 are exactly the ends of §6's runs, and `outOfFuel` at every fuel is exactly
 divergence (`eval_diverges_iff`). -/
 theorem eval_small_to_big (M : FloatLaws) {P : Program} (h : ProgramTyped P) :
@@ -1886,7 +1886,7 @@ theorem eval_diverges_iff (M : FloatLaws) {P : Program} (h : ProgramTyped P) :
 program does not get stuck: it either reduces, halts with a value, or halts
 with one of the defined panics. Types are preserved under reduction." The
 theorems above state it over `eval` (`soundness`, `run_safe`); this section
-restates it over `Step`, derived from `soundness` and the two adequacy
+restates it over `Step`, derived from `soundness` and the two semantic-equivalence
 directions, so the metatheory can cite a theorem in §7's own terms.
 
 **Which preservation.** The configuration typing here is *semantic*:
@@ -1895,7 +1895,7 @@ steps, and every value it halts with has type `T`. Progress and preservation
 of `SafeAt` hold by construction, as in any semantic-typing proof; the content
 is syntactic type soundness, `init_safeAt` — a checked program's initial
 configuration is safe at its entry type — and that is `soundness` carried to
-§6 by adequacy. A *syntactic* configuration typing `⊢ C : T` (a typed store, a
+§6 by the semantic equivalence. A *syntactic* configuration typing `⊢ C : T` (a typed store, a
 typed frame stack with a Σ per suspended caller, and one preservation case per
 `Step` constructor) would be a second safety proof over `Step`, not a
 corollary of the first, and is not claimed here. -/

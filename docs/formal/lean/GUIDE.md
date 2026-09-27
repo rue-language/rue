@@ -224,7 +224,7 @@ Why a function rather than the relation? A function can be *run*, so every
 semantic question about a fragment program can be answered by executing it.
 And a total function always returns one of the six outcomes, so progress
 becomes the single statement "never `.refused`", which section 4's theorem
-proves. What the function owes the relation is an adequacy lemma (the two
+proves. What the function owes the relation is a semantic-equivalence lemma (the two
 agree on every checked program), required before the mechanization gates
 anything (`../03-metatheory.md`, "How to read a theorem here"). Its first
 half, the big-to-small direction, is proved (`eval_big_to_small`, below), and so is its
@@ -242,7 +242,7 @@ compares its results with the compiler's. Neither alone is enough: a theorem
 about `eval` says nothing about §6 unless the two agree, and `Step`, though
 it runs (`stepN` takes its steps, and `letAddProgram_runs` and the `demo_`
 theorems run whole programs through it), is not what the bridge runs against
-the compiler, and it does not carry the safety proof as cheaply. The adequacy
+the compiler, and it does not carry the safety proof as cheaply. The semantic-equivalence
 theorems (RUE-2289's parts 2 and 3) are the bridge between them. Besides
 them, `Step`'s own theorems are the cheap ones — it is deterministic, a
 finished configuration takes no step, and a stuck one is stuck on one of §6's
@@ -272,7 +272,7 @@ On programs `check` rejects, `Step` follows §6 where `eval` does not: `@drop`
 of a `⊘` place is §6.11's no-op where `eval` refuses it.
 
 **Soundness: what `eval` answers, §6 reaches.** `Equivalence.lean` proves the
-first adequacy theorem. For a program `check` accepts, `eval_big_to_small` says three
+first semantic-equivalence theorem. For a program `check` accepts, `eval_big_to_small` says three
 things: `run` is never `.refused` (that is `no_refusal`); if it answers a
 value, §6.12's initial configuration reaches, by `Step`, the terminal
 configuration holding that value, with the same store and the same trace; and
@@ -311,7 +311,7 @@ relation, so the relation is the thing a reader can hold against the
 calculus rule by rule, and §7's promises ("does not get stuck", "types are
 preserved under reduction") are sentences about it. The interpreter is what
 can be run against the compiler, and what the safety proof is an induction
-over. Adequacy is what lets a result about one be read as a result about the
+over. The semantic equivalence is what lets a result about one be read as a result about the
 other. Here is one corpus program, `affine_scope_drop`, in both (the
 corpus prelude's other declarations omitted):
 
@@ -362,14 +362,14 @@ Two things differ, and neither is a disagreement:
 
 The end states are equal: the same store (`[†, †]`), the same value (`1`),
 and the same trace. `affineScopeDrop_both_ways` proves exactly that, and also
-proves `check` accepts the program. The adequacy theorems say that this
+proves `check` accepts the program. The semantic-equivalence theorems say that this
 agreement is not special to one program: on every program `check` accepts,
 `eval`'s value or panic is §6's (`eval_big_to_small`), §6's is `eval`'s at every
 fuel past the run's length (`eval_small_to_big`), and `outOfFuel` at every fuel
 is §6 running forever (`eval_diverges_iff`).
 
 **What that buys: §7 in its own terms.** The safety theorem is proved once,
-over `eval`. Adequacy then carries it to `Step`:
+over `eval`. The semantic equivalence then carries it to `Step`:
 
 - `step_progress`: every configuration §6 reaches from a checked program's
   initial one reduces or has halted, so none is stuck.
@@ -430,7 +430,7 @@ value, and `fuel_mono` proves every larger bound agrees. A program that does
 `loop { () }` is `outOfFuel` at every bound (`infiniteLoop_outOfFuel`), and
 the corpus, which exports only completed runs, leaves it out.
 
-The two lemmas close the loophole from `eval`'s side. Adequacy closes it from
+The two lemmas close the loophole from `eval`'s side. The semantic equivalence closes it from
 §6's side. On a checked program, `run` is out of fuel at every bound exactly
 when §6's reduction never ends (`eval_diverges_iff`). And when §6's run does
 end, every bound past its length finds the end (`eval_small_to_big`).
@@ -567,7 +567,7 @@ reuse it at every form. It says:
 That is progress and preservation in one statement (§7, first bullet).
 Over §6's `Step`, its whole-program consequence is `step_progress` and
 `step_value_typed`, with `step_safeAt` packaging the two as a semantic
-configuration typing, derived from this theorem by adequacy. The
+configuration typing, derived from this theorem by the semantic equivalence. The
 per-expression invariant `ActivationTyping` has no `Step`-side statement.
 
 Over a whole program, `run_safe` says it in the shape a reader wants:
@@ -2330,7 +2330,7 @@ Pick two of these three and read the calculus and the Lean side by side.
   drop event emitted in the wrong order relative to the body's own trace,
   which step 5's stdout comparison would catch.
 
-**What thirty minutes does not buy.** The adequacy lemma tying this
+**What thirty minutes does not buy.** The semantic-equivalence lemma tying this
 executable dynamics to §6's reduction relation is proved both ways
 (`eval_big_to_small` and `eval_small_to_big`, section 2), and §7's progress and
 preservation are stated over `Step` itself (`step_progress`,

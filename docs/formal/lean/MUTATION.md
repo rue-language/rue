@@ -59,7 +59,7 @@ modules — **and, since RUE-2490, the statement vocabulary itself**: L0's
   `HasTy`, `ContentsTy`, `ContentsOwnTyping`, `ActivationTyping`, `EvalOk`.
 * `Trace/Defs.lean` (RUE-2490): what the trace theorems are stated over —
   `Exact`, `Blocks`, `StackDiscipline`, `StrictStackOrder`, `Config.Ordered`.
-* `Equivalence/Defs.lean` (RUE-2490): what the adequacy theorems are stated
+* `Equivalence/Defs.lean` (RUE-2490): what the semantic-equivalence theorems are stated
   over — `Config.SafeAt`, `StepsN`.
 * `Float.lean` (RUE-2490): `FloatDatum.Wf`, the float counterpart of
   `InBounds`.

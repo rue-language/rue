@@ -933,7 +933,7 @@ def renderTrust (theorems : Array (Item × Array Name)) (declared : Array Item) 
        "assumed beyond Lean's logic — what it assumes about IEEE 754 is the",
        "float algebraic specification above instead. When the project's other obligation",
        "interfaces arrive (the trusted-code obligations of §6.13.5, and the",
-       "adequacy obligation `../03-metatheory.md` records), each will appear",
+       "semantic-equivalence obligation `../03-metatheory.md` records), each will appear",
        "in this section with its doc-comment, which is where its source",
        "belongs.",
        ""]
