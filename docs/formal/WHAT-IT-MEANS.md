@@ -86,8 +86,8 @@ RUE-2348, RUE-2449); others became spec questions.
 One hand-written case knowingly disagrees: the spec forbids `a[0] = a[0]`, the
 compiler accepts it, and the decision is open (RUE-2346).
 
-This follows **verification-guided development**, as AWS did for Cedar (prove
-the model, test the product against it), at a far smaller scale.
+This follows **verification-guided development**, as AWS did for Cedar, at a
+far smaller scale.
 
 ## What that does and does not guarantee
 
@@ -95,10 +95,7 @@ the model, test the product against it), at a far smaller scale.
   verified compiler.
 - Only programs in the core fragment are covered.
 - Bugs on program shapes the tests never produce can be missed, as can drops
-  that run no destructor.
-- Unreached code after a `return`/`@panic`/`break` is untested: the model
-  types nothing past it, so a compiler rejection there is not compared
-  (RUE-2376, open).
+  that run no destructor or a malformed dead tail (RUE-2376, open).
 - The comparison is run by hand, not yet in CI (RUE-2241).
 
 ## How we know the proofs are right
