@@ -208,10 +208,10 @@ shape.
   operator, aggregate, and call statics (§5.8) that complete every §2 expression
   form; the **complete small-step dynamic semantics (§6)** — a reduction rule for
   every §2 form, grounded function-for-function in the `rue-oracle` interpreter
-  (RUE-50) — and drop; the **allocation store and the library container
-  defining equations (§6.13)** — the ratified RUE-390 modeling decision, which
+  (RUE-50) — and drop; the **allocation store and the abstract data types'
+  specification equations (§6.13)** — the ratified RUE-390 modeling decision, which
   places `ArrayBuf`/`StrBuf` buffers inside the calculus's perimeter on paper,
-  under stated RustBelt-style library obligations — nothing about buffers is
+  under stated RustBelt-style trusted-code obligations — nothing about buffers is
   mechanized in Lean yet (the allocation store is Phase D, RUE-2240); and the
   soundness theorems (memory safety), stated precisely.
 - *(planned)* `02-elaboration.md` — surface→core desugaring and the comptime /

@@ -81,10 +81,10 @@ it has two rows.
 | elaboration prunes unreachable bodies | Only function bodies reachable from `main` are elaborated and checked | [spec 10.5:4][s10.5] | — | Rue-specific, grounded | 01 §2 |
 | mechanization; mechanized; mechanized as written; not yet mechanized | The Lean transcription of the calculus and its theorems in `lean/`; "not yet mechanized" marks a rule or theorem with no Lean counterpart | none fetched | — | ours, pending audit | 01 §3; 03 intro; README intro; REDTEAM “Roles”; lean/README intro; GUIDE intro; BRIDGE-SENSITIVITY “Six divergence-rule seeds”; `Float` |
 | fragment | The part of the core that the mechanization covers today | none | — | ours, pending audit | 03 intro; README intro; WHAT-IT-MEANS “What is modelled”; lean/README intro; GUIDE §1; BRIDGE-SENSITIVITY “Method”; `Syntax` |
-| library; library obligations; library bug | The trusted standard-library code behind the buffer-backed containers, the conditions (§6.13.5) it must meet, and a violation of them | none | — | ours, pending audit | 01 §2; README “Contents”; WHAT-IT-MEANS “What is modelled”; lean/README “Deciding whether to believe it”; MUTATION “Limits”; TOOLING “How it fits this package” |
-| library container; library container types | A buffer-backed container type of the standard library (`ArrayBuf(T)`, `StrBuf`), whose methods the calculus gives as defining equations | none | — | ours, pending audit | 01 §6.13; README “Contents” |
+| trusted code; trusted-code obligations; trusted-code bug | The standard-library code behind the buffer-backed abstract data types, which the theorems trust; the conditions (§6.13.5) it must meet; and a violation of them | [FIELD §8][F8]: trusted code base (the Lean Reference; CakeML §1) | — | standard | 01 §2; README “Contents” |
+| abstract data type; abstract data types | A buffer-backed container type of the standard library (`ArrayBuf(T)`, `StrBuf`), known to the core only by its methods' specification equations | [FIELD §10][F10]: abstract data type (Liskov & Zilles 1974; MIT 6.005 Reading 13) | — | standard | 01 §2; README “Contents” |
 | (O1) Unique handle; (O2) Boundary invariant; (O3) Footprint; (O4) Refinement | The four library obligations: no operation duplicates or fabricates a live buffer identity; every method re-establishes the representation invariant; a method touches only its own allocations and arguments; a method behaves as its defining equation says | none | — | ours, pending audit | 01 §6.13.5 |
-| defining equation | A method's meaning given as an equation over the machine's store, as a function would define it | none | — | ours, pending audit | 01 §6.9; `Statics` |
+| specification equation; specification equations | A method's or intrinsic's meaning given as an equation over the machine's store, as a function would define it | [FIELD §10][F10]: the axioms of an algebraic specification (Guttag & Horning, via Gaudel & Le Gall §2) are the nearest accepted term; ours define each operation over the store rather than relate operations to one another | — | ours, pending audit | 01 §2; README “Contents”; `Step` |
 | representation invariant | A condition every value of an abstract type's representation satisfies between operations | none fetched (FIELD.md has no source for it) | — | ours, pending audit | 01 §6.13.3 |
 | source-defined | Of a library method: defined by Rue source code rather than by an intrinsic | none | — | ours, pending audit | 01 §6.11 |
 | decode family | The UTF-8 decoding methods of the string containers (`char_scalar`, `char_next` and their variants) | none | — | ours, pending audit | 01 §6.13.4 |
@@ -1088,6 +1088,7 @@ What it does not see, by design:
 [F7]: FIELD.md#7-testing-against-an-executable-semantics
 [F8]: FIELD.md#8-lean-proof-vocabulary
 [F9]: FIELD.md#9-general-mathematics
+[F10]: FIELD.md#10-program-logics-data-abstraction-and-implementation
 [s1]: ../spec/src/01-introduction.md
 [s2]: ../spec/src/02-lexical-structure/_index.md
 [s2.1]: ../spec/src/02-lexical-structure/01-tokens.md

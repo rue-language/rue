@@ -121,7 +121,7 @@ representation; none changes what a checked program does.
   non-`Copy` leaf; `@drop` there of a `⊘` is stuck too (`useAfterMove`). The
   statics reject both (E0904).
 * **`@dbg` renders an observable value, and a loop body yields `⟨⟩`**
-  (RUE-2427). `@dbg`'s defining equation appends a rendering §6.12 defines
+  (RUE-2427). `@dbg`'s specification equation appends a rendering §6.12 defines
   only for an integer, a float or a `bool`, and §6.10 says the body's value
   is "necessarily `⟨⟩`"; any other value is stuck (`typeConfusion`) rather
   than discarded without a drop, as in `eval`. (Dbg) §5.8 and §5.7's `unit`
@@ -475,7 +475,7 @@ inductive Step (M : FloatSig) (P : Program) : Config → Config → Prop where
   /-- (Search) §6.2 into `@dbg( E )`. -/
   | dbgEnter {H φ K tr e} :
       Step M P (.run H φ K (.eval (.dbg e)) tr) (.run H φ (.dbg :: K) (.eval e) tr)
-  /-- `@dbg`'s defining equation (§6.9's intrinsic note, §6.12): append the
+  /-- `@dbg`'s specification equation (§6.9's intrinsic note, §6.12): append the
   value's rendering to the observable output and yield `⟨⟩`. The rendering is
   defined on an observable value only (`Val.observable`), so any other operand
   has no rule (RUE-2427). -/

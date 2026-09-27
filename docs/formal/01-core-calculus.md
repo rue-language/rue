@@ -289,10 +289,10 @@ so they are modeled separately rather than threaded through every rule.
 **Buffer-backed container types are inside the machine; slice statics are not
 yet.** The RUE-390 modeling decision is ratified (2026-07-14): the machine's
 store is an **allocation store** (§6.1) — abstract allocations, not a
-language-level heap — and the buffer-backed library types `ArrayBuf(T)` /
-`StrBuf` are brought inside the proved perimeter by defining equations over it
+language-level heap — and the buffer-backed abstract data types `ArrayBuf(T)` /
+`StrBuf` are brought inside the proved perimeter by specification equations over it
 (§6.13), so the §7 theorems now quantify over buffer cells as well
-(conditional on the library obligations of §6.13.5). What remains outside the
+(conditional on the trusted-code obligations of §6.13.5). What remains outside the
 *grammar* above: the surface slice forms (`[T]`, `str`, `Str(N)`) and the
 mode-position compatibility relation `⊳` that creates views at call sites (the
 external-call note in §6.9, string content equality in §6.4, the `⊳` examples
@@ -2078,7 +2078,7 @@ exit that drops them; `H(ℓ) = c` and `H[ℓ ↦ c]` throughout §6.3–§6.11
 abbreviate the one-cell forms `H(ℓ) = [c]` and `H[ℓ ↦ [c]]`, so every rule in
 those sections reads unchanged. **Buffer allocations** are minted, read,
 written, resized, and retired only by the machine operations and container
-defining equations of §6.13; no §2 expression form touches one directly. A
+specification equations of §6.13; no §2 expression form touches one directly. A
 fresh identity is one not in `dom(H)`; dead allocations stay in the domain as
 `†`, so an identity is never reused — which is what makes a stale `buf⟨A⟩` or
 `view⟨A | o, k⟩` permanently dead rather than accidentally valid again.
@@ -2495,7 +2495,7 @@ negative and the rules undefined there, is therefore not the one.
 
 `not` on `bool` is `not true → false`, `not false → true` (`Not`).
 
-**The float intrinsics `@f`** (§2, §5.8) reduce by their defining equations,
+**The float intrinsics `@f`** (§2, §5.8) reduce by their specification equations,
 like every other intrinsic with no core body (§6.9's intrinsic note). Four of
 the five groups are total; `@float_to_int` is the one float form that traps.
 
@@ -2855,7 +2855,7 @@ the shared-cell rule above; the paper machine takes the sharing form because it 
 simpler to state and the two agree exactly on well-typed programs.
 
 A call whose callee is an intrinsic with no core body (e.g. `@dbg` or
-`@to_string`) reduces by the intrinsic's defining equation rather than by
+`@to_string`) reduces by the intrinsic's specification equation rather than by
 `(D-Call)`; these are elaboration-level primitives, and the oracle dispatches them
 directly (`@dbg` appends its argument's rendering
 to the observable output). The core-form call rule above governs
@@ -2970,8 +2970,8 @@ thus defined by **mutual recursion**, as the least pair of relations closed
 under all the rules of §6; a `drop` whose nested run diverges makes the
 enclosing configuration diverge, and one whose nested run traps `↯κ` makes the
 enclosing configuration `↯κ` ((Panic-Lift) extends through the nesting). A
-destructor is permitted to have no observable effect, but need not. For a **library
-container** `S` — `StrBuf`, an `ArrayBuf(T)` instance — the destructor is a
+destructor is permitted to have no observable effect, but need not. For an **abstract
+data type** `S` — `StrBuf`, an `ArrayBuf(T)` instance — the destructor is a
 source-defined `drop fn` whose body contains unchecked code, so in the model
 it steps by the type's defining drop equation instead (§6.13.3: drop the live
 buffer cells in ascending index order, skipping `⊘`, then retire the
@@ -3014,7 +3014,7 @@ category and only one producer: `@float_to_int` joins the `overflow` list above
 `@total_cmp`, and the five rounding intrinsics never trap at all (`3.12:21`,
 `3.12:23`, `3.12:24`, `3.12:19`, `3.12:32`, `3.12:37`) — §6.4.
 
-The `user` category is `@panic`'s defining equation (RUE-526 — previously the
+The `user` category is `@panic`'s specification equation (RUE-526 — previously the
 paper machine had no rule for it). `@panic` is an intrinsic (§6.9's
 external-call note): it evaluates its message operand, appends
 `panic: <message>` to the observable output, and abandons the configuration:
@@ -3068,14 +3068,14 @@ above names the function that realizes it, so a change to either must be mirrore
 in the other or the differential tests will diverge — which is the mechanism that
 keeps the paper semantics and the running semantics one artifact.
 
-### 6.13 The allocation store: buffers, views, and container defining equations
+### 6.13 The allocation store: buffers, views, and container specification equations
 
 This section is the ratified RUE-390 modeling decision (maintainer ruling,
 2026-07-14): the machine models **abstract allocations**, not a language-level
 heap. §6.1's store already gives every binding a single-cell allocation; this
 section adds the multi-cell **buffer allocations** that back `ArrayBuf(T)` and
 `StrBuf`, the machine operations on them, the two value forms that name them,
-and the defining equations of the library container types over those
+and the specification equations of the abstract data types over those
 operations. What it deliberately does **not** add: a malloc-style heap, a
 global allocator, an allocation algorithm, arenas or pages, address
 arithmetic, or a reclamation policy. Those are runtime/library concerns (the
@@ -3128,12 +3128,12 @@ Two §6.1 value forms name allocations:
 
 - `buf⟨A⟩` — an **owned buffer handle**. It is opaque: no §2 expression form
   and no §6.3–§6.11 rule operates on it; it exists only as the abstracted
-  pointer field inside a library container's header struct (the `ptr mut T` of
+  pointer field inside an abstract data type's header struct (the `ptr mut T` of
   `std/arraybuf.rue`, the `ptr mut u8` of `std/strbuf.rue`'s header),
-  and only the defining equations below touch the allocation it names. Every
-  library container type declares a destructor, so its class is `Affine` (§3,
+  and only the specification equations below touch the allocation it names. Every
+  abstract data type declares a destructor, so its class is `Affine` (§3,
   never `@copy`) and core code cannot duplicate a header — and with it a
-  handle — by (Use-Copy); handle uniqueness inside the *library* is obligation
+  handle — by (Use-Copy); handle uniqueness inside the *trusted code* is obligation
   (O1) of §6.13.5.
 - `view⟨A | o, k⟩` — a **second-class view**: cells `o … o+k-1` of allocation
   `A`. Views are the model's slices (`borrow [T]` / `inout [T]` / `str` —
@@ -3164,12 +3164,12 @@ cell-vector allocations or by adding a path component to views — is the
 slice-statics work this machinery was sequenced to unblock, deliberately not
 decided here.
 
-#### 6.13.3 `ArrayBuf(T)`: representation, invariant, and defining equations
+#### 6.13.3 `ArrayBuf(T)`: representation, invariant, and specification equations
 
 `ArrayBuf(T)` is an ordinary source-defined library type (`std/arraybuf.rue`,
 per ADR-0043 — not a compiler builtin), but its method bodies contain
 `checked {}` blocks over the raw intrinsics, which are **outside the core**
-(§2). The model therefore gives each public method a **defining equation**:
+(§2). The model therefore gives each public method a **specification equation**:
 the same device §6.9 uses for intrinsics with no core body, applied at the
 container's public boundary. The real body must refine its equation —
 obligation (O4) of §6.13.5. An `ArrayBuf(T)` instantiation's values are
@@ -3181,7 +3181,7 @@ obligation (O4) of §6.13.5. An `ArrayBuf(T)` instantiation's values are
 (`null` abstracts the no-allocation empty state — `@int_to_ptr(zero)` over a
 `u64` binding `zero = 0` in the source; `@int_to_ptr` takes exactly a `u64`, so
 a bare `0` literal is not the spelling.) The **representation invariant** `Inv`
-holds at every method boundary — entry and exit of every defining equation, and
+holds at every method boundary — entry and exit of every specification equation, and
 at the destructor:
 
 ```
@@ -3200,7 +3200,7 @@ initializedness now exists for dynamically allocated elements, and the
 destructor's skip below has a `⊘` to write for a buffer element exactly as
 §6.11's has for a stack cell.
 
-The defining equations: `self` is an `inout` place for the mutators, so
+The specification equations: `self` is an `inout` place for the mutators, so
 header updates write the caller's cell per §6.9's sharing rule. Each equation
 is the model of the corresponding `std/arraybuf.rue` body, together with the
 `std/rawbuf.rue` layer it delegates its storage to — the one place that holds
@@ -3252,7 +3252,7 @@ byte-oriented allocation family takes (ADR-0059 Phase 3):
     clear's element drops;  retire(H, A) if h = buf⟨A⟩;
     h ↦ null;  len ↦ 0;  cap ↦ 0                  →  ⟨⟩     -- early release; the later destructor is then a no-op
 
-  drop (the §6.11 library-container destructor):
+  drop (the §6.11 abstract-data-type destructor):
     for i = 0 … len-1 ascending:  drop(H, H(A).i), skipping any ⊘
     retire(H, A) if h = buf⟨A⟩
 ```
@@ -3309,7 +3309,7 @@ over a `ptr u8` for single bytes, and
 `@ptr_to_int`/`@int_to_ptr`/`@ptr_offset` directly, plus the `@alloc` of the
 literal-promotion arm below, with the growable `{buf, cap}` allocation itself
 delegated to the same `std/rawbuf.rue` core `ArrayBuf` uses (ADR-0059) — so the
-same defining-equation device applies at its public boundary. Its value is
+same specification-equation device applies at its public boundary. Its value is
 `{ h ; len ; cap }_StrBuf` over `u8` cells, with one representation twist the
 source pins in its header comment: **`cap = 0` is the non-owning state.**
 
@@ -3347,7 +3347,7 @@ instances of §6.13.3 with these deltas:
   cross-container bridge (`from_str`, `from_bytes`, `to_bytes`,
   `from_byte_range`): the source's own contract line — "no bridge aliases or
   transfers either container's private allocation" — is obligation (O1)
-  stated in the library's voice.
+  stated in the trusted code's voice.
 - The trapping index form `s[i]` (`StrBuf` or a `str` view) checks `i < len`
   (resp. `i < k` for `view⟨A | o, k⟩`) and traps out of range exactly like
   array indexing (§6.5; ADR-0035's byte indexing); the machine cell read it
@@ -3373,14 +3373,14 @@ instances of §6.13.3 with these deltas:
 inside §6.3–§6.11; a `Str(N)` borrow in `str` position becomes a view per
 §6.13.2 (RUE-386).
 
-#### 6.13.5 The library refinement obligation (RustBelt-style)
+#### 6.13.5 The trusted-code refinement obligation (RustBelt-style)
 
 The §7 theorems quantify over core programs whose container-method calls step
 by the equations above. The real implementations — the `checked {}` blocks of
 `std/arraybuf.rue` and `std/strbuf.rue` over the raw and byte intrinsics —
 are **unchecked code, outside the core by design** (§2): the core type system
 does not verify them, and no amount of core soundness can. They carry instead
-a stated proof obligation, discharged per method at the library boundary (by
+a stated proof obligation, discharged per method at the trusted-code boundary (by
 review today; by mechanized verification when `03-metatheory.md` exists), in
 exactly the position RustBelt gives `Vec`'s unsafe internals:
 
@@ -3401,7 +3401,7 @@ exactly the position RustBelt gives `Vec`'s unsafe internals:
   effect, traps, `@dbg` output, and the cells' contents — equals its defining
   equation's.
 
-A violation inside a checked block is a **library bug**, not a refutation of
+A violation inside a checked block is a **trusted-code bug**, not a refutation of
 the core theorems; conversely, the theorems say nothing about a program that
 adds new unchecked code without discharging the same four obligations. This
 conditionality is the ruling's Rust/RustBelt-style separation, stated rather
@@ -3513,7 +3513,7 @@ neither claims anything about an uninhabited-parameter function such as
   `H` at all (the RUE-390 vacuity). Now a use-after-free is a **stuck
   configuration**, which progress forbids — the claim is falsifiable, and the
   oracle obligation of §6.13.6 is what will falsify it mechanically if the
-  library or the equations are wrong.
+  trusted code or the equations are wrong.
 
 - **Linear values are consumed exactly once.** No value whose type carries a
   linear value reaches end of scope `Owned` (§5.6 rejects it) or is discarded
@@ -3598,7 +3598,7 @@ each rests on "use", "moved", "consumed", "dropped" being defined — which
 §3–§6 finally do. And note which were **vacuous for the flagship collection
 types** until the allocation store: the double-free, use-after-drop, and
 use-after-free bullets (RUE-390) — now stated over buffer cells, with their
-conditionality on the library obligations made explicit in §6.13.5 rather
+conditionality on the trusted-code obligations made explicit in §6.13.5 rather
 than hidden.
 
 ---
@@ -3664,7 +3664,7 @@ locked:
    as a marked extension that explicitly steps outside the §7 guarantees, rather
    than threading it through every rule. (Recommended.) The RUE-390 ruling
    keeps this: §6.13 models buffers as abstract allocations reached only
-   through container defining equations — raw pointers themselves stay outside
+   through container specification equations — raw pointers themselves stay outside
    the core, and the containers' unchecked internals carry the §6.13.5
    obligations instead.
 3. **Loans strictly second-class (§5.4).** Confirm loans never escape a call in
