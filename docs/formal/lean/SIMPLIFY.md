@@ -606,16 +606,23 @@ half already goes through the same `run_blocks`/`run_glue_blocks`/
 handful of exported corollaries — `StackDiscipline.newer`,
 `reachable_stackDiscipline`, `Blocks.append` and its neighbors — serve
 neither proof's own closure directly and are read instead by `TracePrefix`,
-`TraceWhole` or `Witnesses`. Read against that 47-theorem, 550-line figure
-rather than the whole module, the clean-room proof is still smaller, but
-not by nearly as much as 812 lines against 1,065 first suggests.
+`TraceWhole` or `Witnesses`. The 22 shared theorems are still inside
+`drop_order`'s own reach, not extra content only `drop_glue_order` needs,
+so the fair basis for this comparison is the full 69-theorem, 1,030-line
+figure above, not a 47/550 split. Read against that figure, the clean-room
+proof (48 theorems, 743 code lines) is smaller by close to 30 percent on
+both counts, a real reduction. The line counts are measured differently:
+1,030 sums the theorems' own lines, while 743 is the whole file's code,
+including its three `def`s, its tactic macro and its `open` lines. Summed
+the same way over its 48 theorems alone, the clean room is 714 lines.
 
 ### Reinvention
 
 Run over a package holding both `TraceOrder.lean` and `CleanRoom.lean`
 together, `bin/simplify_metrics.lean`'s exact and skeleton groups place 25
 of the clean-room's 48 theorems — a little over half — in a group with one
-of ours. Exact matches, up to alpha-equivalence: `Blocks.append`, `Rec.mono`,
+of ours. This excludes `drop_order'` itself, which lands in an exact group
+with `Spine.drop_order` by construction: a naive rerun counts 26. Exact matches, up to alpha-equivalence: `Blocks.append`, `Rec.mono`,
 `Rec.range` with our `Rec.fresh`, `dropContents_ok`/`dropContentsList_ok`
 with our `dropContents_eq`/`dropContentsList_eq`, `allCopy_dropEvents`/
 `allCopyList_dropEvents` with our `dropEvents_allCopy`/
@@ -678,11 +685,15 @@ already pulls in on its own route, and it does not need `Config.Ordered` or
 `reachable_ordered` at all, which the clean-room proof confirms by never
 reaching for them.
 
-For part 3: do not adopt the clean-room proof itself. It is not shorter once
-`TraceOrder.lean`'s size is read fairly against `drop_order` alone (47
-theorems, not 73), and it is not committed-quality — a tactic macro under
-`set_option hygiene false`, no doc-comments, and single-letter case
-patterns throughout. `Config.Ordered` and `reachable_ordered` cannot simply
+For part 3: do not adopt the clean-room proof itself. Read fairly against
+`drop_order`'s own reach (69 theorems, about 1,030 lines, not the whole
+module's 73 theorems and 1,065 lines), the clean room is shorter: 48
+theorems and 743 code lines, close to 30 percent fewer on both counts. So
+size is not the reason to decline it. The reasons are reinvention and
+quality: 25 of its 48 theorems already exist in `TraceOrder.lean` in an
+exact or skeleton-equal shape, and it is not committed-quality — a tactic
+macro under `set_option hygiene false`, doc-comments on only one of its 48
+theorems, and single-letter case patterns throughout. `Config.Ordered` and `reachable_ordered` cannot simply
 follow `drop_order` out of the module on this finding, though: `Witnesses.lean`'s
 `swappedMarkers_rejected` reads `Config.Ordered` directly (`swappedMarkers.Ordered`,
 `Kont.Ordered`), to show that nesting, not per-cell order, is what a sibling
