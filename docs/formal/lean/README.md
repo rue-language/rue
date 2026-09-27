@@ -544,7 +544,8 @@ a proof.
 
 Everything §6.4 does *not* round is a function of the module and a theorem
 rather than an assumption: `neg` (`negate_wf`), the ordering compares,
-`@total_cmp`, `@float_to_int` (whose `(D-Float-To-Int)`/
+`@total_cmp` (whose `≺_w` is a strict total order,
+`totalCmp_strictTotalOrder`), `@float_to_int` (whose `(D-Float-To-Int)`/
 `(D-Float-To-Int-Trap)` partition is `floatToInt_partition`), the four exact
 rounding intrinsics (`roundOp_wf`), and the widening half of `@float_cast`
 (`widen_wf`). The executable instance `RueCore.Float.exactOps` is
