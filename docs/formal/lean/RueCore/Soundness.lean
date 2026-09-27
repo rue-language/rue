@@ -4261,7 +4261,7 @@ theorem run_safe (M : FloatLaws) {P : Program} {fd : FnDef} (hwf : WfProgram P)
       exact Or.inr (Or.inr ⟨H, v, tr, rfl, hok.1⟩)
   | returned H v tr => exact absurd hr (run_ne_returned M.toFloatSig H v tr)
   | broke H sc tr =>
-      -- The entry call completes abruptly with no `break` (`entry_typed`'s `Ω` has none).
+      -- The entry call has no `break` abrupt-completion context (`entry_typed`'s `Ω` has none).
       rw [hr] at hok
       obtain ⟨_, hb, _⟩ := hok
       cases hb

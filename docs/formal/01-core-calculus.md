@@ -3364,9 +3364,9 @@ instances of §6.13.3 with these deltas:
   live cells in order (`equals_borrowed`) — never allocation identity: two
   distinct allocations with equal bytes are `≈`-equal (`4.3:2`).
 - The **UTF-8 decoder methods** (`char_scalar`, `char_next`, and their `_lossy`
-  variants, still runtime calls dispatched by the oracle) is deliberately
-  **not pinned here**: its strict forms introduce a trap category (invalid
-  UTF-8) that §6.12's taxonomy does not yet carry, so its equations belong to
+  variants, still runtime calls dispatched by the oracle) are deliberately
+  **not pinned here**: their strict forms introduce a trap category (invalid
+  UTF-8) that §6.12's taxonomy does not yet carry, so their equations belong to
   a string-decode amendment of their own. A cut, stated rather than silent.
 
 `Str(N)` is `[u8; N]` plus the convention — a fixed array, already fully

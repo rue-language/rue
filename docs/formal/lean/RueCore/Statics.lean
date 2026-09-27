@@ -1612,7 +1612,7 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Out → Prop wh
   consumer that reads it (`loopBreak`). Every rule between the two carries the
   abrupt-completion context outward by §5.3's threading, whether or not the `break` is in tail
   position. "Well-formed only inside a loop" is (Fn)'s premise that a body
-  completes abruptly with no `break` (`WfFn`). -/
+  has no `break` abrupt-completion context (`WfFn`). -/
   | brk {Γ T} :
       Typed P R Γ .brk T ⟨none, [Γ]⟩
   /-- **(Loop-Div-Backedge) and (Loop-Div) §5.7**, in one rule, because they
@@ -1660,7 +1660,7 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Out → Prop wh
   order (the order is immaterial: `Ctx.joinAll_perm`). The body's normal
   completion is the back edge, which `LoopHead` already reads; it is not an
   exit. The loop consumes its own `break` abrupt-completion contexts (`Δ_out`), and the
-  fragment has no others, so it completes abruptly with none. -/
+  fragment has no others, so it has none. -/
   | loopBreak {Γ Γh Ωe Γx e} :
       Typed P R Γh e .unit Ωe →
       LoopHead P.decls Γ Ωe.norm Γh →
