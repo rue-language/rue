@@ -7,7 +7,7 @@ statement or its doc-comment changes.
 **Scope.** These statements are about a *fragment* of the core calculus
 (`../01-core-calculus.md`; `INDEX.md` draws the boundary rule by rule), and
 nothing outside it is proved by omission. The fragment has no loans or borrows
-(Λ is empty, so §5.4 is not modelled) and no allocation store (no buffers, views
+(Λ is empty, so §5.4 is not modelled) and no block store (no buffers, views
 or containers, §6.13); both are Phase D (RUE-2238, RUE-2240). So these parts of
 §7 have **no statement here** (`../03-metatheory.md`):
 
@@ -107,36 +107,36 @@ the table records rather than renames. `step_progress` is §7's word for a
 consequence along runs of the semantic invariant `step_safeAt` states, not the
 one-step lemma over a syntactic configuration typing, which the calculus does
 not define (RUE-2423 decides which §7 means). The `eval`/`Step` agreement the
-calculus calls the adequacy lemma is, in the field's words, the semantic
+calculus called the adequacy lemma before RUE-2466 is, in the field's words, the semantic
 equivalence of a definitional interpreter and a small-step semantics (Amin &
 Rompf; `../FIELD.md` §3); RUE-2466 renamed its Spec module's file to the
 field's name too, `RueCore.Spec.Equivalence`.
 
 | Theorem | Literature (`../FIELD.md`) | Ours | Difference |
 |---|---|---|---|
-| `soundness` | Soundness via a definitional interpreter: `⊢ e : T ∧ eval n e = r ≠ Timeout ⇒ r = Val v ∧ v : T` (FIELD §3: Amin & Rompf Lemma 3; Owens et al. §5) | `WfProgram P`, `Typed P R Γ e T Ω` and a frame and store agreeing with `Γ` ⇒ `EvalOk` of `eval` at every fuel | The same theorem for an open expression, from any frame and store that agree with its context (`ActivationTyping`), with an unwinding `return` or `break`, a defined panic and exhausted fuel among the allowed outcomes, and with `.refused` excluded, which covers `eval`'s monitors as well as stuck states. |
+| `soundness` | Soundness via a definitional interpreter: `⊢ e : T ∧ eval n e = r ≠ Timeout ⇒ r = Val v ∧ v : T` (FIELD §3: Amin & Rompf Lemma 3; Owens et al. §5) | `WfProgram P`, `Typed P R Γ e T Ω` and an activation record and store agreeing with `Γ` ⇒ `EvalOk` of `eval` at every fuel | The same theorem for an open expression, from any activation record and store that agree with its context (`ActivationTyping`), with an unwinding `return` or `break`, a defined panic and exhausted fuel among the allowed outcomes, and with `.refused` excluded, which covers `eval`'s monitors as well as stuck states. |
 | `run_safe` | Syntactic soundness: `⊢ e : τ ⇒ e⇑ ∨ (e ↦* v ∧ ⊢ v : τ)` (FIELD §2: Wright & Felleisen Thm 4.12 (preprint numbering)) | `WfProgram P` and a parameterless entry point ⇒ at every fuel, `run` is out of fuel, a panic, or a value of the entry point's type | Wright & Felleisen's three-way form, read per fuel bound over the interpreter: divergence is exhausting this fuel rather than `⇑`, and a defined panic, PFPL's checked error, is an allowed outcome. |
 | `no_refusal` | Weak soundness: a well-typed program never yields `wrong` ("well-typed programs do not go wrong") (FIELD §2: Wright & Felleisen §§1–2; Milner 1978) | `ProgramTyped P` ⇒ `run` is never `.refused w`, at any fuel and for any `w` | `.refused w` is wider than `wrong`: it includes the refusals of `eval`'s four monitors, which are not stuck states of §6, so the statement also says that no monitor fires (R3 of `REDTEAM-LOG.md`). |
 | `no_use_after_move` | No named theorem; reading a moved-from (deinitialized) place is a use of uninitialized memory, one of the memory access errors of memory safety (FIELD §5: Rust Reference, Expressions and Glossary (moved from); Hicks 2014 (memory safety)) | `ProgramTyped P` ⇒ `run` never refuses with `useAfterMove` | It is `no_refusal` at one tag, so it rules out a read of a `⊘` cell only as far as `eval` checks every read and labels it so. |
-| `no_use_after_drop` | No use after free: the program never "reuses or references memory after it has been freed" (FIELD §5: CWE-416) | `ProgramTyped P` ⇒ `run` never refuses with `useAfterDrop` | The freed object is a dropped binding's retired (`†`) cell rather than heap memory, the error is ruled out as far as `eval` labels an access to it, and the typing hypothesis is redundant (`run_no_use_after_drop`). |
-| `run_no_use_after_drop` | No use after free (CWE-416), as above (FIELD §5: CWE-416) | every program ⇒ `run` never refuses with `useAfterDrop`, at any fuel and any float operations | No typing hypothesis: the property is structural, since a cell is minted fresh and nothing names it once its scope has retired it. |
-| `no_linear_leak` | Linearity: a linear assumption is used exactly once, so there is no weakening; failing the "at least once" half is a leak (FIELD §4: Walker §1.1; FIELD §5: CWE-401) | `ProgramTyped P` ⇒ `run` never refuses with `linearLeak` | Walker's rule is a property of the typing context. Ours is its dynamic image at the scope records: no scope exit, frame pop or unwind meets a live linear binding, as `eval`'s monitor for it watches. A linear operand value that a sibling's `return` or `break` abandons is outside it (RUE-2316). |
+| `no_use_after_drop` | No use after free: the program never "reuses or references memory after it has been freed" (FIELD §5: CWE-416) | `ProgramTyped P` ⇒ `run` never refuses with `useAfterDrop` | The freed object is a dropped binding's tombstoned (`†`) cell rather than heap memory, the error is ruled out as far as `eval` labels an access to it, and the typing hypothesis is redundant (`run_no_use_after_drop`). |
+| `run_no_use_after_drop` | No use after free (CWE-416), as above (FIELD §5: CWE-416) | every program ⇒ `run` never refuses with `useAfterDrop`, at any fuel and any float operations | No typing hypothesis: the property is structural, since a cell is minted fresh and nothing names it once its scope has tombstoned it. |
+| `no_linear_leak` | Linearity: a linear assumption is used exactly once, so there is no weakening; failing the "at least once" half is a leak (FIELD §4: Walker §1.1; FIELD §5: CWE-401) | `ProgramTyped P` ⇒ `run` never refuses with `linearLeak` | Walker's rule is a property of the typing context. Ours is its dynamic image at the drop scopes: no scope exit, activation record pop or unwind meets a live linear binding, as `eval`'s monitor for it watches. A linear operand value that a sibling's `return` or `break` abandons is outside it (RUE-2316). |
 | `no_linear_overwrite` | Linearity, no weakening (Walker), for an assignment (FIELD §4: Walker §1.1) | `ProgramTyped P` ⇒ `run` never refuses with `linearOverwrite` | The dynamic image of no weakening at an assignment, which would discard the live linear value it overwrites, as `eval`'s monitor for it watches. |
 | `no_linear_discard` | Linearity, no weakening (Walker), for a sequence (FIELD §4: Walker §1.1) | `ProgramTyped P` ⇒ `run` never refuses with `linearDiscard` | The dynamic image of no weakening at a sequence, which would discard a linear value, as `eval`'s monitor for it watches. |
 | `fuel_mono` | The clock lemma: not timed out at clock `c` ⇒ the same result at every `c + k` (FIELD §3: Owens et al. §3.4 (unnamed); Software Foundations `ceval_step_more`) | `n ≤ m` and `eval n … ≠ outOfFuel` ⇒ `eval m … = eval n …` | Identical up to notation. |
-| `no_masking` | No named counterpart; a consequence of the clock lemma (FIELD §3: the `no_masking` row (none)) | `eval n … = .refused w` and `eval m … ≠ outOfFuel` ⇒ `eval m … = .refused w` | A corollary of `fuel_mono` in either order of `n` and `m`, stated because the ∀-fuel theorems need it and the literature does not state it separately. |
+| `no_masking` | No named counterpart; a corollary of the clock lemma (FIELD §3: the `no_masking` row (none)) | `eval n … = .refused w` and `eval m … ≠ outOfFuel` ⇒ `eval m … = .refused w` | A corollary of `fuel_mono` in either order of `n` and `m`, stated because the ∀-fuel theorems need it and the literature does not state it separately. |
 | `run_ne_returned` | No counterpart: the literature's interpreter result is a timeout, an error or a value (FIELD §3: the result type `Timeout ∣ Done (Error ∣ Val v)` (Owens et al.; Siek 2013)) | `run` never answers an unwinding `return`, on every program | Our result type also has unwinding outcomes (`returned`, `broke`) that the literature's has no counterpart of, and this says an unwinding `return` never escapes `run`, since the entry point's call catches it ((D-Return-Main) §6.9). |
-| `check_sound` | Algorithmic soundness: `Γ₁ ⊢ t : T; Γ₂ ∧ L(Γ₂) = ∅ ⇒ Γ₁ ⊢ t : T` (FIELD §4: Walker 1.2.9) | `check P R Γ e = some (c, Ω)` ⇒ `Typed P R Γ e T Ω` at every `T` that `c` fits | Walker's direction and shape, with the outgoing state `Ω` kept in the declarative judgment rather than required empty, and soundness only: completeness is not stated, and does not hold (a bound on the loop-head iteration can reject a typed program). |
+| `check_sound` | Algorithmic soundness: `Γ₁ ⊢ t : T; Γ₂ ∧ L(Γ₂) = ∅ ⇒ Γ₁ ⊢ t : T` (FIELD §4: Walker 1.2.9) | `check P R Γ e = some (c, Ω)` ⇒ `Typed P R Γ e T Ω` at every `T` that `c` fits | Walker's direction and shape, with the output context `Ω` kept in the declarative judgment rather than required empty, and soundness only: completeness is not stated, and does not hold (a bound on the loop-head iteration can reject a typed program). |
 | `checkProgram_sound` | Algorithmic soundness (Walker 1.2.9), for a whole program (FIELD §4: Walker 1.2.9) | `checkProgram P = true` ⇒ `ProgramTyped P` | Soundness only, lifted to a program; a typed program the checker rejects is possible. |
-| `no_double_free` | No double free: no program run "calls free() twice on the same memory address", an at-most-once safety property of the trace (FIELD §5: CWE-415; FIELD §6: Alpern & Schneider §2) | `ProgramTyped P` ⇒ at every fuel, `run` is not stuck and its trace frees each identity, and runs a destructor on each, at most once | It counts drop and destructor events per value identity rather than calls of `free()` per address, and holds of finished runs only (an `outOfFuel` result has an empty trace), so the safety-property form is `step_no_double_free`. |
+| `no_double_free` | No double free: no program run "calls free() twice on the same memory address", an at-most-once safety property of the trace (FIELD §5: CWE-415; FIELD §6: Alpern & Schneider §2) | `ProgramTyped P` ⇒ at every fuel, `run` is not refused and its trace frees each identity, and runs a destructor on each, at most once | It counts drop and destructor events per object identity rather than calls of `free()` per address, and holds of terminating runs only (an `outOfFuel` result has an empty trace), so the safety-property form is `step_no_double_free`. |
 | `step_no_double_free` | A safety property: every violation has a finite prefix no continuation repairs (FIELD §6: Alpern & Schneider §2; FIELD §5: CWE-415) | `ProgramTyped P` and `init →* C` ⇒ `C`'s trace frees each identity, and runs a destructor on each, at most once | The at-most-once bound stated on every finite prefix of every run, as a property of each reachable configuration rather than of Alpern & Schneider's infinite sequences, which for this property is the same content. |
-| `freed_once` | No double free (CWE-415), on every program (FIELD §5: CWE-415) | every program ⇒ a finished run's trace frees each identity at most once | No typing hypothesis and no destructor count, per value identity, over finished runs. |
-| `dtor_once` | No double free (CWE-415), for destructor runs (FIELD §5: CWE-415; Rust Reference, Destructors) | `DtorNotCopy` ⇒ a finished run's trace runs a destructor on each identity at most once | Its only hypothesis is that a destructor-bearing struct is not `Copy`, and it counts destructor runs per identity, over finished runs. |
-| `drop_exactly_once` | Exactly once = at most once ∧ at least once; linear use is exactly one use; a memory leak is the failure of "at least once" (FIELD §6: Confluent (delivery), Walker (linear use); FIELD §5: CWE-401) | a typed, `pendingSafe` expression of a checked program, from a frame and store agreeing with its context ⇒ its evaluation is not stuck, ends every identity exactly as often as held (`Exact`), and retires what it allocated (`Tidy`) | Per evaluation of one expression from a matching frame and store, not per run from `Config.init`, under `pendingSafe` (RUE-2316) and with nothing about a panic; the whole-run form is `whole_program_exactly_once`. |
-| `rest_exactly_once` | Exactly once (as above), for values minted during an evaluation (FIELD §6: Confluent (delivery), Walker (linear use)) | the hypotheses of `drop_exactly_once`, and a form's leading operands evaluated (`Lead`) ⇒ the rest of the form ends them and the store's identities exactly once (`Exact`) and retires what it allocated (`Settled`) | The induction form behind `drop_exactly_once`, listed as a linking statement because it covers the values a form mints mid-evaluation; the literature has no separate counterpart. |
-| `whole_program_exactly_once` | Exactly once = at most once ∧ at least once, over a whole run; a memory leak is a value the run allocates and never releases (FIELD §6: Confluent (delivery), Walker (linear use); FIELD §5: CWE-401) | `ProgramTyped P`, `P.pendingSafe`, `init →* C`, `a` held by `C` (`Config.held`) and `C →* ✓v` with trace `tr` ⇒ `a` is ended in `tr` or owned by `v`, exactly once between the two | Per owned value identity, for every value a finished run holds rather than per allocation site, under `pendingSafe` (RUE-2316), and with nothing about a panic, whose trap runs no drop, or a run that never finishes. |
-| `drop_order` | Drop order: variables are dropped in reverse order of declaration, temporaries in reverse order of creation (FIELD §5: Rust Reference, Destructors; FIELD §6: trace property over finished traces (no accepted name)) | `ProgramTyped P` ⇒ a finished run's trace is in §6.11's block grammar (`Blocks`), and each step from a reachable configuration drops newest first (`StrictStackOrder`, `StackDiscipline`) from a location-ordered stack | Newest first by location rather than reverse declaration order, where `StackDiscipline` constrains only a step that pops a scope (it holds of every step that keeps its stack), and `Blocks` holds of finished traces only (R7 of `REDTEAM-LOG.md`). |
-| `drop_glue_order` | Drop glue: `Drop::drop` if implemented, then each field's drop glue; struct fields in declaration order, array elements first to last (FIELD §5: rustc-dev-guide, Drop elaboration; Rust Reference, Destructors) | `ProgramTyped P` ⇒ a finished run's trace is in §6.11's block grammar with each drop's events given by §6.11's rules (`DropGlueBlocks`, `DropGlue`) | The Rust order for structs and arrays, with an enum dropping its active payload only, stated over finished traces only. |
+| `freed_once` | No double free (CWE-415), on every program (FIELD §5: CWE-415) | every program ⇒ a terminating run's trace frees each identity at most once | No typing hypothesis and no destructor count, per object identity, over terminating runs. |
+| `dtor_once` | No double free (CWE-415), for destructor runs (FIELD §5: CWE-415; Rust Reference, Destructors) | `DtorNotCopy` ⇒ a terminating run's trace runs a destructor on each identity at most once | Its only hypothesis is that a destructor-bearing struct is not `Copy`, and it counts destructor runs per identity, over terminating runs. |
+| `drop_exactly_once` | Exactly once = at most once ∧ at least once; linear use is exactly one use; a memory leak is the failure of "at least once" (FIELD §6: Confluent (delivery), Walker (linear use); FIELD §5: CWE-401) | a typed, `pendingSafe` expression of a checked program, from an activation record and store agreeing with its context ⇒ its evaluation is not refused, ends every identity exactly as often as held (`Exact`), and tombstones what it allocated (`Tidy`) | Per evaluation of one expression from a matching activation record and store, not per run from `Config.init`, under `pendingSafe` (RUE-2316) and with nothing about a panic; the whole-run form is `whole_program_exactly_once`. |
+| `rest_exactly_once` | Exactly once (as above), for values minted during an evaluation (FIELD §6: Confluent (delivery), Walker (linear use)) | the hypotheses of `drop_exactly_once`, and a form's leading operands evaluated (`Lead`) ⇒ the rest of the form ends them and the store's identities exactly once (`Exact`) and tombstones what it allocated (`Settled`) | The induction form behind `drop_exactly_once`, listed as a linking statement because it covers the values a form mints mid-evaluation; the literature has no separate counterpart. |
+| `whole_program_exactly_once` | Exactly once = at most once ∧ at least once, over a whole run; a memory leak is a value the run allocates and never releases (FIELD §6: Confluent (delivery), Walker (linear use); FIELD §5: CWE-401) | `ProgramTyped P`, `P.pendingSafe`, `init →* C`, `a` held by `C` (`Config.held`) and `C →* ✓v` with trace `tr` ⇒ `a` is ended in `tr` or owned by `v`, exactly once between the two | Per owned object identity, for every value a terminating run holds rather than per allocation site, under `pendingSafe` (RUE-2316), and with nothing about a panic, whose trap runs no drop, or a run that never terminates. |
+| `drop_order` | Drop order: variables are dropped in reverse order of declaration, temporaries in reverse order of creation (FIELD §5: Rust Reference, Destructors; FIELD §6: trace property over terminating traces (no accepted name)) | `ProgramTyped P` ⇒ a terminating run's trace is in §6.11's block grammar (`Blocks`), and each step from a reachable configuration drops newest first (`StrictStackOrder`, `StackDiscipline`) from a location-ordered stack | Newest first by location rather than reverse declaration order, where `StackDiscipline` constrains only a step that pops a scope (it holds of every step that keeps its stack), and `Blocks` holds of terminating traces only (R7 of `REDTEAM-LOG.md`). |
+| `drop_glue_order` | Drop glue: `Drop::drop` if implemented, then each field's drop glue; struct fields in declaration order, array elements first to last (FIELD §5: rustc-dev-guide, Drop elaboration; Rust Reference, Destructors) | `ProgramTyped P` ⇒ a terminating run's trace is in §6.11's block grammar with each drop's events given by §6.11's rules (`DropGlueBlocks`, `DropGlue`) | The Rust order for structs and arrays, with an enum dropping its active payload only, stated over terminating traces only. |
 | `Step.det` | Determinacy: `e ↦ e′ ∧ e ↦ e″ ⇒ e′ =α e″` (FIELD §1: PFPL Lemma 5.3) | `C → C₁` and `C → C₂` ⇒ `C₁ = C₂` | Identical up to notation, with syntactic equality for `=α` because bindings are de Bruijn indices. |
 | `Step.terminal` | Finality of values: `¬(e val ∧ e ↦ e′)`; a terminal transition system's final configurations take no step (FIELD §1: PFPL Lemma 5.2; Plotkin 1981/2004 §1.2, Def. 2) | `C` terminal (`✓` or `↯κ`) ⇒ no `C → C′` | Identical up to notation, with a trap `↯κ` final too, as PFPL's checked error is. |
 | `Config.trichotomy` | No named theorem: by the definition of stuck, a state is final, steps, or is stuck (FIELD §1: Plotkin 1981/2004 §3.1, Def. 11; PFPL ch. 6) | every `C` steps, is terminal, or is stuck on a named `Refusal` | Immediate here, as in the literature. `Config.Stuck` is `step`'s `.stuck` verdict and `step` is total, so what the statement adds is that `step`'s `.halted` is `Config.Terminal` and its `.next` is a `Step`. That stuck means "not terminal, and no rule applies" is `Config.stuck_iff`; that `step` is `Step` is `step_iff`. |
@@ -146,13 +146,13 @@ field's name too, `RueCore.Spec.Equivalence`.
 | `step_progress` | Progress: `⊢ e : τ ⇒ e val ∨ ∃e′. e ↦ e′`; along runs, `safe(e)`: every state reachable from `e` is progressive (FIELD §2: PFPL Thm 6.4; Timany et al. §2.4) | `ProgramTyped P` and `init →* C` ⇒ `C` terminal or `C → C′` for some `C′` | Not the one-step lemma over typed configurations, since no configuration typing is defined (RUE-2423), but its consequence along every run from `Config.init`, Timany's `safe(init)` with traps final. |
 | `step_safeAt` | Preservation (subject reduction): `Γ ⊢ e : τ ∧ e ↦ e′ ⇒ Γ ⊢ e′ : τ` (FIELD §2: PFPL Thm 6.2; Wright & Felleisen Lemma 4.3) | `ProgramTyped P` and `init →* C` ⇒ `C.SafeAt` the entry point's return type | Substantive: `SafeAt` is a semantic invariant (Timany's `safe` plus typed halting values), closed under `→*` by definition, so the statement is `SafeAt` at `Config.init`, the conclusion of Timany's Cor. 2.3, and no syntactic `⊢ C : T` is preserved (R4 of `REDTEAM-LOG.md`; RUE-2423). |
 | `step_type_safety` | Type safety = preservation ∧ progress; in Wright & Felleisen's form, `⊢ e : τ ⇒ e⇑ ∨ (e ↦* v ∧ ⊢ v : τ)` (FIELD §2: PFPL Thm 6.1; Wright & Felleisen Thm 4.12) | `ProgramTyped P` ⇒ for every `n`, `init →ⁿ D` for some `D`, or `init →* ✓v` with `v` of the entry point's type, or `init →* ↯κ` | Wright & Felleisen's three-way form per horizon `n`, with a trap as an allowed outcome (PFPL's checked error) and divergence read as having run `n` steps, rather than a conjunction of progress and preservation. |
-| `step_no_use_after_drop` | No use after free (CWE-416), a safety property of runs (FIELD §5: CWE-416; FIELD §6: Alpern & Schneider §2) | every program and `init →* C` ⇒ `C` is not stuck on a retired (`†`) cell | Over §6's relation on every program, checked or not, with a dropped binding's cell in the role of freed memory. |
-| `eval_big_to_small` | Semantic equivalence, interpreter to small-step: `eval n e = r ⇒ ∃e′. e →* e′ ∧ r ∼ e′`; big-step to small-step, `a ⇒ v ⇒ a →* v` (FIELD §3: Amin & Rompf Thm 2; Leroy & Grall Thm 9) | `ProgramTyped P` ⇒ at every fuel, `run` is not stuck, a value it answers is `init →* ✓v` and a panic is `init →* ↯κ`, with the same store and trace | The interpreter-to-small-step direction, restricted to checked programs and bundled with "`run` is never stuck"; the unconditional direction is `run_sim`. |
+| `step_no_use_after_drop` | No use after free (CWE-416), a safety property of runs (FIELD §5: CWE-416; FIELD §6: Alpern & Schneider §2) | every program and `init →* C` ⇒ `C` is not stuck on a tombstoned (`†`) cell | Over §6's relation on every program, checked or not, with a dropped binding's cell in the role of freed memory. |
+| `eval_big_to_small` | Semantic equivalence, interpreter to small-step: `eval n e = r ⇒ ∃e′. e →* e′ ∧ r ∼ e′`; big-step to small-step, `a ⇒ v ⇒ a →* v` (FIELD §3: Amin & Rompf Thm 2; Leroy & Grall Thm 9) | `ProgramTyped P` ⇒ at every fuel, `run` is not refused, a value it answers is `init →* ✓v` and a panic is `init →* ↯κ`, with the same store and trace | The interpreter-to-small-step direction, restricted to checked programs and bundled with "`run` is never refused"; the unconditional direction is `run_sim`. |
 | `run_sim` | Semantic equivalence, interpreter to small-step (Amin & Rompf Thm 2), unconditionally (FIELD §3: Amin & Rompf Thm 2; Leroy & Grall Thm 9) | every program ⇒ at every fuel, a value `run` answers is `init →* ✓v` and a panic is `init →* ↯κ` | The literature's unconditional direction for values and panics, with a refusal or exhausted fuel left outside it. |
 | `eval_small_to_big` | Semantic equivalence, small-step to interpreter: `e →* e′ ⇒ ∃n. eval n e ∼ e′`; small-step to big-step, `a →* v ∧ v value ⇒ a ⇒ v` (FIELD §3: Amin & Rompf Thm 2; Leroy & Grall Thm 9; Owens et al. §3.4) | `ProgramTyped P` and `init →* ✓v` (or `↯κ`) ⇒ `run` answers that value (or panic), with the same store and trace, at every fuel past some `n` | Restricted to checked programs, and at every fuel past `n` rather than at some `n`, which folds in the clock lemma (`fuel_mono`). |
 | `run_small_to_big` | Semantic equivalence, small-step to interpreter (Amin & Rompf Thm 2), unconditionally (FIELD §3: Amin & Rompf Thm 2) | every program and `init →* ✓v` (or `↯κ`) ⇒ past some fuel, `run` answers that value (or panic) or refuses | On every program only up to a refusal, since `eval`'s monitors are stricter than §6, which makes it much weaker than the literature's unconditional direction. |
-| `never_refused_iff` | No named counterpart: the interpreter's weak soundness against the small-step `safe(init)` (FIELD §2: Wright & Felleisen §§1–2 (weak soundness); Timany et al. §2.4 (`safe`)) | `ProgramTyped P` ⇒ (`run` never stuck at any fuel ⇔ every `C` with `init →* C` is terminal or steps) | Under `ProgramTyped` both sides hold outright (`no_refusal`, `step_progress`), so the `⇔` adds nothing; its content is the forward direction on every program, `step_never_stuck_of_run` (R5 of `REDTEAM-LOG.md`). |
-| `step_never_stuck_of_run` | No named counterpart: `safe(init)` transferred from the interpreter (FIELD §2: Timany et al. §2.4 (`safe`); FIELD §3: Amin & Rompf Thm 2) | every program, `run` never stuck at any fuel ⇒ every `C` with `init →* C` is terminal or steps | Carries the interpreter's never-stuck to `Step`'s `safe(init)` on every program, a use of the equivalence the literature does not state separately. |
+| `never_refused_iff` | No named counterpart: the interpreter's weak soundness against the small-step `safe(init)` (FIELD §2: Wright & Felleisen §§1–2 (weak soundness); Timany et al. §2.4 (`safe`)) | `ProgramTyped P` ⇒ (`run` never refused at any fuel ⇔ every `C` with `init →* C` is terminal or steps) | Under `ProgramTyped` both sides hold outright (`no_refusal`, `step_progress`), so the `⇔` adds nothing; its content is the forward direction on every program, `step_never_stuck_of_run` (R5 of `REDTEAM-LOG.md`). |
+| `step_never_stuck_of_run` | No named counterpart: `safe(init)` transferred from the interpreter (FIELD §2: Timany et al. §2.4 (`safe`); FIELD §3: Amin & Rompf Thm 2) | every program, `run` never refused at any fuel ⇒ every `C` with `init →* C` is terminal or steps | Carries the interpreter's never-refused to `Step`'s `safe(init)` on every program, a use of the equivalence the literature does not state separately. |
 | `run_refused_of_step_stuck` | No named counterpart: the stuck case of the equivalence, where `∼` relates an error result to a stuck term (FIELD §3: Amin & Rompf Thm 2) | `init →* C` and `C` stuck ⇒ past some fuel, `run` refuses, perhaps with another `Refusal` | The error half of the equivalence, stated separately because `run` and `Step` may name the same failure by different violations. |
 | `eval_diverges_iff` | Big-step/small-step equivalence for diverging runs: `a ⇒∞ ⇔ a →∞`; clock-based divergence, timing out at every clock (FIELD §3: Leroy & Grall Thm 11; Owens et al. §3.4) | `ProgramTyped P` ⇒ (`run` out of fuel at every fuel ⇔ `init →ⁿ D` for every `n` and some `D`) | Restricted to checked programs, with Owens's clocked divergence on the interpreter side and runs of every length instead of a coinductive `→∞` on the small-step side, which agree because `Step` is deterministic. |
 
@@ -164,7 +164,7 @@ field's name too, `RueCore.Spec.Equivalence`.
 
 **Type safety over `eval`** (§7 "Type safety", in the interpreter form it
 names). A typed expression of a well-formed program, run at any fuel from a
-frame and store agreeing with its context, ends in `EvalOk`: a well-typed
+activation record and store agreeing with its context, ends in `EvalOk`: a well-typed
 value, an unwinding `return` or `break` §5.3's `Ω` allows, a defined panic,
 or exhausted fuel — never `.refused`.
 
@@ -274,14 +274,14 @@ Sharp:
 
 **No use-after-drop** (§7 "No use-after-drop / no leak of drops", "never
 read afterward"): `run` never refuses with `useAfterDrop`, the tag `eval`
-raises when it reaches a retired cell. It is `no_refusal` at one tag, so it
-says no retired cell is accessed only as far as `eval` checks every access
+raises when it reaches a tombstoned cell. It is `no_refusal` at one tag, so it
+says no tombstoned cell is accessed only as far as `eval` checks every access
 and labels it so: what it rules out is what that monitor watches (R3 of
 `REDTEAM-LOG.md`; RUE-2469). The buffer half of the bullet, use-after-free,
 has no statement (§6.13 is outside the fragment). Its `ProgramTyped`
 hypothesis is redundant: `run_no_use_after_drop` below proves the same
 conclusion for every program, checked or not, so this statement is not a
-consequence of typing; it is kept in §7's form, over checked programs
+corollary of typing; it is kept in §7's form, over checked programs
 (RUE-2496).
 
 ```lean
@@ -297,20 +297,20 @@ Non-vacuous: witnesses `Nonvacuous.exact_model`, `Nonvacuous.dtor`, `Nonvacuous.
 
 Sharp:
 
-1. `ProgramTyped P` — no counter-example: No counter-example exists: `run_no_use_after_drop` proves the conclusion for every program, checked or not (and `step_no_use_after_drop` the same over `Step` from `Config.init`), so the hypothesis is redundant for a run from the start. The property is structural: a binding's cell is minted fresh and retired only when its scope ends, after which nothing names it. The statement is kept in §7's form, over checked programs (RUE-2496).
+1. `ProgramTyped P` — no counter-example: No counter-example exists: `run_no_use_after_drop` proves the conclusion for every program, checked or not (and `step_no_use_after_drop` the same over `Step` from `Config.init`), so the hypothesis is redundant for a run from the start. The property is structural: a binding's cell is minted fresh and tombstoned only when its scope ends, after which nothing names it. The statement is kept in §7's form, over checked programs (RUE-2496).
 
 ### `run_no_use_after_drop`
 
 **No use-after-drop, on every program** (§7 "No use-after-drop / no leak
 of drops", "never read afterward"; RUE-2496): `run` never refuses with
 `useAfterDrop`, at any fuel and any float operations (not only a `FloatLaws`), **whether or not the program is
-checked**. The property is structural rather than a consequence of typing: a
-binding's cell is minted fresh and retired only when the scope that bound it
-ends, after which nothing names it, and a scope record owes each cell once.
+checked**. The property is structural rather than a corollary of typing: a
+binding's cell is minted fresh and tombstoned only when the scope that bound it
+ends, after which nothing names it, and a drop scope owes each cell once.
 So `no_use_after_drop`'s `ProgramTyped` is redundant for a run from the
-start. The guard is not dead code: from an open configuration, a frame that
-names a cell already retired, `eval` does refuse (`Sharp.tombstoned_cell`). Like
-`no_use_after_drop`, it says no retired cell is accessed only as far as
+start. The guard is not dead code: from an open configuration, an activation record that
+names a cell already tombstoned, `eval` does refuse (`Sharp.tombstoned_cell`). Like
+`no_use_after_drop`, it says no tombstoned cell is accessed only as far as
 `eval` checks every access and labels it so (R3 of `REDTEAM-LOG.md`).
 
 ```lean
@@ -328,10 +328,10 @@ Sharp: no hypotheses to drop.
 ### `no_linear_leak`
 
 **No linear leak** (§7 "Linear values are consumed exactly once", §5.6): no
-scope exit, frame pop or scope unwind meets a live linear binding. Narrower
+scope exit, activation record pop or scope unwind meets a live linear binding. Narrower
 than the bullet:
 - a linear value built for a sibling operand, which a later operand abandons
-  by `return` or `break`, is in no scope record; the unwind discards it
+  by `return` or `break`, is in no drop scope; the unwind discards it
   unchecked and the run ends normally (RUE-2316;
   `Examples.linearLostAtCallArg`);
 - a `@panic` abandons live linear bindings by design (§5.7's `⊥_panic`);
@@ -510,7 +510,7 @@ Sharp:
 **No double free** (§7 "No double-free"). A checked program's run is never
 refused, and its trace frees no identity twice and runs no destructor twice
 on one. Narrower than the bullet: an `outOfFuel` result has an empty trace,
-so a run that never finishes is not covered here; `step_no_double_free`
+so a run that never terminates is not covered here; `step_no_double_free`
 covers it, over every configuration a run reaches (RUE-2477).
 
 ```lean
@@ -537,11 +537,11 @@ Sharp:
 **No double free, on every prefix of a run** (§7 "No double-free", read as a
 safety property; RUE-2477). For a checked program, every configuration §6's
 relation reaches from `Config.init` — the run so far, whether or not it ever
-finishes — has a trace that frees no identity twice and runs no destructor
+terminates — has a trace that frees no identity twice and runs no destructor
 twice on one, in `no_double_free`'s terms (`freedIds`, `dtorIds`). A safety
 property is one a finite prefix of a run can violate (Alpern & Schneider,
 `FIELD.md`), so this is the bullet's form over every run, a diverging one
-included; `no_double_free` over a finished run follows from it
+included; `no_double_free` over a terminating run follows from it
 (`no_double_free_of_step`).
 
 ```lean
@@ -590,7 +590,7 @@ Sharp: no hypotheses to drop.
 **No destructor twice on one value** (§6.11, `3.9:28`), given only that a
 destructor-bearing struct is not `Copy` (`3.9:31`). As for `freed_once`, a
 refused or fuel-exhausted run has an empty trace, so the bound is over the
-runs `eval` finishes.
+runs `eval` terminates.
 
 ```lean
 def Spec.dtor_once_stmt : Prop :=
@@ -611,9 +611,9 @@ Sharp:
 **Every owned value ends exactly once** (§7 "No use-after-drop / no leak of
 drops"). A typed expression of a checked program, the expression and the
 program both `pendingSafe` (`e.pendingSafe`, `P.pendingSafe`), run from an
-agreeing frame and store, is never refused; every identity the store
+agreeing activation record and store, is never refused; every identity the store
 holds ends up in an old cell, in the result, or ended in the trace as often
-as held (`Exact`); every cell it allocated is retired (`Tidy`). Narrower
+as held (`Exact`); every cell it allocated is tombstoned (`Tidy`). Narrower
 than the bullet: `pendingSafe` (RUE-2316), nothing about a panic, and per
 evaluation, not per run; the whole-run form is `whole_program_exactly_once`
 (RUE-2478).
@@ -652,7 +652,7 @@ Sharp:
 **Values minted during an evaluation end exactly once too** (the same §7
 bullet; §6.7, §6.9, §6.10): under the same hypotheses, once a form's leading
 operands produced `vs` in `H₁` (`Lead`), the rest of the form ends them and
-`H₁`'s identities as `Exact` counts, and retires what it allocated
+`H₁`'s identities as `Exact` counts, and tombstones what it allocated
 (`Settled`). This is the form the proof of `drop_exactly_once` inducts on
 (`Lead`, `fuel + 1`, `withTrace`), listed as a linking statement: it is what
 says the values a form mints mid-evaluation are covered too.
@@ -695,20 +695,20 @@ Sharp:
 
 ### `whole_program_exactly_once`
 
-**Every owned value of a run that finishes with a value ends exactly once** (§7 "No
+**Every owned value of a run that terminates with a value ends exactly once** (§7 "No
 use-after-drop / no leak of drops", over a whole program; RUE-2478). For a
 checked, `pendingSafe` program, take any configuration `C` §6's relation
 reaches from `Config.init` and any owned identity `a` that `C` holds — in a
 cell, in focus, or pending on the control stack (`Config.held`); these are the
-owned values allocated along the run. If the run from `C` finishes with a
+owned values allocated along the run. If the run from `C` terminates with a
 value (`✓v`, a value at an empty stack), then `a` is ended in the final trace
-(a drop, a discarded temporary's drop, or a consumption: `freedIds`) or is
+(a drop, a discarded temporary's drop, or a consume event: `freedIds`) or is
 part of the final value (which counts as ended: §2 restricts `main` to `i32` or
 `unit`, which own nothing, and the fragment does not), exactly once between
 the two: no owned value the
 run holds is lost, and none is ended twice. Narrower than the bullet:
 `pendingSafe` (RUE-2316), nothing about a panic (§6.12's trap runs no drop, so
-what it abandons is not ended), and nothing about a run that never finishes
+what it abandons is not ended), and nothing about a run that never terminates
 (`step_no_double_free` bounds every prefix from above).
 
 ```lean
@@ -741,7 +741,7 @@ Sharp:
 ### `drop_order`
 
 **Drop order** (§7 "No use-after-drop / no leak of drops", "at the end of
-its scope"; §6.7, §6.9–§6.11), over `Step`. A finished run's trace — value
+its scope"; §6.7, §6.9–§6.11), over `Step`. A terminating run's trace — value
 or panic — is in §6.11's block grammar (`Blocks`). Each step from a
 reachable configuration drops one cell or distinct cells newest first, and
 the registration stack is in location order. `StackDiscipline` holds of every step
@@ -784,7 +784,7 @@ Sharp:
 
 **Drop glue order, in §6.11's own terms** (§3.9, §6.11; §7 "No
 use-after-drop / no leak of drops", *how* a value is dropped; RUE-2487), over
-`Step`. A finished run's trace — value or panic — is in §6.11's block grammar
+`Step`. A terminating run's trace — value or panic — is in §6.11's block grammar
 with each drop's events given by §6.11's rules (`DropGlueBlocks`, `DropGlue`):
 after each drop marker, the value's destructor first, then its fields in
 declaration order, an array's elements in ascending index order, and an enum's
@@ -1017,10 +1017,10 @@ Sharp:
 ### `step_no_use_after_drop`
 
 **No use-after-drop over `Step`, on every program** (§7 "No use-after-drop /
-no leak of drops"; §6.1's retired cell; RUE-2496). No configuration reachable
-from `Config.init` is stuck on a retired (`†`) cell, whether or not the
+no leak of drops"; §6.1's tombstoned cell; RUE-2496). No configuration reachable
+from `Config.init` is stuck on a tombstoned (`†`) cell, whether or not the
 program is checked. The hypothesis that the configuration is reached is
-needed: a configuration whose frame names a retired cell is stuck so
+needed: a configuration whose activation record names a tombstoned cell is stuck so
 (`Sharp.tombstoned_cell`).
 
 ```lean
@@ -1043,9 +1043,9 @@ Sharp:
 
 ### `eval_big_to_small`
 
-**`eval` is sound for `Step`**, the interpreter-to-small-step direction of
-the semantic equivalence (§7's adequacy sentence; ADR-0097). For a
-checked program, `run` is never stuck, and its values and panics are reached
+**The big-to-small direction, `eval` to `Step`**: the interpreter-to-small-step direction of
+the semantic equivalence (§7's semantic-equivalence sentence; ADR-0097). For a
+checked program, `run` is never refused, and its values and panics are reached
 by `→*` from `Config.init` with the same store and trace.
 
 ```lean
@@ -1099,8 +1099,8 @@ Sharp:
 
 ### `eval_small_to_big`
 
-**`eval` is complete for `Step`, modulo fuel**, the small-step-to-interpreter
-direction of the semantic equivalence (§7's adequacy sentence).
+**The small-to-big direction, `Step` to `eval`, modulo fuel**: the small-step-to-interpreter
+direction of the semantic equivalence (§7's semantic-equivalence sentence).
 For a checked program, a value or panic `→*` reaches is `run`'s answer at
 every large enough fuel.
 
@@ -1164,8 +1164,8 @@ Sharp:
 
 ### `never_refused_iff`
 
-**Never stuck, both ways** (§7 "Type safety"). For a checked program, `run`
-is never stuck iff no reachable configuration is. Under `ProgramTyped` both
+**Never refused iff never stuck** (§7 "Type safety"). For a checked program,
+`run` is never refused iff no reachable configuration is stuck. Under `ProgramTyped` both
 sides hold outright, so the equivalence adds nothing; cite
 `step_never_stuck_of_run` (R5 of `REDTEAM-LOG.md`).
 
@@ -1189,7 +1189,7 @@ Sharp:
 
 ### `step_never_stuck_of_run`
 
-**`eval` never stuck, so `Step` never stuck, on every program** (§7 "Type
+**`eval` never refused, so `Step` never stuck, on every program** (§7 "Type
 safety": "it either reduces, halts with a value, or halts with one of the
 defined panics").
 
@@ -1278,10 +1278,10 @@ Proved by `Nonvacuous.exact_model` (`RueCore.Nonvacuous`). Witnesses `soundness`
 
 ### `Nonvacuous.empty_activation`
 
-**The initial frame agrees with the empty context** (§6.12's initial
-configuration): at every declaration environment, the empty frame over the
+**The initial activation record agrees with the empty context** (§6.12's initial
+configuration): at every declaration environment, the empty activation record over the
 empty store matches the empty context (`ActivationTyping`) and its store is
-copy-closed (`StoreCC`). With a program's typed body this is the frame and
+copy-contained (`StoreCC`). With a program's typed body this is the activation record and
 store the evaluation statements (`soundness`, `drop_exactly_once`,
 `rest_exactly_once`) are applied at by the witnesses below.
 
@@ -1294,11 +1294,11 @@ Proved by `Nonvacuous.empty_activation` (`RueCore.Nonvacuous`). Witnesses `sound
 
 ### `Nonvacuous.open_activation`
 
-**An open term in a live frame** (§6.1, §7): the evaluation statements apply
-beyond the empty frame. Over the witnesses' declarations, `@drop(s); 1` is
-typed by `check` in the context `s : S0`, owned, and the frame `{ ρ := [ℓ0],
+**An open term in a live activation record** (§6.1, §7): the evaluation statements apply
+beyond the empty activation record. Over the witnesses' declarations, `@drop(s); 1` is
+typed by `check` in the context `s : S0`, owned, and the activation record `{ ρ := [ℓ0],
 σ := [ℓ0] }` over the store `ℓ0 ↦ S0 { 5 }` agrees with that context
-(`ActivationTyping`) and is copy-closed (`StoreCC`), for a checked, `pendingSafe`
+(`ActivationTyping`) and is copy-contained (`StoreCC`), for a checked, `pendingSafe`
 program. Its evaluation runs the destructor of the value it started with, and
 its leading operand has a `Lead`, so `soundness`, `drop_exactly_once` and
 `rest_exactly_once` apply to a term with a free variable and a store that is
@@ -1377,7 +1377,7 @@ class: destructors; the corpus case `affine_scope_drop`, with two bindings). The
 `Step` from `Config.init`, and its trace frees two identities and runs two
 destructors. It also carries the other hypotheses of the trace statements:
 the declarations keep destructor-bearing structs off `Copy` (`DtorNotCopy`),
-the initial configuration steps, no fuel makes the run stuck, the body's own
+the initial configuration steps, no fuel makes the run refused, the body's own
 evaluation drops two values, and the body's leading operand mints an owned
 identity (`Lead`), so `rest_exactly_once` applies to a value minted
 mid-evaluation.
@@ -1581,7 +1581,7 @@ Proved by `Nonvacuous.array` (`RueCore.Nonvacuous`). Witnesses `soundness`, `run
 **A checked program with an enum and a `match`** (§5.5, §6.6; construct class: enums with
 `match`; the corpus case `enum_match_affine`). `let e = E0::K0(S0 { 1 }); match
 e { K0(s) => s.x0, K1 => 0 }` is accepted and typed; its run returns, reached
-by `Step`, and its trace frees two identities (the scrutinee's shell,
+by `Step`, and its trace frees two identities (the scrutinee's dead remainder,
 consumed by the match, and the payload, dropped at the arm's end) and runs
 the payload's destructor.
 
@@ -1827,7 +1827,7 @@ whole program; RUE-2478; the `dtor` witness's program, the corpus case
 `affine_scope_drop` twice over). `let x = S0 { 1 }; let y = S0 { 2 }; 3` is
 checked and `pendingSafe`; §6's relation reaches a configuration that holds
 both values, identities `0` and `2`, in their cells, and from there the run
-finishes with a trace that ends each of them once. So
+terminates with a trace that ends each of them once. So
 `whole_program_exactly_once`'s hypotheses hold of a run that allocates and
 drops several owned values.
 
@@ -1872,7 +1872,7 @@ Proved by `Nonvacuous.whole_drops` (`RueCore.Nonvacuous`). Witnesses `checkProgr
 **A run whose result is an owned value** (§7, over a whole program;
 RUE-2478). `fn main() -> S0 { S0 { 7 } }` is checked and `pendingSafe`; the
 configuration right after (D-Struct) holds the new value's identity `0`, and
-the run finishes with that value as its result — which owns `0` — and a trace
+the run terminates with that value as its result — which owns `0` — and a trace
 that ends nothing. So `whole_program_exactly_once`'s other disjunct, an owned
 value accounted for by being part of the final value, is reached too.
 
@@ -1913,7 +1913,7 @@ case `use_after_move` reads its moved binding the same way). `let a = S0 { 1
 }; @drop(a); a.x0` is rejected by the checker; run
 unchecked, `eval` refuses it with `useAfterMove`, and §6's relation reaches a
 configuration stuck with the same violation from `Config.init`. So the
-statements whose hypothesis is a stuck run or a stuck configuration are not
+statements whose hypothesis is a refused run or a stuck configuration are not
 vacuous either.
 
 ```lean
@@ -1959,7 +1959,7 @@ program written out in the statement, every other holds, and the conclusion fail
 @drop(a); a.x0` as the entry point: the checker rejects it and it is neither
 `ProgramTyped` nor `WfProgram`, while its entry point exists and takes no
 parameters, and its body is `pendingSafe`; `main()`, the call `run` makes, is
-typed by `check` from the empty frame and store, which agree with the empty
+typed by `check` from the empty activation record and store, which agree with the empty
 context, and has a `Lead` (its empty argument list). `eval` refuses it with
 `useAfterMove`, and at fuel `0` it answers `outOfFuel`. So each of these
 conclusions fails once its program hypothesis is dropped: `soundness`
@@ -2052,9 +2052,9 @@ reaches a configuration stuck with `useAfterMove` from `Config.init`, and
 `run` refuses at fuel `200` and exhausts fuel `0`. So once `ProgramTyped` is
 dropped, `step_progress`, `step_safeAt` and `step_type_safety` fail
 (no horizon passes the stuck configuration, which is not a value or a
-panic); once `step_never_stuck_of_run`'s hypothesis that `run` is never stuck
+panic); once `step_never_stuck_of_run`'s hypothesis that `run` is never refused
 is dropped, its conclusion fails; and once `run_refused_of_step_stuck`'s bound
-`n < fuel` is dropped, no `n` makes `run` stuck at every fuel.
+`n < fuel` is dropped, no `n` makes `run` refuse at every fuel.
 
 ```lean
 def Spec.Sharp.stuck_step_stmt : Prop :=
@@ -2111,7 +2111,7 @@ Proved by `Sharp.stuck_step` (`RueCore.Sharp`). Drops `step_progress` 1, `step_s
 
 **An ill-typed expression of a checked program** (§7 sharpness, RUE-2485).
 Over the checked program of `Nonvacuous.dtor`, the expression `let a = S0 { 1
-}; @drop(a); a.x0`, from the empty frame and store, is typed at no type and no
+}; @drop(a); a.x0`, from the empty activation record and store, is typed at no type and no
 outcome, and `check` rejects it; everything else `soundness`,
 `drop_exactly_once` and `rest_exactly_once` ask holds, the leading `S0 { 1 }`
 included (`Lead`). Its evaluation is refused with `useAfterMove`, so none of
@@ -2183,9 +2183,9 @@ Proved by `Sharp.typed` (`RueCore.Sharp`). Drops `soundness` 2, `check_sound` 1,
 
 ### `Sharp.activation`
 
-**A typed expression run in a frame that does not match its context**
+**A typed expression run in an activation record that does not match its context**
 (§7 sharpness, RUE-2485). `1; x`, typed by `check` in the context `x : i64` over
-the checked program of `Nonvacuous.dtor`, is run from the empty frame and
+the checked program of `Nonvacuous.dtor`, is run from the empty activation record and
 store, which do not match that context (`ActivationTyping` fails); everything else
 `soundness`, `drop_exactly_once` and `rest_exactly_once` ask holds, a `Lead`
 (the discarded `1`) included. `eval` refuses the read of `x` with `unbound`. The statement gives `ProgramTyped P` and `WfProgram P`
@@ -2336,7 +2336,7 @@ would duplicate an owner through: over `S0 = @copy struct { x0: i64 }` and
 @drop(p.x0); @drop(q.x0); 0` (`Trace.lean`'s `dupProgram`). It is not
 `ProgramTyped`, and `eval` refuses it with `ownedUnderCopy`, at the literal:
 `no_refusal`'s conclusion fails once `ProgramTyped` is dropped, and a machine
-without the copy-closure monitor (`Contents.copyContained` in `introVal`) makes
+without the Copy-containment monitor (`Contents.copyContained` in `introVal`) makes
 this statement false.
 
 ```lean
@@ -2770,8 +2770,8 @@ Proved by `Sharp.bare_dtor` (`RueCore.Sharp`). Drops `drop_order` 1, `drop_glue_
 **A checked program with a function that is not `pendingSafe`** (§7 sharpness,
 RUE-2485; RUE-2316's carve-out). Beside an entry point returning `0`, `fn
 g(s: S0) -> i64 { [s, return 7]; 0 }` is typed, but the array literal's first
-element is pending when the second unwinds, so the program is not
-`pendingSafe`. The call `g(s)`, from a frame holding `s : S0` at cell `0`,
+element is pending when the second completes abruptly, so the program is not
+`pendingSafe`. The call `g(s)`, from an activation record holding `s : S0` at cell `0`,
 returns `7` and ends `s`'s identity nowhere: it is in no cell, not in the
 result and not in the trace. So `drop_exactly_once` and `rest_exactly_once`
 fail without `P.pendingSafe` (`Exact` fails); everything else they ask holds.
@@ -2865,8 +2865,8 @@ Proved by `Sharp.pending_program` (`RueCore.Sharp`). Drops `drop_exactly_once` 2
 **An expression that is not `pendingSafe`** (§7 sharpness, RUE-2485; RUE-2316's
 carve-out). In the checked program of `Nonvacuous.dtor`, `0; [s, return 7];
 1` is typed in the context `s : S0`, but the array literal's first element is
-pending when the second unwinds. From a frame holding `s` at cell `0`, the
-`return` retires the frame and ends `s`'s identity nowhere. So
+pending when the second completes abruptly. From an activation record holding `s` at cell `0`, the
+`return` tombstones the activation record and ends `s`'s identity nowhere. So
 `drop_exactly_once` and `rest_exactly_once` fail without `e.pendingSafe`
 (`Exact` fails); everything else they ask holds, a `Lead` (the discarded `0`)
 included.
@@ -2968,13 +2968,13 @@ Proved by `Sharp.pending_expr` (`RueCore.Sharp`). Drops `drop_exactly_once` 6, `
 
 ### `Sharp.store_cc`
 
-**A store that is not copy-closed** (§7 sharpness, RUE-2485). The store's one
+**A store that is not copy-contained** (§7 sharpness, RUE-2485). The store's one
 cell holds an `[i64; 1]` array (a `Copy` type) with an owned `S0` inside it,
-outside the frame. `1; 2` is typed and run from the empty frame over it, which
+outside the activation record. `1; 2` is typed and run from the empty activation record over it, which
 agrees with the empty context, in the checked program of `Nonvacuous.dtor`;
 everything else `drop_exactly_once` and `rest_exactly_once` ask holds. The
 evaluation leaves the cell alone, and `Exact` asks the final store to be
-copy-closed, which it is not: both fail without `StoreCC`.
+copy-contained, which it is not: both fail without `StoreCC`.
 
 ```lean
 def Spec.Sharp.store_cc_stmt : Prop :=
@@ -3077,7 +3077,7 @@ Proved by `Sharp.store_cc` (`RueCore.Sharp`). Drops `drop_exactly_once` 5, `rest
 ### `Sharp.no_lead`
 
 **A `Lead` that did not happen** (§7 sharpness, RUE-2485). For the body of
-`Nonvacuous.dtor`, run from the empty frame, take the store `ℓ0 ↦ S0 { 1 }`
+`Nonvacuous.dtor`, run from the empty activation record, take the store `ℓ0 ↦ S0 { 1 }`
 and the pending value `S0 { 1 }` (identity `0`) as if the leading operand had
 produced them; it did not (`Lead` fails: it minted identity `0` into a reserved
 slot). Everything else `rest_exactly_once` asks holds, and the evaluation ends
@@ -3297,7 +3297,7 @@ Proved by `Sharp.unreached_panic` (`RueCore.Sharp`). Drops `drop_order` 3, `drop
 
 **An unreachable configuration whose registration stack is out of order**
 (§7 sharpness, RUE-2485). For the checked program of `Nonvacuous.dtor`, a
-configuration whose frame registers cell `1` before cell `0` takes a step, but
+configuration whose activation record registers cell `1` before cell `0` takes a step, but
 `Config.init` does not reach it: `drop_order`'s last half fails without the
 hypothesis that the configuration is reached.
 
@@ -3408,7 +3408,7 @@ Proved by `Sharp.not_a_step` (`RueCore.Sharp`). Drops `drop_order` 5.
 checked program of `Nonvacuous.dtor`, `Config.init` steps to the argument
 list of `main()`, and not to itself; it is not terminal and not stuck (with
 `linearLeak`, a monitor's tag, not one of §6's stuck states); and `run` is
-never stuck. So `Step.det` fails without either of its step hypotheses,
+never refused. So `Step.det` fails without either of its step hypotheses,
 `Step.terminal` without `C.Terminal`, `step_stuck_isStuckState` without
 `C.Stuck`, and `run_refused_of_step_stuck` without `C.Stuck`.
 
@@ -3454,7 +3454,7 @@ Proved by `Sharp.init_steps` (`RueCore.Sharp`). Drops `Step.det` 1, `Step.det` 2
 ### `Sharp.unreachable_stuck`
 
 **A stuck configuration that is not reached** (§7 sharpness, RUE-2485). For the
-checked program of `Nonvacuous.dtor`, whose `run` is never stuck, a
+checked program of `Nonvacuous.dtor`, whose `run` is never refused, a
 configuration reading an unbound name is stuck and is not reached from
 `Config.init`. So `step_progress`, `step_safeAt`,
 `step_never_stuck_of_run` and `run_refused_of_step_stuck` fail without the
@@ -3512,10 +3512,10 @@ Proved by `Sharp.unreachable_stuck` (`RueCore.Sharp`). Drops `step_progress` 2, 
 
 ### `Sharp.tombstoned_cell`
 
-**A configuration that reads a retired cell, not reached** (§7 sharpness,
+**A configuration that reads a tombstoned cell, not reached** (§7 sharpness,
 RUE-2496). For the checked program of `Nonvacuous.dtor`, a configuration whose
-frame names a cell already retired (`†`) is stuck with `useAfterDrop`, and
-`eval` from the same store and frame refuses the same way; the configuration
+activation record names a cell already tombstoned (`†`) is stuck with `useAfterDrop`, and
+`eval` from the same store and activation record refuses the same way; the configuration
 is not reached from `Config.init` (shown through `step_no_use_after_drop`
 itself). So `step_no_use_after_drop` fails without the hypothesis that the
 configuration is reached: the refusal is live from an open configuration, and
@@ -3610,7 +3610,7 @@ Proved by `Sharp.unreached_double` (`RueCore.Sharp`). Drops `step_no_double_free
 
 **A pop that drops a cell it did not cut, not reached** (§7 sharpness,
 RUE-2500). For the checked program of `Nonvacuous.dtor`, a configuration whose
-frame registers cells `0` and `1`, in location order, but whose pending
+activation record registers cells `0` and `1`, in location order, but whose pending
 `endscope` names cell `0` rather than the newest cell `1` takes a step: (D-EndScope)
 pops one cell off the record, which leaves `[0]`, and drops cell `0`, the cell
 it kept. Its drop markers name one cell, so they are newest first, and its
@@ -3910,10 +3910,10 @@ RUE-2478; the ill-typed shape of `double_drop`, without the copies). With `S0`
 a `@copy` struct whose field is an `i64`, `let p = S0 { S1 { 1 } }; 0` is
 rejected by the checker (the field is given an `S1`), so it is not
 `ProgramTyped` (shown through `whole_program_exactly_once` itself), and it is
-`pendingSafe`. §6's relation, which has no copy-closure monitor, runs it: the
+`pendingSafe`. §6's relation, which has no Copy-containment monitor, runs it: the
 configuration after `S1`'s (D-Struct) holds `S1`'s identity `0`; (D-Struct)
 wraps it in the `Copy` `S0`, which owns nothing, and `p`'s drop at scope exit
-is a `Copy` cell's, which runs nothing; the run finishes with `0` and an empty
+is a `Copy` cell's, which runs nothing; the run terminates with `0` and an empty
 trace. Identity `0` is neither in the result nor ended: without
 `ProgramTyped`, `whole_program_exactly_once` fails.
 
@@ -3961,7 +3961,7 @@ itself). `fn main() -> i64 { f(S0 { 7 }, return 0) }` with `fn f(a: S0, b:
 i64) -> i64 { @drop(a); b }` is accepted by the checker and is not
 `pendingSafe`: the second argument returns. §6's relation reaches the
 configuration holding the minted `S0` (identity `0`) pending in the call's
-argument list; (D-Return) discards that list, and the run finishes with `0`
+argument list; (D-Return) discards that list, and the run terminates with `0`
 and an empty trace. Identity `0` is neither in the result nor ended: without
 `pendingSafe`, `whole_program_exactly_once` fails on a checked program. A
 `break` out of a pending form loses a value the same way (`loop { S2 { S0 { 1 },
@@ -4064,7 +4064,7 @@ Proved by `Sharp.unreached_held` (`RueCore.Sharp`). Drops `whole_program_exactly
 ### `Sharp.unheld`
 
 **An identity the run never holds** (§7 sharpness, RUE-2478). The checked,
-`pendingSafe` program of `Nonvacuous.dtor` finishes from `Config.init`, which
+`pendingSafe` program of `Nonvacuous.dtor` terminates from `Config.init`, which
 holds nothing; its trace ends identities `0` and `2` and nothing else, so
 identity `1` — the index of `x`'s cell, which names a cell and no value — is
 neither ended nor in the result. So the statement fails without the
@@ -4105,7 +4105,7 @@ Proved by `Sharp.unheld` (`RueCore.Sharp`). Drops `whole_program_exactly_once` 4
 
 ### `Sharp.off_run`
 
-**A finished configuration the run does not reach** (§7 sharpness,
+**A terminal configuration the run does not reach** (§7 sharpness,
 RUE-2478). The checked, `pendingSafe` program of `Nonvacuous.dtor` reaches a
 configuration holding `x`'s `S0`, identity `0`; the terminal configuration
 with an empty store, result `3` and an empty trace ends nothing, and that
