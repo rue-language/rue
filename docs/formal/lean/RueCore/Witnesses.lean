@@ -491,7 +491,7 @@ theorem demo_loopIter_drops (M : FloatSig) (e : Expr) :
         (.eval .brk) [.drop 0 (demoSc 0), .dtor 0 (demoSc 0)]) :=
   step_iff.mpr rfl
 
-/-! ## `run_sim` and `run_complete`'s domain at work
+/-! ## `run_sim` and `run_small_to_big`'s domain at work
 
 Moved here verbatim from `Adequacy.lean` (RUE-2460): they are about the demo
 programs above, which left the definitions layer with them. -/
@@ -500,7 +500,7 @@ programs above, which left the definitions layer with them. -/
 `let s = S{}; let t = s; @drop(s); 0`, §6's `→*` reaches `✓0`, because §6.11
 makes `@drop` of a `⊘` place a no-op (`demo_dropMoved_runs`, above).
 `run` refuses it with `useAfterMove` instead. That refusal is the one disjunct
-`run_complete` allows, and `check` rejects the program. -/
+`run_small_to_big` allows, and `check` rejects the program. -/
 theorem dropMoved_refused (M : FloatSig) :
     (∃ H, Steps M (demoProgram (.letIn false demoS
         (.letIn false (.use (.var 0)) (.seq (.drop (.var 1)) (demoI32 0))))) Config.init

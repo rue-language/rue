@@ -206,8 +206,8 @@ theorem dtor.run_safe : True := by
   have := Spine.run_safe M hPT.wf (fd := _) rfl rfl 200
   trivial
 
-/-- `dtor` applied to `no_violation` (helper). -/
-theorem dtor.no_violation : True := by
+/-- `dtor` applied to `no_refusal` (helper). -/
+theorem dtor.no_refusal : True := by
   obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
   obtain ⟨hc, hPT, hps, ⟨c, Ω, hchk, hfit, hTy⟩, hDNC, ⟨C, hStep⟩, hns, -, ⟨H₁, vs, tr₁, r, hLead, hEv, -⟩,
     H, v, tr, hrun, hSteps, -⟩ :=
@@ -215,7 +215,7 @@ theorem dtor.no_violation : True := by
   rw [← hM] at hStep hns hLead hEv hrun hSteps
   let P := progDtor
   have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := Spine.no_violation M hPT 200
+  have := Spine.no_refusal M hPT 200
   trivial
 
 /-- `dtor` applied to `no_use_after_move` (helper). -/
@@ -362,8 +362,8 @@ theorem dtor.step_progress : True := by
   have := Spine.step_progress M hPT
   trivial
 
-/-- `dtor` applied to `step_preservation` (helper). -/
-theorem dtor.step_preservation : True := by
+/-- `dtor` applied to `step_safeAt` (helper). -/
+theorem dtor.step_safeAt : True := by
   obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
   obtain ⟨hc, hPT, hps, ⟨c, Ω, hchk, hfit, hTy⟩, hDNC, ⟨C, hStep⟩, hns, -, ⟨H₁, vs, tr₁, r, hLead, hEv, -⟩,
     H, v, tr, hrun, hSteps, -⟩ :=
@@ -371,7 +371,7 @@ theorem dtor.step_preservation : True := by
   rw [← hM] at hStep hns hLead hEv hrun hSteps
   let P := progDtor
   have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := Spine.step_preservation M hPT
+  have := Spine.step_safeAt M hPT
   trivial
 
 /-- `dtor` applied to `step_type_safety` (helper). -/
@@ -398,8 +398,8 @@ theorem dtor.step_no_use_after_drop : True := by
   have := Spine.step_no_use_after_drop M.toFloatSig P hSteps
   trivial
 
-/-- `dtor` applied to `eval_sound` (helper). -/
-theorem dtor.eval_sound : True := by
+/-- `dtor` applied to `eval_big_to_small` (helper). -/
+theorem dtor.eval_big_to_small : True := by
   obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
   obtain ⟨hc, hPT, hps, ⟨c, Ω, hchk, hfit, hTy⟩, hDNC, ⟨C, hStep⟩, hns, -, ⟨H₁, vs, tr₁, r, hLead, hEv, -⟩,
     H, v, tr, hrun, hSteps, -⟩ :=
@@ -407,11 +407,11 @@ theorem dtor.eval_sound : True := by
   rw [← hM] at hStep hns hLead hEv hrun hSteps
   let P := progDtor
   have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := (Spine.eval_sound M hPT 200).2.1 _ _ _ hrun
+  have := (Spine.eval_big_to_small M hPT 200).2.1 _ _ _ hrun
   trivial
 
-/-- `dtor` applied to `never_stuck_iff` (helper). -/
-theorem dtor.never_stuck_iff : True := by
+/-- `dtor` applied to `never_refused_iff` (helper). -/
+theorem dtor.never_refused_iff : True := by
   obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
   obtain ⟨hc, hPT, hps, ⟨c, Ω, hchk, hfit, hTy⟩, hDNC, ⟨C, hStep⟩, hns, -, ⟨H₁, vs, tr₁, r, hLead, hEv, -⟩,
     H, v, tr, hrun, hSteps, -⟩ :=
@@ -419,7 +419,7 @@ theorem dtor.never_stuck_iff : True := by
   rw [← hM] at hStep hns hLead hEv hrun hSteps
   let P := progDtor
   have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := Spine.never_stuck_iff M hPT
+  have := Spine.never_refused_iff M hPT
   trivial
 
 /-- `dtor` applied to `eval_diverges_iff` (helper). -/
@@ -470,8 +470,8 @@ theorem dtor.run_sim : True := by
   have := (Spine.run_sim M.toFloatSig P 200).1 _ _ _ hrun
   trivial
 
-/-- `dtor` applied to `eval_complete` (helper). -/
-theorem dtor.eval_complete : True := by
+/-- `dtor` applied to `eval_small_to_big` (helper). -/
+theorem dtor.eval_small_to_big : True := by
   obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
   obtain ⟨hc, hPT, hps, ⟨c, Ω, hchk, hfit, hTy⟩, hDNC, ⟨C, hStep⟩, hns, -, ⟨H₁, vs, tr₁, r, hLead, hEv, -⟩,
     H, v, tr, hrun, hSteps, -⟩ :=
@@ -479,11 +479,11 @@ theorem dtor.eval_complete : True := by
   rw [← hM] at hStep hns hLead hEv hrun hSteps
   let P := progDtor
   have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := (Spine.eval_complete M hPT).1 _ _ _ _ hSteps
+  have := (Spine.eval_small_to_big M hPT).1 _ _ _ _ hSteps
   trivial
 
-/-- `dtor` applied to `run_complete` (helper). -/
-theorem dtor.run_complete : True := by
+/-- `dtor` applied to `run_small_to_big` (helper). -/
+theorem dtor.run_small_to_big : True := by
   obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
   obtain ⟨hc, hPT, hps, ⟨c, Ω, hchk, hfit, hTy⟩, hDNC, ⟨C, hStep⟩, hns, -, ⟨H₁, vs, tr₁, r, hLead, hEv, -⟩,
     H, v, tr, hrun, hSteps, -⟩ :=
@@ -491,7 +491,7 @@ theorem dtor.run_complete : True := by
   rw [← hM] at hStep hns hLead hEv hrun hSteps
   let P := progDtor
   have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := (Spine.run_complete M.toFloatSig P).1 _ _ _ _ hSteps
+  have := (Spine.run_small_to_big M.toFloatSig P).1 _ _ _ _ hSteps
   trivial
 
 /-- `dtor` applied to `step_no_double_free` (helper). -/
@@ -624,15 +624,15 @@ theorem linear.run_safe : True := by
   have := Spine.run_safe M hPT.wf (fd := _) rfl rfl 200
   trivial
 
-/-- `linear` applied to `no_violation` (helper). -/
-theorem linear.no_violation : True := by
+/-- `linear` applied to `no_refusal` (helper). -/
+theorem linear.no_refusal : True := by
   obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
   obtain ⟨hc, hPT, hps, ⟨c, Ω, hchk, hfit, hTy⟩, H, v, tr, hrun, hSteps, -⟩ :=
     Spine.Nonvacuous.linear bodyLinear rfl progLinear rfl
   rw [← hM] at hrun hSteps
   let P := progLinear
   have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := Spine.no_violation M hPT 200
+  have := Spine.no_refusal M hPT 200
   trivial
 
 /-- `linear` applied to `no_use_after_move` (helper). -/
@@ -756,15 +756,15 @@ theorem linear.step_progress : True := by
   have := Spine.step_progress M hPT
   trivial
 
-/-- `linear` applied to `step_preservation` (helper). -/
-theorem linear.step_preservation : True := by
+/-- `linear` applied to `step_safeAt` (helper). -/
+theorem linear.step_safeAt : True := by
   obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
   obtain ⟨hc, hPT, hps, ⟨c, Ω, hchk, hfit, hTy⟩, H, v, tr, hrun, hSteps, -⟩ :=
     Spine.Nonvacuous.linear bodyLinear rfl progLinear rfl
   rw [← hM] at hrun hSteps
   let P := progLinear
   have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := Spine.step_preservation M hPT
+  have := Spine.step_safeAt M hPT
   trivial
 
 /-- `linear` applied to `step_type_safety` (helper). -/
@@ -778,26 +778,26 @@ theorem linear.step_type_safety : True := by
   have := Spine.step_type_safety M hPT
   trivial
 
-/-- `linear` applied to `eval_sound` (helper). -/
-theorem linear.eval_sound : True := by
+/-- `linear` applied to `eval_big_to_small` (helper). -/
+theorem linear.eval_big_to_small : True := by
   obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
   obtain ⟨hc, hPT, hps, ⟨c, Ω, hchk, hfit, hTy⟩, H, v, tr, hrun, hSteps, -⟩ :=
     Spine.Nonvacuous.linear bodyLinear rfl progLinear rfl
   rw [← hM] at hrun hSteps
   let P := progLinear
   have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := (Spine.eval_sound M hPT 200).2.1 _ _ _ hrun
+  have := (Spine.eval_big_to_small M hPT 200).2.1 _ _ _ hrun
   trivial
 
-/-- `linear` applied to `never_stuck_iff` (helper). -/
-theorem linear.never_stuck_iff : True := by
+/-- `linear` applied to `never_refused_iff` (helper). -/
+theorem linear.never_refused_iff : True := by
   obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
   obtain ⟨hc, hPT, hps, ⟨c, Ω, hchk, hfit, hTy⟩, H, v, tr, hrun, hSteps, -⟩ :=
     Spine.Nonvacuous.linear bodyLinear rfl progLinear rfl
   rw [← hM] at hrun hSteps
   let P := progLinear
   have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := Spine.never_stuck_iff M hPT
+  have := Spine.never_refused_iff M hPT
   trivial
 
 /-- `linear` applied to `eval_diverges_iff` (helper). -/
@@ -844,26 +844,26 @@ theorem linear.run_sim : True := by
   have := (Spine.run_sim M.toFloatSig P 200).1 _ _ _ hrun
   trivial
 
-/-- `linear` applied to `eval_complete` (helper). -/
-theorem linear.eval_complete : True := by
+/-- `linear` applied to `eval_small_to_big` (helper). -/
+theorem linear.eval_small_to_big : True := by
   obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
   obtain ⟨hc, hPT, hps, ⟨c, Ω, hchk, hfit, hTy⟩, H, v, tr, hrun, hSteps, -⟩ :=
     Spine.Nonvacuous.linear bodyLinear rfl progLinear rfl
   rw [← hM] at hrun hSteps
   let P := progLinear
   have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := (Spine.eval_complete M hPT).1 _ _ _ _ hSteps
+  have := (Spine.eval_small_to_big M hPT).1 _ _ _ _ hSteps
   trivial
 
-/-- `linear` applied to `run_complete` (helper). -/
-theorem linear.run_complete : True := by
+/-- `linear` applied to `run_small_to_big` (helper). -/
+theorem linear.run_small_to_big : True := by
   obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
   obtain ⟨hc, hPT, hps, ⟨c, Ω, hchk, hfit, hTy⟩, H, v, tr, hrun, hSteps, -⟩ :=
     Spine.Nonvacuous.linear bodyLinear rfl progLinear rfl
   rw [← hM] at hrun hSteps
   let P := progLinear
   have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := (Spine.run_complete M.toFloatSig P).1 _ _ _ _ hSteps
+  have := (Spine.run_small_to_big M.toFloatSig P).1 _ _ _ _ hSteps
   trivial
 
 /-- `loop` applied to `soundness` (helper). -/
@@ -888,15 +888,15 @@ theorem loop.run_safe : True := by
   have := Spine.run_safe M hPT.wf (fd := _) rfl rfl 200
   trivial
 
-/-- `loop` applied to `no_violation` (helper). -/
-theorem loop.no_violation : True := by
+/-- `loop` applied to `no_refusal` (helper). -/
+theorem loop.no_refusal : True := by
   obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
   obtain ⟨hc, hPT, hps, ⟨c, Ω, hchk, hfit, hTy⟩, H, v, tr, hrun, hSteps, -⟩ :=
     Spine.Nonvacuous.loop bodyLoop rfl progLoop rfl
   rw [← hM] at hrun hSteps
   let P := progLoop
   have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := Spine.no_violation M hPT 200
+  have := Spine.no_refusal M hPT 200
   trivial
 
 /-- `loop` applied to `no_use_after_move` (helper). -/
@@ -1020,15 +1020,15 @@ theorem loop.step_progress : True := by
   have := Spine.step_progress M hPT
   trivial
 
-/-- `loop` applied to `step_preservation` (helper). -/
-theorem loop.step_preservation : True := by
+/-- `loop` applied to `step_safeAt` (helper). -/
+theorem loop.step_safeAt : True := by
   obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
   obtain ⟨hc, hPT, hps, ⟨c, Ω, hchk, hfit, hTy⟩, H, v, tr, hrun, hSteps, -⟩ :=
     Spine.Nonvacuous.loop bodyLoop rfl progLoop rfl
   rw [← hM] at hrun hSteps
   let P := progLoop
   have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := Spine.step_preservation M hPT
+  have := Spine.step_safeAt M hPT
   trivial
 
 /-- `loop` applied to `step_type_safety` (helper). -/
@@ -1042,26 +1042,26 @@ theorem loop.step_type_safety : True := by
   have := Spine.step_type_safety M hPT
   trivial
 
-/-- `loop` applied to `eval_sound` (helper). -/
-theorem loop.eval_sound : True := by
+/-- `loop` applied to `eval_big_to_small` (helper). -/
+theorem loop.eval_big_to_small : True := by
   obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
   obtain ⟨hc, hPT, hps, ⟨c, Ω, hchk, hfit, hTy⟩, H, v, tr, hrun, hSteps, -⟩ :=
     Spine.Nonvacuous.loop bodyLoop rfl progLoop rfl
   rw [← hM] at hrun hSteps
   let P := progLoop
   have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := (Spine.eval_sound M hPT 200).2.1 _ _ _ hrun
+  have := (Spine.eval_big_to_small M hPT 200).2.1 _ _ _ hrun
   trivial
 
-/-- `loop` applied to `never_stuck_iff` (helper). -/
-theorem loop.never_stuck_iff : True := by
+/-- `loop` applied to `never_refused_iff` (helper). -/
+theorem loop.never_refused_iff : True := by
   obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
   obtain ⟨hc, hPT, hps, ⟨c, Ω, hchk, hfit, hTy⟩, H, v, tr, hrun, hSteps, -⟩ :=
     Spine.Nonvacuous.loop bodyLoop rfl progLoop rfl
   rw [← hM] at hrun hSteps
   let P := progLoop
   have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := Spine.never_stuck_iff M hPT
+  have := Spine.never_refused_iff M hPT
   trivial
 
 /-- `loop` applied to `eval_diverges_iff` (helper). -/
@@ -1108,26 +1108,26 @@ theorem loop.run_sim : True := by
   have := (Spine.run_sim M.toFloatSig P 200).1 _ _ _ hrun
   trivial
 
-/-- `loop` applied to `eval_complete` (helper). -/
-theorem loop.eval_complete : True := by
+/-- `loop` applied to `eval_small_to_big` (helper). -/
+theorem loop.eval_small_to_big : True := by
   obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
   obtain ⟨hc, hPT, hps, ⟨c, Ω, hchk, hfit, hTy⟩, H, v, tr, hrun, hSteps, -⟩ :=
     Spine.Nonvacuous.loop bodyLoop rfl progLoop rfl
   rw [← hM] at hrun hSteps
   let P := progLoop
   have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := (Spine.eval_complete M hPT).1 _ _ _ _ hSteps
+  have := (Spine.eval_small_to_big M hPT).1 _ _ _ _ hSteps
   trivial
 
-/-- `loop` applied to `run_complete` (helper). -/
-theorem loop.run_complete : True := by
+/-- `loop` applied to `run_small_to_big` (helper). -/
+theorem loop.run_small_to_big : True := by
   obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
   obtain ⟨hc, hPT, hps, ⟨c, Ω, hchk, hfit, hTy⟩, H, v, tr, hrun, hSteps, -⟩ :=
     Spine.Nonvacuous.loop bodyLoop rfl progLoop rfl
   rw [← hM] at hrun hSteps
   let P := progLoop
   have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := (Spine.run_complete M.toFloatSig P).1 _ _ _ _ hSteps
+  have := (Spine.run_small_to_big M.toFloatSig P).1 _ _ _ _ hSteps
   trivial
 
 /-- `loop` applied to `freed_once` (helper). -/
@@ -1163,15 +1163,15 @@ theorem array.run_safe : True := by
   have := Spine.run_safe M hPT.wf (fd := _) rfl rfl 200
   trivial
 
-/-- `array` applied to `no_violation` (helper). -/
-theorem array.no_violation : True := by
+/-- `array` applied to `no_refusal` (helper). -/
+theorem array.no_refusal : True := by
   obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
   obtain ⟨hc, hPT, hps, ⟨c, Ω, hchk, hfit, hTy⟩, H, v, tr, hrun, hSteps, -⟩ :=
     Spine.Nonvacuous.array bodyArray rfl progArray rfl
   rw [← hM] at hrun hSteps
   let P := progArray
   have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := Spine.no_violation M hPT 200
+  have := Spine.no_refusal M hPT 200
   trivial
 
 /-- `array` applied to `no_use_after_move` (helper). -/
@@ -1295,15 +1295,15 @@ theorem array.step_progress : True := by
   have := Spine.step_progress M hPT
   trivial
 
-/-- `array` applied to `step_preservation` (helper). -/
-theorem array.step_preservation : True := by
+/-- `array` applied to `step_safeAt` (helper). -/
+theorem array.step_safeAt : True := by
   obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
   obtain ⟨hc, hPT, hps, ⟨c, Ω, hchk, hfit, hTy⟩, H, v, tr, hrun, hSteps, -⟩ :=
     Spine.Nonvacuous.array bodyArray rfl progArray rfl
   rw [← hM] at hrun hSteps
   let P := progArray
   have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := Spine.step_preservation M hPT
+  have := Spine.step_safeAt M hPT
   trivial
 
 /-- `array` applied to `step_type_safety` (helper). -/
@@ -1317,26 +1317,26 @@ theorem array.step_type_safety : True := by
   have := Spine.step_type_safety M hPT
   trivial
 
-/-- `array` applied to `eval_sound` (helper). -/
-theorem array.eval_sound : True := by
+/-- `array` applied to `eval_big_to_small` (helper). -/
+theorem array.eval_big_to_small : True := by
   obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
   obtain ⟨hc, hPT, hps, ⟨c, Ω, hchk, hfit, hTy⟩, H, v, tr, hrun, hSteps, -⟩ :=
     Spine.Nonvacuous.array bodyArray rfl progArray rfl
   rw [← hM] at hrun hSteps
   let P := progArray
   have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := (Spine.eval_sound M hPT 200).2.1 _ _ _ hrun
+  have := (Spine.eval_big_to_small M hPT 200).2.1 _ _ _ hrun
   trivial
 
-/-- `array` applied to `never_stuck_iff` (helper). -/
-theorem array.never_stuck_iff : True := by
+/-- `array` applied to `never_refused_iff` (helper). -/
+theorem array.never_refused_iff : True := by
   obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
   obtain ⟨hc, hPT, hps, ⟨c, Ω, hchk, hfit, hTy⟩, H, v, tr, hrun, hSteps, -⟩ :=
     Spine.Nonvacuous.array bodyArray rfl progArray rfl
   rw [← hM] at hrun hSteps
   let P := progArray
   have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := Spine.never_stuck_iff M hPT
+  have := Spine.never_refused_iff M hPT
   trivial
 
 /-- `array` applied to `eval_diverges_iff` (helper). -/
@@ -1383,26 +1383,26 @@ theorem array.run_sim : True := by
   have := (Spine.run_sim M.toFloatSig P 200).1 _ _ _ hrun
   trivial
 
-/-- `array` applied to `eval_complete` (helper). -/
-theorem array.eval_complete : True := by
+/-- `array` applied to `eval_small_to_big` (helper). -/
+theorem array.eval_small_to_big : True := by
   obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
   obtain ⟨hc, hPT, hps, ⟨c, Ω, hchk, hfit, hTy⟩, H, v, tr, hrun, hSteps, -⟩ :=
     Spine.Nonvacuous.array bodyArray rfl progArray rfl
   rw [← hM] at hrun hSteps
   let P := progArray
   have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := (Spine.eval_complete M hPT).1 _ _ _ _ hSteps
+  have := (Spine.eval_small_to_big M hPT).1 _ _ _ _ hSteps
   trivial
 
-/-- `array` applied to `run_complete` (helper). -/
-theorem array.run_complete : True := by
+/-- `array` applied to `run_small_to_big` (helper). -/
+theorem array.run_small_to_big : True := by
   obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
   obtain ⟨hc, hPT, hps, ⟨c, Ω, hchk, hfit, hTy⟩, H, v, tr, hrun, hSteps, -⟩ :=
     Spine.Nonvacuous.array bodyArray rfl progArray rfl
   rw [← hM] at hrun hSteps
   let P := progArray
   have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := (Spine.run_complete M.toFloatSig P).1 _ _ _ _ hSteps
+  have := (Spine.run_small_to_big M.toFloatSig P).1 _ _ _ _ hSteps
   trivial
 
 /-- `enum_match` applied to `soundness` (helper). -/
@@ -1427,15 +1427,15 @@ theorem enum_match.run_safe : True := by
   have := Spine.run_safe M hPT.wf (fd := _) rfl rfl 200
   trivial
 
-/-- `enum_match` applied to `no_violation` (helper). -/
-theorem enum_match.no_violation : True := by
+/-- `enum_match` applied to `no_refusal` (helper). -/
+theorem enum_match.no_refusal : True := by
   obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
   obtain ⟨hc, hPT, hps, ⟨c, Ω, hchk, hfit, hTy⟩, H, v, tr, hrun, hSteps, -⟩ :=
     Spine.Nonvacuous.enum_match bodyEnumMatch rfl progEnumMatch rfl
   rw [← hM] at hrun hSteps
   let P := progEnumMatch
   have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := Spine.no_violation M hPT 200
+  have := Spine.no_refusal M hPT 200
   trivial
 
 /-- `enum_match` applied to `no_use_after_move` (helper). -/
@@ -1559,15 +1559,15 @@ theorem enum_match.step_progress : True := by
   have := Spine.step_progress M hPT
   trivial
 
-/-- `enum_match` applied to `step_preservation` (helper). -/
-theorem enum_match.step_preservation : True := by
+/-- `enum_match` applied to `step_safeAt` (helper). -/
+theorem enum_match.step_safeAt : True := by
   obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
   obtain ⟨hc, hPT, hps, ⟨c, Ω, hchk, hfit, hTy⟩, H, v, tr, hrun, hSteps, -⟩ :=
     Spine.Nonvacuous.enum_match bodyEnumMatch rfl progEnumMatch rfl
   rw [← hM] at hrun hSteps
   let P := progEnumMatch
   have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := Spine.step_preservation M hPT
+  have := Spine.step_safeAt M hPT
   trivial
 
 /-- `enum_match` applied to `step_type_safety` (helper). -/
@@ -1581,26 +1581,26 @@ theorem enum_match.step_type_safety : True := by
   have := Spine.step_type_safety M hPT
   trivial
 
-/-- `enum_match` applied to `eval_sound` (helper). -/
-theorem enum_match.eval_sound : True := by
+/-- `enum_match` applied to `eval_big_to_small` (helper). -/
+theorem enum_match.eval_big_to_small : True := by
   obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
   obtain ⟨hc, hPT, hps, ⟨c, Ω, hchk, hfit, hTy⟩, H, v, tr, hrun, hSteps, -⟩ :=
     Spine.Nonvacuous.enum_match bodyEnumMatch rfl progEnumMatch rfl
   rw [← hM] at hrun hSteps
   let P := progEnumMatch
   have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := (Spine.eval_sound M hPT 200).2.1 _ _ _ hrun
+  have := (Spine.eval_big_to_small M hPT 200).2.1 _ _ _ hrun
   trivial
 
-/-- `enum_match` applied to `never_stuck_iff` (helper). -/
-theorem enum_match.never_stuck_iff : True := by
+/-- `enum_match` applied to `never_refused_iff` (helper). -/
+theorem enum_match.never_refused_iff : True := by
   obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
   obtain ⟨hc, hPT, hps, ⟨c, Ω, hchk, hfit, hTy⟩, H, v, tr, hrun, hSteps, -⟩ :=
     Spine.Nonvacuous.enum_match bodyEnumMatch rfl progEnumMatch rfl
   rw [← hM] at hrun hSteps
   let P := progEnumMatch
   have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := Spine.never_stuck_iff M hPT
+  have := Spine.never_refused_iff M hPT
   trivial
 
 /-- `enum_match` applied to `eval_diverges_iff` (helper). -/
@@ -1647,26 +1647,26 @@ theorem enum_match.run_sim : True := by
   have := (Spine.run_sim M.toFloatSig P 200).1 _ _ _ hrun
   trivial
 
-/-- `enum_match` applied to `eval_complete` (helper). -/
-theorem enum_match.eval_complete : True := by
+/-- `enum_match` applied to `eval_small_to_big` (helper). -/
+theorem enum_match.eval_small_to_big : True := by
   obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
   obtain ⟨hc, hPT, hps, ⟨c, Ω, hchk, hfit, hTy⟩, H, v, tr, hrun, hSteps, -⟩ :=
     Spine.Nonvacuous.enum_match bodyEnumMatch rfl progEnumMatch rfl
   rw [← hM] at hrun hSteps
   let P := progEnumMatch
   have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := (Spine.eval_complete M hPT).1 _ _ _ _ hSteps
+  have := (Spine.eval_small_to_big M hPT).1 _ _ _ _ hSteps
   trivial
 
-/-- `enum_match` applied to `run_complete` (helper). -/
-theorem enum_match.run_complete : True := by
+/-- `enum_match` applied to `run_small_to_big` (helper). -/
+theorem enum_match.run_small_to_big : True := by
   obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
   obtain ⟨hc, hPT, hps, ⟨c, Ω, hchk, hfit, hTy⟩, H, v, tr, hrun, hSteps, -⟩ :=
     Spine.Nonvacuous.enum_match bodyEnumMatch rfl progEnumMatch rfl
   rw [← hM] at hrun hSteps
   let P := progEnumMatch
   have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := (Spine.run_complete M.toFloatSig P).1 _ _ _ _ hSteps
+  have := (Spine.run_small_to_big M.toFloatSig P).1 _ _ _ _ hSteps
   trivial
 
 /-- `early_return` applied to `soundness` (helper). -/
@@ -1691,15 +1691,15 @@ theorem early_return.run_safe : True := by
   have := Spine.run_safe M hPT.wf (fd := _) rfl rfl 200
   trivial
 
-/-- `early_return` applied to `no_violation` (helper). -/
-theorem early_return.no_violation : True := by
+/-- `early_return` applied to `no_refusal` (helper). -/
+theorem early_return.no_refusal : True := by
   obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
   obtain ⟨hc, hPT, hps, ⟨c, Ω, hchk, hfit, hTy⟩, H, v, tr, hrun, hSteps, -⟩ :=
     Spine.Nonvacuous.early_return bodyEarlyReturn rfl progEarlyReturn rfl
   rw [← hM] at hrun hSteps
   let P := progEarlyReturn
   have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := Spine.no_violation M hPT 200
+  have := Spine.no_refusal M hPT 200
   trivial
 
 /-- `early_return` applied to `no_use_after_move` (helper). -/
@@ -1823,15 +1823,15 @@ theorem early_return.step_progress : True := by
   have := Spine.step_progress M hPT
   trivial
 
-/-- `early_return` applied to `step_preservation` (helper). -/
-theorem early_return.step_preservation : True := by
+/-- `early_return` applied to `step_safeAt` (helper). -/
+theorem early_return.step_safeAt : True := by
   obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
   obtain ⟨hc, hPT, hps, ⟨c, Ω, hchk, hfit, hTy⟩, H, v, tr, hrun, hSteps, -⟩ :=
     Spine.Nonvacuous.early_return bodyEarlyReturn rfl progEarlyReturn rfl
   rw [← hM] at hrun hSteps
   let P := progEarlyReturn
   have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := Spine.step_preservation M hPT
+  have := Spine.step_safeAt M hPT
   trivial
 
 /-- `early_return` applied to `step_type_safety` (helper). -/
@@ -1845,26 +1845,26 @@ theorem early_return.step_type_safety : True := by
   have := Spine.step_type_safety M hPT
   trivial
 
-/-- `early_return` applied to `eval_sound` (helper). -/
-theorem early_return.eval_sound : True := by
+/-- `early_return` applied to `eval_big_to_small` (helper). -/
+theorem early_return.eval_big_to_small : True := by
   obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
   obtain ⟨hc, hPT, hps, ⟨c, Ω, hchk, hfit, hTy⟩, H, v, tr, hrun, hSteps, -⟩ :=
     Spine.Nonvacuous.early_return bodyEarlyReturn rfl progEarlyReturn rfl
   rw [← hM] at hrun hSteps
   let P := progEarlyReturn
   have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := (Spine.eval_sound M hPT 200).2.1 _ _ _ hrun
+  have := (Spine.eval_big_to_small M hPT 200).2.1 _ _ _ hrun
   trivial
 
-/-- `early_return` applied to `never_stuck_iff` (helper). -/
-theorem early_return.never_stuck_iff : True := by
+/-- `early_return` applied to `never_refused_iff` (helper). -/
+theorem early_return.never_refused_iff : True := by
   obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
   obtain ⟨hc, hPT, hps, ⟨c, Ω, hchk, hfit, hTy⟩, H, v, tr, hrun, hSteps, -⟩ :=
     Spine.Nonvacuous.early_return bodyEarlyReturn rfl progEarlyReturn rfl
   rw [← hM] at hrun hSteps
   let P := progEarlyReturn
   have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := Spine.never_stuck_iff M hPT
+  have := Spine.never_refused_iff M hPT
   trivial
 
 /-- `early_return` applied to `eval_diverges_iff` (helper). -/
@@ -1911,26 +1911,26 @@ theorem early_return.run_sim : True := by
   have := (Spine.run_sim M.toFloatSig P 200).1 _ _ _ hrun
   trivial
 
-/-- `early_return` applied to `eval_complete` (helper). -/
-theorem early_return.eval_complete : True := by
+/-- `early_return` applied to `eval_small_to_big` (helper). -/
+theorem early_return.eval_small_to_big : True := by
   obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
   obtain ⟨hc, hPT, hps, ⟨c, Ω, hchk, hfit, hTy⟩, H, v, tr, hrun, hSteps, -⟩ :=
     Spine.Nonvacuous.early_return bodyEarlyReturn rfl progEarlyReturn rfl
   rw [← hM] at hrun hSteps
   let P := progEarlyReturn
   have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := (Spine.eval_complete M hPT).1 _ _ _ _ hSteps
+  have := (Spine.eval_small_to_big M hPT).1 _ _ _ _ hSteps
   trivial
 
-/-- `early_return` applied to `run_complete` (helper). -/
-theorem early_return.run_complete : True := by
+/-- `early_return` applied to `run_small_to_big` (helper). -/
+theorem early_return.run_small_to_big : True := by
   obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
   obtain ⟨hc, hPT, hps, ⟨c, Ω, hchk, hfit, hTy⟩, H, v, tr, hrun, hSteps, -⟩ :=
     Spine.Nonvacuous.early_return bodyEarlyReturn rfl progEarlyReturn rfl
   rw [← hM] at hrun hSteps
   let P := progEarlyReturn
   have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := (Spine.run_complete M.toFloatSig P).1 _ _ _ _ hSteps
+  have := (Spine.run_small_to_big M.toFloatSig P).1 _ _ _ _ hSteps
   trivial
 
 /-- `early_return` applied to `run_ne_returned` (helper). -/
@@ -1966,15 +1966,15 @@ theorem float.run_safe : True := by
   have := Spine.run_safe M hPT.wf (fd := _) rfl rfl 200
   trivial
 
-/-- `float` applied to `no_violation` (helper). -/
-theorem float.no_violation : True := by
+/-- `float` applied to `no_refusal` (helper). -/
+theorem float.no_refusal : True := by
   obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
   obtain ⟨hc, hPT, hps, ⟨c, Ω, hchk, hfit, hTy⟩, H, v, tr, hrun, hSteps, -⟩ :=
     Spine.Nonvacuous.float bodyFloat rfl progFloat rfl
   rw [← hM] at hrun hSteps
   let P := progFloat
   have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := Spine.no_violation M hPT 200
+  have := Spine.no_refusal M hPT 200
   trivial
 
 /-- `float` applied to `no_use_after_move` (helper). -/
@@ -2098,15 +2098,15 @@ theorem float.step_progress : True := by
   have := Spine.step_progress M hPT
   trivial
 
-/-- `float` applied to `step_preservation` (helper). -/
-theorem float.step_preservation : True := by
+/-- `float` applied to `step_safeAt` (helper). -/
+theorem float.step_safeAt : True := by
   obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
   obtain ⟨hc, hPT, hps, ⟨c, Ω, hchk, hfit, hTy⟩, H, v, tr, hrun, hSteps, -⟩ :=
     Spine.Nonvacuous.float bodyFloat rfl progFloat rfl
   rw [← hM] at hrun hSteps
   let P := progFloat
   have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := Spine.step_preservation M hPT
+  have := Spine.step_safeAt M hPT
   trivial
 
 /-- `float` applied to `step_type_safety` (helper). -/
@@ -2120,26 +2120,26 @@ theorem float.step_type_safety : True := by
   have := Spine.step_type_safety M hPT
   trivial
 
-/-- `float` applied to `eval_sound` (helper). -/
-theorem float.eval_sound : True := by
+/-- `float` applied to `eval_big_to_small` (helper). -/
+theorem float.eval_big_to_small : True := by
   obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
   obtain ⟨hc, hPT, hps, ⟨c, Ω, hchk, hfit, hTy⟩, H, v, tr, hrun, hSteps, -⟩ :=
     Spine.Nonvacuous.float bodyFloat rfl progFloat rfl
   rw [← hM] at hrun hSteps
   let P := progFloat
   have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := (Spine.eval_sound M hPT 200).2.1 _ _ _ hrun
+  have := (Spine.eval_big_to_small M hPT 200).2.1 _ _ _ hrun
   trivial
 
-/-- `float` applied to `never_stuck_iff` (helper). -/
-theorem float.never_stuck_iff : True := by
+/-- `float` applied to `never_refused_iff` (helper). -/
+theorem float.never_refused_iff : True := by
   obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
   obtain ⟨hc, hPT, hps, ⟨c, Ω, hchk, hfit, hTy⟩, H, v, tr, hrun, hSteps, -⟩ :=
     Spine.Nonvacuous.float bodyFloat rfl progFloat rfl
   rw [← hM] at hrun hSteps
   let P := progFloat
   have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := Spine.never_stuck_iff M hPT
+  have := Spine.never_refused_iff M hPT
   trivial
 
 /-- `float` applied to `eval_diverges_iff` (helper). -/
@@ -2186,26 +2186,26 @@ theorem float.run_sim : True := by
   have := (Spine.run_sim M.toFloatSig P 200).1 _ _ _ hrun
   trivial
 
-/-- `float` applied to `eval_complete` (helper). -/
-theorem float.eval_complete : True := by
+/-- `float` applied to `eval_small_to_big` (helper). -/
+theorem float.eval_small_to_big : True := by
   obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
   obtain ⟨hc, hPT, hps, ⟨c, Ω, hchk, hfit, hTy⟩, H, v, tr, hrun, hSteps, -⟩ :=
     Spine.Nonvacuous.float bodyFloat rfl progFloat rfl
   rw [← hM] at hrun hSteps
   let P := progFloat
   have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := (Spine.eval_complete M hPT).1 _ _ _ _ hSteps
+  have := (Spine.eval_small_to_big M hPT).1 _ _ _ _ hSteps
   trivial
 
-/-- `float` applied to `run_complete` (helper). -/
-theorem float.run_complete : True := by
+/-- `float` applied to `run_small_to_big` (helper). -/
+theorem float.run_small_to_big : True := by
   obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
   obtain ⟨hc, hPT, hps, ⟨c, Ω, hchk, hfit, hTy⟩, H, v, tr, hrun, hSteps, -⟩ :=
     Spine.Nonvacuous.float bodyFloat rfl progFloat rfl
   rw [← hM] at hrun hSteps
   let P := progFloat
   have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := (Spine.run_complete M.toFloatSig P).1 _ _ _ _ hSteps
+  have := (Spine.run_small_to_big M.toFloatSig P).1 _ _ _ _ hSteps
   trivial
 
 /-- `panic` applied to `soundness` (helper). -/
@@ -2230,15 +2230,15 @@ theorem panic.run_safe : True := by
   have := Spine.run_safe M hPT.wf (fd := _) rfl rfl 200
   trivial
 
-/-- `panic` applied to `no_violation` (helper). -/
-theorem panic.no_violation : True := by
+/-- `panic` applied to `no_refusal` (helper). -/
+theorem panic.no_refusal : True := by
   obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
   obtain ⟨hc, hPT, hps, ⟨c, Ω, hchk, hfit, hTy⟩, hrun, hSteps⟩ :=
     Spine.Nonvacuous.panic bodyPanic rfl progPanic rfl
   rw [← hM] at hrun hSteps
   let P := progPanic
   have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := Spine.no_violation M hPT 200
+  have := Spine.no_refusal M hPT 200
   trivial
 
 /-- `panic` applied to `no_use_after_move` (helper). -/
@@ -2362,15 +2362,15 @@ theorem panic.step_progress : True := by
   have := Spine.step_progress M hPT
   trivial
 
-/-- `panic` applied to `step_preservation` (helper). -/
-theorem panic.step_preservation : True := by
+/-- `panic` applied to `step_safeAt` (helper). -/
+theorem panic.step_safeAt : True := by
   obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
   obtain ⟨hc, hPT, hps, ⟨c, Ω, hchk, hfit, hTy⟩, hrun, hSteps⟩ :=
     Spine.Nonvacuous.panic bodyPanic rfl progPanic rfl
   rw [← hM] at hrun hSteps
   let P := progPanic
   have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := Spine.step_preservation M hPT
+  have := Spine.step_safeAt M hPT
   trivial
 
 /-- `panic` applied to `step_type_safety` (helper). -/
@@ -2384,26 +2384,26 @@ theorem panic.step_type_safety : True := by
   have := Spine.step_type_safety M hPT
   trivial
 
-/-- `panic` applied to `eval_sound` (helper). -/
-theorem panic.eval_sound : True := by
+/-- `panic` applied to `eval_big_to_small` (helper). -/
+theorem panic.eval_big_to_small : True := by
   obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
   obtain ⟨hc, hPT, hps, ⟨c, Ω, hchk, hfit, hTy⟩, hrun, hSteps⟩ :=
     Spine.Nonvacuous.panic bodyPanic rfl progPanic rfl
   rw [← hM] at hrun hSteps
   let P := progPanic
   have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := (Spine.eval_sound M hPT 200).2.2 _ _ hrun
+  have := (Spine.eval_big_to_small M hPT 200).2.2 _ _ hrun
   trivial
 
-/-- `panic` applied to `never_stuck_iff` (helper). -/
-theorem panic.never_stuck_iff : True := by
+/-- `panic` applied to `never_refused_iff` (helper). -/
+theorem panic.never_refused_iff : True := by
   obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
   obtain ⟨hc, hPT, hps, ⟨c, Ω, hchk, hfit, hTy⟩, hrun, hSteps⟩ :=
     Spine.Nonvacuous.panic bodyPanic rfl progPanic rfl
   rw [← hM] at hrun hSteps
   let P := progPanic
   have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := Spine.never_stuck_iff M hPT
+  have := Spine.never_refused_iff M hPT
   trivial
 
 /-- `panic` applied to `eval_diverges_iff` (helper). -/
@@ -2450,26 +2450,26 @@ theorem panic.run_sim : True := by
   have := (Spine.run_sim M.toFloatSig P 200).2 _ _ hrun
   trivial
 
-/-- `panic` applied to `eval_complete` (helper). -/
-theorem panic.eval_complete : True := by
+/-- `panic` applied to `eval_small_to_big` (helper). -/
+theorem panic.eval_small_to_big : True := by
   obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
   obtain ⟨hc, hPT, hps, ⟨c, Ω, hchk, hfit, hTy⟩, hrun, hSteps⟩ :=
     Spine.Nonvacuous.panic bodyPanic rfl progPanic rfl
   rw [← hM] at hrun hSteps
   let P := progPanic
   have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := (Spine.eval_complete M hPT).2 _ _ hSteps
+  have := (Spine.eval_small_to_big M hPT).2 _ _ hSteps
   trivial
 
-/-- `panic` applied to `run_complete` (helper). -/
-theorem panic.run_complete : True := by
+/-- `panic` applied to `run_small_to_big` (helper). -/
+theorem panic.run_small_to_big : True := by
   obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
   obtain ⟨hc, hPT, hps, ⟨c, Ω, hchk, hfit, hTy⟩, hrun, hSteps⟩ :=
     Spine.Nonvacuous.panic bodyPanic rfl progPanic rfl
   rw [← hM] at hrun hSteps
   let P := progPanic
   have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := (Spine.run_complete M.toFloatSig P).2 _ _ hSteps
+  have := (Spine.run_small_to_big M.toFloatSig P).2 _ _ hSteps
   trivial
 
 /-- `exact_model` applied to `soundness`, through the `dtor` program (helper). -/
@@ -2496,8 +2496,8 @@ theorem exact_model.run_safe : True := by
   have := Spine.run_safe M hPT.wf (fd := _) rfl rfl 200
   trivial
 
-/-- `exact_model` applied to `no_violation`, through the `dtor` program (helper). -/
-theorem exact_model.no_violation : True := by
+/-- `exact_model` applied to `no_refusal`, through the `dtor` program (helper). -/
+theorem exact_model.no_refusal : True := by
   obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
   obtain ⟨hc, hPT, hps, ⟨c, Ω, hchk, hfit, hTy⟩, hDNC, ⟨C, hStep⟩, hns, -, ⟨H₁, vs, tr₁, r, hLead, hEv, -⟩,
     H, v, tr, hrun, hSteps, -⟩ :=
@@ -2505,7 +2505,7 @@ theorem exact_model.no_violation : True := by
   rw [← hM] at hStep hns hLead hEv hrun hSteps
   let P := progDtor
   have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := Spine.no_violation M hPT 200
+  have := Spine.no_refusal M hPT 200
   trivial
 
 /-- `exact_model` applied to `no_use_after_move`, through the `dtor` program (helper). -/
@@ -2652,8 +2652,8 @@ theorem exact_model.step_progress : True := by
   have := Spine.step_progress M hPT
   trivial
 
-/-- `exact_model` applied to `step_preservation`, through the `dtor` program (helper). -/
-theorem exact_model.step_preservation : True := by
+/-- `exact_model` applied to `step_safeAt`, through the `dtor` program (helper). -/
+theorem exact_model.step_safeAt : True := by
   obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
   obtain ⟨hc, hPT, hps, ⟨c, Ω, hchk, hfit, hTy⟩, hDNC, ⟨C, hStep⟩, hns, -, ⟨H₁, vs, tr₁, r, hLead, hEv, -⟩,
     H, v, tr, hrun, hSteps, -⟩ :=
@@ -2661,7 +2661,7 @@ theorem exact_model.step_preservation : True := by
   rw [← hM] at hStep hns hLead hEv hrun hSteps
   let P := progDtor
   have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := Spine.step_preservation M hPT
+  have := Spine.step_safeAt M hPT
   trivial
 
 /-- `exact_model` applied to `step_type_safety`, through the `dtor` program (helper). -/
@@ -2676,8 +2676,8 @@ theorem exact_model.step_type_safety : True := by
   have := Spine.step_type_safety M hPT
   trivial
 
-/-- `exact_model` applied to `eval_sound`, through the `dtor` program (helper). -/
-theorem exact_model.eval_sound : True := by
+/-- `exact_model` applied to `eval_big_to_small`, through the `dtor` program (helper). -/
+theorem exact_model.eval_big_to_small : True := by
   obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
   obtain ⟨hc, hPT, hps, ⟨c, Ω, hchk, hfit, hTy⟩, hDNC, ⟨C, hStep⟩, hns, -, ⟨H₁, vs, tr₁, r, hLead, hEv, -⟩,
     H, v, tr, hrun, hSteps, -⟩ :=
@@ -2685,11 +2685,11 @@ theorem exact_model.eval_sound : True := by
   rw [← hM] at hStep hns hLead hEv hrun hSteps
   let P := progDtor
   have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := (Spine.eval_sound M hPT 200).2.1 _ _ _ hrun
+  have := (Spine.eval_big_to_small M hPT 200).2.1 _ _ _ hrun
   trivial
 
-/-- `exact_model` applied to `eval_complete`, through the `dtor` program (helper). -/
-theorem exact_model.eval_complete : True := by
+/-- `exact_model` applied to `eval_small_to_big`, through the `dtor` program (helper). -/
+theorem exact_model.eval_small_to_big : True := by
   obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
   obtain ⟨hc, hPT, hps, ⟨c, Ω, hchk, hfit, hTy⟩, hDNC, ⟨C, hStep⟩, hns, -, ⟨H₁, vs, tr₁, r, hLead, hEv, -⟩,
     H, v, tr, hrun, hSteps, -⟩ :=
@@ -2697,11 +2697,11 @@ theorem exact_model.eval_complete : True := by
   rw [← hM] at hStep hns hLead hEv hrun hSteps
   let P := progDtor
   have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := (Spine.eval_complete M hPT).1 _ _ _ _ hSteps
+  have := (Spine.eval_small_to_big M hPT).1 _ _ _ _ hSteps
   trivial
 
-/-- `exact_model` applied to `never_stuck_iff`, through the `dtor` program (helper). -/
-theorem exact_model.never_stuck_iff : True := by
+/-- `exact_model` applied to `never_refused_iff`, through the `dtor` program (helper). -/
+theorem exact_model.never_refused_iff : True := by
   obtain ⟨M, hM⟩ := Spine.Nonvacuous.exact_model
   obtain ⟨hc, hPT, hps, ⟨c, Ω, hchk, hfit, hTy⟩, hDNC, ⟨C, hStep⟩, hns, -, ⟨H₁, vs, tr₁, r, hLead, hEv, -⟩,
     H, v, tr, hrun, hSteps, -⟩ :=
@@ -2709,7 +2709,7 @@ theorem exact_model.never_stuck_iff : True := by
   rw [← hM] at hStep hns hLead hEv hrun hSteps
   let P := progDtor
   have hne : run M.toFloatSig P 200 ≠ .outOfFuel := by rw [hrun]; intro h; cases h
-  have := Spine.never_stuck_iff M hPT
+  have := Spine.never_refused_iff M hPT
   trivial
 
 /-- `exact_model` applied to `eval_diverges_iff`, through the `dtor` program (helper). -/
@@ -2896,12 +2896,12 @@ theorem stuck.step_stuck_isStuckState : True := by
   have := Spine.step_stuck_isStuckState hSt
   trivial
 
-/-- `stuck` applied to `run_stuck_of_step_stuck` (helper). -/
-theorem stuck.run_stuck_of_step_stuck : True := by
+/-- `stuck` applied to `run_refused_of_step_stuck` (helper). -/
+theorem stuck.run_refused_of_step_stuck : True := by
   obtain ⟨-, hr, C, hS, hSt⟩ := Spine.Nonvacuous.stuck bodyStuck rfl progStuck rfl
   have h300 : run Float.exactOps progStuck 300 = .refused .useAfterMove := by rfl
   have hne : run Float.exactOps progStuck 200 ≠ .outOfFuel := by rw [hr]; intro h; cases h
-  have := Spine.run_stuck_of_step_stuck Float.exactOps progStuck hS hSt
+  have := Spine.run_refused_of_step_stuck Float.exactOps progStuck hS hSt
   trivial
 
 end RueCore.Nonvacuous.Glue

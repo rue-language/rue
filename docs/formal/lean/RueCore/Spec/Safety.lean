@@ -51,13 +51,13 @@ by nobody (RUE-2316), and a `@panic` runs no drop (§5.7's `⊥_panic`). Like
 every "never `.refused`" statement, it holds because `eval`'s checks and
 monitors never fire: what it rules out is what they watch (R3 of
 `REDTEAM-LOG.md`; RUE-2469). -/
-def no_violation_stmt : Prop :=
+def no_refusal_stmt : Prop :=
   ∀ (M : FloatLaws) {P : Program} (_ : ProgramTyped P) (fuel : Nat) (w : Refusal),
     run M.toFloatSig P fuel ≠ .refused w
 
 /-- **No use-after-move** (§7 "No use-after-move"): `run` never refuses with
 `useAfterMove`, the tag `eval` raises when it reads a `⊘`. It is
-`no_violation` at one tag, so it says no read of a moved-out place happens
+`no_refusal` at one tag, so it says no read of a moved-out place happens
 only as far as `eval` checks every read and labels it so: what it rules out is
 what that monitor watches (R3 of `REDTEAM-LOG.md`; RUE-2469). -/
 def no_use_after_move_stmt : Prop :=
@@ -66,7 +66,7 @@ def no_use_after_move_stmt : Prop :=
 
 /-- **No use-after-drop** (§7 "No use-after-drop / no leak of drops", "never
 read afterward"): `run` never refuses with `useAfterDrop`, the tag `eval`
-raises when it reaches a retired cell. It is `no_violation` at one tag, so it
+raises when it reaches a retired cell. It is `no_refusal` at one tag, so it
 says no retired cell is accessed only as far as `eval` checks every access
 and labels it so: what it rules out is what that monitor watches (R3 of
 `REDTEAM-LOG.md`; RUE-2469). The buffer half of the bullet, use-after-free,

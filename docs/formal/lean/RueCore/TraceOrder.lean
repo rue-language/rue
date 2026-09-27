@@ -66,7 +66,7 @@ reachable from `Config.init`:
   drops oldest first — and it is not `Nested`, so no run reaches it.
 
 `drop_order` states both halves over `Step`: the within-value half reaches
-`Step`'s finished runs through `eval_complete` (`step_blocks`).
+`Step`'s finished runs through `eval_small_to_big` (`step_blocks`).
 
 ## What the grammar does not constrain
 
@@ -1306,12 +1306,12 @@ theorem reachable_stackDiscipline {M : FloatSig} {P : Program} {C C' : Config}
 /-! ## `drop_order` -/
 
 /-- `Blocks` on §6's terminal configurations: a finished `Step` run's trace
-is the one `eval` answers (`eval_complete`), so it is in the block grammar
+is the one `eval` answers (`eval_small_to_big`), so it is in the block grammar
 (helper). -/
 theorem step_blocks (M : FloatLaws) {P : Program} (h : ProgramTyped P) :
     (∀ H φ v tr, Steps M.toFloatSig P Config.init (.run H φ [] (.ret v) tr) → Blocks P.decls tr) ∧
     (∀ κ tr, Steps M.toFloatSig P Config.init (.panic κ tr) → Blocks P.decls tr) := by
-  obtain ⟨hv, hp⟩ := eval_complete M h
+  obtain ⟨hv, hp⟩ := eval_small_to_big M h
   have hdt := h.wf.decls.dtorNotCopy
   refine ⟨fun H φ v tr hs => ?_, fun κ tr hs => ?_⟩
   · obtain ⟨n, hn⟩ := hv H φ v tr hs
@@ -1337,7 +1337,7 @@ theorem drop_glue_order (M : FloatLaws) {P : Program} (h : ProgramTyped P) :
     (∀ H φ v tr, Steps M.toFloatSig P Config.init (.run H φ [] (.ret v) tr) →
       DropGlueBlocks P.decls tr) ∧
     (∀ κ tr, Steps M.toFloatSig P Config.init (.panic κ tr) → DropGlueBlocks P.decls tr) := by
-  obtain ⟨hv, hp⟩ := eval_complete M h
+  obtain ⟨hv, hp⟩ := eval_small_to_big M h
   have hdt := h.wf.decls.dtorNotCopy
   refine ⟨fun H φ v tr hs => ?_, fun κ tr hs => ?_⟩
   · obtain ⟨n, hn⟩ := hv H φ v tr hs
@@ -1367,7 +1367,7 @@ checker accepts:
   order (`reachable_stackDiscipline`, `StackDiscipline.newer`). So across all its exit steps a
   scope's cells drop newest first, and before any older scope's.
 
-Only the first half reads the typing hypothesis, through `eval_complete` and
+Only the first half reads the typing hypothesis, through `eval_small_to_big` and
 `DtorNotCopy`. -/
 theorem drop_order (M : FloatLaws) {P : Program} (h : ProgramTyped P) :
     (∀ H φ v tr, Steps M.toFloatSig P Config.init (.run H φ [] (.ret v) tr) → Blocks P.decls tr) ∧

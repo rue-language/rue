@@ -2593,7 +2593,7 @@ walks only σ, and §5.3's strict-context bottom rule (`Strict-Bottom` there,
 which `Typed.consBot` and the other `-Bottom` variants mechanize) imposes no discard check on the siblings
 already evaluated — and the Rue compiler behaves the same. Closing it
 is an open spec decision, RUE-2316. These four programs are the
-kernel-checked witnesses, and the reason `no_violation`'s docstring names the
+kernel-checked witnesses, and the reason `no_refusal`'s docstring names the
 carve-out. -/
 
 /-- A **linear** value consumed *zero* times, with no refusal anywhere.
@@ -2604,7 +2604,7 @@ first argument and then diverges in the second. (Return-Value) §5.7's
 frame-wide residual-linear premise holds at the `return`, because the move
 already marked the *context* `MovedOut` — the obligation has migrated to a
 value the context does not name. `checkProgram` accepts, so
-`checkProgram_sound`, `run_safe`, `no_violation` and `no_linear_leak` all
+`checkProgram_sound`, `run_safe`, `no_refusal` and `no_linear_leak` all
 apply to it, and the run destroys `S2 { 7 }` with an empty drop trace. -/
 def linearLostAtCallArg : Program :=
   { decls := Decls.ofStructs structEnv,
@@ -3544,7 +3544,7 @@ example : checkProgram (prog tI64 panicPastLinear) = true := by rfl
 /-- **The linear value is consumed zero times, with no violation.** The trap
 carries an empty trace: `S3` declares a destructor and it does not run,
 because §6.12 abandons the configuration where a `return` would have unwound
-the frame. `no_violation` holds of this program and says nothing about it —
+the frame. `no_refusal` holds of this program and says nothing about it —
 the `@panic` exit its docstring now names. -/
 example : run demoOps (prog tI64 panicPastLinear) demoFuel = .panic .user [] := by rfl
 

@@ -57,7 +57,7 @@ that a property of every well-typed value, and the machine enforces it with a
 monitor at aggregate introduction and assignment (`Dynamics.lean`), so the law
 holds of every finished run, typed or not, given only `WfDecls`' "a
 destructor-bearing struct is not `Copy`". Typing enters `no_double_free`
-through `no_violation`:
+through `no_refusal`:
 a program the checker accepts never reaches the monitor, or any other
 refusal, so its trace is the whole run's — a `refused` result carries no trace
 and would make the statement vacuous.
@@ -2092,7 +2092,7 @@ theorem dtor_once (M : FloatSig) {P : Program} (hdt : DtorNotCopy P.decls) (fuel
   run_trace_once M (dtor_measure hdt) fuel
 
 /-- **No double free** (§7): a well-typed program's run is never refused, so
-its trace is the whole run's (`no_violation`), and in that trace no identity
+its trace is the whole run's (`no_refusal`), and in that trace no identity
 appears twice among the `drop`/`dropTemp` free events (`freedIds`) and no
 identity has its destructor run twice (`dtorIds`, §7's literal claim). The
 first conjunct is what makes the other two a statement about the program
@@ -2112,7 +2112,7 @@ theorem no_double_free (M : FloatLaws) {P : Program} (h : ProgramTyped P) (fuel 
     (∀ w, run M.toFloatSig P fuel ≠ .refused w) ∧
       (∀ a, (freedIds P.decls (run M.toFloatSig P fuel).trace).count a ≤ 1) ∧
       (∀ a, (dtorIds (run M.toFloatSig P fuel).trace).count a ≤ 1) :=
-  ⟨no_violation M h fuel, freed_once M.toFloatSig P fuel,
+  ⟨no_refusal M h fuel, freed_once M.toFloatSig P fuel,
     dtor_once M.toFloatSig h.wf.decls.dtorNotCopy fuel⟩
 
 /-! ## Witnesses: what the monitor stands between

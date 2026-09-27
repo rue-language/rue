@@ -86,8 +86,8 @@ theorem stuck.run_safe_1 :
     Spine.Sharp.stuck _ rfl _ rfl
   exact hnot (h Float.exactModel (fd := { params := [], ret := .int .w64 .signed, body := bodyStuck }) rfl rfl 200)
 
-/-- `Sharp.stuck` refutes `no_violation` without hypothesis 1 (helper). -/
-theorem stuck.no_violation_1 :
+/-- `Sharp.stuck` refutes `no_refusal` without hypothesis 1 (helper). -/
+theorem stuck.no_refusal_1 :
     ¬∀ (M : FloatLaws) {P : Program} (fuel : Nat) (w : Refusal),
         run M.toFloatSig P fuel ≠ EvalRes.refused w := by
   intro h
@@ -164,8 +164,8 @@ theorem stuck.rest_exactly_once_1 :
     Spine.Sharp.stuck _ rfl _ rfl
   exact (h Float.exactModel hps ht hfm hcc heps hl h201).1 _ rfl
 
-/-- `Sharp.stuck` refutes `eval_sound` without hypothesis 1 (helper). -/
-theorem stuck.eval_sound_1 :
+/-- `Sharp.stuck` refutes `eval_big_to_small` without hypothesis 1 (helper). -/
+theorem stuck.eval_big_to_small_1 :
     ¬∀ (M : FloatLaws) {P : Program} (fuel : Nat),
         (∀ (w : Refusal), run M.toFloatSig P fuel ≠ EvalRes.refused w) ∧
           (∀ (H : Store) (v : Val) (tr : List Event),
@@ -187,8 +187,8 @@ theorem stuck_step.step_progress_1 :
   obtain ⟨-, ⟨C, hC, hst⟩, -, -, hprog, hpres, hts, hn⟩ := Spine.Sharp.stuck_step _ rfl _ rfl
   exact hprog (h Float.exactModel)
 
-/-- `Sharp.stuck_step` refutes `step_preservation` without hypothesis 1 (helper). -/
-theorem stuck_step.step_preservation_1 :
+/-- `Sharp.stuck_step` refutes `step_safeAt` without hypothesis 1 (helper). -/
+theorem stuck_step.step_safeAt_1 :
     ¬∀ (M : FloatLaws) {P : Program},
         ∃ fd,
           P.fns[0]? = some fd ∧
@@ -221,8 +221,8 @@ theorem stuck_step.step_never_stuck_of_run_1 :
   obtain ⟨-, ⟨C, hC, hst⟩, -, -, hprog, hpres, hts, hn⟩ := Spine.Sharp.stuck_step _ rfl _ rfl
   exact hprog (h Float.exactOps _)
 
-/-- `Sharp.stuck_step` refutes `run_stuck_of_step_stuck` without hypothesis 3 (helper). -/
-theorem stuck_step.run_stuck_of_step_stuck_3 :
+/-- `Sharp.stuck_step` refutes `run_refused_of_step_stuck` without hypothesis 3 (helper). -/
+theorem stuck_step.run_refused_of_step_stuck_3 :
     ¬∀ (M : FloatSig) (P : Program) {C : RueCore.Config} {w : Refusal},
         Steps M P Config.init C →
           Config.Stuck M P C w → ∃ _n : Nat, ∀ (fuel : Nat), ∃ w', run M P fuel = EvalRes.refused w' := by
@@ -377,16 +377,16 @@ theorem entry_param.run_safe_3 :
   obtain ⟨hwf, -, ⟨fd, hfd, -, hn⟩, hr⟩ := Spine.Sharp.entry_param _ rfl
   exact hn (h Float.exactModel hwf hfd 200)
 
-/-- `Sharp.entry_param` refutes `no_violation` without hypothesis 1 (helper). -/
-theorem entry_param.no_violation_1 :
+/-- `Sharp.entry_param` refutes `no_refusal` without hypothesis 1 (helper). -/
+theorem entry_param.no_refusal_1 :
     ¬∀ (M : FloatLaws) {P : Program} (fuel : Nat) (w : Refusal),
         run M.toFloatSig P fuel ≠ EvalRes.refused w := by
   intro h
   obtain ⟨hwf, -, ⟨fd, hfd, -, hn⟩, hr⟩ := Spine.Sharp.entry_param _ rfl
   exact h Float.exactModel 200 _ hr
 
-/-- `Sharp.copy` refutes `no_violation` without hypothesis 1 (helper). -/
-theorem copy.no_violation_1 :
+/-- `Sharp.copy` refutes `no_refusal` without hypothesis 1 (helper). -/
+theorem copy.no_refusal_1 :
     ¬∀ (M : FloatLaws) {P : Program} (fuel : Nat) (w : Refusal),
         run M.toFloatSig P fuel ≠ EvalRes.refused w := by
   intro h
@@ -401,8 +401,8 @@ theorem leak.no_linear_leak_1 :
   obtain ⟨-, -, hr, H, φ, v, tr, hs, hn⟩ := Spine.Sharp.leak _ rfl _ rfl
   exact h Float.exactModel 200 hr
 
-/-- `Sharp.leak` refutes `eval_complete` without hypothesis 1 (helper). -/
-theorem leak.eval_complete_1 :
+/-- `Sharp.leak` refutes `eval_small_to_big` without hypothesis 1 (helper). -/
+theorem leak.eval_small_to_big_1 :
     ¬∀ (M : FloatLaws) {P : Program},
         (∀ (H : Store) (φ : Activation) (v : Val) (tr : List Event),
             Steps M.toFloatSig P Config.init (Config.run H φ [] (Focus.ret v) tr) →
@@ -430,8 +430,8 @@ theorem discard.no_linear_discard_1 :
   obtain ⟨-, -, hr, κ, tr, hs, hn⟩ := Spine.Sharp.discard _ rfl _ rfl
   exact h Float.exactModel 200 hr
 
-/-- `Sharp.discard` refutes `eval_complete` without hypothesis 1 (helper). -/
-theorem discard.eval_complete_1 :
+/-- `Sharp.discard` refutes `eval_small_to_big` without hypothesis 1 (helper). -/
+theorem discard.eval_small_to_big_1 :
     ¬∀ (M : FloatLaws) {P : Program},
         (∀ (H : Store) (φ : Activation) (v : Val) (tr : List Event),
             Steps M.toFloatSig P Config.init (Config.run H φ [] (Focus.ret v) tr) →
@@ -451,8 +451,8 @@ theorem discard_loop.no_linear_discard_1 :
   obtain ⟨-, -, hr, -, -, hdiv, hns⟩ := Spine.Sharp.discard_loop _ rfl _ rfl
   exact h Float.exactModel 200 hr
 
-/-- `Sharp.discard_loop` refutes `never_stuck_iff` without hypothesis 1 (helper). -/
-theorem discard_loop.never_stuck_iff_1 :
+/-- `Sharp.discard_loop` refutes `never_refused_iff` without hypothesis 1 (helper). -/
+theorem discard_loop.never_refused_iff_1 :
     ¬∀ (M : FloatLaws) {P : Program},
         (∀ (fuel : Nat) (w : Refusal), run M.toFloatSig P fuel ≠ EvalRes.refused w) ↔
           ∀ (C : RueCore.Config),
@@ -502,8 +502,8 @@ theorem fuel.no_masking_1 :
   rw [← hrun] at k
   exact hns _ k
 
-/-- `Sharp.fuel` refutes `eval_complete` without hypothesis 3 (helper). -/
-theorem fuel.eval_complete_3 :
+/-- `Sharp.fuel` refutes `eval_small_to_big` without hypothesis 3 (helper). -/
+theorem fuel.eval_small_to_big_3 :
     ¬∀ (M : FloatLaws) {P : Program},
         ProgramTyped P →
           (∀ (H : Store) (φ : Activation) (v : Val) (tr : List Event),
@@ -517,8 +517,8 @@ theorem fuel.eval_complete_3 :
   obtain ⟨_, hk⟩ := (h Float.exactModel hPT).1 _ _ _ _ hs
   exact hn fun f => .inl (hk f)
 
-/-- `Sharp.fuel` refutes `run_complete` without hypothesis 2 (helper). -/
-theorem fuel.run_complete_2 :
+/-- `Sharp.fuel` refutes `run_small_to_big` without hypothesis 2 (helper). -/
+theorem fuel.run_small_to_big_2 :
     ¬∀ (M : FloatSig) (P : Program),
         (∀ (H : Store) (φ : Activation) (v : Val) (tr : List Event),
             Steps M P Config.init (Config.run H φ [] (Focus.ret v) tr) →
@@ -535,8 +535,8 @@ theorem fuel.run_complete_2 :
   obtain ⟨_, hk⟩ := (h Float.exactOps _).1 _ _ _ _ hs
   exact hn hk
 
-/-- `Sharp.fuel_panic` refutes `eval_complete` without hypothesis 5 (helper). -/
-theorem fuel_panic.eval_complete_5 :
+/-- `Sharp.fuel_panic` refutes `eval_small_to_big` without hypothesis 5 (helper). -/
+theorem fuel_panic.eval_small_to_big_5 :
     ¬∀ (M : FloatLaws) {P : Program},
         ProgramTyped P →
           (∀ (H : Store) (φ : Activation) (v : Val) (tr : List Event),
@@ -550,8 +550,8 @@ theorem fuel_panic.eval_complete_5 :
   obtain ⟨_, hk⟩ := (h Float.exactModel hPT).2 _ _ hs
   exact hn fun f => .inl (hk f)
 
-/-- `Sharp.fuel_panic` refutes `run_complete` without hypothesis 4 (helper). -/
-theorem fuel_panic.run_complete_4 :
+/-- `Sharp.fuel_panic` refutes `run_small_to_big` without hypothesis 4 (helper). -/
+theorem fuel_panic.run_small_to_big_4 :
     ¬∀ (M : FloatSig) (P : Program),
         (∀ (H : Store) (φ : Activation) (v : Val) (tr : List Event),
             Steps M P Config.init (Config.run H φ [] (Focus.ret v) tr) →
@@ -827,8 +827,8 @@ theorem unreached.drop_glue_order_2 :
   obtain ⟨hPT, hns, -, hnb, hn⟩ := Spine.Sharp.unreached _ rfl _ rfl
   exact hnb ((h Float.exactModel hPT).1 [] Activation.empty (.int .w64 .signed 8) _).toBlocks
 
-/-- `Sharp.unreached` refutes `eval_sound` without hypothesis 2 (helper). -/
-theorem unreached.eval_sound_2 :
+/-- `Sharp.unreached` refutes `eval_big_to_small` without hypothesis 2 (helper). -/
+theorem unreached.eval_big_to_small_2 :
     ¬∀ (M : FloatLaws) {P : Program},
         ProgramTyped P →
           ∀ (fuel : Nat),
@@ -853,8 +853,8 @@ theorem unreached.run_sim_1 :
   obtain ⟨hPT, hns, -, hnb, hn⟩ := Spine.Sharp.unreached _ rfl _ rfl
   exact hns ((h Float.exactOps _ 200).1 [] (.int .w64 .signed 8) _)
 
-/-- `Sharp.unreached` refutes `eval_complete` without hypothesis 2 (helper). -/
-theorem unreached.eval_complete_2 :
+/-- `Sharp.unreached` refutes `eval_small_to_big` without hypothesis 2 (helper). -/
+theorem unreached.eval_small_to_big_2 :
     ¬∀ (M : FloatLaws) {P : Program},
         ProgramTyped P →
           (∀ (H : Store) (_φ : Activation) (v : Val) (tr : List Event),
@@ -868,8 +868,8 @@ theorem unreached.eval_complete_2 :
     [.dtor 0 (.struct 0 0 [.int .w64 .signed 1])]
   exact hn ⟨n, fun f hf => .inl (hk f hf)⟩
 
-/-- `Sharp.unreached` refutes `run_complete` without hypothesis 1 (helper). -/
-theorem unreached.run_complete_1 :
+/-- `Sharp.unreached` refutes `run_small_to_big` without hypothesis 1 (helper). -/
+theorem unreached.run_small_to_big_1 :
     ¬∀ (M : FloatSig) (P : Program),
         (∀ (H : Store) (_φ : Activation) (v : Val) (tr : List Event),
             ∃ n,
@@ -916,8 +916,8 @@ theorem unreached_panic.drop_glue_order_3 :
   obtain ⟨hPT, hns, -, hnb, hn⟩ := Spine.Sharp.unreached_panic _ rfl _ rfl
   exact hnb ((h Float.exactModel hPT).2 .user _).toBlocks
 
-/-- `Sharp.unreached_panic` refutes `eval_sound` without hypothesis 3 (helper). -/
-theorem unreached_panic.eval_sound_3 :
+/-- `Sharp.unreached_panic` refutes `eval_big_to_small` without hypothesis 3 (helper). -/
+theorem unreached_panic.eval_big_to_small_3 :
     ¬∀ (M : FloatLaws) {P : Program},
         ProgramTyped P →
           ∀ (fuel : Nat),
@@ -942,8 +942,8 @@ theorem unreached_panic.run_sim_2 :
   obtain ⟨hPT, hns, -, hnb, hn⟩ := Spine.Sharp.unreached_panic _ rfl _ rfl
   exact hns ((h Float.exactOps _ 200).2 .user _)
 
-/-- `Sharp.unreached_panic` refutes `eval_complete` without hypothesis 4 (helper). -/
-theorem unreached_panic.eval_complete_4 :
+/-- `Sharp.unreached_panic` refutes `eval_small_to_big` without hypothesis 4 (helper). -/
+theorem unreached_panic.eval_small_to_big_4 :
     ¬∀ (M : FloatLaws) {P : Program},
         ProgramTyped P →
           (∀ (H : Store) (φ : Activation) (v : Val) (tr : List Event),
@@ -956,8 +956,8 @@ theorem unreached_panic.eval_complete_4 :
   obtain ⟨n, hk⟩ := (h Float.exactModel hPT).2 .user [.dtor 0 (.struct 0 0 [.int .w64 .signed 1])]
   exact hn ⟨n, fun f hf => .inl (hk f hf)⟩
 
-/-- `Sharp.unreached_panic` refutes `run_complete` without hypothesis 3 (helper). -/
-theorem unreached_panic.run_complete_3 :
+/-- `Sharp.unreached_panic` refutes `run_small_to_big` without hypothesis 3 (helper). -/
+theorem unreached_panic.run_small_to_big_3 :
     ¬∀ (M : FloatSig) (P : Program),
         (∀ (H : Store) (φ : Activation) (v : Val) (tr : List Event),
             Steps M P Config.init (Config.run H φ [] (Focus.ret v) tr) →
@@ -1042,8 +1042,8 @@ theorem init_steps.step_stuck_isStuckState_1 :
   rw [hf] at this
   cases this
 
-/-- `Sharp.init_steps` refutes `run_stuck_of_step_stuck` without hypothesis 2 (helper). -/
-theorem init_steps.run_stuck_of_step_stuck_2 :
+/-- `Sharp.init_steps` refutes `run_refused_of_step_stuck` without hypothesis 2 (helper). -/
+theorem init_steps.run_refused_of_step_stuck_2 :
     ¬∀ (M : FloatSig) (P : Program) {C : RueCore.Config} {_w : Refusal},
         Steps M P Config.init C → ∃ n, ∀ (fuel : Nat), n < fuel → ∃ w', run M P fuel = EvalRes.refused w' := by
   intro h
@@ -1058,8 +1058,8 @@ theorem unreachable_stuck.step_progress_2 :
   obtain ⟨hPT, hst, -, hnr, -, hns, hall, hn⟩ := Spine.Sharp.unreachable_stuck _ rfl _ rfl
   exact hall (h Float.exactModel hPT)
 
-/-- `Sharp.unreachable_stuck` refutes `step_preservation` without hypothesis 2 (helper). -/
-theorem unreachable_stuck.step_preservation_2 :
+/-- `Sharp.unreachable_stuck` refutes `step_safeAt` without hypothesis 2 (helper). -/
+theorem unreachable_stuck.step_safeAt_2 :
     ¬∀ (M : FloatLaws) {P : Program},
         ProgramTyped P →
           ∃ fd, P.fns[0]? = some fd ∧ ∀ (C : RueCore.Config), Config.SafeAt M.toFloatSig P fd.ret C := by
@@ -1068,8 +1068,8 @@ theorem unreachable_stuck.step_preservation_2 :
   obtain ⟨_, -, hs⟩ := h Float.exactModel hPT
   exact hns _ (hs _)
 
-/-- `Sharp.unreachable_stuck` refutes `never_stuck_iff` without hypothesis 2 (helper). -/
-theorem unreachable_stuck.never_stuck_iff_2 :
+/-- `Sharp.unreachable_stuck` refutes `never_refused_iff` without hypothesis 2 (helper). -/
+theorem unreachable_stuck.never_refused_iff_2 :
     ¬∀ (M : FloatLaws) {P : Program},
         ProgramTyped P →
           ((∀ (fuel : Nat) (w : Refusal), run M.toFloatSig P fuel ≠ EvalRes.refused w) ↔
@@ -1087,8 +1087,8 @@ theorem unreachable_stuck.step_never_stuck_of_run_2 :
   obtain ⟨hPT, hst, -, hnr, -, hns, hall, hn⟩ := Spine.Sharp.unreachable_stuck _ rfl _ rfl
   exact hall (h Float.exactOps _ hnr)
 
-/-- `Sharp.unreachable_stuck` refutes `run_stuck_of_step_stuck` without hypothesis 1 (helper). -/
-theorem unreachable_stuck.run_stuck_of_step_stuck_1 :
+/-- `Sharp.unreachable_stuck` refutes `run_refused_of_step_stuck` without hypothesis 1 (helper). -/
+theorem unreachable_stuck.run_refused_of_step_stuck_1 :
     ¬∀ (M : FloatSig) (P : Program) {C : RueCore.Config} {w : Refusal},
         Config.Stuck M P C w → ∃ n, ∀ (fuel : Nat), n < fuel → ∃ w', run M P fuel = EvalRes.refused w' := by
   intro h
@@ -1133,8 +1133,8 @@ theorem uncut_drop.drop_order_4 :
   obtain ⟨hPT, -, hs, -, -, -, hn⟩ := Spine.Sharp.uncut_drop _ rfl _ rfl
   exact hn ((h Float.exactModel hPT).2.2 _ _ hs)
 
-/-- `Sharp.ill_typed_halt` refutes `step_preservation` without hypothesis 2 (helper). -/
-theorem ill_typed_halt.step_preservation_2 :
+/-- `Sharp.ill_typed_halt` refutes `step_safeAt` without hypothesis 2 (helper). -/
+theorem ill_typed_halt.step_safeAt_2 :
     ¬∀ (M : FloatLaws) {P : Program},
         ProgramTyped P →
           ∃ fd, P.fns[0]? = some fd ∧ ∀ (C : RueCore.Config), Config.SafeAt M.toFloatSig P fd.ret C := by
@@ -1145,8 +1145,8 @@ theorem ill_typed_halt.step_preservation_2 :
   subst hfd
   exact hns (hs _)
 
-/-- `Sharp.out_of_range_halt` refutes `step_preservation` without hypothesis 2 (helper). -/
-theorem out_of_range_halt.step_preservation_2 :
+/-- `Sharp.out_of_range_halt` refutes `step_safeAt` without hypothesis 2 (helper). -/
+theorem out_of_range_halt.step_safeAt_2 :
     ¬∀ (M : FloatLaws) {P : Program},
         ProgramTyped P →
           ∃ fd, P.fns[0]? = some fd ∧ ∀ (C : RueCore.Config), Config.SafeAt M.toFloatSig P fd.ret C := by
@@ -1157,8 +1157,8 @@ theorem out_of_range_halt.step_preservation_2 :
   subst hfd
   exact hns (hs _)
 
-/-- `Sharp.float_halt` refutes `step_preservation` without hypothesis 2 (helper). -/
-theorem float_halt.step_preservation_2 :
+/-- `Sharp.float_halt` refutes `step_safeAt` without hypothesis 2 (helper). -/
+theorem float_halt.step_safeAt_2 :
     ¬∀ (M : FloatLaws) {P : Program},
         ProgramTyped P →
           ∃ fd, P.fns[0]? = some fd ∧ ∀ (C : RueCore.Config), Config.SafeAt M.toFloatSig P fd.ret C := by

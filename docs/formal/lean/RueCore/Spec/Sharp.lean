@@ -53,8 +53,8 @@ doc-comment says it is shown directly. The content of each counter-example is
 that the other hypotheses hold and the conclusion fails, and both are
 established without the spine theorem.
 
-A second limit: For `drop_order` 2–3, `eval_sound` 2–3, `run_sim` 1–2, `eval_complete` 2 and 4,
-and `run_complete` 1 and 3, the dropped premise is the only thing tying its
+A second limit: For `drop_order` 2–3, `eval_big_to_small` 2–3, `run_sim` 1–2, `eval_small_to_big` 2 and 4,
+and `run_small_to_big` 1 and 3, the dropped premise is the only thing tying its
 bound value or trace to the program; once it is gone the weakened statement
 claims something of *every* such value, so the counter-example shows only that
 the conclusion is not a tautology, not that the premise does the work that
@@ -82,8 +82,8 @@ typed by `check` from the empty frame and store, which agree with the empty
 context, and has a `Lead` (its empty argument list). `eval` refuses it with
 `useAfterMove`, and at fuel `0` it answers `outOfFuel`. So each of these
 conclusions fails once its program hypothesis is dropped: `soundness`
-(`WfProgram`), `run_safe` (`WfProgram`), `no_violation`, `no_use_after_move`,
-`checkProgram_sound` (`checkProgram P = true`), `eval_sound`,
+(`WfProgram`), `run_safe` (`WfProgram`), `no_refusal`, `no_use_after_move`,
+`checkProgram_sound` (`checkProgram P = true`), `eval_big_to_small`,
 `drop_exactly_once` and `rest_exactly_once` (`ProgramTyped`), and `no_masking`
 (its second hypothesis, `eval m ≠ outOfFuel`, at `m = 0`). Where the spine theorem is stated over `eval`
 (`no_masking`, `drop_exactly_once`, `rest_exactly_once`), the statement gives
@@ -124,10 +124,10 @@ def stuck_stmt : Prop :=
 /-- **The same program, run by §6's relation** (§7 sharpness, RUE-2485). `Step`
 reaches a configuration stuck with `useAfterMove` from `Config.init`, and
 `run` refuses at fuel `200` and exhausts fuel `0`. So once `ProgramTyped` is
-dropped, `step_progress`, `step_preservation` and `step_type_safety` fail
+dropped, `step_progress`, `step_safeAt` and `step_type_safety` fail
 (no horizon passes the stuck configuration, which is not a value or a
 panic); once `step_never_stuck_of_run`'s hypothesis that `run` is never stuck
-is dropped, its conclusion fails; and once `run_stuck_of_step_stuck`'s bound
+is dropped, its conclusion fails; and once `run_refused_of_step_stuck`'s bound
 `n < fuel` is dropped, no `n` makes `run` stuck at every fuel. -/
 def stuck_step_stmt : Prop :=
   ∀ B : Expr, B =
@@ -246,7 +246,7 @@ def no_entry_stmt : Prop :=
 RUE-2485). `fn main(x: i64) -> i64 { x }` is `WfProgram`, but its entry point
 has a parameter, so it is not `ProgramTyped`; `run` calls it with no
 arguments, and `eval` refuses the call with `typeConfusion`. So `run_safe`
-needs its hypothesis `fd.params = []`, and `no_violation` needs the entry
+needs its hypothesis `fd.params = []`, and `no_refusal` needs the entry
 clause of `ProgramTyped`, not only `WfProgram`. `¬ ProgramTyped` is shown
 directly, from that clause. -/
 def entry_param_stmt : Prop :=
@@ -269,7 +269,7 @@ would duplicate an owner through: over `S0 = @copy struct { x0: i64 }` and
 `S1`, affine with a destructor, `let p = S0 { x0: S1 { 1 } }; let q = p;
 @drop(p.x0); @drop(q.x0); 0` (`Trace.lean`'s `dupProgram`). It is not
 `ProgramTyped`, and `eval` refuses it with `ownedUnderCopy`, at the literal:
-`no_violation`'s conclusion fails once `ProgramTyped` is dropped, and a machine
+`no_refusal`'s conclusion fails once `ProgramTyped` is dropped, and a machine
 without the copy-closure monitor (`Contents.copyContained` in `introVal`) makes
 this statement false. -/
 def copy_stmt : Prop :=
@@ -292,7 +292,7 @@ def copy_stmt : Prop :=
 value at the scope's end. It is not `ProgramTyped`, and `eval` refuses it with
 `linearLeak`: `no_linear_leak`'s conclusion fails once `ProgramTyped` is
 dropped. §6's relation, which has no monitor, runs it to a value, which `run`
-never returns at any fuel: `eval_complete` needs `ProgramTyped` too. A machine
+never returns at any fuel: `eval_small_to_big` needs `ProgramTyped` too. A machine
 whose leak monitor is off, or does not read a declared-`linear` struct's own
 obligation (`Contents.residualLinear`), makes this statement false. -/
 def leak_stmt : Prop :=
@@ -333,7 +333,7 @@ def overwrite_stmt : Prop :=
 `S1 { 3 }; @panic("boom")` discards a linear value. It is not `ProgramTyped`,
 and `eval` refuses the sequence with `linearDiscard`: `no_linear_discard`'s
 conclusion fails once `ProgramTyped` is dropped. §6's relation drops the
-value and reaches the panic, which `run` never answers: `eval_complete`'s
+value and reaches the panic, which `run` never answers: `eval_small_to_big`'s
 panic half needs `ProgramTyped` too. A machine without the discard monitor
 makes this statement false. -/
 def discard_stmt : Prop :=
@@ -354,7 +354,7 @@ def discard_stmt : Prop :=
 `loop { S1 { 3 }; () }` is not `ProgramTyped`. `eval` refuses its first turn
 with `linearDiscard`, while §6's relation, which has no monitor, turns forever:
 it has runs of every length from `Config.init`, and every configuration they
-reach steps. So `eval_diverges_iff` and `never_stuck_iff` fail once
+reach steps. So `eval_diverges_iff` and `never_refused_iff` fail once
 `ProgramTyped` is dropped: one side of each holds and the other does not. A
 machine without the discard monitor makes this statement false. -/
 def discard_loop_stmt : Prop :=
@@ -379,7 +379,7 @@ def discard_loop_stmt : Prop :=
 relation reaches. So `fuel_mono` fails without `n ≤ m` (`n = 200`, `m = 0`) and
 without `eval n ≠ outOfFuel` (`n = 0`, `m = 200`); `no_masking` fails without
 its first hypothesis (`eval n` is a value, not a refusal); and
-`eval_complete`'s and `run_complete`'s value halves fail without `n < fuel`:
+`eval_small_to_big`'s and `run_small_to_big`'s value halves fail without `n < fuel`:
 no `n` makes the value, or a refusal, the answer at every fuel. `run P fuel`
 is `eval` at `main()` (`run`'s definition). `fuel_mono` and `no_masking` are
 stated over `eval`; the statement gives `run P n` and `eval` at `main()` as
@@ -405,7 +405,7 @@ def fuel_stmt : Prop :=
 
 /-- **Fuel bounds, dropped, at a panic** (§7 sharpness, RUE-2485). The checked
 program of `Nonvacuous.panic` panics, and §6's relation reaches the panic, but
-fuel `0` is exhausted: `eval_complete`'s and `run_complete`'s panic halves
+fuel `0` is exhausted: `eval_small_to_big`'s and `run_small_to_big`'s panic halves
 fail without `n < fuel`. -/
 def fuel_panic_stmt : Prop :=
   ∀ B : Expr, B =
@@ -644,8 +644,8 @@ value `8`, the empty store and a trace that opens with a destructor event is
 not reached from `Config.init`, is not `run`'s answer at any fuel past any
 bound, and its trace is not in §6.11's block grammar. So each statement
 whose conclusion claims something of a reached or answered value fails once
-the hypothesis naming that value is dropped: `eval_sound`'s and `run_sim`'s
-`run … = .ok H v tr`, `eval_complete`'s and `run_complete`'s `Steps … (.ret
+the hypothesis naming that value is dropped: `eval_big_to_small`'s and `run_sim`'s
+`run … = .ok H v tr`, `eval_small_to_big`'s and `run_small_to_big`'s `Steps … (.ret
 v)`, and `drop_order`'s and `drop_glue_order`'s (a trace outside `Blocks` is
 outside `DropGlueBlocks`, RUE-2487). -/
 def unreached_stmt : Prop :=
@@ -669,8 +669,8 @@ def unreached_stmt : Prop :=
 /-- **A panic §6's relation does not reach** (§7 sharpness, RUE-2485). The same, for
 the panic whose trace opens with a destructor event: not reached, not `run`'s
 answer past any bound (the program returns), not in the block grammar. So
-`eval_sound`'s and `run_sim`'s `run … = .panic k tr`, `eval_complete`'s and
-`run_complete`'s `Steps … (.panic κ tr)`, and `drop_order`'s and
+`eval_big_to_small`'s and `run_sim`'s `run … = .panic k tr`, `eval_small_to_big`'s and
+`run_small_to_big`'s `Steps … (.panic κ tr)`, and `drop_order`'s and
 `drop_glue_order`'s are needed. -/
 def unreached_panic_stmt : Prop :=
   ∀ B : Expr, B =
@@ -748,7 +748,7 @@ list of `main()`, and not to itself; it is not terminal and not stuck (with
 `linearLeak`, a monitor's tag, not one of §6's stuck states); and `run` is
 never stuck. So `Step.det` fails without either of its step hypotheses,
 `Step.terminal` without `C.Terminal`, `step_stuck_isStuckState` without
-`C.Stuck`, and `run_stuck_of_step_stuck` without `C.Stuck`. -/
+`C.Stuck`, and `run_refused_of_step_stuck` without `C.Stuck`. -/
 def init_steps_stmt : Prop :=
   ∀ B : Expr, B =
       .letIn false (.mkStruct 0 [.intLit .w64 .signed 1])
@@ -769,9 +769,9 @@ def init_steps_stmt : Prop :=
 /-- **A stuck configuration that is not reached** (§7 sharpness, RUE-2485). For the
 checked program of `Nonvacuous.dtor`, whose `run` is never stuck, a
 configuration reading an unbound name is stuck and is not reached from
-`Config.init`. So `step_progress`, `step_preservation`,
-`step_never_stuck_of_run` and `run_stuck_of_step_stuck` fail without the
-hypothesis that the configuration is reached, and so does `never_stuck_iff`:
+`Config.init`. So `step_progress`, `step_safeAt`,
+`step_never_stuck_of_run` and `run_refused_of_step_stuck` fail without the
+hypothesis that the configuration is reached, and so does `never_refused_iff`:
 its left side holds and its right side, over every configuration, does not. -/
 def unreachable_stuck_stmt : Prop :=
   ∀ B : Expr, B =
@@ -895,7 +895,7 @@ sharpness, RUE-2500). For the checked program of `Nonvacuous.dtor`, whose entry
 point returns `i64`, the configuration that has halted with `true` is terminal,
 so nothing it reaches is stuck; but its value is not an `i64`, so it is not
 `SafeAt` the entry type, and `Config.init` does not reach it. So
-`step_preservation` fails without the hypothesis that the configuration is
+`step_safeAt` fails without the hypothesis that the configuration is
 reached, through `SafeAt`'s typing half, where `unreachable_stuck` fails it
 through the progress half. -/
 def ill_typed_halt_stmt : Prop :=
@@ -919,7 +919,7 @@ sharpness, RUE-2500; §6.1's `n_T`). For the same program, the configuration
 that has halted with `2^63`, one past `i64`'s maximum, is terminal, but the
 value is not well typed at `i64` (`HasTy` carries the bounds), so the
 configuration is not `SafeAt` the entry type, and `Config.init` does not reach
-it. So `step_preservation` fails without the hypothesis that the configuration
+it. So `step_safeAt` fails without the hypothesis that the configuration
 is reached, at a value of the right form whose only fault is its range. -/
 def out_of_range_halt_stmt : Prop :=
   ∀ B : Expr, B =
@@ -947,7 +947,7 @@ datum `15 · 2^-1`, two data that are not in `𝔽_f64` are not `Wf`: `30 · 2^-
 the same number with an even significand (not canonical), and `1 · 2^-1075`,
 half the least subnormal (below the floor `eMin`). The configurations that
 have halted with them are terminal, not `SafeAt` the entry type, and not
-reached from `Config.init`. So `step_preservation` fails without the
+reached from `Config.init`. So `step_safeAt` fails without the
 hypothesis that the configuration is reached, at a float value whose only
 fault is its datum. -/
 def float_halt_stmt : Prop :=

@@ -21,9 +21,9 @@ Thms 9 and 11; `FIELD.md`, section 3). "Adequacy" is the calculus's word, in the
 of one operational semantics being adequate with respect to another; in the
 field it more often means computational adequacy or the adequacy of a
 semantic model, neither of which this is. The module keeps its file name,
-which the proof module `RueCore.Adequacy` shares. `eval_sound` and
-`eval_complete` are the equivalence's two directions; "sound" there names a
-simulation direction, not type soundness (`soundness`).
+which the proof module `RueCore.Adequacy` shares. `eval_big_to_small` and
+`eval_small_to_big` are the equivalence's two directions, named as Isabelle's
+HOL-IMP names them (`big_to_small`, `small_to_big`).
 -/
 
 namespace RueCore.Spec
@@ -32,7 +32,7 @@ namespace RueCore.Spec
 the semantic equivalence (§7's adequacy sentence; ADR-0097). For a
 checked program, `run` is never stuck, and its values and panics are reached
 by `→*` from `Config.init` with the same store and trace. -/
-def eval_sound_stmt : Prop :=
+def eval_big_to_small_stmt : Prop :=
   ∀ (M : FloatLaws) {P : Program} (_ : ProgramTyped P) (fuel : Nat),
     (∀ w, run M.toFloatSig P fuel ≠ .refused w) ∧
     (∀ H v tr, run M.toFloatSig P fuel = .ok H v tr →
@@ -52,7 +52,7 @@ def run_sim_stmt : Prop :=
 direction of the semantic equivalence (§7's adequacy sentence).
 For a checked program, a value or panic `→*` reaches is `run`'s answer at
 every large enough fuel. -/
-def eval_complete_stmt : Prop :=
+def eval_small_to_big_stmt : Prop :=
   ∀ (M : FloatLaws) {P : Program} (_ : ProgramTyped P),
     (∀ H φ v tr, Steps M.toFloatSig P Config.init (.run H φ [] (.ret v) tr) →
       ∃ n, ∀ fuel, n < fuel → run M.toFloatSig P fuel = .ok H v tr) ∧
@@ -62,7 +62,7 @@ def eval_complete_stmt : Prop :=
 /-- **Completeness on every program** (§6.12): the same, up to a refusal of
 `run`'s (RUE-2314). With no typing hypothesis the escape is wide: a `run` that
 is `.refused` past some fuel satisfies it, whatever `→*` reaches. -/
-def run_complete_stmt : Prop :=
+def run_small_to_big_stmt : Prop :=
   ∀ (M : FloatSig) (P : Program),
     (∀ H φ v tr, Steps M P Config.init (.run H φ [] (.ret v) tr) →
       ∃ n, ∀ fuel, n < fuel → run M P fuel = .ok H v tr ∨ ∃ w, run M P fuel = .refused w) ∧
@@ -73,7 +73,7 @@ def run_complete_stmt : Prop :=
 is never stuck iff no reachable configuration is. Under `ProgramTyped` both
 sides hold outright, so the equivalence adds nothing; cite
 `step_never_stuck_of_run` (R5 of `REDTEAM-LOG.md`). -/
-def never_stuck_iff_stmt : Prop :=
+def never_refused_iff_stmt : Prop :=
   ∀ (M : FloatLaws) {P : Program} (_ : ProgramTyped P),
     (∀ fuel w, run M.toFloatSig P fuel ≠ .refused w) ↔
       ∀ C, Steps M.toFloatSig P Config.init C → C.Terminal ∨ ∃ C', Step M.toFloatSig P C C'
@@ -87,7 +87,7 @@ def step_never_stuck_of_run_stmt : Prop :=
 
 /-- **A stuck `Step` run is a refusal of `run`** (§6), at every large enough
 fuel, perhaps with another `Refusal`. -/
-def run_stuck_of_step_stuck_stmt : Prop :=
+def run_refused_of_step_stuck_stmt : Prop :=
   ∀ (M : FloatSig) (P : Program) {C : Config} {w : Refusal}
     (_ : Steps M P Config.init C) (_ : C.Stuck M P w),
     ∃ n, ∀ fuel, n < fuel → ∃ w', run M P fuel = .refused w'
