@@ -2505,7 +2505,7 @@ def returnPastLinear : Program :=
   prog tI64 (letIn false (resL (lit 5)) (ret (lit 1)))
 
 /-- A by-value affine argument the callee never consumes: the callee's frame
-owes its drop, and (D-Return-Value)'s `run-all-scope-drops` runs it at the
+holds its drop obligation, and (D-Return-Value)'s `run-all-scope-drops` runs it at the
 frame pop — `2`, then the value `1`. -/
 def paramDroppedAtPop : Program :=
   { decls := Decls.ofStructs structEnv,

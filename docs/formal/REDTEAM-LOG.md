@@ -358,7 +358,7 @@ What the mutants could not get past:
     `lean/RueCore/Tombstone.lean`, state it with no typing hypothesis, over `run`
     at every fuel and every model of the float algebraic specification and over `Step` from `Config.init`. The
     invariant is that every cell the frame's environment names or its scope
-    record owes a drop is live and owed once; over `Step`, for every
+    record holds a drop obligation for is live and owed once; over `Step`, for every
     suspended caller's frame too. The reason in `Spec.sharpnessReasons` now
     cites the proof, and `Sharp.tombstoned_cell` shows the refusal live from an
     open configuration, so `step_no_use_after_drop` needs its reachability

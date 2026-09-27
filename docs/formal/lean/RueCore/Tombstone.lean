@@ -23,7 +23,7 @@ is one such configuration, not reached from `Config.init`.
 **The invariant** is structural, not a typing fact. `†` enters the store in
 two ways only: as the reserved slot of a minted object identity (`introVal`),
 which no binding names, and when a scope teardown retires the cells its
-scope record owes a drop (`dropRetire`, `unwindLocs`, and `Step`'s plain
+scope record holds a drop obligation for (`dropRetire`, `unwindLocs`, and `Step`'s plain
 versions). Every binding cell is minted fresh at the end of the store and
 bound at once, and a scope record lists each cell once. So:
 
@@ -38,7 +38,7 @@ bound at once, and a scope record lists each cell once. So:
 * over `Step` (`Tombstone.step_live`): every configuration keeps the stack's
   shape (`Shape`: an `endscope` marker or a loop boundary sits under a frame
   that extends its own at the end of the scope record, and every frame's
-  environment is its record reversed), and every cell owed a drop by the
+  environment is its record reversed), and every cell with a drop obligation in the
   frame in force or by a suspended caller is live and owed once
   (`StackLive`). `step` keeps it and never answers `stuck .useAfterDrop`
   under it, and `Config.init` has it.
@@ -112,7 +112,7 @@ theorem Live.ne_of_le {H : Store} {ℓ m : Nat} (h : Live H ℓ) (hm : H.length 
   intro he; subst he; exact Nat.lt_irrefl _ (Nat.lt_of_lt_of_le h.lt hm)
 
 /-- **The frame invariant**: every cell the environment names, and every cell
-the scope record owes a drop, is live, and the record owes each at most once
+the scope record holds a drop obligation for, is live, and the record owes each at most once
 (helper). -/
 def LiveActivation (H : Store) (φ : Activation) : Prop :=
   (∀ ℓ ∈ φ.env, Live H ℓ) ∧ (∀ ℓ ∈ φ.scope, Live H ℓ) ∧ φ.scope.Nodup
@@ -961,14 +961,14 @@ def Shape : Activation → List Kont → Prop
   | φ, .indexWriteRhs _ _ _ :: K | φ, .«match» _ :: K | φ, .letIn _ :: K | φ, .seq _ :: K
   | φ, .ite _ _ :: K | φ, .assign _ :: K | φ, .ret :: K => Shape φ K
 
-/-- The cells the suspended callers' frames owe a drop (helper). -/
+/-- The cells the suspended callers' frames hold a drop obligation for (helper). -/
 def callerCells : List Kont → List Nat
   | [] => []
   | .call φs :: K => callerCells K ++ φs.scope
   | _ :: K => callerCells K
 
 /-- **The configuration invariant**: the stack has its shape, and every cell a
-frame on it owes a drop — the frame in force and every suspended caller — is
+frame on it holds a drop obligation for — the frame in force and every suspended caller — is
 live and owed once (helper). -/
 def StackLive (H : Store) (φ : Activation) (K : List Kont) : Prop :=
   Shape φ K ∧ (callerCells K ++ φ.scope).Nodup ∧ ∀ ℓ ∈ callerCells K ++ φ.scope, Live H ℓ

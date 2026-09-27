@@ -425,6 +425,7 @@ in the Rust Reference, the Book, the Rustonomicon and the rustc-dev-guide
 | "No use-after-drop", `no_use_after_drop` (01 §7; the metatheory): no evaluation reads a retired (`†`) cell | use after free (CWE-416), for a dropped binding's cell | partial: the same kind of error. "Drop" is Rust's word (Ref. *Destructors*) for what CWE calls freeing |
 | "no leak of drops" (01 §7; the metatheory; `drop_exactly_once`, `Tidy`): every owned, droppable, non-moved place is dropped exactly once, at the end of its scope | memory leak (CWE-401) is the failure of the "at least once" half | partial: ours also has the "at most once" half, and it counts drops (destructor runs), not memory released |
 | "full expression" (01 §5.8, RUE-1279: the extent of an accessor loan) | full expression (C11 N1570 §6.8¶4) | partial: the same syntactic notion, an expression not inside another, used here for a loan's extent; C uses it for sequence points |
+| "drop obligation", "has a drop obligation" (01 §6.7, §6.9; formerly "owes `x` a drop") | drop obligation (RFC 320; rustc-dev-guide *Drop elaboration*) | clear: a binding the scope will drop at its exit; RFC 320's obligations are per structural path, ours per cell |
 
 ---
 
