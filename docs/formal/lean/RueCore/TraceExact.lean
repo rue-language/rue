@@ -1050,27 +1050,16 @@ theorem rest_step (M : FloatSig) {P : Program} (hp : P.pendingSafe = true) {n : 
       refine Exact.opRes hc₂ (fun v h => ⟨evalBinOp_scalar h, fun a _ => ?_⟩)
       obtain ⟨s₁, s₂⟩ := evalBinOp_val_args h
       simp [(Val.scalar_own (D := P.decls) s₁).1, (Val.scalar_own (D := P.decls) s₂).1]
-  | unop op e₁ =>
+  | unop _ e₁ | intCast _ _ e₁ | fintrin _ e₁ =>
       obtain ⟨v₁, rfl, hr⟩ := hl
       simp only [eval, hr, EvalRes.bind] at heq
       obtain rfl := EvalRes.withTrace_inj heq
       rw [Contents.ownList_ofVals_single]
-      refine Exact.opRes hc₁ (fun v h => ⟨evalUnOp_scalar h, fun a _ => ?_⟩)
-      simp [(Val.scalar_own (D := P.decls) (evalUnOp_val_arg h)).1]
-  | intCast w sg e₁ =>
-      obtain ⟨v₁, rfl, hr⟩ := hl
-      simp only [eval, hr, EvalRes.bind] at heq
-      obtain rfl := EvalRes.withTrace_inj heq
-      rw [Contents.ownList_ofVals_single]
-      refine Exact.opRes hc₁ (fun v h => ⟨evalIntCast_scalar h, fun a _ => ?_⟩)
-      simp [(Val.scalar_own (D := P.decls) (evalIntCast_val_arg h)).1]
-  | fintrin k e₁ =>
-      obtain ⟨v₁, rfl, hr⟩ := hl
-      simp only [eval, hr, EvalRes.bind] at heq
-      obtain rfl := EvalRes.withTrace_inj heq
-      rw [Contents.ownList_ofVals_single]
-      refine Exact.opRes hc₁ (fun v h => ⟨evalFintrin_scalar h, fun a _ => ?_⟩)
-      simp [(Val.scalar_own (D := P.decls) (evalFintrin_val_arg h)).1]
+      refine Exact.opRes hc₁ (fun v h => ⟨?_, fun a _ => ?_⟩)
+      · first | exact evalUnOp_scalar h | exact evalIntCast_scalar h | exact evalFintrin_scalar h
+      · have hs : v₁.scalar := by
+          first | exact evalUnOp_val_arg h | exact evalIntCast_val_arg h | exact evalFintrin_val_arg h
+        simp [(Val.scalar_own (D := P.decls) hs).1]
   | dbg e₁ =>
       obtain ⟨v₁, rfl, hr⟩ := hl
       simp only [eval, hr, EvalRes.bind] at heq
