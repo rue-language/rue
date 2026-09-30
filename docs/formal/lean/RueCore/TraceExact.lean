@@ -1563,13 +1563,14 @@ theorem Tidy.prefix {φ : Activation} {H H₁ : Store} {tr : List Event} {r : Ev
         fun ℓ hm => Nat.le_trans hl.1 (hfr ℓ hm)⟩
   | _ => trivial
 
-/-- §6.2's search keeps the activation-record-pop invariant (helper). -/
-theorem Tidy.bind {φ : Activation} {H : Store} {r : EvalRes} {k : Store → Val → EvalRes}
-    (hf : ∀ ℓ ∈ φ.env, ℓ < H.length) (hr : Tidy φ H r)
-    (hk : ∀ H₁ v tr, r = .ok H₁ v tr → Tidy φ H₁ (k H₁ v)) : Tidy φ H (r.bind k) := by
-  cases r with
-  | ok H₁ v tr => exact Tidy.prefix hf hr.1 hr.2 (hk H₁ v tr rfl)
-  | _ => exact hr
+/-- §6.2's search keeps the activation-record-pop invariant: `Tidy` is an
+evaluation invariant (`EvalInv`), the held values irrelevant (helper). -/
+def Tidy.inv (φ : Activation) : EvalInv where
+  Pre H _ := φ.In H
+  Post H _ := Tidy φ H
+  pre hf hr _ := hf.mono hr.1.1
+  seq hf hr h := Tidy.prefix hf.1 hr.1 hr.2 h
+  hold _ h := h
 
 /-- `drop-retire` tombstones exactly its cell, which existed (helper). -/
 theorem dropRetire_shape {D : Decls} {H H' : Store} {ℓ : Nat} {evs : List Event}
@@ -1759,40 +1760,6 @@ theorem dynPlace_env {H : Store} {φ : Activation} {p : Place} {vs : List Val} {
           · cases h
           · cases h
 
-/-- The activation-record-pop invariant for an argument list (helper). -/
-def ArgsTidy (φ : Activation) (H : Store) : ArgsRes → Prop
-  | .ok H' _ _ => Local φ H H' ∧ Tombstoned H [] H'
-  | .abort r => Tidy φ H r
-
-/-- An argument list keeps the activation-record-pop invariant (helper). -/
-theorem evalArgs_tidy {φ : Activation} {ev : Store → Expr → EvalRes} :
-    ∀ {es : List Expr}, (∀ H e, e ∈ es → φ.In H → Tidy φ H (ev H e)) →
-      ∀ H, φ.In H → ArgsTidy φ H (evalArgs ev H es)
-  | [], _, H, _ => ⟨Local.refl φ H, Tombstoned.same (Nat.le_refl _)⟩
-  | e :: es, hev, H, hf => by
-      have h₁ := hev H e List.mem_cons_self hf
-      simp only [evalArgs]
-      cases hr : ev H e with
-      | ok H₁ v tr =>
-          rw [hr] at h₁
-          obtain ⟨l₁, r₁⟩ := h₁
-          have ih := evalArgs_tidy (es := es) (fun H e' hm => hev H e' (List.mem_cons_of_mem _ hm))
-            H₁ (hf.mono l₁.1)
-          dsimp only
-          cases hra : evalArgs ev H₁ es with
-          | ok H₂ vs tr₂ =>
-              rw [hra] at ih
-              have := Tidy.prefix (tr := []) hf.1 l₁ r₁ (r := .ok H₂ .unit []) ih
-              exact this
-          | abort r =>
-              rw [hra] at ih
-              exact Tidy.prefix hf.1 l₁ r₁ ih
-      | returned => rw [hr] at h₁; exact h₁
-      | broke => rw [hr] at h₁; exact h₁
-      | panic => trivial
-      | refused => trivial
-      | outOfFuel => trivial
-
 /-- **§6.9's activation record, pushed and popped**: a callee's body, run in an activation record of
 fresh parameter cells `ls` and absorbed at the call boundary — its value's
 activation record popped by `run-all-scope-drops`, its unwinding `return` having popped
@@ -1824,9 +1791,8 @@ theorem eval_tidy (M : FloatSig) (P : Program) :
   | zero => intro H φ e _; simp only [eval]; trivial
   | succ n ih =>
     intro H φ e hf
-    have hargs := fun (es : List Expr) (H' : Store) (hf' : φ.In H') =>
-      evalArgs_tidy (ev := fun H'' e' => eval M n P H'' φ e') (es := es)
-        (fun H'' e' _ hf'' => ih H'' φ e' hf'') H' hf'
+    have hev := fun (H' : Store) (_ : List Val) (e' : Expr) (hf' : φ.In H') =>
+      (⟨ih H' φ e' hf', trivial⟩ : Tidy φ H' _ ∧ True)
     cases e with
     | intLit | floatLit | boolLit | unitLit => exact Tidy.same
     | panic => simp only [eval]; trivial
@@ -1841,68 +1807,43 @@ theorem eval_tidy (M : FloatSig) (P : Program) :
           have hℓ := List.mem_of_getElem? hρ
           (repeat' split) <;> first | trivial | exact Tidy.same | exact Tidy.write hℓ
     | binop op e₁ e₂ =>
-        simp only [eval]
-        refine Tidy.bind hf.1 (ih H φ e₁ hf) (fun H₁ _ _ hr => ?_)
-        have hl := (ih H φ e₁ hf); rw [hr] at hl
-        exact Tidy.bind (hf.mono hl.1.1).1 (ih H₁ φ e₂ (hf.mono hl.1.1)) (fun _ _ _ _ => Tidy.opRes)
+        exact (Tidy.inv φ).bind₀ hf (ih H φ e₁ hf) fun H₁ _ _ _ hf₁ =>
+          (Tidy.inv φ).bind hf₁ (ih H₁ φ e₂ hf₁) fun _ _ _ _ _ => Tidy.opRes
     | unop op e₁ | intCast w sg e₁ | fintrin k e₁ =>
-        simp only [eval]
-        exact Tidy.bind hf.1 (ih H φ e₁ hf) (fun _ _ _ _ => Tidy.opRes)
+        exact (Tidy.inv φ).bind₀ hf (ih H φ e₁ hf) fun _ _ _ _ _ => Tidy.opRes
     | dbg e₁ =>
-        simp only [eval]
-        exact Tidy.bind hf.1 (ih H φ e₁ hf) (fun _ _ _ _ => by
-          split
-          · exact Tidy.same
-          · trivial)
+        refine (Tidy.inv φ).bind₀ hf (ih H φ e₁ hf) fun _ _ _ _ _ => show Tidy φ _ _ from ?_
+        split
+        · exact Tidy.same
+        · trivial
     | repeatArray T e₁ m =>
-        simp only [eval]
-        exact Tidy.bind hf.1 (ih H φ e₁ hf) (fun _ _ _ _ => by
-          split
-          · exact Tidy.intro
-          · trivial)
+        refine (Tidy.inv φ).bind₀ hf (ih H φ e₁ hf) fun _ _ _ _ _ => ?_
+        split
+        · exact Tidy.intro
+        · trivial
     | mkStruct s args | mkEnum e k args | mkArray T args =>
         simp only [eval]
-        have ka := hargs args H hf
-        split
-        · rename_i r hra; rw [hra] at ka; exact ka
-        · rename_i H₁ vs tr hra
-          rw [hra] at ka
-          refine Tidy.prefix hf.1 ka.1 ka.2 ?_
-          (repeat' split) <;> first | trivial | exact Tidy.intro
+        refine (Tidy.inv φ).args₀ hev args hf fun _ _ _ => ?_
+        (repeat' split) <;> first | trivial | exact Tidy.intro
     | indexRead p idx πs =>
         simp only [eval]
-        have ka := hargs idx H hf
-        split
-        · rename_i r hra; rw [hra] at ka; exact ka
-        · rename_i H₁ vs tr hra
-          rw [hra] at ka
-          refine Tidy.prefix hf.1 ka.1 ka.2 ?_
-          (repeat' split) <;> first | trivial | exact Tidy.same
+        refine (Tidy.inv φ).args₀ hev idx hf fun _ _ _ => show Tidy φ _ _ from ?_
+        (repeat' split) <;> first | trivial | exact Tidy.same
     | indexDrop p idx πs =>
-        simp only [eval]
-        exact Tidy.bind hf.1 (ih H φ _ hf) (fun _ _ _ _ => Tidy.same)
+        exact (Tidy.inv φ).bind₀ hf (ih H φ _ hf) fun H₁ _ _ _ _ =>
+          (Tidy.same : Tidy φ H₁ (.ok H₁ .unit []))
     | indexWrite p idx πs e₁ =>
-        simp only [eval]
-        refine Tidy.bind hf.1 (ih H φ e₁ hf) (fun H₁ _ _ hr => ?_)
-        have hl := (ih H φ e₁ hf); rw [hr] at hl
-        have hf₁ := hf.mono hl.1.1
-        have ka := hargs idx H₁ hf₁
+        refine (Tidy.inv φ).bind₀ hf (ih H φ e₁ hf) fun H₁ _ _ _ hf₁ => ?_
+        refine (Tidy.inv φ).args hev idx hf₁ fun _ _ _ => show Tidy φ _ _ from ?_
         split
-        · rename_i r hra; rw [hra] at ka; exact ka
-        · rename_i H₂ vs tr hra
-          rw [hra] at ka
-          refine Tidy.prefix hf₁.1 ka.1 ka.2 ?_
-          split
-          · trivial
-          · trivial
-          · rename_i ℓ c sub ρ hdp
-            have hℓ := dynPlace_env hdp
-            (repeat' split) <;> first | trivial | exact Tidy.write hℓ
+        · trivial
+        · trivial
+        · rename_i ℓ c sub ρ hdp
+          have hℓ := dynPlace_env hdp
+          (repeat' split) <;> first | trivial | exact Tidy.write hℓ
     | «match» scrut arms =>
         simp only [eval]
-        refine Tidy.bind hf.1 (ih H φ scrut hf) (fun H₀ v _ hr => ?_)
-        have hl := (ih H φ scrut hf); rw [hr] at hl
-        have hf₀ := hf.mono hl.1.1
+        refine (Tidy.inv φ).bind₀ hf (ih H φ scrut hf) fun H₀ v _ _ hf₀ => ?_
         cases v with
         | enum e k i vs =>
           dsimp only
@@ -1923,10 +1864,7 @@ theorem eval_tidy (M : FloatSig) (P : Program) :
               · exact ((hmem ℓ).mp h).2
         | _ => trivial
     | letIn m e₁ e₂ =>
-        simp only [eval]
-        refine Tidy.bind hf.1 (ih H φ e₁ hf) (fun H₁ v₁ _ hr => ?_)
-        have hl := (ih H φ e₁ hf); rw [hr] at hl
-        have hf₁ := hf.mono hl.1.1
+        refine (Tidy.inv φ).bind₀ hf (ih H φ e₁ hf) fun H₁ v₁ _ _ hf₁ => ?_
         have hls : ∀ ℓ, ℓ ∈ [H₁.length] ↔
             H₁.length ≤ ℓ ∧ ℓ < (H₁ ++ [Cell.full (Contents.ofVal v₁)]).length := by
           intro ℓ
@@ -1946,18 +1884,14 @@ theorem eval_tidy (M : FloatSig) (P : Program) :
           · have := hf₁.2 ℓ h; simp; omega
           · simp at h; subst h; simp
     | assign p e₁ =>
-        simp only [eval]
-        refine Tidy.bind hf.1 (ih H φ e₁ hf) (fun H₁ _ _ _ => ?_)
+        refine (Tidy.inv φ).bind₀ hf (ih H φ e₁ hf) fun H₁ _ _ _ _ => show Tidy φ _ _ from ?_
         split
         · trivial
         · rename_i ℓ hρ
           have hℓ := List.mem_of_getElem? hρ
           (repeat' split) <;> first | trivial | exact Tidy.write hℓ
     | seq e₁ e₂ =>
-        simp only [eval]
-        refine Tidy.bind hf.1 (ih H φ e₁ hf) (fun H₁ _ _ hr => ?_)
-        have hl := (ih H φ e₁ hf); rw [hr] at hl
-        have hf₁ := hf.mono hl.1.1
+        refine (Tidy.inv φ).bind₀ hf (ih H φ e₁ hf) fun H₁ _ _ _ hf₁ => ?_
         split
         · trivial
         · split
@@ -1966,10 +1900,7 @@ theorem eval_tidy (M : FloatSig) (P : Program) :
               (ih H₁ φ e₂ hf₁)
         · exact ih H₁ φ e₂ hf₁
     | ite c e₁ e₂ =>
-        simp only [eval]
-        refine Tidy.bind hf.1 (ih H φ c hf) (fun H₀ _ _ hr => ?_)
-        have hl := (ih H φ c hf); rw [hr] at hl
-        have hf₀ := hf.mono hl.1.1
+        refine (Tidy.inv φ).bind₀ hf (ih H φ c hf) fun H₀ _ _ _ hf₀ => ?_
         split
         · split
           · exact ih H₀ φ e₁ hf₀
@@ -1977,30 +1908,22 @@ theorem eval_tidy (M : FloatSig) (P : Program) :
         · trivial
     | call f args =>
         simp only [eval]
-        have ka := hargs args H hf
+        refine (Tidy.inv φ).args₀ hev args hf fun H₁ vs _ => ?_
         split
-        · rename_i r hra; rw [hra] at ka; exact ka
-        · rename_i H₁ vs tr hra
-          rw [hra] at ka
-          refine Tidy.prefix hf.1 ka.1 ka.2 ?_
+        · trivial
+        · rename_i fd _
           split
+          · have hmem := freshParams_mem H₁ vs
+            have hlen : H₁.length ≤ (freshParams H₁ vs).1.length := by
+              rw [freshParams_length]; omega
+            have hb := ih (freshParams H₁ vs).1
+              { env := (freshParams H₁ vs).2.reverse, scope := (freshParams H₁ vs).2 } fd.body
+              ⟨fun ℓ hm => ((hmem ℓ).mp (List.mem_reverse.mp hm)).2,
+               fun ℓ hm => ((hmem ℓ).mp hm).2⟩
+            exact Tidy.call hmem hlen (freshParams_pre H₁ vs) hb
           · trivial
-          · rename_i fd _
-            split
-            · have hmem := freshParams_mem H₁ vs
-              have hlen : H₁.length ≤ (freshParams H₁ vs).1.length := by
-                rw [freshParams_length]; omega
-              have hb := ih (freshParams H₁ vs).1
-                { env := (freshParams H₁ vs).2.reverse, scope := (freshParams H₁ vs).2 } fd.body
-                ⟨fun ℓ hm => ((hmem ℓ).mp (List.mem_reverse.mp hm)).2,
-                 fun ℓ hm => ((hmem ℓ).mp hm).2⟩
-              exact Tidy.call hmem hlen (freshParams_pre H₁ vs) hb
-            · trivial
     | ret e₁ =>
-        simp only [eval]
-        refine Tidy.bind hf.1 (ih H φ e₁ hf) (fun H₁ v _ hr => ?_)
-        have hl := (ih H φ e₁ hf); rw [hr] at hl
-        have hf₁ := hf.mono hl.1.1
+        refine (Tidy.inv φ).bind₀ hf (ih H φ e₁ hf) fun H₁ v _ _ _ => ?_
         simp only [runAllScopeDrops]
         split
         · trivial
