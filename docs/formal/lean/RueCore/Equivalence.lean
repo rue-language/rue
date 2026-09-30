@@ -407,12 +407,6 @@ theorem rootCell_of {H : Store} {φ : Activation} {i ℓ : Nat} {c : Contents}
     (hℓ : φ.env[i]? = some ℓ) (hc : H[ℓ]? = some (.full c)) : rootCell H φ i = .ok (ℓ, c) := by
   simp [rootCell, hℓ, hc]
 
-/-- (D-EndScope) after (D-Let) (helper). -/
-theorem Activation.unwindScope_let (φ : Activation) (ℓ : Nat) :
-    ({ env := ℓ :: φ.env, scope := φ.scope ++ [ℓ] } : Activation).unwindScope 1 = φ := by
-  cases φ
-  simp [Activation.unwindScope]
-
 /-- The monitor-free unwind of one cell (helper). -/
 theorem plainUnwind_single {D : Decls} {H H' : Store} {ℓ : Nat} {evs : List Event}
     (h : dropRetire D H ℓ = .ok (H', evs)) : plainUnwind D H [ℓ] = .ok (H', evs) := by
