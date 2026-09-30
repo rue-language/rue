@@ -156,13 +156,15 @@ theorem LivePost.lift {H H₁ : Store} {φ : Activation} {r : EvalRes} (hg : Gro
   | refused w => exact h
   | outOfFuel => trivial
 
-/-- §6.2's search keeps the promise (helper). -/
-theorem LivePost.andThen {H : Store} {φ : Activation} {r : EvalRes} {k : Store → Val → EvalRes}
-    (h : LivePost H φ r) (hk : ∀ H₁ v, Grow H H₁ → LivePost H₁ φ (k H₁ v)) :
-    LivePost H φ (r.bind k) := by
-  cases r with
-  | ok H₁ v tr => exact ((hk H₁ v h).lift h).withTrace tr
-  | _ => exact h
+/-- §6.2's search keeps the promise: `LivePost` is an evaluation invariant
+(`EvalInv`), the held values irrelevant, since an operand's value only grew
+the store (helper). -/
+def LivePost.inv (φ : Activation) : EvalInv where
+  Pre H _ := LiveActivation H φ
+  Post H _ := LivePost H φ
+  pre hf hg := hf.grow hg
+  seq _ hg h := (h.lift hg).withTrace _
+  hold _ h := h
 
 /-- A scope opened on top of the activation record — a `let`'s cell, a `match` arm's
 payload cells — keeps the promise when the body's non-value outcomes pass
@@ -458,30 +460,6 @@ theorem introVal_live {D : Decls} {H : Store} {φ : Activation} (mk : Nat → Va
   · exact Grow.append H _
   · simp [LivePost]
 
-/-- The promise over an argument list (helper). -/
-def ArgsLive (H : Store) (φ : Activation) : ArgsRes → Prop
-  | .ok H' _ _ => Grow H H'
-  | .abort r => LivePost H φ r
-
-/-- An argument list keeps the promise, argument by argument (§6.2's left-to-right
-search) (helper). -/
-theorem evalArgs_live {φ : Activation} {ev : Store → Expr → EvalRes}
-    (hev : ∀ H e, LiveActivation H φ → LivePost H φ (ev H e)) :
-    ∀ (H : Store) (es : List Expr), LiveActivation H φ → ArgsLive H φ (evalArgs ev H es)
-  | H, [], _ => Grow.refl H
-  | H, e :: es, hf => by
-      simp only [evalArgs]
-      have h₁ := hev H e hf
-      cases hr : ev H e with
-      | ok H₁ v tr =>
-          rw [hr] at h₁
-          have h₂ := evalArgs_live hev H₁ es (hf.grow h₁)
-          dsimp only
-          cases hra : evalArgs ev H₁ es with
-          | ok H₂ vs tr₂ => rw [hra] at h₂; exact h₁.trans h₂
-          | abort r => rw [hra] at h₂; exact (h₂.lift h₁).withTrace tr
-      | _ => rw [hr] at h₁; exact h₁
-
 /-! ### The invariant, by induction on fuel -/
 
 /-- A cell the environment names is live (helper). -/
@@ -499,8 +477,8 @@ theorem eval_live (M : FloatSig) (P : Program) :
   | zero => intro H φ e _; simp only [eval]; trivial
   | succ n ih =>
     intro H φ e hf
-    have hargs := fun (H' : Store) (es : List Expr) (hf' : LiveActivation H' φ) =>
-      evalArgs_live (fun H'' e' hf'' => ih H'' φ e' hf'') H' es hf'
+    have hev := fun (H' : Store) (_ : List Val) (e' : Expr) (hf' : LiveActivation H' φ) =>
+      ih H' φ e' hf'
     cases e with
     | intLit w sg m => exact Grow.refl H
     | floatLit w l => exact Grow.refl H
@@ -534,63 +512,42 @@ theorem eval_live (M : FloatSig) (P : Program) :
                     · simp [LivePost]
                     · exact Grow.set_full H ℓ _
     | binop op e₁ e₂ =>
-        simp only [eval]
-        refine (ih H φ e₁ hf).andThen (fun H₁ v₁ hg₁ => ?_)
-        refine (ih H₁ φ e₂ (hf.grow hg₁)).andThen (fun H₂ v₂ _ => ?_)
-        exact OpRes.toRes_live _
-    | unop op e₁ =>
-        simp only [eval]
-        exact (ih H φ e₁ hf).andThen (fun H₁ v₁ _ => OpRes.toRes_live _)
-    | intCast w sg e₁ =>
-        simp only [eval]
-        exact (ih H φ e₁ hf).andThen (fun H₁ v₁ _ => OpRes.toRes_live _)
-    | fintrin k e₁ =>
-        simp only [eval]
-        exact (ih H φ e₁ hf).andThen (fun H₁ v₁ _ => OpRes.toRes_live _)
+        exact (LivePost.inv φ).bind (vs := []) hf (ih H φ e₁ hf) fun H₁ _ _ _ hf₁ =>
+          (LivePost.inv φ).bind hf₁ (ih H₁ φ e₂ hf₁) fun _ _ _ _ _ => OpRes.toRes_live _
+    | unop _ e₁ | intCast _ _ e₁ | fintrin _ e₁ =>
+        exact (LivePost.inv φ).bind (vs := []) hf (ih H φ e₁ hf) fun _ _ _ _ _ => OpRes.toRes_live _
     | panic msg => simp only [eval]; trivial
     | dbg e₁ =>
-        simp only [eval]
-        refine (ih H φ e₁ hf).andThen (fun H₁ v₁ _ => ?_)
+        refine (LivePost.inv φ).bind (vs := []) hf (ih H φ e₁ hf) fun H₁ _ _ _ _ => ?_
         split
         · exact Grow.refl H₁
-        · simp [LivePost]
+        · simp [LivePost.inv, LivePost]
     | mkStruct s args =>
         simp only [eval]
-        have ka := hargs H args hf
+        refine (LivePost.inv φ).args hev args (vs := []) hf fun H₁ vs _ => ?_
         split
-        · rename_i r hra; rw [hra] at ka; exact ka
-        · rename_i H₁ vs tr hra
-          rw [hra] at ka
-          refine LivePost.withTrace (LivePost.lift ka ?_) tr
-          split
-          · simp [LivePost]
-          · split
-            · exact introVal_live _
-            · simp [LivePost]
+        · simp [LivePost.inv, LivePost]
+        · split
+          · exact introVal_live _
+          · simp [LivePost.inv, LivePost]
     | mkEnum e k args =>
         simp only [eval]
-        have ka := hargs H args hf
+        refine (LivePost.inv φ).args hev args (vs := []) hf fun H₁ vs _ => ?_
         split
-        · rename_i r hra; rw [hra] at ka; exact ka
-        · rename_i H₁ vs tr hra
-          rw [hra] at ka
-          refine LivePost.withTrace (LivePost.lift ka ?_) tr
-          split
-          · simp [LivePost]
+        · simp [LivePost.inv, LivePost]
+        · split
+          · simp [LivePost.inv, LivePost]
           · split
-            · simp [LivePost]
-            · split
-              · exact introVal_live _
-              · simp [LivePost]
+            · exact introVal_live _
+            · simp [LivePost.inv, LivePost]
     | «match» scrut arms =>
         simp only [eval]
-        refine (ih H φ scrut hf).andThen (fun H₀ v hg₀ => ?_)
-        have hf₀ := hf.grow hg₀
+        refine (LivePost.inv φ).bind (vs := []) hf (ih H φ scrut hf) fun H₀ v _ _ hf₀ => ?_
         cases v with
         | enum e k i vs =>
           dsimp only
           split
-          · simp [LivePost]
+          · simp [LivePost.inv, LivePost]
           · rename_i body harm
             obtain ⟨hgm, hndm, hlm⟩ := freshParams_live H₀ vs
             refine LivePost.withTrace ?_ _
@@ -619,68 +576,50 @@ theorem eval_live (M : FloatSig) (P : Program) :
                 refine ⟨Nat.le_trans hgm.1 (Nat.le_trans hg₂.1 hlen), fun ℓ hl => ?_⟩
                 refine hkeep ℓ (fun hm => ?_) (hg₂.2 ℓ (hgm.2 ℓ hl))
                 exact hl.ne_of_le (hlm ℓ (List.mem_reverse.mp hm)).1 rfl
-        | _ => simp [LivePost]
+        | _ => simp [LivePost.inv, LivePost]
     | mkArray T args =>
         simp only [eval]
-        have ka := hargs H args hf
-        split
-        · rename_i r hra; rw [hra] at ka; exact ka
-        · rename_i H₁ vs tr hra
-          rw [hra] at ka
-          exact LivePost.withTrace (LivePost.lift ka (introVal_live _)) tr
+        exact (LivePost.inv φ).args hev args (vs := []) hf fun _ _ _ => introVal_live _
     | repeatArray T e₁ m =>
-        simp only [eval]
-        refine (ih H φ e₁ hf).andThen (fun H₁ v₁ _ => ?_)
+        refine (LivePost.inv φ).bind (vs := []) hf (ih H φ e₁ hf) fun H₁ _ _ _ _ => ?_
         split
         · exact introVal_live _
-        · simp [LivePost]
+        · simp [LivePost.inv, LivePost]
     | indexRead p idx πs =>
         simp only [eval]
-        have ka := hargs H idx hf
+        refine (LivePost.inv φ).args hev idx (vs := []) hf fun H₁ vs hf₁ => ?_
         split
-        · rename_i r hra; rw [hra] at ka; exact ka
-        · rename_i H₁ vs tr hra
-          rw [hra] at ka
-          refine LivePost.withTrace (LivePost.lift ka ?_) tr
-          split
-          · exact dynPlace_ne_uad (hf.grow ka).1 (by assumption)
-          · trivial
+        · exact dynPlace_ne_uad hf₁.1 (by assumption)
+        · trivial
+        · split
+          · exact Contents.getAt_ne_uad _ (by assumption)
           · split
-            · exact Contents.getAt_ne_uad _ (by assumption)
+            · simp [LivePost.inv, LivePost]
             · split
-              · simp [LivePost]
-              · split
-                · exact Grow.refl H₁
-                · simp [LivePost]
+              · exact Grow.refl H₁
+              · simp [LivePost.inv, LivePost]
     | indexWrite p idx πs e₁ =>
-        simp only [eval]
-        refine (ih H φ e₁ hf).andThen (fun H₁ v hg₁ => ?_)
-        have ka := hargs H₁ idx (hf.grow hg₁)
+        refine (LivePost.inv φ).bind (vs := []) hf (ih H φ e₁ hf) fun H₁ v _ _ hf₁ => ?_
+        refine (LivePost.inv φ).args hev idx hf₁ fun H₂ vs hf₂ => ?_
         split
-        · rename_i r hra; rw [hra] at ka; exact ka
-        · rename_i H₂ vs tr hra
-          rw [hra] at ka
-          refine LivePost.withTrace (LivePost.lift ka ?_) tr
+        · exact dynPlace_ne_uad hf₂.1 (by assumption)
+        · trivial
+        · rename_i ℓ c sub ρ hdp
           split
-          · exact dynPlace_ne_uad ((hf.grow hg₁).grow ka).1 (by assumption)
-          · trivial
-          · rename_i ℓ c sub ρ hdp
-            split
-            · exact Contents.getAt_ne_uad _ (by assumption)
+          · exact Contents.getAt_ne_uad _ (by assumption)
+          · split
+            · simp [LivePost.inv, LivePost]
             · split
-              · simp [LivePost]
+              · exact dropCell_ne_uad (by assumption)
               · split
-                · exact dropCell_ne_uad (by assumption)
+                · simp [LivePost.inv, LivePost]
                 · split
-                  · simp [LivePost]
+                  · simp [LivePost.inv, LivePost]
                   · split
-                    · simp [LivePost]
-                    · split
-                      · exact Grow.set_full H₂ ℓ _
-                      · simp [LivePost]
+                    · exact Grow.set_full H₂ ℓ _
+                    · simp [LivePost.inv, LivePost]
     | indexDrop p idx πs =>
-        simp only [eval]
-        exact (ih H φ _ hf).andThen (fun H₁ v₁ _ => Grow.refl H₁)
+        exact (LivePost.inv φ).bind (vs := []) hf (ih H φ _ hf) fun H₁ _ _ _ _ => Grow.refl H₁
     | drop p =>
         simp only [eval]
         split
@@ -713,9 +652,7 @@ theorem eval_live (M : FloatSig) (P : Program) :
                       · simp [LivePost]
                       · exact Grow.set_full H ℓ _
     | letIn m e₁ e₂ =>
-        simp only [eval]
-        refine (ih H φ e₁ hf).andThen (fun H₁ v₁ hg₁ => ?_)
-        have hf₁ := hf.grow hg₁
+        refine (LivePost.inv φ).bind (vs := []) hf (ih H φ e₁ hf) fun H₁ v₁ _ _ hf₁ => ?_
         have hg₁' := Grow.append H₁ [Cell.full (Contents.ofVal v₁)]
         have hnew : Live (H₁ ++ [Cell.full (Contents.ofVal v₁)]) H₁.length :=
           ⟨Contents.ofVal v₁, by simp⟩
@@ -748,92 +685,82 @@ theorem eval_live (M : FloatSig) (P : Program) :
             · rw [hH₃, Live, List.getElem?_set_ne (hl.ne_of_le (Nat.le_refl _)).symm]
               exact hg₂.2 ℓ (hg₁'.2 ℓ hl)
     | assign p e₁ =>
-        simp only [eval]
-        refine (ih H φ e₁ hf).andThen (fun H₁ v hg₁ => ?_)
-        have hf₁ := hf.grow hg₁
+        refine (LivePost.inv φ).bind (vs := []) hf (ih H φ e₁ hf) fun H₁ v _ _ hf₁ => ?_
         split
-        · simp [LivePost]
+        · simp [LivePost.inv, LivePost]
         · rename_i ℓ hρ
           split
-          · simp [LivePost]
+          · simp [LivePost.inv, LivePost]
           · rename_i hd; exact absurd hd (hf₁.root hρ).ne_dead
           · split
             · exact Contents.getAt_ne_uad _ (by assumption)
             · split
-              · simp [LivePost]
+              · simp [LivePost.inv, LivePost]
               · split
                 · exact dropCell_ne_uad (by assumption)
                 · split
-                  · simp [LivePost]
+                  · simp [LivePost.inv, LivePost]
                   · split
                     · exact Grow.set_full H₁ ℓ _
-                    · simp [LivePost]
+                    · simp [LivePost.inv, LivePost]
     | seq e₁ e₂ =>
-        simp only [eval]
-        refine (ih H φ e₁ hf).andThen (fun H₁ v₁ hg₁ => ?_)
+        refine (LivePost.inv φ).bind (vs := []) hf (ih H φ e₁ hf) fun H₁ v₁ _ _ hf₁ => ?_
         split
-        · simp [LivePost]
+        · simp [LivePost.inv, LivePost]
         · split
           · exact dropContents_ne_uad (by assumption)
-          · exact (ih H₁ φ e₂ (hf.grow hg₁)).withTrace _
-        · exact ih H₁ φ e₂ (hf.grow hg₁)
+          · exact (ih H₁ φ e₂ hf₁).withTrace _
+        · exact ih H₁ φ e₂ hf₁
     | ite c e₁ e₂ =>
-        simp only [eval]
-        refine (ih H φ c hf).andThen (fun H₀ v₀ hg₀ => ?_)
+        refine (LivePost.inv φ).bind (vs := []) hf (ih H φ c hf) fun H₀ v₀ _ _ hf₀ => ?_
         split
         · split
-          · exact ih H₀ φ e₁ (hf.grow hg₀)
-          · exact ih H₀ φ e₂ (hf.grow hg₀)
-        · simp [LivePost]
+          · exact ih H₀ φ e₁ hf₀
+          · exact ih H₀ φ e₂ hf₀
+        · simp [LivePost.inv, LivePost]
     | call f args =>
         simp only [eval]
-        have ka := hargs H args hf
+        refine (LivePost.inv φ).args hev args (vs := []) hf fun H₁ vs _ => ?_
+        show LivePost H₁ φ _
         split
-        · rename_i r hra; rw [hra] at ka; exact ka
-        · rename_i H₁ vs tr hra
-          rw [hra] at ka
-          refine LivePost.withTrace (LivePost.lift ka ?_) tr
+        · simp [LivePost]
+        · rename_i fd hfd
           split
+          · obtain ⟨hgm, hndm, hlm⟩ := freshParams_live H₁ vs
+            have hb := ih _ { env := (freshParams H₁ vs).2.reverse, scope := (freshParams H₁ vs).2 }
+              fd.body ⟨fun ℓ hℓ => (hlm ℓ (List.mem_reverse.mp hℓ)).2,
+                fun ℓ hℓ => (hlm ℓ hℓ).2, hndm⟩
+            revert hb
+            generalize eval M n P (freshParams H₁ vs).1
+              { env := (freshParams H₁ vs).2.reverse, scope := (freshParams H₁ vs).2 } fd.body = r
+            intro hb
+            cases r with
+            | ok H₃ v tr₃ =>
+                simp only [EvalRes.bindCall]
+                refine LivePost.withTrace ?_ tr₃
+                simp only [runAllScopeDrops]
+                have hu := unwindLocs_live (D := P.decls) (H := H₃)
+                  (nodup_reverse hndm)
+                  (fun ℓ hℓ => hb.2 ℓ (hlm ℓ (List.mem_reverse.mp hℓ)).2)
+                split
+                · rename_i w hw; rw [hw] at hu; exact hu
+                · rename_i H₄ evs hw
+                  rw [hw] at hu
+                  obtain ⟨hlen, hkeep⟩ := hu.grow
+                  refine ⟨Nat.le_trans hgm.1 (Nat.le_trans hb.1 hlen), fun ℓ hl => ?_⟩
+                  refine hkeep ℓ (fun hm => ?_) (hb.2 ℓ (hgm.2 ℓ hl))
+                  exact hl.ne_of_le (hlm ℓ (List.mem_reverse.mp hm)).1 rfl
+            | returned H₃ v tr₃ =>
+                simp only [EvalRes.bindCall]
+                refine ⟨Nat.le_trans hgm.1 hb.1, fun ℓ hl => ?_⟩
+                exact hb.2 ℓ (fun hm => hl.ne_of_le (hlm ℓ hm).1 rfl) (hgm.2 ℓ hl)
+            | broke H₃ sc tr₃ => simp [EvalRes.bindCall, LivePost]
+            | panic k tr₃ => trivial
+            | refused w => exact hb
+            | outOfFuel => trivial
           · simp [LivePost]
-          · rename_i fd hfd
-            split
-            · obtain ⟨hgm, hndm, hlm⟩ := freshParams_live H₁ vs
-              have hb := ih _ { env := (freshParams H₁ vs).2.reverse, scope := (freshParams H₁ vs).2 }
-                fd.body ⟨fun ℓ hℓ => (hlm ℓ (List.mem_reverse.mp hℓ)).2,
-                  fun ℓ hℓ => (hlm ℓ hℓ).2, hndm⟩
-              revert hb
-              generalize eval M n P (freshParams H₁ vs).1
-                { env := (freshParams H₁ vs).2.reverse, scope := (freshParams H₁ vs).2 } fd.body = r
-              intro hb
-              cases r with
-              | ok H₃ v tr₃ =>
-                  simp only [EvalRes.bindCall]
-                  refine LivePost.withTrace ?_ tr₃
-                  simp only [runAllScopeDrops]
-                  have hu := unwindLocs_live (D := P.decls) (H := H₃)
-                    (nodup_reverse hndm)
-                    (fun ℓ hℓ => hb.2 ℓ (hlm ℓ (List.mem_reverse.mp hℓ)).2)
-                  split
-                  · rename_i w hw; rw [hw] at hu; exact hu
-                  · rename_i H₄ evs hw
-                    rw [hw] at hu
-                    obtain ⟨hlen, hkeep⟩ := hu.grow
-                    refine ⟨Nat.le_trans hgm.1 (Nat.le_trans hb.1 hlen), fun ℓ hl => ?_⟩
-                    refine hkeep ℓ (fun hm => ?_) (hb.2 ℓ (hgm.2 ℓ hl))
-                    exact hl.ne_of_le (hlm ℓ (List.mem_reverse.mp hm)).1 rfl
-              | returned H₃ v tr₃ =>
-                  simp only [EvalRes.bindCall]
-                  refine ⟨Nat.le_trans hgm.1 hb.1, fun ℓ hl => ?_⟩
-                  exact hb.2 ℓ (fun hm => hl.ne_of_le (hlm ℓ hm).1 rfl) (hgm.2 ℓ hl)
-              | broke H₃ sc tr₃ => simp [EvalRes.bindCall, LivePost]
-              | panic k tr₃ => trivial
-              | refused w => exact hb
-              | outOfFuel => trivial
-            · simp [LivePost]
     | ret e₁ =>
-        simp only [eval]
-        refine (ih H φ e₁ hf).andThen (fun H₁ v hg₁ => ?_)
-        have hf₁ := hf.grow hg₁
+        refine (LivePost.inv φ).bind (vs := []) hf (ih H φ e₁ hf) fun H₁ v _ _ hf₁ => ?_
         simp only [runAllScopeDrops]
         have hu := unwindLocs_live (D := P.decls) (H := H₁) (nodup_reverse hf₁.2.2)
           (fun ℓ hℓ => hf₁.2.1 ℓ (List.mem_reverse.mp hℓ))
