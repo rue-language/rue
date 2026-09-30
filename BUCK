@@ -832,7 +832,7 @@ lean_package(
         "RueCore.breakLeak_rejected",
         "RueCore.drop_order",
         "RueCore.run_blocks",
-        "RueCore.eval_blocks",
+        "RueCore.eval_glue_blocks",
         "RueCore.dropContents_eq",
         "RueCore.reachable_ordered",
         "RueCore.step_drop_order",
