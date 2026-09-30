@@ -104,26 +104,6 @@ theorem Expr.pendingSafeList_mem : ∀ {es : List Expr} {e : Expr},
       | head => exact h.1
       | tail _ hm => exact Expr.pendingSafeList_mem h.2 hm
 
-/-- A member of a list with no `return` has none (helper). -/
-theorem Expr.returnsList_mem : ∀ {es : List Expr} {e : Expr},
-    Expr.returnsList es = false → e ∈ es → e.returns = false
-  | [], _, _, h => by cases h
-  | e :: es, e', h, hm => by
-      simp only [Expr.returnsList, Bool.or_eq_false_iff] at h
-      cases hm with
-      | head => exact h.1
-      | tail _ hm => exact Expr.returnsList_mem h.2 hm
-
-/-- A member of a list with no free `break` has none (helper). -/
-theorem Expr.breaksList_mem : ∀ {es : List Expr} {e : Expr},
-    Expr.breaksList es = false → e ∈ es → e.breaks = false
-  | [], _, _, h => by cases h
-  | e :: es, e', h, hm => by
-      simp only [Expr.breaksList, Bool.or_eq_false_iff] at h
-      cases hm with
-      | head => exact h.1
-      | tail _ hm => exact Expr.breaksList_mem h.2 hm
-
 /-- A member of a quiet list does not complete abruptly (helper). -/
 theorem Expr.quietList_mem {es : List Expr} {e : Expr} (h : Expr.quietList es = true)
     (hm : e ∈ es) : e.returns = false ∧ e.breaks = false := by
@@ -231,9 +211,14 @@ theorem eval_quiet (M : FloatSig) (P : Program) : ∀ (fuel : Nat) (H : Store) (
     cases b <;> simp
   have memL : ∀ {es : List Expr} {e : Expr}, cond b (Expr.breaksList es) (Expr.returnsList es) = false →
       e ∈ es → cond b e.breaks e.returns = false := by
-    cases b
-    · exact Expr.returnsList_mem
-    · exact Expr.breaksList_mem
+    intro es e h hm
+    induction es with
+    | nil => cases hm
+    | cons e' es ih =>
+        simp only [Expr.breaksList, Expr.returnsList] at h
+        cases hm with
+        | head => exact (or2 h).1
+        | tail _ hm => exact ih (or2 h).2 hm
   have bind {r : EvalRes} {k : Store → Val → EvalRes} :=
     @EvalRes.bind_of (fun r => cond b r.NoBrk r.NoRet) wt r k
   intro fuel
