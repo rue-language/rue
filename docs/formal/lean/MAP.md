@@ -130,6 +130,7 @@ flowchart BT
   check_sound --> pendingSafe_needed
   destructure_plain --> eval_sim
   destructure_plain --> whole_program_exactly_once
+  drop_glue_order --> step_blocks
   dtor_once --> no_double_free
   eval_conserves --> drop_glue_order
   eval_conserves --> dtor_once
@@ -142,7 +143,6 @@ flowchart BT
   eval_sim --> step_no_double_free
   eval_small_to_big --> drop_glue_order
   eval_small_to_big --> init_safeAt
-  eval_small_to_big --> step_blocks
   eval_small_to_big --> whole_program_exactly_once
   eval_steps_of_outOfFuel --> eval_diverges_iff
   eval_steps_of_outOfFuel --> run_refused_of_step_stuck
@@ -170,13 +170,13 @@ flowchart BT
   no_refusal --> step_no_double_free
   no_refusal --> step_progress
   reachable_nested --> drop_order
+  reachable_nested --> reachable_ordered
   reachable_nested --> reachable_stackDiscipline
   reachable_ordered --> drop_order
   reachable_ordered --> step_no_double_free
   rest_step --> drop_exactly_once
   rest_step --> rest_exactly_once
   rest_step --> whole_program_exactly_once
-  run_blocks --> step_blocks
   run_ne_returned --> eval_diverges_iff
   run_ne_returned --> run_refused_of_step_stuck
   run_ne_returned --> run_safe
@@ -231,14 +231,14 @@ helper theorems `Map.walk` counted under it before the next marked node:
 | `step_value_typed` | every value a reachable `Step` configuration carries is typed | 10 | 0 |
 | `destructure_plain` | a monitor removes no behaviour: the declared-linear destructure's residue check changes no step it does not refuse | 18 | 1 |
 | `unwindLocs_plain` | a monitor removes no behaviour: an unwind's drops are the same with or without the monitors | 19 | 1 |
-| `eval_conserves` | the conservation law over `eval`'s identities, proved by fuel induction, that `no_double_free` follows from | 390 | 171 |
+| `eval_conserves` | the conservation law over `eval`'s identities, proved by fuel induction, that `no_double_free` follows from | 390 | 173 |
 | `eval_tidy` | every cell an evaluation allocates is tombstoned by its end — the activation-record-pop invariant behind `drop_exactly_once` | 228 | 49 |
 | `rest_step` | the ledger for the rest of every form, behind `rest_exactly_once` | 316 | 160 |
 | `run_blocks` | every terminating run's trace is in the block grammar `Blocks`: each drop marker followed by exactly its own walk | 6 | 79 |
-| `step_blocks` | carries `run_blocks` to `Step` | 17 | 6 |
-| `reachable_ordered` | every drop scope is in location order | 8 | 24 |
+| `step_blocks` | reads `drop_glue_order` as `Blocks`, through `DropGlueBlocks.toBlocks` | 7 | 3 |
+| `reachable_ordered` | every drop scope is in location order | 8 | 3 |
 | `reachable_nested` | scopes nest, a pending `endscope` being the tail of its record | 7 | 18 |
-| `reachable_stackDiscipline` | the registration stack is dropped newest-first | 17 | 13 |
+| `reachable_stackDiscipline` | a step that cuts the registration stack back drops only cells it deregistered, newest first | 17 | 13 |
 | `pendingSafe_needed` | the RUE-2316 carve-out (a by-value argument a sibling's `return` destroys) is load-bearing, not vacuous | 20 | 8 |
 | `roundRat_wf` | rounding an exact rational lands in 𝔽_w — the float algebraic specification's closure law the non-vacuity witness rests on | 19 | 34 |
 ## Definitions the statements rest on
@@ -2431,13 +2431,13 @@ marked node.
 | `check_sound` | `RueCore.Checker` | 706 | 22 |
 | `checkProgram_sound` | `RueCore.Checker` | 13 | 24 |
 | `no_double_free` | `RueCore.Trace` | 23 | 6 |
-| `step_no_double_free` | `RueCore.TracePrefix` | 12 | 167 |
+| `step_no_double_free` | `RueCore.TracePrefix` | 12 | 166 |
 | `freed_once` | `RueCore.Trace` | 10 | 14 |
 | `dtor_once` | `RueCore.Trace` | 7 | 20 |
 | `drop_exactly_once` | `RueCore.TraceExact` | 55 | 136 |
 | `rest_exactly_once` | `RueCore.TraceExact` | 52 | 139 |
-| `whole_program_exactly_once` | `RueCore.TraceWhole` | 37 | 295 |
-| `drop_order` | `RueCore.TraceOrder` | 36 | 21 |
+| `whole_program_exactly_once` | `RueCore.TraceWhole` | 37 | 297 |
+| `drop_order` | `RueCore.TraceOrder` | 36 | 20 |
 | `drop_glue_order` | `RueCore.TraceOrder` | 25 | 82 |
 | `Step.det` | `RueCore.Step.Lemmas` | 11 | 2 |
 | `Step.terminal` | `RueCore.Step.Lemmas` | 5 | 3 |
@@ -2472,12 +2472,12 @@ marked node.
 | `step_value_typed` | `RueCore.Equivalence` | 10 | 0 |
 | `destructure_plain` | `RueCore.Step.Lemmas` | 18 | 1 |
 | `unwindLocs_plain` | `RueCore.Step.Lemmas` | 19 | 1 |
-| `eval_conserves` | `RueCore.Trace` | 390 | 171 |
+| `eval_conserves` | `RueCore.Trace` | 390 | 173 |
 | `eval_tidy` | `RueCore.TraceExact` | 228 | 49 |
 | `rest_step` | `RueCore.TraceExact` | 316 | 160 |
 | `run_blocks` | `RueCore.TraceOrder` | 6 | 79 |
-| `step_blocks` | `RueCore.TraceOrder` | 17 | 6 |
-| `reachable_ordered` | `RueCore.TraceOrder` | 8 | 24 |
+| `step_blocks` | `RueCore.TraceOrder` | 7 | 3 |
+| `reachable_ordered` | `RueCore.TraceOrder` | 8 | 3 |
 | `reachable_nested` | `RueCore.TraceOrder` | 7 | 18 |
 | `reachable_stackDiscipline` | `RueCore.TraceOrder` | 17 | 13 |
 | `pendingSafe_needed` | `RueCore.TraceExact` | 20 | 8 |
