@@ -780,75 +780,30 @@ theorem Exact.of_quiet {D : Decls} {H : Store} {X : List Nat} {r : EvalRes} {tr 
   | broke => exact hq.2.elim
   | _ => trivial
 
-/-- **A quiet argument list keeps the exact ledger** (§6.2's left-to-right
-search), and aborts only with a trap, a refusal or exhausted fuel: no member
-completes abruptly, so no built value is ever abandoned (helper). -/
-theorem evalArgs_exactQuiet {D : Decls} {ev : Store → Expr → EvalRes} :
-    ∀ {es : List Expr},
-      (∀ H e, e ∈ es → StoreCC D H → Exact D H [] (ev H e)) →
-      (∀ H e, e ∈ es → (ev H e).NoRet ∧ (ev H e).NoBrk) →
-      ∀ H, StoreCC D H → ArgsExact D H (evalArgs ev H es) ∧
-        ∀ r, evalArgs ev H es = .abort r → r.NoRet ∧ r.NoBrk
-  | [], _, _, H, hcc => by
-      refine ⟨⟨Nat.le_refl _, hcc, rfl, fun a _ => ?_⟩, fun r h => by simp [evalArgs] at h⟩
-      simp [Contents.ofVals, Contents.ownList, freedIds]
+/-- **An argument list keeps the exact ledger** (§6.2's left-to-right search)
+where only its first member may complete abruptly: nothing is pending when the
+first does, and a later member aborts only with a trap, a refusal or exhausted
+fuel, so no built value is ever abandoned (helper). -/
+theorem evalArgs_exact {D : Decls} {ev : Store → Expr → EvalRes} :
+    ∀ {es : List Expr}, (∀ H e, e ∈ es → StoreCC D H → Exact D H [] (ev H e)) →
+      (∀ H e, e ∈ es.tail → (ev H e).NoRet ∧ (ev H e).NoBrk) →
+      ∀ H, StoreCC D H → ArgsExact D H (evalArgs ev H es)
+  | [], _, _, H, hcc =>
+      ⟨Nat.le_refl _, hcc, rfl, fun a _ => by simp [Contents.ofVals, Contents.ownList, freedIds]⟩
   | e :: es, hev, hq, H, hcc => by
       have h₁ := hev H e List.mem_cons_self hcc
-      have q₁ := hq H e List.mem_cons_self
       simp only [evalArgs]
       cases hr : ev H e with
       | ok H₁ v tr =>
           rw [hr] at h₁
           obtain ⟨l₁, c₁, v₁, i₁⟩ := h₁
-          have ih := evalArgs_exactQuiet (es := es)
-            (fun H e' hm => hev H e' (List.mem_cons_of_mem _ hm))
-            (fun H e' hm => hq H e' (List.mem_cons_of_mem _ hm)) H₁ c₁
+          have ih := evalArgs_exact (es := es) (fun H e' hm => hev H e' (List.mem_cons_of_mem _ hm))
+            (fun H e' hm => hq H e' (List.mem_of_mem_tail hm)) H₁ c₁
           dsimp only
           cases hra : evalArgs ev H₁ es with
           | ok H₂ vs tr₂ =>
               rw [hra] at ih
-              obtain ⟨⟨l₂, c₂, v₂, i₂⟩, _⟩ := ih
-              refine ⟨⟨Nat.le_trans l₁ l₂, c₂, ?_, fun a ha => ?_⟩, fun r h => by cases h⟩
-              · simp [Contents.ofVals, Contents.copyContainedList, v₁, v₂]
-              · have := i₁ a ha; have := i₂ a (by omega)
-                simp only [Contents.ownList_ofVals_cons, freedIds_append, List.count_append,
-                  List.count_nil] at *
-                omega
-          | abort r =>
-              rw [hra] at ih
-              have hq' := ih.2 r rfl
-              refine ⟨Exact.of_quiet hq' (evalArgs_abort_ne_ok hra), fun r' h => ?_⟩
-              cases h
-              exact ⟨EvalRes.withTrace_noRet hq'.1, EvalRes.withTrace_noBrk hq'.2⟩
-      | returned H₁ v tr => rw [hr] at q₁; exact q₁.1.elim
-      | broke H₁ sc tr => rw [hr] at q₁; exact q₁.2.elim
-      | panic k tr => exact ⟨trivial, fun r h => by cases h; exact ⟨trivial, trivial⟩⟩
-      | refused w => exact ⟨trivial, fun r h => by cases h; exact ⟨trivial, trivial⟩⟩
-      | outOfFuel => exact ⟨trivial, fun r h => by cases h; exact ⟨trivial, trivial⟩⟩
-
-/-- **An argument list keeps the exact ledger** where only its first member
-may complete abruptly: nothing is pending when the first does (helper). -/
-theorem evalArgs_exact {D : Decls} {ev : Store → Expr → EvalRes} {es : List Expr}
-    (hev : ∀ H e, e ∈ es → StoreCC D H → Exact D H [] (ev H e))
-    (hq : ∀ H e, e ∈ es.tail → (ev H e).NoRet ∧ (ev H e).NoBrk) :
-    ∀ H, StoreCC D H → ArgsExact D H (evalArgs ev H es) := by
-  intro H hcc
-  cases es with
-  | nil => exact (evalArgs_exactQuiet (es := []) (by simp) (by simp) H hcc).1
-  | cons e es =>
-      have h₁ := hev H e List.mem_cons_self hcc
-      simp only [evalArgs]
-      cases hr : ev H e with
-      | ok H₁ v tr =>
-          rw [hr] at h₁
-          obtain ⟨l₁, c₁, v₁, i₁⟩ := h₁
-          have ih := evalArgs_exactQuiet (es := es)
-            (fun H e' hm => hev H e' (List.mem_cons_of_mem _ hm)) (fun H e' hm => hq H e' hm) H₁ c₁
-          dsimp only
-          cases hra : evalArgs ev H₁ es with
-          | ok H₂ vs tr₂ =>
-              rw [hra] at ih
-              obtain ⟨⟨l₂, c₂, v₂, i₂⟩, _⟩ := ih
+              obtain ⟨l₂, c₂, v₂, i₂⟩ := ih
               refine ⟨Nat.le_trans l₁ l₂, c₂, ?_, fun a ha => ?_⟩
               · simp [Contents.ofVals, Contents.copyContainedList, v₁, v₂]
               · have := i₁ a ha; have := i₂ a (by omega)
@@ -856,8 +811,9 @@ theorem evalArgs_exact {D : Decls} {ev : Store → Expr → EvalRes} {es : List 
                   List.count_nil] at *
                 omega
           | abort r =>
-              rw [hra] at ih
-              exact Exact.of_quiet (ih.2 r rfl) (evalArgs_abort_ne_ok hra)
+              exact Exact.of_quiet (evalArgs_abort_of (Q := fun r => r.NoRet ∧ r.NoBrk)
+                (fun h => ⟨EvalRes.withTrace_noRet h.1, EvalRes.withTrace_noBrk h.2⟩) H₁ hq r hra)
+                (evalArgs_abort_ne_ok hra)
       | returned H₁ v tr => rw [hr] at h₁; exact h₁
       | broke H₁ sc tr => rw [hr] at h₁; exact h₁
       | panic k tr => trivial
@@ -1256,13 +1212,14 @@ theorem rest_step (M : FloatSig) {P : Program} (hp : P.pendingSafe = true) {n : 
       obtain rfl := EvalRes.withTrace_inj heq
       rw [Contents.ownList_ofVals_single]
       simp only [Expr.pendingSafe, Bool.and_eq_true] at he
-      have ka := evalArgs_exactQuiet (ev := fun H'' e' => eval M n P H'' φ e') (es := idx)
+      have hqi := fun H'' e' hm => hq H'' e' (Expr.quietList_mem he.2 hm)
+      have ka := evalArgs_exact (ev := fun H'' e' => eval M n P H'' φ e') (es := idx)
         (fun H'' e' hm hc' => ih H'' φ e' hc' (Expr.pendingSafeList_mem he.1.2 hm))
-        (fun H'' e' hm => hq H'' e' (Expr.quietList_mem he.2 hm)) H₁ hc₁
+        (fun H'' e' hm => hqi H'' e' (List.mem_of_mem_tail hm)) H₁ hc₁
       split
       · rename_i r hra
-        rw [hra] at ka
-        have hqr := ka.2 r rfl
+        have hqr := evalArgs_abort_of (Q := fun r => r.NoRet ∧ r.NoBrk)
+          (fun h => ⟨EvalRes.withTrace_noRet h.1, EvalRes.withTrace_noBrk h.2⟩) H₁ hqi r hra
         have hno := evalArgs_abort_ne_ok hra
         cases r with
         | ok => exact absurd rfl (hno _ _ _)
@@ -1271,7 +1228,7 @@ theorem rest_step (M : FloatSig) {P : Program} (hp : P.pendingSafe = true) {n : 
         | _ => trivial
       · rename_i H₂ vs tr hra
         rw [hra] at ka
-        obtain ⟨⟨l₂, c₂, _, i₂⟩, _⟩ := ka
+        obtain ⟨l₂, c₂, _, i₂⟩ := ka
         refine Exact.prefix
           (Y := v.own P.decls ++ Contents.ownList P.decls (Contents.ofVals vs)) l₂
           (fun a ha => by have := i₂ a ha; simp only [List.count_append] at *; omega) ?_
