@@ -820,7 +820,8 @@ re-certifies, and every survivor's axioms are what they were (`propext`, and
 `Quot.sound` for the two ledgers).
 
 - Merged, one name per fact: `Activation.unwindScope_push` now sits in
-  `Step.Lemmas`, beside `Activation.unwindScope`'s other lemmas, and replaces
+  `Step.Lemmas`, beside `Activation.unwindScope_let` (moved there from
+  `Equivalence` with it), and replaces
   `Equivalence`'s copy and `Tombstone.Activation.unwindScope_ext` (neither
   module imports the other; all three users import `Step.Lemmas`). `Sharp`
   uses `Nonvacuous.withTrace_nil` and `Trace`'s `StoreCC.single` in place of
