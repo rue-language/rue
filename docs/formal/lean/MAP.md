@@ -227,7 +227,7 @@ helper theorems `Map.walk` counted under it before the next marked node:
 | `enum_carriesLinear_iff` | the same equation for an enum's variants | 23 | 11 |
 | `init_safeAt` | `Config.init` is semantically safe: syntactic type soundness, which `step_safeAt` inducts from | 18 | 2 |
 | `eval_sim` | the simulation relation between `eval` and `Step`, proved for every expression, fuel and program | 46 | 62 |
-| `eval_steps_of_outOfFuel` | exhausted fuel is a run of that many `Step`s — the small-to-big direction modulo fuel, behind `eval_small_to_big` | 42 | 70 |
+| `eval_steps_of_outOfFuel` | exhausted fuel is a run of that many `Step`s — the small-to-big direction modulo fuel, behind `eval_small_to_big` | 43 | 70 |
 | `step_value_typed` | every value a reachable `Step` configuration carries is typed | 10 | 0 |
 | `destructure_plain` | a monitor removes no behaviour: the declared-linear destructure's residue check changes no step it does not refuse | 18 | 1 |
 | `unwindLocs_plain` | a monitor removes no behaviour: an unwind's drops are the same with or without the monitors | 19 | 1 |
@@ -2468,7 +2468,7 @@ marked node.
 | `enum_carriesLinear_iff` | `RueCore.Statics.Lemmas` | 23 | 11 |
 | `init_safeAt` | `RueCore.Equivalence` | 18 | 2 |
 | `eval_sim` | `RueCore.Equivalence` | 46 | 62 |
-| `eval_steps_of_outOfFuel` | `RueCore.Equivalence` | 42 | 70 |
+| `eval_steps_of_outOfFuel` | `RueCore.Equivalence` | 43 | 70 |
 | `step_value_typed` | `RueCore.Equivalence` | 10 | 0 |
 | `destructure_plain` | `RueCore.Step.Lemmas` | 18 | 1 |
 | `unwindLocs_plain` | `RueCore.Step.Lemmas` | 19 | 1 |
