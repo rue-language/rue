@@ -508,6 +508,104 @@ The simulation (structural 1) has the largest expected payoff and is the
 first follow-up; it spans three modules, which is why it is not the first
 pass.
 
+## First pass (RUE-2471 part 3)
+
+Done on `TraceExact`, from trunk `815b9b7ed`, measured by
+`python3 bin/simplify-metrics.py` before and after. Every Spec statement is
+unchanged (`spine-fingerprints.txt` matches), Comparator re-certifies, the
+trusted-base lint, the layering audit and `leanchecker` pass, and every
+theorem of the module uses `propext`, or `propext` and `Quot.sound`, as
+before: none gained `Classical.choice`.
+
+### The delta
+
+| Measure | Before | After | Change |
+| --- | ---: | ---: | ---: |
+| Lines | 2944 | 2540 | −404 (13.7%) |
+| Code lines | 2367 | 1960 | −407 (17.2%) |
+| Theorems | 99 | 95 | −4 |
+| Build wall s (median of 3) | 2.40 | 2.31 | noise |
+| Build CPU s | 8.78 | 6.90 | −1.88 (21%) |
+| `lake env lean`, three runs, wall s | 2.40, 2.35, 2.46 | 2.31, 2.25, 2.24 | noise |
+| Heartbeat floor (`-DmaxHeartbeats`) | builds at 12000, fails at 11000 | builds at 13000, fails at 12000 | +1000, in `eval_quiet` |
+| `set_option`, warnings | 0, 0 | 0, 0 | |
+| `drop_exactly_once` helpers: all, their lines, own, MAP | 369, 6457, 135, 148 | 365, 6065, 131, 136 | −4, −392, −4, −12 |
+| `rest_exactly_once` helpers: all, their lines, own, MAP | 372, 6521, 138, 151 | 368, 6129, 134, 139 | −4, −392, −4, −12 |
+| `whole_program_exactly_once` helpers: all, their lines, own | 568, 10267, 247 | 564, 9875, 243 | −4, −392, −4 |
+| Skeleton twin pairs in the module | 3 | 1 | −2 |
+| `lean4-skills-find-golfable` (filtered) | 6 directness, 1 conditional | 0 directness, 1 conditional | |
+| `lean4-skills-find-exact-candidates` | 16 low | 10 low | |
+
+The four fuel inductions, in lines per declaration: `eval_quiet` 226 to
+142, `eval_exact` 300 to 162, `rest_step` 323 to 313, `eval_tidy` 226
+(unchanged); 1,075 to 843 together.
+
+### What was done
+
+- `eval_exact`: every form led by one operand goes through one local helper
+  (the operand's ledger by `Exact.bind`, then the rest by `rest_step`), so its
+  cases are one per shape of lead rather than one per form.
+- The twin pairs: `EvalRes.bind_noRet`/`bind_noBrk` are one `EvalRes.bind_of`
+  and `evalArgs_noRet`/`evalArgs_noBrk` one `evalArgs_abort_of`, each
+  parametrized by a property of results that a prefixed trace keeps (`NoRet`
+  or `NoBrk`, or both). `eval_quiet` proves its two halves by one induction
+  over a selector `b` for the excluded result, and proves its list membership
+  itself, so `Expr.returnsList_mem` and `Expr.breaksList_mem` are gone.
+- `evalArgs_exact` is proved by its own recursion, and
+  `evalArgs_exactQuiet`, which repeated its step, is gone: the "aborts
+  quietly" half is `evalArgs_abort_of`.
+- The `Tidy` family: `Tidy.scoped` and `Tidy.call` share `Local.lift`,
+  `Tombstoned.lift` and `Tidy.teardown` (a scope of fresh cells opened above
+  a record and torn down after its value), in place of two copies of the same
+  reasoning (56 and 46 lines, now 24 and 17). `dropRetire_shape` carries the
+  cell's existence, so `dropRetire_live` is gone.
+- Local: `Exact.assign` is the old `Exact.assignDyn`, a static place being
+  the empty dynamic path; `Contents.setAt_own_eq`'s struct and array cases,
+  `Exact.prefix`'s value and `return` cases and `rest_step`'s three unary
+  operators are one case each; `pendingSafe_needed` reuses
+  `lostActivation_typing` and `lostStore_cc`, which proved the same two facts
+  again inside it.
+- Outside the module: `TraceWhole` calls `evalArgs_abort_of` where it called
+  the two twins. `DIGEST.md`, `TRUST.md`, `INDEX.md` and `MAP.md` are
+  regenerated; their diffs are the removed and replaced helpers, the new
+  shared ones, `evalArgs_exact`'s binders (the list moved after the colon for
+  the recursion) and `dropRetire_shape`'s added conjunct.
+
+### What was not done, and why
+
+- `eval_exact` and `eval_tidy` sharing one induction. `eval_exact`'s
+  per-construct work is now in `rest_step`, reached through `Lead`, and what
+  is left of it is the lead's scaffolding and the `use` and `@drop` cases;
+  `eval_tidy` has no counterpart of `rest_step`. One induction over the
+  conjunction would need a `Tidy` rest lemma first, and mixes the
+  `pendingSafe` and copy-containment hypotheses with `φ.In`. The scaffolding
+  it would share is now about 60 lines. Left for the generic
+  evaluation-context lemma (structural 2), which would give both the same
+  shape.
+- `EvalRes.withTrace_noRet`/`withTrace_noBrk` remain a skeleton pair: they are
+  the two instances of the parametrized lemmas' hypothesis, and `TraceWhole`
+  uses them.
+- The theorem count fell by 4, not about 10: nine went (the four twins, the
+  two list-membership lemmas, `evalArgs_exactQuiet`, `dropRetire_live` and
+  the static `Exact.assign`) and five came (the two parametrized lemmas and
+  the three shared `Tidy` lemmas, which replace duplicated reasoning inside
+  two proofs rather than whole theorems).
+  `Tidy.same`, `Tidy.write`, `Tidy.opRes` and `Tidy.intro` stay: each is one
+  line from `Local` and `Tombstoned`, and reading them off `Settled` does not
+  shorten them.
+- `rest_step`'s repeated four-line opening per form (twelve forms) would go
+  with one more lemma (a `bind` of a value is injective in its rest); about
+  seven lines net, so not taken.
+- `Contents.own_struct_fresh`, `own_enum_fresh` and `own_array_fresh` have one
+  proof for three constructors; one statement for all three needs vocabulary
+  the package does not have.
+- `evalUnOp_val_arg`, `evalIntCast_val_arg` and `evalFintrin_val_arg` pair
+  with `Trace.lean`'s `evalUnOp_scalar` and the rest (an operator's value and
+  its operand are scalars); `TraceWhole` uses both, so merging them is a
+  follow-up outside this module.
+- The heartbeat floor rose from 12000 to 13000: `eval_quiet`'s selector adds a
+  little unfolding per case. The default budget is 200000.
+
 ## The clean-room re-derivation (part 2)
 
 Run. The protocol:
