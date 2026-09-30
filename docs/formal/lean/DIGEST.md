@@ -9328,8 +9328,23 @@ theorem RueCore.EvalInv.bind (I : EvalInv) {H : Store} {vs : List Val} {r : Eval
   (hk :
     ∀ (H₁ : Store) (v : Val) (tr : List Event),
       r = EvalRes.ok H₁ v tr →
-        I.Pre H₁ (vs ++ [v]) → I.Post H₁ (vs ++ [v]) (k H₁ v)) :
-  I.Post H vs (r.bind k)
+        I.Pre H₁ (vs ++ [v]) → I.Post H₁ (vs ++ [v]) (k H₁ v))
+  (hkp : I.Keep H r := by trivial) : I.Post H vs (r.bind k)
+```
+
+### `EvalInv.bind₀`
+
+*theorem* · module `RueCore.Dynamics.Lemmas`
+
+`EvalInv.bind` for a form's first operand, nothing held yet (helper).
+
+```lean
+theorem RueCore.EvalInv.bind₀ (I : EvalInv) {H : Store} {r : EvalRes}
+  {k : Store → Val → EvalRes} (hp : I.Pre H []) (hr : I.Post H [] r)
+  (hk :
+    ∀ (H₁ : Store) (v : Val) (tr : List Event),
+      r = EvalRes.ok H₁ v tr → I.Pre H₁ [v] → I.Post H₁ [v] (k H₁ v))
+  (hkp : I.Keep H r := by trivial) : I.Post H [] (r.bind k)
 ```
 
 ### `EvalInv.args`
@@ -9344,13 +9359,31 @@ it starts, and the computation keeps it holding every value.
 theorem RueCore.EvalInv.args (I : EvalInv) {ev : Store → Expr → EvalRes}
   (hev :
     ∀ (H : Store) (vs : List Val) (e : Expr),
-      I.Pre H vs → I.Post H [] (ev H e))
+      I.Pre H vs → I.Post H [] (ev H e) ∧ I.Keep H (ev H e))
   (es : List Expr) {H : Store} {vs : List Val}
   {c : Store → List Val → EvalRes} :
   I.Pre H vs →
     (∀ (H₁ : Store) (vs' : List Val),
         I.Pre H₁ (vs ++ vs') → I.Post H₁ (vs ++ vs') (c H₁ vs')) →
       I.Post H vs ((evalArgs ev H es).bind c)
+```
+
+### `EvalInv.args₀`
+
+*theorem* · module `RueCore.Dynamics.Lemmas`
+
+`EvalInv.args` for a form whose operands are its argument list (helper).
+
+```lean
+theorem RueCore.EvalInv.args₀ (I : EvalInv) {ev : Store → Expr → EvalRes}
+  (hev :
+    ∀ (H : Store) (vs : List Val) (e : Expr),
+      I.Pre H vs → I.Post H [] (ev H e) ∧ I.Keep H (ev H e))
+  (es : List Expr) {H : Store} {c : Store → List Val → EvalRes}
+  (hp : I.Pre H [])
+  (hc :
+    ∀ (H₁ : Store) (vs : List Val), I.Pre H₁ vs → I.Post H₁ vs (c H₁ vs)) :
+  I.Post H [] ((evalArgs ev H es).bind c)
 ```
 
 ### `Activation.unwindScope_push`
@@ -15227,22 +15260,6 @@ theorem RueCore.Tidy.prefix {φ : Activation} {H H₁ : Store} {tr : List Event}
   Tidy φ H (EvalRes.withTrace tr r)
 ```
 
-### `Tidy.bind`
-
-*theorem* · module `RueCore.TraceExact`
-
-§6.2's search keeps the activation-record-pop invariant (helper).
-
-```lean
-theorem RueCore.Tidy.bind {φ : Activation} {H : Store} {r : EvalRes}
-  {k : Store → Val → EvalRes}
-  (hf : ∀ (ℓ : Nat), ℓ ∈ φ.env → ℓ < List.length H) (hr : Tidy φ H r)
-  (hk :
-    ∀ (H₁ : Store) (v : Val) (tr : List Event),
-      r = EvalRes.ok H₁ v tr → Tidy φ H₁ (k H₁ v)) :
-  Tidy φ H (r.bind k)
-```
-
 ### `dropRetire_shape`
 
 *theorem* · module `RueCore.TraceExact`
@@ -15414,19 +15431,6 @@ A dynamic place's cell is named by the environment (helper).
 theorem RueCore.dynPlace_env {H : Store} {φ : Activation} {p : Place} {vs : List Val}
   {πs : List (List Nat)} {ℓ : Nat} {c sub : Contents} {ρ : List Nat}
   (h : dynPlace H φ p vs πs = DynPlace.at ℓ c sub ρ) : ℓ ∈ φ.env
-```
-
-### `evalArgs_tidy`
-
-*theorem* · module `RueCore.TraceExact`
-
-An argument list keeps the activation-record-pop invariant (helper).
-
-```lean
-theorem RueCore.evalArgs_tidy {φ : Activation} {ev : Store → Expr → EvalRes}
-  {es : List Expr} :
-  (∀ (H : Store) (e : Expr), e ∈ es → φ.In H → Tidy φ H (ev H e)) →
-    ∀ (H : Store), φ.In H → ArgsTidy φ H (evalArgs ev H es)
 ```
 
 ### `Tidy.call`
@@ -15831,23 +15835,6 @@ theorem RueCore.eval_ok_cc (M : FloatSig) {P : Program} {n : Nat} {H H₁ : Stor
   (hcc : StoreCC P.decls H) (hr : eval M n P H φ e = EvalRes.ok H₁ v tr) :
   StoreCC P.decls H₁ ∧
     Contents.copyContained P.decls (Contents.ofVal v) = true
-```
-
-### `evalArgs_blocks`
-
-*theorem* · module `RueCore.TraceOrder`
-
-An argument list keeps the grammar (helper).
-
-```lean
-theorem RueCore.evalArgs_blocks {D : Decls} {ev : Store → Expr → EvalRes}
-  (hev :
-    ∀ (H : Store) (e : Expr), StoreCC D H → DropGlueBlocks D (ev H e).trace)
-  (hcc :
-    ∀ (H : Store) (e : Expr) (H₁ : Store) (v : Val) (tr : List Event),
-      StoreCC D H → ev H e = EvalRes.ok H₁ v tr → StoreCC D H₁)
-  (H : Store) (es : List Expr) :
-  StoreCC D H → ArgsDropGlueBlocks D (evalArgs ev H es)
 ```
 
 ### `Rec.mono`
@@ -31296,19 +31283,6 @@ Defining equations, as Lean derived them from the body:
   (ArgsRes.ok H vs tr).bind c = EvalRes.withTrace tr (c H vs)
 ```
 
-### `ArgsTidy`
-
-*def* · module `RueCore.TraceExact`
-
-The activation-record-pop invariant for an argument list (helper).
-
-```lean
-def RueCore.ArgsTidy (φ : Activation) (H : Store) : ArgsRes → Prop :=
-  match x✝ with
-  | ArgsRes.ok H' vs tr => Local φ H H' ∧ Tombstoned H [] H'
-  | ArgsRes.abort r => Tidy φ H r
-```
-
 ### `Corpus.cases`
 
 *def* · module `RueCore.Corpus`
@@ -31353,12 +31327,15 @@ RueCore.EnumDecl.Wf.mk {D : Decls} {ed : EnumDecl}
 **An invariant of evaluation, closed under §6.2's search** (helper).
 `Pre H vs` is what a start holds of its store `H`, with the values `vs` of the
 operands already run held; `Post H vs r` is the promise about the result `r`
-of a run from there. `pre` and `seq` are the search's step: an operand run
-from `H`, holding nothing, that produced a value, leaves a start holding that
-value too, and a result from that start keeps the promise from `H` once the
-operand's trace is prefixed. `hold` is the rest of the search: an operand's
-result that the form passes on unchanged keeps the promise with the held
-values abandoned.
+of a run from there. `Keep H r` is what an operand's run from `H` is known to
+keep besides the promise, by a theorem outside the induction (the conservation
+law, say), which only an operand, never the form's own computation, has to
+supply; it is `True` unless an instance says otherwise. `pre` and `seq` are
+the search's step: an operand run from `H`, holding nothing, that produced a
+value, leaves a start holding that value too, and a result from that start
+keeps the promise from `H` once the operand's trace is prefixed. `hold` is the
+rest of the search: an operand's result that the form passes on unchanged
+keeps the promise with the held values abandoned.
 
 ```lean
 inductive RueCore.EvalInv : Type
@@ -31370,10 +31347,12 @@ Constructors:
 
 ```lean
 RueCore.EvalInv.mk (Pre : Store → List Val → Prop)
-  (Post : Store → List Val → EvalRes → Prop)
+  (Post : Store → List Val → EvalRes → Prop) (Keep : Store → EvalRes → Prop)
   (pre :
     ∀ {H : Store} {vs : List Val} {H₁ : Store} {v : Val} {tr : List Event},
-      Pre H vs → Post H [] (EvalRes.ok H₁ v tr) → Pre H₁ (vs ++ [v]))
+      Pre H vs →
+        Post H [] (EvalRes.ok H₁ v tr) →
+          Keep H (EvalRes.ok H₁ v tr) → Pre H₁ (vs ++ [v]))
   (seq :
     ∀ {H : Store} {vs : List Val} {H₁ : Store} {v : Val} {tr : List Event}
       {r : EvalRes},
@@ -32691,19 +32670,6 @@ def RueCore.ArgsCons (D : Decls) (F : Event → List Nat) (H : Store) :
                 List.count a (List.flatMap F tr) ≤
               List.count a (storeOwn D H) + List.count a (Fresh H H')
   | ArgsRes.abort r => Cons D F H [] r
-```
-
-### `ArgsDropGlueBlocks`
-
-*def* · module `RueCore.TraceOrder`
-
-The grammar's promise about an argument list (helper).
-
-```lean
-def RueCore.ArgsDropGlueBlocks (D : Decls) : ArgsRes → Prop :=
-  match x✝ with
-  | ArgsRes.ok H vs tr => DropGlueBlocks D tr
-  | ArgsRes.abort r => DropGlueBlocks D r.trace
 ```
 
 ### `ArgsExact`
