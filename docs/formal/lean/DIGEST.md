@@ -446,7 +446,7 @@ theorem RueCore.enum_carriesLinear_iff {D : Decls} {e : Nat} {ed : EnumDecl}
     ∃ Ts, Ts ∈ ed.variants ∧ ∃ T, T ∈ Ts ∧ Ty.qual D T = Qual.linear
 ```
 
-### `class_unique`
+### `qual_unique`
 
 *theorem* · module `RueCore.Statics.Lemmas`
 
@@ -467,7 +467,7 @@ enum and a payload naming a struct are the same step. `dtor` does not appear,
 because §3's equations do not read it.
 
 ```lean
-theorem RueCore.class_unique {D D' : Decls} (hwf : WfDecls D) (hwf' : WfDecls D')
+theorem RueCore.qual_unique {D D' : Decls} (hwf : WfDecls D) (hwf' : WfDecls D')
   (hslen : D.structs.length = D'.structs.length)
   (helen : D.enums.length = D'.enums.length)
   (hsshape :
@@ -482,18 +482,18 @@ theorem RueCore.class_unique {D D' : Decls} (hwf : WfDecls D) (hwf' : WfDecls D'
   (T : Ty) : Ty.qual D T = Ty.qual D' T
 ```
 
-### `struct_class_unique`
+### `struct_qual_unique`
 
 *theorem* · module `RueCore.Statics.Lemmas`
 
 **§3's qualifier assignment for the struct layer has one solution**, the
-projection of `class_unique` §3's own sentence asks for. It needs the enum
+projection of `qual_unique` §3's own sentence asks for. It needs the enum
 layer's shapes as well as the struct layer's, because a field may name an enum
 — that is the mutual recursion `3.0:5` grounds, not a weakness of the
 statement.
 
 ```lean
-theorem RueCore.struct_class_unique {D D' : Decls} (hwf : WfDecls D)
+theorem RueCore.struct_qual_unique {D D' : Decls} (hwf : WfDecls D)
   (hwf' : WfDecls D') (hslen : D.structs.length = D'.structs.length)
   (helen : D.enums.length = D'.enums.length)
   (hsshape :
@@ -505,20 +505,20 @@ theorem RueCore.struct_class_unique {D D' : Decls} (hwf : WfDecls D)
     ∀ (e : Nat) (ed ed' : EnumDecl),
       D.enums[e]? = some ed →
         D'.enums[e]? = some ed' → ed.variants = ed'.variants)
-  (s : Nat) : D.classOf s = D'.classOf s
+  (s : Nat) : D.qualOf s = D'.qualOf s
 ```
 
-### `enum_class_unique`
+### `enum_qual_unique`
 
 *theorem* · module `RueCore.Statics.Lemmas`
 
 **§3's qualifier assignment for the enum layer has one solution** (`6.3:19`),
-the other projection of `class_unique`. Simpler than the struct one in its own
+the other projection of `qual_unique`. Simpler than the struct one in its own
 layer — an enum records no attribute, so its qualifier *is* the payload join — and
 mutual in the same way: a payload may name a struct.
 
 ```lean
-theorem RueCore.enum_class_unique {D D' : Decls} (hwf : WfDecls D) (hwf' : WfDecls D')
+theorem RueCore.enum_qual_unique {D D' : Decls} (hwf : WfDecls D) (hwf' : WfDecls D')
   (hslen : D.structs.length = D'.structs.length)
   (helen : D.enums.length = D'.enums.length)
   (hsshape :
@@ -530,7 +530,7 @@ theorem RueCore.enum_class_unique {D D' : Decls} (hwf : WfDecls D) (hwf' : WfDec
     ∀ (e : Nat) (ed ed' : EnumDecl),
       D.enums[e]? = some ed →
         D'.enums[e]? = some ed' → ed.variants = ed'.variants)
-  (e : Nat) : D.enumClassOf e = D'.enumClassOf e
+  (e : Nat) : D.enumQualOf e = D'.enumQualOf e
 ```
 
 ### `overwriteOk_iff`
@@ -715,7 +715,7 @@ theorem RueCore.OwnSt.join_wf {D : Decls} (b c : OwnSt) (T : Ty) (r : OwnSt) :
 
 **The §5.5 join is associative**, at one path and its subtree, over states
 that are shapes of their type (`OwnSt.wf`) and under §3's qualifier assignment for
-the struct layer (`WfStructs`, of which only the class-is-join clause is read).
+the struct layer (`WfStructs`, of which only the qual-is-join clause is read).
 Neither premise can be dropped: the section docstring above says which
 counterexample each rules out; `WfStructs` is one a
 well-formed program already carries (`checkStructs_sound`).
@@ -2213,7 +2213,7 @@ theorem RueCore.checkEnums_sound {D : Decls} (h : checkEnums D = true) : WfEnums
 **Every `checkNoCycle` acceptance is `3.0:5`** (`WfByValueEdge`): the by-value
 "contains" relation over the declarations is well-founded, so no struct or enum
 contains itself by value through any cycle of fields and payloads. This is the
-premise `class_unique` turns into "§3's qualifier assignment has one solution".
+premise `qual_unique` turns into "§3's qualifier assignment has one solution".
 
 ```lean
 theorem RueCore.checkNoCycle_sound {D : Decls} (h : checkNoCycle D = true) :
@@ -27738,30 +27738,7 @@ Defining equations, as Lean derived them from the body:
     | none => []
 ```
 
-### `Decls.classOf`
-
-*def* · module `RueCore.Syntax`
-
-`qual(S)` for a declared struct type (§3), read off the declaration. An
-index the environment does not have is `Affine`, the qualifier of a struct with no
-attribute and no linear field — the conservative reading of a program
-`WfStructs` rejects anyway (helper).
-
-```lean
-def RueCore.Decls.classOf (D : Decls) (s : Nat) : Qual
-```
-
-Defining equations, as Lean derived them from the body:
-
-```lean
-∀ (D : Decls) (s : Nat),
-  D.classOf s =
-    match D.structs[s]? with
-    | some sd => sd.cls
-    | none => Qual.affine
-```
-
-### `Decls.enumClassOf`
+### `Decls.enumQualOf`
 
 *def* · module `RueCore.Syntax`
 
@@ -27771,14 +27748,14 @@ conservative reading of a program `WfEnums` rejects anyway — `Copy` would let
 such a type be duplicated (helper).
 
 ```lean
-def RueCore.Decls.enumClassOf (D : Decls) (e : Nat) : Qual
+def RueCore.Decls.enumQualOf (D : Decls) (e : Nat) : Qual
 ```
 
 Defining equations, as Lean derived them from the body:
 
 ```lean
 ∀ (D : Decls) (e : Nat),
-  D.enumClassOf e =
+  D.enumQualOf e =
     match D.enums[e]? with
     | some ed => ed.cls
     | none => Qual.affine
@@ -27800,6 +27777,29 @@ Defining equations, as Lean derived them from the body:
 
 ```lean
 ∀ (D : List StructDecl), Decls.ofStructs D = { structs := D, enums := [] }
+```
+
+### `Decls.qualOf`
+
+*def* · module `RueCore.Syntax`
+
+`qual(S)` for a declared struct type (§3), read off the declaration. An
+index the environment does not have is `Affine`, the qualifier of a struct with no
+attribute and no linear field — the conservative reading of a program
+`WfStructs` rejects anyway (helper).
+
+```lean
+def RueCore.Decls.qualOf (D : Decls) (s : Nat) : Qual
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (D : Decls) (s : Nat),
+  D.qualOf s =
+    match D.structs[s]? with
+    | some sd => sd.cls
+    | none => Qual.affine
 ```
 
 ### `Decls.topoSortStep`
@@ -28888,7 +28888,7 @@ the declarations the conservation law reads (helper).
 ```lean
 def RueCore.DtorNotCopy (D : Decls) : Prop :=
   ∀ (s : Nat) (sd : StructDecl),
-    D.structs[s]? = some sd → sd.dtor = true → D.classOf s ≠ Qual.copy
+    D.structs[s]? = some sd → sd.dtor = true → D.qualOf s ≠ Qual.copy
 ```
 
 ### `EvalRes`
@@ -29518,8 +29518,8 @@ Defining equations, as Lean derived them from the body:
 ∀ (D : Decls) (w : FloatWidth), Ty.qual D (Ty.float w) = Qual.copy
 ∀ (D : Decls), Ty.qual D Ty.bool = Qual.copy
 ∀ (D : Decls), Ty.qual D Ty.unit = Qual.copy
-∀ (D : Decls) (s : Nat), Ty.qual D (Ty.struct s) = D.classOf s
-∀ (D : Decls) (e : Nat), Ty.qual D (Ty.enum e) = D.enumClassOf e
+∀ (D : Decls) (s : Nat), Ty.qual D (Ty.struct s) = D.qualOf s
+∀ (D : Decls) (e : Nat), Ty.qual D (Ty.enum e) = D.enumQualOf e
 ∀ (D : Decls) (elem : Ty) (n : Nat),
   Ty.qual D (elem.array n) =
     match Ty.qual D elem with
@@ -29881,7 +29881,7 @@ Defining equations, as Lean derived them from the body:
 ```lean
 ∀ (D : Decls) (e k i : Nat) (vs : List Val),
   matchConsume D e k i vs =
-    if D.enumClassOf e = Qual.copy then []
+    if D.enumQualOf e = Qual.copy then []
     else
       [Event.consume
           (Contents.enum e k i
@@ -30134,9 +30134,9 @@ Defining equations, as Lean derived them from the body:
 
 ```lean
 ∀ (D : Decls) (s id : Nat) (cs : List Contents),
-  Contents.qual D (Contents.struct s id cs) = D.classOf s
+  Contents.qual D (Contents.struct s id cs) = D.qualOf s
 ∀ (D : Decls) (e k id : Nat) (cs : List Contents),
-  Contents.qual D (Contents.enum e k id cs) = D.enumClassOf e
+  Contents.qual D (Contents.enum e k id cs) = D.enumQualOf e
 ∀ (D : Decls) (T : Ty) (id : Nat) (cs : List Contents),
   Contents.qual D (Contents.array T id cs) = Ty.qual D (T.array cs.length)
 ∀ (D : Decls), Contents.qual D Contents.movedOut = Qual.copy
@@ -30839,9 +30839,9 @@ Defining equations, as Lean derived them from the body:
 
 ```lean
 ∀ (D : Decls) (s id : Nat) (fields : List Val),
-  Val.qual D (Val.struct s id fields) = D.classOf s
+  Val.qual D (Val.struct s id fields) = D.qualOf s
 ∀ (D : Decls) (e k id : Nat) (payload : List Val),
-  Val.qual D (Val.enum e k id payload) = D.enumClassOf e
+  Val.qual D (Val.enum e k id payload) = D.enumQualOf e
 ∀ (D : Decls) (T : Ty) (id : Nat) (vs : List Val),
   Val.qual D (Val.array T id vs) = Ty.qual D (T.array vs.length)
 ∀ (D : Decls) (w : IntWidth) (s : Sign) (n : Int),
@@ -30859,7 +30859,7 @@ Defining equations, as Lean derived them from the body:
 **`3.0:5` (E0483), mechanized**: the by-value "contains" relation over the
 declarations is well-founded, so no declaration reaches itself through a cycle
 of struct fields and enum payloads. This is the one premise that makes §3's
-struct and enum equations a *definition* — `class_unique` is the induction it
+struct and enum equations a *definition* — `qual_unique` is the induction it
 licenses — and it is joint over the two layers because `3.0:5` is.
 
 ```lean
@@ -31320,7 +31320,7 @@ Constructors:
 
 ```lean
 RueCore.EnumDecl.Wf.mk {D : Decls} {ed : EnumDecl}
-  (classIsJoin : ed.cls = EnumDecl.payloadJoin D ed) : EnumDecl.Wf D ed
+  (qualIsJoin : ed.cls = EnumDecl.payloadJoin D ed) : EnumDecl.Wf D ed
 ```
 
 ### `EvalInv`
@@ -31631,7 +31631,7 @@ Constructors:
 
 ```lean
 RueCore.StructDecl.Wf.mk {D : Decls} {sd : StructDecl}
-  (classIsJoin : sd.cls = sd.attr.lift (StructDecl.baseOf D sd))
+  (qualIsJoin : sd.cls = sd.attr.lift (StructDecl.baseOf D sd))
   (copyWf :
     sd.attr = Attr.copy →
       StructDecl.baseOf D sd = Qual.copy ∧ sd.dtor = false)
@@ -33010,10 +33010,10 @@ Defining equations, as Lean derived them from the body:
 ∀ (D : Decls), Contents.allCopy D Contents.unit = true
 ∀ (D : Decls) (s i : Nat) (cs : List Contents),
   Contents.allCopy D (Contents.struct s i cs) =
-    (decide (D.classOf s = Qual.copy) && Contents.allCopyList D cs)
+    (decide (D.qualOf s = Qual.copy) && Contents.allCopyList D cs)
 ∀ (D : Decls) (e k i : Nat) (cs : List Contents),
   Contents.allCopy D (Contents.enum e k i cs) =
-    (decide (D.enumClassOf e = Qual.copy) && Contents.allCopyList D cs)
+    (decide (D.enumQualOf e = Qual.copy) && Contents.allCopyList D cs)
 ∀ (D : Decls) (T : Ty) (i : Nat) (cs : List Contents),
   Contents.allCopy D (Contents.array T i cs) =
     (decide (Ty.qual D (T.array cs.length) = Qual.copy) &&
@@ -33075,11 +33075,11 @@ Defining equations, as Lean derived them from the body:
 ∀ (D : Decls), Contents.copyContained D Contents.unit = true
 ∀ (D : Decls) (s i : Nat) (cs : List Contents),
   Contents.copyContained D (Contents.struct s i cs) =
-    if D.classOf s = Qual.copy then Contents.allCopyList D cs
+    if D.qualOf s = Qual.copy then Contents.allCopyList D cs
     else Contents.copyContainedList D cs
 ∀ (D : Decls) (e k i : Nat) (cs : List Contents),
   Contents.copyContained D (Contents.enum e k i cs) =
-    if D.enumClassOf e = Qual.copy then Contents.allCopyList D cs
+    if D.enumQualOf e = Qual.copy then Contents.allCopyList D cs
     else Contents.copyContainedList D cs
 ∀ (D : Decls) (T : Ty) (i : Nat) (cs : List Contents),
   Contents.copyContained D (Contents.array T i cs) =
@@ -33347,10 +33347,10 @@ Defining equations, as Lean derived them from the body:
 ∀ (D : Decls), Contents.own D Contents.unit = []
 ∀ (D : Decls) (s i : Nat) (cs : List Contents),
   Contents.own D (Contents.struct s i cs) =
-    if D.classOf s = Qual.copy then [] else i :: Contents.ownList D cs
+    if D.qualOf s = Qual.copy then [] else i :: Contents.ownList D cs
 ∀ (D : Decls) (e k i : Nat) (cs : List Contents),
   Contents.own D (Contents.enum e k i cs) =
-    if D.enumClassOf e = Qual.copy then [] else i :: Contents.ownList D cs
+    if D.enumQualOf e = Qual.copy then [] else i :: Contents.ownList D cs
 ∀ (D : Decls) (T : Ty) (i : Nat) (cs : List Contents),
   Contents.own D (Contents.array T i cs) =
     if Ty.qual D (T.array cs.length) = Qual.copy then []
