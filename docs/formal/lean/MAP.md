@@ -100,7 +100,7 @@ flowchart BT
     reachable_nested["reachable_nested"]
     reachable_ordered["reachable_ordered"]
     reachable_stackDiscipline["reachable_stackDiscipline"]
-    run_blocks["run_blocks"]
+    run_glue_blocks["run_glue_blocks"]
     step_blocks["step_blocks"]
   end
   subgraph RueCore_TracePrefix["RueCore.TracePrefix (L2 proofs)"]
@@ -132,10 +132,9 @@ flowchart BT
   destructure_plain --> whole_program_exactly_once
   drop_glue_order --> step_blocks
   dtor_once --> no_double_free
-  eval_conserves --> drop_glue_order
   eval_conserves --> dtor_once
   eval_conserves --> freed_once
-  eval_conserves --> run_blocks
+  eval_conserves --> run_glue_blocks
   eval_conserves --> step_no_double_free
   eval_conserves --> whole_program_exactly_once
   eval_sim --> eval_steps_of_outOfFuel
@@ -177,6 +176,7 @@ flowchart BT
   rest_step --> drop_exactly_once
   rest_step --> rest_exactly_once
   rest_step --> whole_program_exactly_once
+  run_glue_blocks --> drop_glue_order
   run_ne_returned --> eval_diverges_iff
   run_ne_returned --> run_refused_of_step_stuck
   run_ne_returned --> run_safe
@@ -234,7 +234,7 @@ helper theorems `Map.walk` counted under it before the next marked node:
 | `eval_conserves` | the conservation law over `eval`'s identities, proved by fuel induction, that `no_double_free` follows from | 390 | 171 |
 | `eval_tidy` | every cell an evaluation allocates is tombstoned by its end — the activation-record-pop invariant behind `drop_exactly_once` | 228 | 49 |
 | `rest_step` | the ledger for the rest of every form, behind `rest_exactly_once` | 316 | 160 |
-| `run_blocks` | every terminating run's trace is in the block grammar `Blocks`: each drop marker followed by exactly its own walk | 6 | 79 |
+| `run_glue_blocks` | every terminating run's trace is in the glue grammar `DropGlueBlocks`: each drop marker followed by exactly §6.11's walk of what it names | 9 | 75 |
 | `step_blocks` | reads `drop_glue_order` as `Blocks`, through `DropGlueBlocks.toBlocks` | 7 | 3 |
 | `reachable_ordered` | every drop scope is in location order | 8 | 3 |
 | `reachable_nested` | scopes nest, a pending `endscope` being the tail of its record | 7 | 18 |
@@ -1549,7 +1549,7 @@ flowchart BT
 flowchart BT
   thm["drop_glue_order"]
   subgraph mile["Milestone ancestors"]
-    eval_conserves["eval_conserves"] --> thm
+    run_glue_blocks["run_glue_blocks"] --> thm
   end
   subgraph defs_["Definitions the statement depends on"]
     Activation["Activation<br/>§6.1, §6.9"] -.-> thm
@@ -2438,7 +2438,7 @@ marked node.
 | `rest_exactly_once` | `RueCore.TraceExact` | 52 | 139 |
 | `whole_program_exactly_once` | `RueCore.TraceWhole` | 37 | 295 |
 | `drop_order` | `RueCore.TraceOrder` | 36 | 20 |
-| `drop_glue_order` | `RueCore.TraceOrder` | 25 | 82 |
+| `drop_glue_order` | `RueCore.TraceOrder` | 25 | 6 |
 | `Step.det` | `RueCore.Step.Lemmas` | 11 | 2 |
 | `Step.terminal` | `RueCore.Step.Lemmas` | 5 | 3 |
 | `Config.trichotomy` | `RueCore.Step.Lemmas` | 9 | 13 |
@@ -2475,7 +2475,7 @@ marked node.
 | `eval_conserves` | `RueCore.Trace` | 390 | 171 |
 | `eval_tidy` | `RueCore.TraceExact` | 228 | 49 |
 | `rest_step` | `RueCore.TraceExact` | 316 | 160 |
-| `run_blocks` | `RueCore.TraceOrder` | 6 | 79 |
+| `run_glue_blocks` | `RueCore.TraceOrder` | 9 | 75 |
 | `step_blocks` | `RueCore.TraceOrder` | 7 | 3 |
 | `reachable_ordered` | `RueCore.TraceOrder` | 8 | 3 |
 | `reachable_nested` | `RueCore.TraceOrder` | 7 | 18 |
