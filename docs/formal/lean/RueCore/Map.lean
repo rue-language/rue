@@ -90,7 +90,7 @@ def milestones : List (Name × String) := [
   (``step_blocks, "reads `drop_glue_order` as `Blocks`, through `DropGlueBlocks.toBlocks`"),
   (``reachable_ordered, "every drop scope is in location order"),
   (``reachable_nested, "scopes nest, a pending `endscope` being the tail of its record"),
-  (``reachable_stackDiscipline, "the registration stack is dropped newest-first"),
+  (``reachable_stackDiscipline, "a step that cuts the registration stack back drops only cells it deregistered, newest first"),
   (``pendingSafe_needed, "the RUE-2316 carve-out (a by-value argument a sibling's `return` destroys) is load-bearing, not vacuous"),
   (``roundRat_wf, "rounding an exact rational lands in 𝔽_w — the float algebraic specification's closure law the non-vacuity witness rests on")
 ]
