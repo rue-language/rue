@@ -236,8 +236,8 @@ helper theorems `Map.walk` counted under it before the next marked node:
 | `rest_step` | the ledger for the rest of every form, behind `rest_exactly_once` | 316 | 160 |
 | `run_blocks` | every terminating run's trace is in the block grammar `Blocks`: each drop marker followed by exactly its own walk | 6 | 79 |
 | `step_blocks` | carries `run_blocks` to `Step` | 17 | 6 |
-| `reachable_ordered` | every drop scope is in location order | 13 | 23 |
-| `reachable_nested` | scopes nest, a pending `endscope` being the tail of its record | 12 | 17 |
+| `reachable_ordered` | every drop scope is in location order | 8 | 24 |
+| `reachable_nested` | scopes nest, a pending `endscope` being the tail of its record | 7 | 18 |
 | `reachable_stackDiscipline` | the registration stack is dropped newest-first | 17 | 13 |
 | `pendingSafe_needed` | the RUE-2316 carve-out (a by-value argument a sibling's `return` destroys) is load-bearing, not vacuous | 20 | 8 |
 | `roundRat_wf` | rounding an exact rational lands in 𝔽_w — the float algebraic specification's closure law the non-vacuity witness rests on | 19 | 34 |
@@ -2448,7 +2448,7 @@ marked node.
 | `step_progress` | `RueCore.Equivalence` | 11 | 0 |
 | `step_safeAt` | `RueCore.Equivalence` | 13 | 2 |
 | `step_type_safety` | `RueCore.Equivalence` | 25 | 2 |
-| `step_no_use_after_drop` | `RueCore.Tombstone` | 10 | 57 |
+| `step_no_use_after_drop` | `RueCore.Tombstone` | 10 | 58 |
 | `eval_big_to_small` | `RueCore.Equivalence` | 17 | 0 |
 | `run_sim` | `RueCore.Equivalence` | 18 | 0 |
 | `eval_small_to_big` | `RueCore.Equivalence` | 23 | 0 |
@@ -2477,8 +2477,8 @@ marked node.
 | `rest_step` | `RueCore.TraceExact` | 316 | 160 |
 | `run_blocks` | `RueCore.TraceOrder` | 6 | 79 |
 | `step_blocks` | `RueCore.TraceOrder` | 17 | 6 |
-| `reachable_ordered` | `RueCore.TraceOrder` | 13 | 23 |
-| `reachable_nested` | `RueCore.TraceOrder` | 12 | 17 |
+| `reachable_ordered` | `RueCore.TraceOrder` | 8 | 24 |
+| `reachable_nested` | `RueCore.TraceOrder` | 7 | 18 |
 | `reachable_stackDiscipline` | `RueCore.TraceOrder` | 17 | 13 |
 | `pendingSafe_needed` | `RueCore.TraceExact` | 20 | 8 |
 | `roundRat_wf` | `RueCore.Float.Lemmas` | 19 | 34 |
