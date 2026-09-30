@@ -68,6 +68,12 @@ theorem EvalRes.withTrace_append (r : EvalRes) (tr₁ tr₂ : List Event) :
     (r.withTrace tr₂).withTrace tr₁ = r.withTrace (tr₁ ++ tr₂) := by
   cases r <;> simp [EvalRes.withTrace]
 
+/-- `ofVals` distributes over concatenation (helper). -/
+theorem Contents.ofVals_append :
+    ∀ (vs ws : List Val), Contents.ofVals (vs ++ ws) = Contents.ofVals vs ++ Contents.ofVals ws
+  | [], _ => rfl
+  | v :: vs, ws => by simp [Contents.ofVals, Contents.ofVals_append vs ws]
+
 /-- An argument list's outcome, sequenced into the context that consumes its
 values: a failed argument is the whole form's outcome, and the values go to
 `c` with the arguments' trace prefixed — the shape every argument-list form of
