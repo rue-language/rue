@@ -1562,7 +1562,7 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
              -- member"), so this picks the trace label the way `.loop`'s case
              -- below tells its two divergence cases apart from one Lean
              -- derivation, keyed on `Ω.norm` rather than a separate rule.
-             accepted (if Ω.norm.isSome then "(Call) §5.8" else "(Call-Bottom) §5.3")
+             accepted (if Ω.norm.isSome then "(Call) §5.8" else "(Call-Bottom) §5.8:27")
                Γ (.call f args) (.ty fd.ret) Ω kids
          | (none, kids) =>
              rejected "(Call) §5.8" Γ (.call f args)

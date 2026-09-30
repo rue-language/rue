@@ -9,7 +9,7 @@ had no seed, no generated case, and no Explain row; Explain now names the call
 this way when its argument list diverges, the way
 (Loop-Div)/(Loop-Div-Backedge) are already told apart.
 
-Rules exercised: (Call-Bottom) §5.3 · (Return-Value) §5.7 · (Dbg) §5.8
+Rules exercised: (Call-Bottom) §5.8:27 · (Return-Value) §5.7 · (Dbg) §5.8
 
 ── The program ─────────────────────────────────────────────────────────────────
 
@@ -57,7 +57,7 @@ function body, checked from (Fn) §5.8's entry context.
             e       1
             Γ;Σ     (empty)
             ⇒       i64  ⊣  (empty)
-      (Call-Bottom) §5.3
+      (Call-Bottom) §5.8:27
         e       f1(return 0)
         Γ;Σ     (empty)
         ⇒       i64  ⊣  ⊥
