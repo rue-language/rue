@@ -317,7 +317,7 @@ theorem RueCore.Float.ofLit_one (w : FloatWidth) :
 
 *theorem* · module `RueCore.Float.Lemmas`
 
-**Closure of `@sqrt`** (`3.12:35`, §7:16's "each `⊙_w` is total on `𝔽_w`") for `exactOps`: `FloatLaws.sqrt_wf`.
+**Closure of `@sqrt`** (`3.12:35`, §7:16's "each `⊙_w` of §6.4 is total on `𝔽_w`") for `exactOps`: `FloatLaws.sqrt_wf`.
 
 ```lean
 theorem RueCore.Float.sqrt_wf (σ : Bool) (w : FloatWidth) (f : FloatDatum)
@@ -24413,19 +24413,19 @@ inductive RueCore.Refusal : Type
 
 Constructors:
 
-**`Refusal.useAfterMove`** — Reading a `⊘` cell (§7: no use-after-move).
+**`Refusal.useAfterMove`** — Reading a `⊘` cell (§7:4: no use-after-move).
 
 ```lean
 RueCore.Refusal.useAfterMove : Refusal
 ```
 
-**`Refusal.useAfterDrop`** — Touching a `†` cell (§7: no use-after-drop).
+**`Refusal.useAfterDrop`** — Touching a `†` cell (§7:6: no use-after-drop).
 
 ```lean
 RueCore.Refusal.useAfterDrop : Refusal
 ```
 
-**`Refusal.linearLeak`** — A scope exit — at a `let`'s end (§6.7) or on an activation record's unwind (§6.9) — reaching a live linear value (§7: consumed exactly once; §5.6); or a declared-linear destructure whose residue holds one, which §5.1's `¬ linear-residue(S, π_s)` premise forbids (`3.8:60`, E0474) and which §6.3 therefore leaves unchecked.
+**`Refusal.linearLeak`** — A scope exit — at a `let`'s end (§6.7) or on an activation record's unwind (§6.9) — reaching a live linear value (§7:8: consumed exactly once; §5.6); or a declared-linear destructure whose residue holds one, which §5.1's `¬ linear-residue(S, π_s)` premise forbids (`3.8:60`, E0474) and which §6.3 therefore leaves unchecked.
 
 ```lean
 RueCore.Refusal.linearLeak : Refusal
@@ -24455,7 +24455,7 @@ RueCore.Refusal.unbound : Refusal
 RueCore.Refusal.typeConfusion : Refusal
 ```
 
-**`Refusal.ownedUnderCopy`** — An owned value under a `Copy` node (§3: a `Copy` type's fields, payloads and elements are `Copy`, `3.8:18`, `6.3:19`) — the shape a copy would duplicate an owner through, which §7's no-double-free bullet forbids. The Copy-containment monitor (`Contents.copyContained`) refuses it where it could be built: at aggregate introduction and at an assignment (RUE-2323).
+**`Refusal.ownedUnderCopy`** — An owned value under a `Copy` node (§3: a `Copy` type's fields, payloads and elements are `Copy`, `3.8:18`, `6.3:19`) — the shape a copy would duplicate an owner through, which §7's no-double-free bullet (§7:5) forbids. The Copy-containment monitor (`Contents.copyContained`) refuses it where it could be built: at aggregate introduction and at an assignment (RUE-2323).
 
 ```lean
 RueCore.Refusal.ownedUnderCopy : Refusal
@@ -32296,7 +32296,8 @@ def RueCore.Lead (M : FloatSig) (P : Program) (fuel : Nat) (H : Store)
 
 *def* · module `RueCore.Spec.Trace`
 
-**No destructor twice on one value** (§6.11, `3.9:28`), given only that a
+**No destructor twice on one value** (§6.11, `3.9:28`; §7:5's "Every
+stored value's destructor runs at most once", with no typing hypothesis), given only that a
 destructor-bearing struct is not `Copy` (`3.9:31`). As for `freed_once`, a
 refused or fuel-exhausted run has an empty trace, so the bound is over the
 runs `eval` terminates.
@@ -33632,7 +33633,8 @@ def RueCore.Exact (D : Decls) (H : Store) (X : List Nat) : EvalRes → Prop :=
 
 *def* · module `RueCore.Spec.Trace`
 
-**Nothing freed twice, on every program** (§6.11): a run that answers a
+**Nothing freed twice, on every program** (§6.11; §7:5's "never frees
+twice", with no typing hypothesis): a run that answers a
 value, an unwind or a panic frees each identity at most once, with no typing
 hypothesis. A refused or fuel-exhausted run has an empty trace
 (`EvalRes.trace`), so on an unchecked program the bound rests on `eval`'s
@@ -35039,7 +35041,8 @@ def RueCore.Sim (M : FloatSig) (P : Program) (φ : Activation)
 *def* · module `RueCore.Spec.Equivalence`
 
 **A stuck `Step` run is a refusal of `run`** (§6), at every large enough
-fuel, perhaps with another `Refusal`.
+fuel, perhaps with another `Refusal`: the stuck case of §7:3's
+semantic-equivalence sentence.
 
 ```lean
 def RueCore.Spec.run_refused_of_step_stuck_stmt : Prop :=
@@ -35055,7 +35058,7 @@ def RueCore.Spec.run_refused_of_step_stuck_stmt : Prop :=
 *def* · module `RueCore.Spec.Equivalence`
 
 **`run` is simulated by `Step`, on every program** (§6.12): the same, with
-no typing hypothesis.
+no typing hypothesis (§7:3's semantic-equivalence sentence).
 
 ```lean
 def RueCore.Spec.run_sim_stmt : Prop :=
@@ -35074,8 +35077,9 @@ def RueCore.Spec.run_sim_stmt : Prop :=
 *def* · module `RueCore.Spec.Equivalence`
 
 **Completeness on every program** (§6.12): the same, up to a refusal of
-`run`'s (RUE-2314). With no typing hypothesis the escape is wide: a `run` that
-is `.refused` past some fuel satisfies it, whatever `→*` reaches.
+`run`'s (RUE-2314; §7:3's semantic-equivalence sentence). With no typing
+hypothesis the escape is wide: a `run` that is `.refused` past some fuel
+satisfies it, whatever `→*` reaches.
 
 ```lean
 def RueCore.Spec.run_small_to_big_stmt : Prop :=
@@ -38752,8 +38756,8 @@ def RueCore.Spec.no_linear_overwrite_stmt : Prop :=
 
 *def* · module `RueCore.Spec.Safety`
 
-**No refusal of any kind** (§7's memory-safety bullets, §7:4, §7:6 and
-§7:8). A checked program's run is never `.refused`. Narrower than the bullets: a value built for
+**No refusal of any kind** (§7:3's "does not get stuck" and §7's
+memory-safety bullets, §7:4, §7:5, §7:6 and §7:8). A checked program's run is never `.refused`. Narrower than the bullets: a value built for
 a sibling operand that a later one abandons by `return` or `break` is dropped
 by nobody (RUE-2316), and a `@panic` runs no drop (§5.7's `⊥_panic`). Like
 every "never `.refused`" statement, it holds because `eval`'s checks and
@@ -40736,7 +40740,7 @@ RueCore.Typed.binopBot {P : Program} {R : Ty} {Γ : Ctx} {Δ₁ : List Ctx}
         { norm := none, brk := Δ₁ }
 ```
 
-**`Typed.floatBinop`** — (Float-Arith), (Float-Ord) and (Total-Cmp) §5.8, in one rule for the same reason `binop` fuses (Arith) and (Ord): they differ only in the type they conclude at (`BinOp.resultTy` — `float(w)`, `bool`, `int(32,signed)`). Both operands share **one** `float(w)`: `3.12:13` gives no implicit widening, so an `f32`/`f64` mix has no derivation, and `3.12:14` relates no float operand to an integer one — the only bridges are the intrinsics. `BinOp.floatAdmits` is §5.8:15's "rejected by the absence of a rule" for `%` (`3.12:25`) and for the bitwise and shift operators, written as a side condition because one constructor stands for the three rule groups.
+**`Typed.floatBinop`** — (Float-Arith), (Float-Ord) and (Total-Cmp) §5.8, in one rule for the same reason `binop` fuses (Arith) and (Ord): they differ only in the type they conclude at (`BinOp.resultTy` — `float(w)`, `bool`, `int(32,signed)`). Both operands share **one** `float(w)`: `3.12:13` gives no implicit widening, so an `f32`/`f64` mix has no derivation, and `3.12:14` relates no float operand to an integer one — the only bridges are the intrinsics. `BinOp.floatAdmits` is §5.8:15's "rejected on floats by the absence of a rule" for `%` (`3.12:25`) and for the bitwise and shift operators, written as a side condition because one constructor stands for the three rule groups.
 
 ```lean
 RueCore.Typed.floatBinop {P : Program} {R : Ty} {Γ Γ₁ : Ctx} {Ω₂ : Out}
