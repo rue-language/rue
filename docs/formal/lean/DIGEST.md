@@ -9320,7 +9320,8 @@ theorem RueCore.ArgsRes.bind_evalArgs_cons (ev : Store → Expr → EvalRes) (H 
 
 **§6.2's search through one operand keeps any `EvalInv`** (helper): the
 operand's promise, and the context's from the store its value left, holding
-that value.
+that value. The operand also supplies `hkp`, what its run is known to `Keep`
+(proved outside the induction); it defaults to `trivial` for `Keep := True`.
 
 ```lean
 theorem RueCore.EvalInv.bind (I : EvalInv) {H : Store} {vs : List Val} {r : EvalRes}
@@ -9353,7 +9354,9 @@ theorem RueCore.EvalInv.bind₀ (I : EvalInv) {H : Store} {r : EvalRes}
 
 **§6.2's search through an argument list keeps any `EvalInv`** (helper):
 operands in order, then compute. Each argument keeps the promise from wherever
-it starts, and the computation keeps it holding every value.
+it starts, and the computation keeps it holding every value. Each argument's
+`hev` gives its promise and, as a second half, what its run is known to `Keep`
+(`trivial` for `Keep := True`).
 
 ```lean
 theorem RueCore.EvalInv.args (I : EvalInv) {ev : Store → Expr → EvalRes}
