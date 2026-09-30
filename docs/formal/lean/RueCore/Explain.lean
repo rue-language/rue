@@ -1789,44 +1789,44 @@ theorem explain_result {P : Program} {R : Ty} : ∀ (e : Expr) (Γ : Ctx),
   | .binop op e₁ e₂, Γ => by
       simp only [explain, check, explain_result e₁, explain_result e₂]
       (repeat' split) <;>
-        first | rfl | (simp_all [accepted, acceptedAt, rejected, Deriv.result] <;> grind)
+        first | rfl | (simp_all [accepted, rejected, Deriv.result] <;> grind)
   | .unop .neg e, Γ => by
       simp only [explain, check, explain_result e]
       (repeat' split) <;>
-        first | rfl | (simp_all [accepted, acceptedAt, rejected, Deriv.result] <;> grind)
+        first | rfl | (simp_all [accepted, rejected, Deriv.result] <;> grind)
   | .unop .not e, Γ => by
       simp only [explain, check, explain_result e]
       (repeat' split) <;>
-        first | rfl | (simp_all [accepted, acceptedAt, rejected, Deriv.result] <;> grind)
+        first | rfl | (simp_all [accepted, rejected, Deriv.result] <;> grind)
   | .unop .bitnot e, Γ => by
       simp only [explain, check, explain_result e]
       (repeat' split) <;>
-        first | rfl | (simp_all [accepted, acceptedAt, rejected, Deriv.result] <;> grind)
+        first | rfl | (simp_all [accepted, rejected, Deriv.result] <;> grind)
   | .intCast w s e, Γ => by
       simp only [explain, check, explain_result e]
       (repeat' split) <;>
-        first | rfl | (simp_all [accepted, acceptedAt, rejected, Deriv.result] <;> grind)
+        first | rfl | (simp_all [accepted, rejected, Deriv.result] <;> grind)
   | .fintrin (.intToFloat w) e, Γ => by
       simp only [explain, check, explain_result e]
       (repeat' split) <;>
-        first | rfl | (simp_all [accepted, acceptedAt, rejected, Deriv.result] <;> grind)
+        first | rfl | (simp_all [accepted, rejected, Deriv.result] <;> grind)
   | .fintrin (.floatToInt w s) e, Γ => by
       simp only [explain, check, explain_result e]
       (repeat' split) <;>
-        first | rfl | (simp_all [accepted, acceptedAt, rejected, Deriv.result] <;> grind)
+        first | rfl | (simp_all [accepted, rejected, Deriv.result] <;> grind)
   | .fintrin (.floatCast w) e, Γ => by
       simp only [explain, check, explain_result e]
       (repeat' split) <;>
-        first | rfl | (simp_all [accepted, acceptedAt, rejected, Deriv.result] <;> grind)
+        first | rfl | (simp_all [accepted, rejected, Deriv.result] <;> grind)
   | .fintrin (.roundOp k) e, Γ => by
       simp only [explain, check, explain_result e]
       (repeat' split) <;>
-        first | rfl | (simp_all [accepted, acceptedAt, rejected, Deriv.result] <;> grind)
+        first | rfl | (simp_all [accepted, rejected, Deriv.result] <;> grind)
   | .panic msg, Γ => rfl
   | .dbg e, Γ => by
       simp only [explain, check, explain_result e]
       (repeat' split) <;>
-        first | rfl | (simp_all [accepted, acceptedAt, Deriv.result] <;> grind)
+        first | rfl | (simp_all [accepted, Deriv.result] <;> grind)
   | .mkStruct s args, Γ => by
       simp only [explain, check]
       cases hs : P.decls.structs[s]? with
@@ -1907,19 +1907,19 @@ theorem explain_result {P : Program} {R : Ty} : ∀ (e : Expr) (Γ : Ctx),
   | .repeatArray Te e n, Γ => by
       simp only [explain, check, explain_result e]
       (repeat' split) <;>
-        first | rfl | (simp_all [accepted, acceptedAt, Deriv.result] <;> grind)
+        first | rfl | (simp_all [accepted, Deriv.result] <;> grind)
   | .indexRead pl idx πs, Γ => by
       simp only [explain, check, explainIdx_result idx]
       (repeat' split) <;>
-        first | rfl | (simp_all [accepted, acceptedAt, rejected, Deriv.result] <;> grind)
+        first | rfl | (simp_all [accepted, rejected, Deriv.result] <;> grind)
   | .indexWrite pl idx πs e, Γ => by
       simp only [explain, check, explain_result e, explainIdx_result idx]
       (repeat' split) <;>
-        first | rfl | (simp_all [accepted, acceptedAt, rejected, Deriv.result] <;> grind)
+        first | rfl | (simp_all [accepted, rejected, Deriv.result] <;> grind)
   | .indexDrop pl idx πs, Γ => by
       simp only [explain, check, explainIdx_result idx]
       (repeat' split) <;>
-        first | rfl | (simp_all [accepted, acceptedAt, rejected, Deriv.result] <;> grind)
+        first | rfl | (simp_all [accepted, rejected, Deriv.result] <;> grind)
   | .drop pl, Γ => by
       simp only [explain, check]
       (repeat' split) <;> first | rfl | simp_all [accepted, acceptedAt, rejected, Deriv.result]
@@ -1989,7 +1989,7 @@ theorem explain_result {P : Program} {R : Ty} : ∀ (e : Expr) (Γ : Ctx),
   | .seq e₁ e₂, Γ => by
       simp only [explain, check, explain_result e₁, explain_result e₂]
       (repeat' split) <;>
-        first | rfl | (simp_all [accepted, acceptedAt, rejected, Deriv.result] <;> grind)
+        first | rfl | (simp_all [accepted, rejected, Deriv.result] <;> grind)
   | .ite c e₁ e₂, Γ => by
       simp only [explain, check, explain_result c]
       cases hc : check P R Γ c with
@@ -3038,7 +3038,7 @@ theorem traceEval_res (M : FloatSig) {P : Program} : ∀ (fuel : Nat) (d : Nat) 
       | repeatArray Te e₁ n =>
           simp only [traceEval, eval, EvalRes.bind, ih]
           (repeat' split) <;>
-            first | rfl | (simp_all [traced, tracedIntro, introVal, didNotRun, refused,
+            first | rfl | (simp_all [traced, tracedIntro, introVal, refused,
               EvalRes.withTrace] <;> split <;> simp_all)
       | indexRead pl idx πs =>
           simp only [traceEval, eval,
