@@ -9289,6 +9289,20 @@ theorem RueCore.dropEventsList_eq_flatten (D : Decls) (cs : List Contents) :
   dropEventsList D cs = (List.map (dropEvents D) cs).flatten
 ```
 
+### `Activation.unwindScope_push`
+
+*theorem* · module `RueCore.Step.Lemmas`
+
+(D-EndScope)'s pop restores the activation record (D-Let) or (D-Match)
+extended (helper).
+
+```lean
+theorem RueCore.Activation.unwindScope_push (φ : Activation) (ls : List Nat) :
+  { env := ls.reverse ++ φ.env, scope := φ.scope ++ ls }.unwindScope
+      ls.length =
+    φ
+```
+
 ### `stepEval_complete`
 
 *theorem* · module `RueCore.Step.Lemmas`
@@ -12839,35 +12853,16 @@ theorem RueCore.Cons.dropDeclared {D : Decls} {F : Event → List Nat}
 
 *theorem* · module `RueCore.Trace`
 
-**(D-Assign) §6.8, as a ledger**: the old contents at the place is dropped
-and the held value takes its position (helper).
+**(D-Assign) §6.8, as a ledger**, at a place below a dynamic index (`ρ`,
+empty for a static place): the old contents at the place is dropped and the
+held value takes its position (helper).
 
 ```lean
 theorem RueCore.Cons.assign {D : Decls} {F : Event → List Nat} (hF : TraceMeasure D F)
-  {H : Store} {Y : List Nat} {ℓ : Nat} {c c' old : Contents} {π : List Nat}
-  {v : Val} {evs : List Event} (hcc : StoreCC D H)
-  (hc : H[ℓ]? = some (Cell.full c)) (hr : c.getAt π = Except.ok old)
-  (hd : dropCell D ℓ old = Except.ok evs)
-  (hw : c.setAt π (Contents.ofVal v) = some c')
-  (hc' : Contents.copyContained D c' = true) :
-  Cons D F H (Val.own D v ++ Y)
-    (EvalRes.ok (List.set H ℓ (Cell.full c')) Val.unit evs)
-```
-
-### `Cons.assignDyn`
-
-*theorem* · module `RueCore.Trace`
-
-**(D-Assign) below a dynamic index, as a ledger**: the same, at the leaf
-the index resolved to, one level down (helper).
-
-```lean
-theorem RueCore.Cons.assignDyn {D : Decls} {F : Event → List Nat}
-  (hF : TraceMeasure D F) {H : Store} {Y : List Nat} {ℓ : Nat}
-  {c c' sub sub' old : Contents} {π ρ : List Nat} {v : Val} {evs : List Event}
-  (hcc : StoreCC D H) (hc : H[ℓ]? = some (Cell.full c))
-  (hr : c.getAt π = Except.ok sub) (hr' : sub.getAt ρ = Except.ok old)
-  (hd : dropCell D ℓ old = Except.ok evs)
+  {H : Store} {Y : List Nat} {ℓ : Nat} {c c' sub sub' old : Contents}
+  {π ρ : List Nat} {v : Val} {evs : List Event} (hcc : StoreCC D H)
+  (hc : H[ℓ]? = some (Cell.full c)) (hr : c.getAt π = Except.ok sub)
+  (hr' : sub.getAt ρ = Except.ok old) (hd : dropCell D ℓ old = Except.ok evs)
   (hw' : sub.setAt ρ (Contents.ofVal v) = some sub')
   (hw : c.setAt π sub' = some c') (hc' : Contents.copyContained D c' = true) :
   Cons D F H (Val.own D v ++ Y)
@@ -13154,19 +13149,6 @@ The root of a place, as `eval` resolves it inline, is `rootCell` (helper).
 theorem RueCore.rootCell_of {H : Store} {φ : Activation} {i ℓ : Nat} {c : Contents}
   (hℓ : φ.env[i]? = some ℓ) (hc : H[ℓ]? = some (Cell.full c)) :
   rootCell H φ i = Except.ok (ℓ, c)
-```
-
-### `Activation.unwindScope_push`
-
-*theorem* · module `RueCore.Equivalence`
-
-(D-EndScope) restores the activation record (D-Let) or (D-Match) extended (helper).
-
-```lean
-theorem RueCore.Activation.unwindScope_push (φ : Activation) (ls : List Nat) :
-  { env := ls.reverse ++ φ.env, scope := φ.scope ++ ls }.unwindScope
-      ls.length =
-    φ
 ```
 
 ### `Activation.unwindScope_let`
@@ -16833,20 +16815,6 @@ theorem RueCore.Tombstone.extend_keeps {H H' : Store} {A ls : List Nat}
   (A ++ ls).Nodup ∧ ∀ (ℓ : Nat), ℓ ∈ A ++ ls → Tombstone.Live H' ℓ
 ```
 
-### `Tombstone.Activation.unwindScope_ext`
-
-*theorem* · module `RueCore.Tombstone`
-
-(D-EndScope)'s pop undoes the extension (D-Let) and (D-Match) made (helper).
-
-```lean
-theorem RueCore.Tombstone.Activation.unwindScope_ext (φ₀ : Activation)
-  (ls : List Nat) :
-  { env := ls.reverse ++ φ₀.env, scope := φ₀.scope ++ ls }.unwindScope
-      ls.length =
-    φ₀
-```
-
 ### `Tombstone.OpRes.toStep_live`
 
 *theorem* · module `RueCore.Tombstone`
@@ -17388,6 +17356,12 @@ panic `run` answers is reached by §6's relation (`eval_big_to_small`), so its t
 a reachable configuration's; exhausted fuel carries the empty trace; and a
 checked run is never refused (helper).
 
+A cross-check, kept on purpose: its statement is `no_double_free`'s, and the
+spine proves that one over `eval` (`freed_once`, `dtor_once`). Nothing uses
+this proof; it certifies that the prefix bound is at least as strong as the
+terminating-run one, which `step_no_double_free`'s Spec doc-comment claims by
+naming it (SIMPLIFY.md, detour 3).
+
 ```lean
 theorem RueCore.no_double_free_of_step (M : FloatLaws) {P : Program}
   (h : ProgramTyped P) (fuel : Nat) :
@@ -17799,28 +17773,11 @@ theorem RueCore.dropDeclared_count {D : Decls} {H : Store} {ℓ : Nat}
 
 *theorem* · module `RueCore.TraceWhole`
 
-(D-Assign) §6.8, at every identity (helper).
+(D-Assign) §6.8, at every identity, at a place below a dynamic index (`ρ`,
+empty for a static place) (helper).
 
 ```lean
-theorem RueCore.assign_count {D : Decls} {H : Store} {ℓ : Nat} {c c' old : Contents}
-  {π : List Nat} {v : Val} {evs : List Event} (hcc : StoreCC D H)
-  (hc : H[ℓ]? = some (Cell.full c)) (hr : c.getAt π = Except.ok old)
-  (hd : dropCell D ℓ old = Except.ok evs)
-  (hw : c.setAt π (Contents.ofVal v) = some c')
-  (hc' : Contents.copyContained D c' = true) (a : Nat) :
-  List.count a (storeOwn D H) + List.count a (Val.own D v) =
-    List.count a (storeOwn D (List.set H ℓ (Cell.full c'))) +
-      List.count a (freedIds D evs)
-```
-
-### `assignDyn_count`
-
-*theorem* · module `RueCore.TraceWhole`
-
-(D-Assign) below a dynamic index, at every identity (helper).
-
-```lean
-theorem RueCore.assignDyn_count {D : Decls} {H : Store} {ℓ : Nat}
+theorem RueCore.assign_count {D : Decls} {H : Store} {ℓ : Nat}
   {c c' sub sub' old : Contents} {π ρ : List Nat} {v : Val} {evs : List Event}
   (hcc : StoreCC D H) (hc : H[ℓ]? = some (Cell.full c))
   (hr : c.getAt π = Except.ok sub) (hr' : sub.getAt ρ = Except.ok old)
@@ -18451,16 +18408,6 @@ The model the statements run on is `Float.exactOps` (helper).
 theorem RueCore.Sharp.exact_ops : Float.exactModel.toFloatSig = Float.exactOps
 ```
 
-### `Sharp.withTrace_nil`
-
-*theorem* · module `RueCore.Sharp`
-
-Prefixing an empty trace changes nothing (helper).
-
-```lean
-theorem RueCore.Sharp.withTrace_nil (r : EvalRes) : EvalRes.withTrace [] r = r
-```
-
 ### `Sharp.noStep_of_stuck`
 
 *theorem* · module `RueCore.Sharp`
@@ -18592,17 +18539,6 @@ theorem RueCore.Sharp.not_exact_returned {D : Decls} {H H' : Store} {v : Val}
 theorem RueCore.Sharp.not_exact_cc {D : Decls} {H H' : Store} {v : Val}
   {tr : List Event} {Y : List Nat} (h : ¬StoreCC D H') :
   ¬Exact D H Y (EvalRes.ok H' v tr)
-```
-
-### `Sharp.storeCC_one`
-
-*theorem* · module `RueCore.Sharp`
-
-A one-cell store is copy-contained when its cell is (helper).
-
-```lean
-theorem RueCore.Sharp.storeCC_one {D : Decls} {c : Contents}
-  (h : Contents.copyContained D c = true) : StoreCC D [Cell.full c]
 ```
 
 ### `Sharp.StepsN.steps_of_longer`
