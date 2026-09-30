@@ -82,8 +82,8 @@ refuses.
 
 Part 3 needs no converse simulation. Its one new fact is
 `eval_steps_of_outOfFuel`: if `eval` exhausts `fuel` on an expression, §6's
-reduction has a run of exactly `fuel` steps from that expression in focus
-(`StepsN`). Each unit of fuel is paid for by at least one `Step`: every
+reduction has a run of at least `fuel` steps from that expression in focus
+(`StepsN`, `Long`). Each unit of fuel is paid for by at least one `Step`: every
 recursive call of `eval` sits behind a (Search) evaluation-state step (§6.2), and the
 operands before it reached values, which `Sim`'s `ok` clause turns into runs.
 Two forms spend fuel without a step of their own, and each is paid for by the
@@ -1464,7 +1464,8 @@ end longForms
 
 /-- **Fuel counts steps** (RUE-2332; ADR-0097 decision 3). If `eval` exhausts
 `fuel` on an expression, then from that expression in focus, under any context
-and after any trace, §6's reduction has a run of exactly `fuel` steps. Each
+and after any trace, §6's reduction has a run of at least `fuel` steps (so one
+of exactly `fuel`, `Long.exact`). Each
 unit of fuel `eval` spends is paid for by at least one `Step`: a (Search)
 enter step (§6.2) before every recursive call, the operands already reduced
 before it (`eval_sim`'s `ok` clause), and (D-Loop-Iter) (§6.10) for the loop's

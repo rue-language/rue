@@ -290,7 +290,7 @@ the same `→*` derivation `letAddProgram_runs` found by stepping, obtained from
 
 **Completeness: what §6 reaches, `eval` answers.** The converse needs no second
 simulation, only a count. If `eval` runs out of `fuel` on an expression, `Step`
-has a run of exactly `fuel` steps from it (`eval_steps_of_outOfFuel`): every
+has a run of at least `fuel` steps from it (`eval_steps_of_outOfFuel`): every
 unit of fuel `eval` spends is paid for by a step. `Step` is deterministic, so a
 run that reaches an end in `n` steps has no longer run beside it. At any fuel
 above `n`, then, `run` cannot be out of fuel, and whatever it answers,
