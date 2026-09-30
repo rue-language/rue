@@ -12,6 +12,10 @@ Every theorem `Dynamics.lean` held, moved here verbatim and in source order so
 that the definitions layer holds definitions only (RUE-2460; README, "Layers").
 The section headings are `Dynamics.lean`'s own, repeated where a moved
 theorem sits under one.
+
+The last section is §6.2's evaluation contexts stated once for every
+invariant a fuel induction over `eval` carries (`EvalInv`, RUE-2518): it is
+here because every proof module imports this one.
 -/
 
 namespace RueCore
