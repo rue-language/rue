@@ -690,8 +690,8 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
 - **Covers:** whole bindings, **field-sensitive obligations**, the binary
   join, by-value parameters, and struct values whose qualifier is `Linear` through
   a field — §3's join, proved to be what a declaration records
-  (`RueCore.class_unique`, one unconditional statement over both layers, with
-  `RueCore.struct_class_unique` its struct projection) and to reach `Linear`
+  (`RueCore.qual_unique`, one unconditional statement over both layers, with
+  `RueCore.struct_qual_unique` its struct projection) and to reach `Linear`
   exactly when the declaration says so or a field does (`RueCore.struct_carriesLinear_iff`,
   §5.3's `carries_linear` lifting) — on every edge but the two above. The
   per-field half is §5.6's `residual-linear` read on the residue

@@ -3390,7 +3390,7 @@ The rule is **joint** over the two layers, and the cross-layer shape is why.
 layers and `Linear` in both layers each check out — so without `3.0:5` the
 recorded qualifier would be a free parameter, and the same source program would be
 accepted under one reading and rejected under the other. `checkNoCycle` refuses
-the shape under both, which is what makes `class_unique` unconditional. The
+the shape under both, which is what makes `qual_unique` unconditional. The
 compiler refuses the declaration outright: E0483, "recursive type 'S' has
 infinite size (contains itself by value: S -> E -> S)".
 -/
@@ -3412,7 +3412,7 @@ example : checkStructs cycLinear = true ∧ checkEnums cycLinear = true := ⟨by
 example : Ty.qual cycAffine (.struct 0) ≠ Ty.qual cycLinear (.struct 0) := by decide
 
 /-- `3.0:5` refuses both, so neither is a `WfDecls` environment and
-`class_unique` is never handed two solutions (E0483; the compiler probe is
+`qual_unique` is never handed two solutions (E0483; the compiler probe is
 `p2320/cyc1.rue`). -/
 example : checkDecls cycAffine = false := by rfl
 example : checkDecls cycLinear = false := by rfl

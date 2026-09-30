@@ -387,7 +387,7 @@ theorem Contents.setAt_own {D : Decls} (a : Nat) : ∀ (π : List Nat) {c sub ne
             simp only [Option.map_eq_some_iff] at hw
             obtain ⟨cf', hw', rfl⟩ := hw
             simp only [Contents.copyContained] at hcc
-            by_cases hc : D.classOf s = .copy
+            by_cases hc : D.qualOf s = .copy
             · rw [if_pos hc] at hcc
               have hsub := Contents.getAt_allCopy π (Contents.allCopyList_index hcc hcf) hr
               simp [Contents.own, hc, Contents.allCopy_own hsub]
@@ -494,10 +494,10 @@ theorem StoreCC.set_dead {D : Decls} {H : Store} {ℓ : Nat} (h : StoreCC D H) :
 declaration declares no destructor (`3.8:18`, `3.9:31`) (helper). -/
 theorem WfDecls.dtorNotCopy {D : Decls} (h : WfDecls D) : DtorNotCopy D := by
   intro s sd hd hdt hc
-  have hcls : sd.cls = .copy := by simpa only [Decls.classOf, hd] using hc
+  have hcls : sd.cls = .copy := by simpa only [Decls.qualOf, hd] using hc
   have hw := h.structs s sd hd
   have hattr : sd.attr = .copy := by
-    have hj := hw.classIsJoin
+    have hj := hw.qualIsJoin
     rw [hcls] at hj
     cases ha : sd.attr with
     | copy => rfl
@@ -608,7 +608,7 @@ theorem dropContents_dtor {D : Decls} (hdt : DtorNotCopy D) (a : Nat) :
   | .unit, _, _, h => by
       simp [dropContents] at h; subst h; simp [dtorIds]
   | .struct s i cs, evs, hcc, h => by
-      by_cases hc : D.classOf s = .copy
+      by_cases hc : D.qualOf s = .copy
       · have hac : (Contents.struct s i cs).allCopy D = true :=
           Contents.copyContained_allCopy hcc (by simpa [Contents.qual] using hc)
         rw [dropContents_allCopy_dtor hdt hac h]; simp
@@ -631,7 +631,7 @@ theorem dropContents_dtor {D : Decls} (hdt : DtorNotCopy D) (a : Nat) :
             · simp only [dtorIds_nil, List.nil_append]
               omega
   | .enum e k i cs, evs, hcc, h => by
-      by_cases hc : D.enumClassOf e = .copy
+      by_cases hc : D.enumQualOf e = .copy
       · have hac : (Contents.enum e k i cs).allCopy D = true :=
           Contents.copyContained_allCopy hcc (by simpa [Contents.qual] using hc)
         rw [dropContents_allCopy_dtor hdt hac h]; simp

@@ -2235,7 +2235,7 @@ theorem pendingSafe_needed (M : FloatSig) :
   intro ⟨_, _, _, h4⟩
   have := h4 0 (by decide)
   simp [storeOwn, lostStore, Cell.own, Contents.own, Contents.ownList, lostProgram, lostDecls,
-    Decls.classOf, Decls.ofStructs, freedIds, Val.own, Contents.ofVal] at this
+    Decls.qualOf, Decls.ofStructs, freedIds, Val.own, Contents.ofVal] at this
 
 /-! ## What the statements reject, at typed configurations
 

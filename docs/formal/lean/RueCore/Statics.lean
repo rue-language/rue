@@ -38,7 +38,7 @@ the obligation could only be met by the glue, which is the implicit discard
 declaration, beside the `@copy` one). The equation is a definition rather than
 a fixpoint condition because `3.0:5` (E0483) forbids a declaration to contain
 itself by value, directly or through a cycle — `WfByValueEdge` is that rule, joint
-over both layers, and `class_unique` is the statement it buys, proved.
+over both layers, and `qual_unique` is the statement it buys, proved.
 
 `3.9:44` is stated "through any depth of struct nesting", and `dtorWf` looks
 one level down — at `sd.baseOf D`, the join of the *immediate* field qualifiers.
@@ -113,7 +113,7 @@ contains itself by value, directly or through a cycle (`3.0:5`, E0483) — is
 enum and a payload may name a struct. -/
 structure StructDecl.Wf (D : Decls) (sd : StructDecl) : Prop where
   /-- §3's assignment: `qual(S) = attr(S) lifted over ⊔ { qual(Ti) }`. -/
-  classIsJoin : sd.cls = sd.attr.lift (sd.baseOf D)
+  qualIsJoin : sd.cls = sd.attr.lift (sd.baseOf D)
   /-- `3.8:18` and `3.9:31`: `@copy` is well-formed only when every field is
   `Copy` and the struct declares no destructor. -/
   copyWf : sd.attr = .copy → sd.baseOf D = .copy ∧ sd.dtor = false
@@ -166,7 +166,7 @@ lift, and the compiler rejects `drop fn E(self)` where it is declared (E0417),
 which is why `EnumDecl` records no `dtor` field for §6.11 to read. -/
 structure EnumDecl.Wf (D : Decls) (ed : EnumDecl) : Prop where
   /-- §3's assignment: `qual(E) = ⊔ { qual(Tij) }` (`6.3:19`). -/
-  classIsJoin : ed.cls = ed.payloadJoin D
+  qualIsJoin : ed.cls = ed.payloadJoin D
 
 /-- A well-formed enum environment: §3's qualifier assignment holds of every enum
 declaration (`EnumDecl.Wf`). Together with `WfStructs` this is the premise that
@@ -189,7 +189,7 @@ shape both equations solve at more than one assignment
 
 `Decls.ByValueEdge` is `3.0:5`'s "contains by value" relation, one step, and
 `WfByValueEdge` is the rule itself: the relation is **well-founded**, so each
-declaration's qualifier is the unique solution of its equation (`class_unique`).
+declaration's qualifier is the unique solution of its equation (`qual_unique`).
 The calculus states the equations but not this side condition; §3 gains the
 paragraph in RUE-2334, and `3.0:5` is the normative form it mechanizes.
 `checkNoCycle` (`Checker/Defs.lean`) decides it by a topological sort. -/
@@ -241,7 +241,7 @@ def Decls.ByValueEdge (D : Decls) (d d' : TyName) : Prop := ∃ T ∈ D.byValue 
 /-- **`3.0:5` (E0483), mechanized**: the by-value "contains" relation over the
 declarations is well-founded, so no declaration reaches itself through a cycle
 of struct fields and enum payloads. This is the one premise that makes §3's
-struct and enum equations a *definition* — `class_unique` is the induction it
+struct and enum equations a *definition* — `qual_unique` is the induction it
 licenses — and it is joint over the two layers because `3.0:5` is. -/
 def WfByValueEdge (D : Decls) : Prop := WellFounded (fun d' d => D.ByValueEdge d d')
 
