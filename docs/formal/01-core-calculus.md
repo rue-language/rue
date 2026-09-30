@@ -10,6 +10,18 @@ assistant or an interpreter without re-typesetting. Judgment forms are introduce
 where they are first used. Paragraphs tagged **[open]** are modeling decisions
 that a maintainer should confirm; everything else is a proposed commitment.
 
+Every paragraph of §5, §6 and §7 carries a citable id, `§` then the section
+then the paragraph's number within it, from 1: `§5.3:4` is the fourth
+paragraph of §5.3, `§6.13.3:5` the fifth of §6.13.3, and `§7:3` the third of
+§7 itself. What gets a number is a prose paragraph, a top-level list item, a
+quoted block, or a rule display together with the paragraph that leads into
+it. The `§` keeps these apart from the prose specification's `X.Y:Z`
+ids, which the calculus cites bare. Ids are append-only, as the specification's
+are: a paragraph inserted mid-section takes a letter suffix after the number it
+follows (`4a` after `4`), and a deleted paragraph's id is retired, not reused.
+The mechanization's cross-reference gate fails on a citation of an id this
+document does not declare.
+
 ---
 
 ## 1. What the core is, in one paragraph
@@ -547,7 +559,7 @@ rules; the word "implicit" disappears.
 
 ## 5. Static semantics: typing with ownership
 
-Ownership is flow-sensitive, so the type judgment threads an **ownership state**.
+<a id="5:1"></a>**[§5:1]** Ownership is flow-sensitive, so the type judgment threads an **ownership state**.
 
 ```
   Ownership state
@@ -567,7 +579,7 @@ Ownership is flow-sensitive, so the type judgment threads an **ownership state**
                                  --   (§5.8, (Accessor-Call), ADR-0062); admissible in PLACE contexts only (§4.1)
 ```
 
-`Σ(p)` is the state recorded for the exact path `p`. A base path can be `Owned`
+<a id="5:2"></a>**[§5:2]** `Σ(p)` is the state recorded for the exact path `p`. A base path can be `Owned`
 while one of its descendants is `MovedOut` after a partial move; rules that hand
 an aggregate to another context therefore use the stronger predicate
 `fully-owned(Σ,p)`, meaning `Σ(p)=Owned` and no path strictly under `p` is
@@ -581,13 +593,13 @@ is a well-formedness discipline, not a runtime property. (RUE-1279: an earlier
 draft's binding form had no mark, leaving this paragraph and (Assign)'s
 mutability premise undefined for every elaborated program.)
 
-The main judgment:
+<a id="5:3"></a>**[§5:3]** The main judgment:
 
 ```
     Γ ; Σ ; Λ  ⊢  e  ⇒  R  ⊣  Σ'
 ```
 
-read: "under bindings Γ, starting ownership Σ and loans Λ, expression `e` is
+<a id="5:4"></a>**[§5:4]** read: "under bindings Γ, starting ownership Σ and loans Λ, expression `e` is
 well-formed, has result sort `R`, and leaves ownership Σ'." Every rule below
 writes `T` for `R` — the value case, and the only one until §5.8. The single
 place-sorted result is (Accessor-Call)'s `place(m, T)` (RUE-1600: the sort was
@@ -597,7 +609,7 @@ and does not change across `e`; it is threaded only so the use/assign rules can
 consult it — see 5.4. It is written on the turnstile, not on the output, for that
 reason.)
 
-**Λ is ambiently empty in the current core** (RUE-526 hygiene note): (Fn)
+<a id="5:5"></a>**[§5:5]** **Λ is ambiently empty in the current core** (RUE-526 hygiene note): (Fn)
 checks every body under `∅`, and (Call) builds `Λ_call` but discharges it
 *locally* — by the consistency check and by rechecking `fully-owned` for every
 loaned root against the state at call entry — rather than threading it into the
@@ -614,7 +626,7 @@ callee reads the updated value through the borrow) — and a *move* of a loaned
 root anywhere in the argument list is caught by the entry recheck (prose
 `6.1:36`, E0208).
 
-Function bodies are checked with an entry ownership state and parameter
+<a id="5:6"></a>**[§5:6]** Function bodies are checked with an entry ownership state and parameter
 discipline determined by the signature:
 
 ```
@@ -634,7 +646,7 @@ discipline determined by the signature:
   g is well-formed
 ```
 
-`Ωf` carries the normal ownership state (if one exists) together with every
+<a id="5:7"></a>**[§5:7]** `Ωf` carries the normal ownership state (if one exists) together with every
 reachable diverging edge and the state in force there, so the rule reads the
 edge snapshots off the judgment itself rather than off the shape of the
 derivation (RUE-2234's judgment-form rewrite; earlier text projected an
@@ -652,7 +664,7 @@ body never consumes is E0406 ("parameter 't' is passed by value, so this
 function owns it and must consume it"), as is a body-local `let` binding of
 one.
 
-Its second clause covers the paths that never reach a normal state. A body
+<a id="5:8"></a>**[§5:8]** Its second clause covers the paths that never reach a normal state. A body
 ending in `return` has `Ωf = ⊥;Δf` (§5.7) with no normal state to discharge at: the function's scopes
 end at the `return` instead, so the obligation must hold in the state its
 `⟨ret, Σ_edge⟩` abrupt-completion context records — the state in force *there* — the same "consumed on only some paths" discipline §5.5's join applies
@@ -671,13 +683,15 @@ so a linear bound outside the loop stays consumable after it. The surface
 spec's `3.8:51` — which had stated the diverging-path exemption broadly
 enough to read as an amnesty — now states the same edge rule.
 
-The `borrow` and `inout` restrictions are **callee-polarity** rules: the caller
+<a id="5:9"></a>**[§5:9]** The `borrow` and `inout` restrictions are **callee-polarity** rules: the caller
 may not touch a lent place while the loan is live, while the callee may touch the
 parameter only in the mode it received. They are not represented by inserting the
 parameters into ambient `Λ`; doing so would make an `inout` parameter unreadable
 by the ordinary `(Use-Copy)` premise.
 
 ### 5.1 Use and copy (the keystone, as a rule)
+
+<a id="5.1:1"></a>**[§5.1:1]**
 
 ```
   Γ ⊢ p : T       planΓ(p) = Ordinary(Copy,T)
@@ -701,7 +715,7 @@ by the ordinary `(Use-Copy)` premise.
   Γ ; Σ ; Λ ⊢ p ⇒ T ⊣ Σ
 ```
 
-There is no successful static rule for `Untrackable(OrdinaryDynamic,T)` when
+<a id="5.1:2"></a>**[§5.1:2]** There is no successful static rule for `Untrackable(OrdinaryDynamic,T)` when
 `qual(T) ∈ {Affine,Linear}`: the existing dynamic-index move restriction
 rejects that use. There is also no successful static rule when an untrackable
 path has an applicable declared-linear prefix: that use is rejected with E0904
@@ -709,7 +723,7 @@ because its destructure target cannot be tracked without a compile-time index. T
 destructor-`self` exemption above classifies its Copy reads as
 `Untrackable(OrdinaryDynamic)` without a declared-linear plan.
 
-The ordinary rules above are selected only when elaboration records the
+<a id="5.1:3"></a>**[§5.1:3]** The ordinary rules above are selected only when elaboration records the
 corresponding `Ordinary` plan. They are overridden for a statically trackable projection
 whose path has a declared-linear prefix. Define the ordered residue traversal
 `residue(T, π)` recursively: at a struct step, visit fields in declaration
@@ -733,7 +747,7 @@ traversal, so nested residue is visited before a later sibling.
   Γ ; Σ ; Λ ⊢ p ⇒ T ⊣ Σ[ d ↦ MovedOut, and every path strictly under d removed ]
 ```
 
-Here `T` is bound by the `Γ ⊢ p : T` premise as the type of the selected leaf;
+<a id="5.1:4"></a>**[§5.1:4]** Here `T` is bound by the `Γ ⊢ p : T` premise as the type of the selected leaf;
 the rule consumes the place `d`, not necessarily the root binding, and leaves
 declared-linear ancestors owned.
 The dynamic counterpart (§6.3) returns the selected leaf and immediately
@@ -749,7 +763,7 @@ the E0904 rejection, while a path without one uses
 `Untrackable(OrdinaryDynamic)`. By-reference and equality operands are
 `Borrowed` place uses and do not invoke this rule.
 
-The `(Use-Copy)` and `(Use-Move)` rules are read only with an `Ordinary` plan;
+<a id="5.1:5"></a>**[§5.1:5]** The `(Use-Copy)` and `(Use-Move)` rules are read only with an `Ordinary` plan;
 this prevents overlap when a selected leaf is Copy inside a declared-linear
 destructure or an ordinary untrackable dynamic read. §5.3's `(@Drop)` and
 `(@Drop-Copy)` are read the same way: `@drop(p)` leaves `p` `MovedOut`, so
@@ -767,7 +781,7 @@ The rule is intentionally distinct from infectious linearity: a struct that is
 linear only because a field carries a linear value follows ordinary partial
 move and residual checking.
 
-`fully-owned(Σ, p)` (§5 preamble) is the **no-use-after-move** premise
+<a id="5.1:6"></a>**[§5.1:6]** `fully-owned(Σ, p)` (§5 preamble) is the **no-use-after-move** premise
 strengthened to the whole subtree (`3.8:5/24/26/53`): a use requires that `p`
 owns its value *and* that no sub-place of `p` has been partially moved out —
 handing an aggregate with a moved-out part to a new owner is ill-formed (`3.8:26`; the
@@ -787,6 +801,8 @@ ProjRead rule instead:
 
 ### 5.2 Assignment and reinitialization
 
+<a id="5.2:1"></a>**[§5.2:1]**
+
 ```
   Γ ; Σ ; Λ ⊢ e ⇒ T ⊣ Σ1       Γ ⊢ p : T       (mutability & loan side-conditions)
   Σ1(p) = MovedOut  ∨  ¬carries_linear(T)                  -- 3.8:77: no implicit linear drop-on-overwrite
@@ -796,7 +812,7 @@ ProjRead rule instead:
   Γ ; Σ ; Λ ⊢ (assign p = e) ⇒ unit ⊣ Σ1[ p ↦ Owned ]      -- reinitialization (3.8:55)
 ```
 
-Assigning to a `MovedOut` place makes it `Owned` again (`3.8:55/56`). Assigning to
+<a id="5.2:2"></a>**[§5.2:2]** Assigning to a `MovedOut` place makes it `Owned` again (`3.8:55/56`). Assigning to
 an already-`Owned` place whose type does **not** carry a linear value drops the old
 value first (`3.8` overwrite-drop). Overwriting an already-`Owned` place whose type
 *does* carry a linear value is **ill-formed** (`3.8:77`): the second premise, checked
@@ -807,7 +823,7 @@ would implicitly consume a linear value that the program never explicitly consum
 The `Σ1` (rather than `Σ`) reading of the premise makes `p = e` legal when `e` itself
 consumes `p` (`x = f(x)`), matching the RHS-first drop order.
 
-**The array side condition, as a premise.** Writing *into* an array while any
+<a id="5.2:3"></a>**[§5.2:3]** **The array side condition, as a premise.** Writing *into* an array while any
 element is moved out is rejected (`3.8:72`, `7.1:46`, E0480). The third premise
 states it: where `Γ ⊢ p : T` reaches its leaf through an index step taken at an
 array place — `a[c] = e` and `a[c].f = e` alike — the rule demands
@@ -827,7 +843,7 @@ always rejected.
 
 ### 5.3 Sequencing, discard, and the linear leak check
 
-Expression evaluation carries an output result `Ω`: an optional normal
+<a id="5.3:1"></a>**[§5.3:1]** Expression evaluation carries an output result `Ω`: an optional normal
 ownership state together with the set of **abrupt-completion contexts** made by the
 reachable diverging edges of the expression:
 
@@ -837,7 +853,7 @@ reachable diverging edges of the expression:
   κ ::= ret | break | continue | diverge | panic
 ```
 
-`Σ;Δ` means that evaluation can reach the next expression normally with state
+<a id="5.3:2"></a>**[§5.3:2]** `Σ;Δ` means that evaluation can reach the next expression normally with state
 `Σ` and may also leave through the edges in `Δ`; `⊥;Δ` means it cannot
 complete normally. A `⟨ret, Σ_e⟩` abrupt-completion context is made by a `return` firing in
 state `Σ_e`, `⟨break, Σ_e⟩` by a `break`, `⟨diverge, Σ_e⟩` by a loop entered in
@@ -855,12 +871,12 @@ the projection that forgets the states and folds the exit kinds together:
   ⊥_panic ∈ δ(Δ)    iff  Δ has a ⟨panic, _⟩
 ```
 
-Every consumer that needs only *whether* a kind of edge is reachable — §5.5's
+<a id="5.3:3"></a>**[§5.3:3]** Every consumer that needs only *whether* a kind of edge is reachable — §5.5's
 join, §5.6's exemption of the panic edge — reads `δ(Δ)`; the consumers that
 need the state *at* an edge — (Fn)'s residual check and the loop rules' back-edge
 and exit sets (§5.7) — read `Δ` itself.
 
-**Threading.** Every rule of §5 written with bare states — `⊣ Σ₁`, `⊣ Σ₂`, … —
+<a id="5.3:4"></a>**[§5.3:4]** **Threading.** Every rule of §5 written with bare states — `⊣ Σ₁`, `⊣ Σ₂`, … —
 is read over `Ω`: a premise `⊣ Σᵢ` abbreviates `⊣ Σᵢ;Δᵢ` (the subexpression
 can complete normally, and may also leave through the edges in `Δᵢ`), and the rule's
 conclusion `⊣ Σ'` abbreviates `⊣ Σ';(Δ₁ ∪ … ∪ Δₙ)` over the premises the rule
@@ -881,7 +897,7 @@ a call with a diverging argument may retain its declared result type while
 producing that argument's provenance. The dead-source checker may still visit
 unreachable syntax for diagnostics, but those visits do not derive a reachable `Σ`.
 
-Strict evaluation contexts evaluate their hole before the surrounding
+<a id="5.3:5"></a>**[§5.3:5]** Strict evaluation contexts evaluate their hole before the surrounding
 construct can produce its value. Let `E_strict` range over the operand,
 receiver, argument, initializer, condition, index, and field/value positions of
 assignment, calls, aggregates, projections, strict operators, and intrinsics.
@@ -894,7 +910,7 @@ strict in their right operand. The generic propagation rule is:
   Γ ; Σ ; Λ ⊢ E_strict[e] ⇒ T_E ⊣ ⊥;Δ_e
 ```
 
-`T_E` is the construct's ordinary surface result type (for example `unit` for
+<a id="5.3:6"></a>**[§5.3:6]** `T_E` is the construct's ordinary surface result type (for example `unit` for
 assignment or `Tr` for a call); strict evaluation does not rewrite it to
 `never`. A non-strict context such as a sequence tail is not in `E_strict`:
 (Seq) and (Let) below carry a divergent tail through their own conclusion. This single rule covers assignment,
@@ -921,7 +937,7 @@ rule per syntax form.
   Γ ; Σ ; Λ ⊢ (let x = e1 ; e2) ⇒ never ⊣ ⊥;Δ_1
 ```
 
-Discarding a value whose type *carries a linear value* is ill-formed (`3.8:64` —
+<a id="5.3:7"></a>**[§5.3:7]** Discarding a value whose type *carries a linear value* is ill-formed (`3.8:64` —
 `carries_linear(T)` is `qual(T) = Linear` lifted through the aggregates: the
 field join for a struct, the element type for an array **of nonzero length**
 (a zero-length array carries nothing, `3.8:74` — which is why §3 gives it the qualifier
@@ -933,7 +949,7 @@ zero-length arrays, whose qualifier never reaches Linear.
 `let x = e1 ; e2` is like `Seq` but binds `x` (with `x` Owned in Σ for `e2`) and
 imposes no discard check on `e1`.
 
-(Seq) and (Let) require only the *prefix* to complete normally: a tail that diverges —
+<a id="5.3:8"></a>**[§5.3:8]** (Seq) and (Let) require only the *prefix* to complete normally: a tail that diverges —
 `(unit ; loop { unit })`, `let x = 1 ; return x` — makes the whole sequence
 divergent, `Ω_2 = ⊥;Δ_2`, with the prefix's abrupt-completion contexts `Δ_1` added, so a
 `break` in the prefix is still seen by the enclosing loop. `(Seq-Bottom)` and
@@ -945,7 +961,7 @@ reachable ownership path or change the block's `never` type. A semicolon after
 a diverging expression thus has the same result as a tail-position divergence;
 `@assert`, whose analyzed type is `unit`, does not satisfy this rule.
 
-The `@drop(p)` intrinsic is the deliberate, visible discharge of a value's drop
+<a id="5.3:9"></a>**[§5.3:9]** The `@drop(p)` intrinsic is the deliberate, visible discharge of a value's drop
 obligation (`3.9`). For `Affine`/`Linear` operands it consumes the operand, runs
 the same drop glue that scope exit would run, and leaves the source moved out so
 no later scope-exit drop runs for that place. It is the only non-move operation
@@ -965,7 +981,7 @@ glue and no ownership effect.
   Γ;Σ;Λ ⊢ @drop(p) ⇒ unit ⊣ Σ[ p ↦ MovedOut, and every path strictly under p removed ]
 ```
 
-The last two premises are (Use-Move)'s, for the same reason (RUE-1600):
+<a id="5.3:10"></a>**[§5.3:10]** The last two premises are (Use-Move)'s, for the same reason (RUE-1600):
 `@drop(p)` leaves `p` `MovedOut`, so when `p` is a projection it *is* a partial
 move, and §4.2's two restrictions on which projections may be partially moved
 apply unchanged. Without them the core accepted `@drop(o.f)` on an `Outer` that
@@ -980,7 +996,7 @@ field of a destructor-bearing `Outer` compiles, as does `@drop(a[i])` on a
 `Copy`-element array at a *dynamic* index, both with no drop glue and no
 ownership effect.
 
-`Σ(p) = Owned`, not `fully-owned(Σ, p)`, is the right strength here: `@drop`
+<a id="5.3:11"></a>**[§5.3:11]** `Σ(p) = Owned`, not `fully-owned(Σ, p)`, is the right strength here: `@drop`
 hands the value to no new owner, and §6.11's `⊘`-skip drops a partially moved
 value correctly — the very walk §5.6 schedules when that value merely leaves
 scope. The added residual-linear side condition applies only when such a
@@ -991,7 +1007,7 @@ marks the whole place moved; it does not revisit the already moved `o.a`.
 
 ### 5.4 Borrows and the law of exclusivity
 
-A call evaluates its arguments and then, for the duration of the call, holds
+<a id="5.4:1"></a>**[§5.4:1]** A call evaluates its arguments and then, for the duration of the call, holds
 *loans* on the places passed by reference. Within one call:
 
 ```
@@ -1008,7 +1024,7 @@ A call evaluates its arguments and then, for the duration of the call, holds
   argument state at call entry.
 ```
 
-While `(root(p), _) ∈ Λ`, `p` and every path under/over it may not be moved
+<a id="5.4:2"></a>**[§5.4:2]** While `(root(p), _) ∈ Λ`, `p` and every path under/over it may not be moved
 (`Use-Move` premise) nor, for a shared loan, mutated. The law of exclusivity is
 deliberately **root-granular**: a loan of any projection or subrange covers the
 entire root, so two `inout` loans of disjoint fields or ranges of the same root
@@ -1016,11 +1032,12 @@ are ill-formed. This is a conservative static rule; future `split_at_mut`-style
 APIs must express disjointness by producing distinct roots. Loans are
 **second-class**: they exist only for the call's dynamic extent and cannot be
 returned, stored, or outlive the call — this is what lets Rue omit lifetimes.
-**[open]** The core models loans as strictly call-scoped; if a future
+
+<a id="5.4:3"></a>**[§5.4:3]** **[open]** The core models loans as strictly call-scoped; if a future
 first-class-reference feature is adopted (a live ADR question, deferred), this
 section is where it lands.
 
-**Borrow of a value (elaboration, RUE-953).** The rule above is stated over
+<a id="5.4:4"></a>**[§5.4:4]** **Borrow of a value (elaboration, RUE-953).** The rule above is stated over
 `borrow p` with `p` a place, and that is the whole of the core: surface syntax
 also admits `borrow e` for an arbitrary `e`, and it is *elaborated away* before
 these rules apply. Elaboration is a source-to-source function on the argument,
@@ -1034,7 +1051,7 @@ choosing between two forms:
       ⇝  let x_fresh = e in  borrow x_fresh    -- x_fresh unnameable, scoped to the call
 ```
 
-Neither form is a new rule. The promoted form loans an `H0` allocation, which
+<a id="5.4:5"></a>**[§5.4:5]** Neither form is a new rule. The promoted form loans an `H0` allocation, which
 by §6.13.2 is minted before `main` and never tombstoned: `Σ(ℓ_e) = Owned` holds
 everywhere, no scope contains it, and §5.6 therefore schedules nothing for it —
 that is the precise content of "no drop glue". The temporary form is an
@@ -1045,13 +1062,13 @@ right answer, since `x_fresh` is unnameable and so can never be consumed. The
 must-consume rejection of `f(borrow make_token())` is thus a corollary of
 §5.6, not an added premise.
 
-The elaboration is a function of the *argument's syntax alone*: it commits to
+<a id="5.4:6"></a>**[§5.4:6]** The elaboration is a function of the *argument's syntax alone*: it commits to
 the promoted form only on a value-independent, enumerated set of infallible
 forms (literals, constants, and the total operators over them — notably not `/`
 or `%`, whose traps are value-dependent). A value-dependent promotion rule is
 unsound to weaken later, which is the history Rust's RFC 1414 → RFC 3027 records.
 
-An **equality compare** `e1 ≟ e2` reads each place operand through the same
+<a id="5.4:7"></a>**[§5.4:7]** An **equality compare** `e1 ≟ e2` reads each place operand through the same
 kind of shared loan, scoped to the compare rather than a call: it requires
 `Σ(p) = Owned`, takes a `(root(p), shared)` loan for the compare's duration,
 and leaves Σ unchanged (no move — §4.1, `4.3:3f`). Two shared reads are always
@@ -1066,7 +1083,7 @@ model masks that class and is not evidence that deferred view equality is sound.
 
 ### 5.5 Control flow and the branch join
 
-`if` and `match` type each arm under the *same* input Σ and must **reconcile**
+<a id="5.5:1"></a>**[§5.5:1]** `if` and `match` type each arm under the *same* input Σ and must **reconcile**
 their output contexts:
 
 ```
@@ -1077,7 +1094,7 @@ their output contexts:
   Γ;Σ;Λ ⊢ if e0 { e1 } else { e2 } ⇒ T ⊣ Σ'
 ```
 
-`join` is taken path by path. Where the two branches agree it is that state.
+<a id="5.5:2"></a>**[§5.5:2]** `join` is taken path by path. Where the two branches agree it is that state.
 Where they disagree — the path is `MovedOut` on one branch and `Owned` on the
 other — the program is ill-formed exactly when the `Owned` side still has
 **residual linear content** at that path, `residual-linear(Σ_owned, p, T)` in
@@ -1088,7 +1105,7 @@ place remains `Owned` at the join. The dynamic state retains the path-specific
 move state; the array-element drop behavior of `3.8:73` is the separate rule
 that says how a joined array's elements are dropped on paths where they remain.
 
-The disagreement test is the **residual** one for the same reason §5.6's
+<a id="5.5:3"></a>**[§5.5:3]** The disagreement test is the **residual** one for the same reason §5.6's
 scope-exit check is (RUE-526, RUE-1591): keyed on `carries_linear(T)` — the
 binding's *type* — it would reject the legal idiom of consuming exactly the
 linear part of an infectious carrier on one path and the whole carrier on the
@@ -1117,7 +1134,7 @@ A branch preserves every reachable edge of its condition and of every arm,
 which is what lets (Fn) and (Loop-Break) see an edge that fires inside one
 arm, or an early `return` inside a condition that itself can still complete normally.
 
-`match` is the elimination form for enums, and its arms join exactly as `if`'s do.
+<a id="5.5:4"></a>**[§5.5:4]** `match` is the elimination form for enums, and its arms join exactly as `if`'s do.
 Typing the scrutinee is a value-context **use** of it (§4.2): a move-typed enum is
 *consumed* by the match, and each arm's variant pattern binds that variant's
 payload components as fresh Owned locals — this is the "destructured" consumption
@@ -1133,7 +1150,7 @@ arm per variant of `E`), so exactly one arm's payload is live in any run:
   Γ;Σ;Λ ⊢ match e0 { K1(x̄1) => e1, ..., Kn(x̄n) => en } ⇒ T ⊣ Σ'
 ```
 
-Typing `e0 ⇒ E` moves the scrutinee out when `qual(E) ∈ {Affine, Linear}` and
+<a id="5.5:5"></a>**[§5.5:5]** Typing `e0 ⇒ E` moves the scrutinee out when `qual(E) ∈ {Affine, Linear}` and
 copies it when `qual(E) = Copy` (the (Use-Move)/(Use-Copy) split of §5.1),
 exactly as for any other place. The payload locals `x_{ij}` are ordinary Owned
 bindings and are governed by §5.6 at the arm's end: a `Linear`-carrying payload
@@ -1145,7 +1162,7 @@ provenance `⊥_exit`, `⊥_diverge`, or `⊥_panic`) and are excluded from the
 state join, as with `if`; only the first two retain the conservative non-panic
 residual check.
 
-The core `match` is deliberately the **match-compilation form**: an enum
+<a id="5.5:6"></a>**[§5.5:6]** The core `match` is deliberately the **match-compilation form**: an enum
 scrutinee, exactly one arm per variant, no wildcards, no guards. Everything
 else the surface `match` chapter (4.7) allows is an **elaboration obligation**
 (`02-elaboration.md`), stated here so the gap is not silent (RUE-526): a
@@ -1165,7 +1182,7 @@ therefore never reaches its body — §2's reachability-pruning assumption
 -> i32 { match n {} }` is accounted for. The (Match) rule below therefore never
 needs an ordering or overlap side condition.
 
-Enum construction is the dual introduction form, evaluated like a struct literal:
+<a id="5.5:7"></a>**[§5.5:7]** Enum construction is the dual introduction form, evaluated like a struct literal:
 each payload argument is a value-context use, and the result owns the tag and the
 supplied payload.
 
@@ -1178,13 +1195,13 @@ supplied payload.
 
 ### 5.6 Scope exit: the drop obligation and the leak check
 
-When a binding `x: T` introduced by `let` (or a by-value parameter) leaves scope
+<a id="5.6:1"></a>**[§5.6:1]** When a binding `x: T` introduced by `let` (or a by-value parameter) leaves scope
 in state `Owned`:
 
-- if `residual-linear(Σ, x, T)` (below): **ill-formed** — a linear value
+- <a id="5.6:2"></a>**[§5.6:2]** if `residual-linear(Σ, x, T)` (below): **ill-formed** — a linear value
   reached end of scope unconsumed (`3.8:32/62/66`). This is the must-use check.
-- else if `qual(T) = Copy`: nothing happens (no drop).
-- else (`Affine`, droppable, non-linear): a **drop** is scheduled (dynamic §6):
+- <a id="5.6:3"></a>**[§5.6:3]** else if `qual(T) = Copy`: nothing happens (no drop).
+- <a id="5.6:4"></a>**[§5.6:4]** else (`Affine`, droppable, non-linear): a **drop** is scheduled (dynamic §6):
   the value's destructor, if any, runs, then its droppable *contents* drop,
   skipping any sub-place that is `MovedOut`. The contents depend on the type:
   - a **struct** drops its droppable fields in declaration order (`3.9`);
@@ -1198,7 +1215,7 @@ in state `Owned`:
     §5.5) left the enum `MovedOut` and is skipped here, so it is never dropped
     twice (`6.3:20`).
 
-The leak check is keyed on the **residual** ownership state, not on the
+<a id="5.6:5"></a>**[§5.6:5]** The leak check is keyed on the **residual** ownership state, not on the
 binding's *type* alone (RUE-526): after a partial move, the linear obligation
 attaches to whatever linear content is still present. `carries_linear(T)` at
 the binding's type would over-reject the legal idiom of consuming exactly the
@@ -1221,7 +1238,7 @@ glue and over-rejected reads of a Copy sibling. Precisely:
     false                                            if T is a scalar ([T'; 0] has no elements: false)
 ```
 
-An `Owned` binding with **no** residual linear content but *some* residual
+<a id="5.6:6"></a>**[§5.6:6]** An `Owned` binding with **no** residual linear content but *some* residual
 droppable content falls to the third bullet: its scope-exit drop walks the
 value skipping every `MovedOut` sub-place, exactly as §6.11's `⊘`-skip does
 dynamically. A **declared**-`linear` struct's obligation belongs to the live
@@ -1234,15 +1251,15 @@ declared-linear ancestor remains `Owned` and is checked here, along with its
 unrelated residue. An infectious carrier has no value-level declaration and is
 instead handled by the recursive field/element clauses.
 
-Parameters passed `inout`/`borrow`, and a destructor's own `self`, are exempt from
+<a id="5.6:7"></a>**[§5.6:7]** Parameters passed `inout`/`borrow`, and a destructor's own `self`, are exempt from
 the must-consume and drop obligations here (`3.8:62`): the caller (resp. the drop
 glue) owns them.
 
-> This section is the precise content behind "implicitly drops"/"goes out of
+> <a id="5.6:8"></a>**[§5.6:8]** This section is the precise content behind "implicitly drops"/"goes out of
 > scope": end-of-scope is where drop *and* the linear leak check happen, driven by
 > the ownership state Σ, not by syntax.
 
-An explicit statically-known `@panic` is a distinct aborting divergence, not a
+<a id="5.6:9"></a>**[§5.6:9]** An explicit statically-known `@panic` is a distinct aborting divergence, not a
 scope exit. It transfers to the process panic outcome without evaluating any
 scope-end action: the residual-linear premise is not applied on that edge and
 no destructor or synthesized drop glue runs. The state a `⟨ret, Σ⟩`, `⟨break, Σ⟩`, or
@@ -1259,11 +1276,11 @@ nothing but itself.
 
 ### 5.7 Divergence and never-coercion
 
-Prose `3.4` gives Rue its **single** type coercion: the never type `!`
+<a id="5.7:1"></a>**[§5.7:1]** Prose `3.4` gives Rue its **single** type coercion: the never type `!`
 (`never` here) coerces to any type. The core realizes this as one subsumption
 rule, plus typing rules that give the diverging expression forms type `never`.
 
-The expressions that *have* type `never` are those that transfer control away
+<a id="5.7:2"></a>**[§5.7:2]** The expressions that *have* type `never` are those that transfer control away
 instead of yielding a value to their context (`3.4:1/2`): `return e`, `break`,
 and an infinite `loop { e }` — one whose body **syntactically contains no
 `break` targeting it**, the same purely syntactic classification the prose
@@ -1280,7 +1297,7 @@ favour of `!`-typing: `@panic` participates in never-coercion (Sub-Never)
 exactly like `return`, so it may inhabit any value context. `@assert` is **not**
 a never form — it returns on the success path and is typed `unit`.)
 
-For ownership provenance, every judgment's output result `Ω` (§5.3) carries
+<a id="5.7:3"></a>**[§5.7:3]** For ownership provenance, every judgment's output result `Ω` (§5.3) carries
 the set `Δ` of **abrupt-completion contexts** made by the reachable diverging edges of the
 expression, each with the ownership state in force where it fires: `⟨ret, Σ⟩`
 for a `return`, `⟨break, Σ⟩` for a `break`, `⟨diverge, Σ_h⟩` for a loop that never
@@ -1300,7 +1317,7 @@ a `panic` abrupt-completion context (`⊥_panic`) is exempt from that static che
 loop's entry: a loop-local binding's scope ends within the iteration, so it
 never survives to be compared or joined.
 
-An abrupt-completion context enters `Δ` only from a derivation that reaches its edge. That is
+<a id="5.7:4"></a>**[§5.7:4]** An abrupt-completion context enters `Δ` only from a derivation that reaches its edge. That is
 not a side condition on the rules but a corollary of their shape: the bottom
 rules ((Strict-Bottom), (Seq-Bottom), (Let-Bottom), (Return-Bottom),
 (Call-Bottom), (Panic-Operand), (Loop-Div)) type nothing past a diverging
@@ -1337,7 +1354,7 @@ rewriting an earlier non-panic divergence.
   Γ;Σ;Λ ⊢ loop { e } ⇒ never ⊣ ⊥; (Δ_e − continue) ∪ { ⟨diverge, Σ_h⟩ if Δ_e ∋ continue }
 ```
 
-**The loop-head state.** Every `loop` rule types its body once, at the state
+<a id="5.7:5"></a>**[§5.7:5]** **The loop-head state.** Every `loop` rule types its body once, at the state
 `Σ_h` in force at the loop head on *every* iteration — the entry state joined
 with the states at the body's own reachable back edges:
 
@@ -1348,7 +1365,7 @@ with the states at the body's own reachable back edges:
     outside_loop(Σ_h) = join({ outside_loop(Σ) } ∪ { outside_loop(Σ_b) | Σ_b ∈ B_h })   -- §5.5's join (3.8:79)
 ```
 
-`Σ_h` is a fixpoint: typing the body from it reaches back edges whose states,
+<a id="5.7:6"></a>**[§5.7:6]** `Σ_h` is a fixpoint: typing the body from it reaches back edges whose states,
 joined with the entry state, give `Σ_h` again. The least one is computed by
 iteration — start from `Σ`, type the body, join the entry with the back-edge
 states it reaches, and repeat until the state stops changing. That terminates:
@@ -1358,13 +1375,13 @@ join is partial, and where it is undefined — a linear-carrying outer path
 `Owned` at entry and `MovedOut` at a back edge (`3.8:50`) — there is no `Σ_h`
 and the loop is ill-formed.
 
-`break` yields no value to its *own* context, so its type is `never`; the "value
+<a id="5.7:7"></a>**[§5.7:7]** `break` yields no value to its *own* context, so its type is `never`; the "value
 unit" of the grammar (§2) is what it hands to the enclosing loop, not the type of
 the `break` expression. The output context of each form is a divergent state
 that §5.5's join excludes: a branch ending in one of these forms contributes no
 ownership state to the merge.
 
-`⟨continue, Σ⟩` is produced by no rule of this section. It is the abrupt-completion context the
+<a id="5.7:8"></a>**[§5.7:8]** `⟨continue, Σ⟩` is produced by no rule of this section. It is the abrupt-completion context the
 elaboration of surface `continue` (§2) makes at the state where the `continue`
 fires, listed so that the back-edge sets below are closed under that
 elaboration; a program written directly in the core reaches a loop's back edge
@@ -1379,7 +1396,7 @@ re-enter itself: it is exited only by its body's own `return`/`panic`
 abrupt-completion contexts, which pass through unchanged, and it makes no
 `⟨diverge, _⟩` abrupt-completion context of its own.
 
-A `loop` that *is* exited by a `break` — the complement of (Loop-Div)'s
+<a id="5.7:9"></a>**[§5.7:9]** A `loop` that *is* exited by a `break` — the complement of (Loop-Div)'s
 syntactic premise, and the target of every elaborated `while` — is `unit`-typed
 (`4.8:21`: type `()` even when every `break` is unreachable; the classification
 is the same purely syntactic one as (Loop-Div)'s). Its ownership story has two
@@ -1398,7 +1415,7 @@ which exit it. Both are read off the body's own judgment:
   Γ;Σ;Λ ⊢ loop { e } ⇒ unit ⊣ Ω_exit
 ```
 
-`B` contains the body's normal completion state when it has one, plus every
+<a id="5.7:10"></a>**[§5.7:10]** `B` contains the body's normal completion state when it has one, plus every
 `continue` abrupt-completion context; `X` contains every `break` abrupt-completion context. Because an abrupt-completion context
 exists only for a reached edge, both sets contain exactly the *reachable*
 back-edge and exit states, with no separate reachability filter: an
@@ -1421,7 +1438,7 @@ abrupt-completion contexts record static ownership states only; they do not spec
 loop-local scopes a `continue` dynamically unwinds or the order of its drops,
 which remains outside this rule's scope.
 
-- **The loop-head state (3.8:79).** The body is typed once, at `Σ_h`, the
+- <a id="5.7:11"></a>**[§5.7:11]** **The loop-head state (3.8:79).** The body is typed once, at `Σ_h`, the
   entry state joined with every reachable back-edge state. So the one typing
   pass covers every iteration. It rejects a use of an outer binding that an
   earlier iteration moved and did not restore: `loop { eat(v0); }` has `v0`
@@ -1437,7 +1454,7 @@ which remains outside this rule's scope.
   state *equal* the entry state, which rejected it. If `B_h` is empty — every
   path through the body breaks, returns, or panics — `Σ_h = Σ`. Paths rooted
   *inside* the loop are exempt through `outside_loop`.
-- **The reachable exit states.** Each reachable targeting `break` contributes
+- <a id="5.7:12"></a>**[§5.7:12]** **The reachable exit states.** Each reachable targeting `break` contributes
   the ownership state in force where it fires *on any iteration* — read off the
   body typed at `Σ_h`, not at the entry state — restricted to paths rooted
   outside the loop — read (Break) as *handing* `unit` to its innermost enclosing loop at that
@@ -1450,7 +1467,7 @@ which remains outside this rule's scope.
   exit are not part of `X`; their §5.6 obligations are discharged at the exit
   itself, where their scopes end (dynamically, §6.10's unwind). For arrays,
   `3.8:73` supplies the separate per-element path-specific dropping behavior.
-- **Nesting.** A loop removes its own `break` and `continue` abrupt-completion contexts from
+- <a id="5.7:13"></a>**[§5.7:13]** **Nesting.** A loop removes its own `break` and `continue` abrupt-completion contexts from
   what it passes outward (`Δ_out`), so an inner loop's `break` is never an
   outer loop's exit and an inner loop's back edge is never the outer loop's;
   `return` and `panic` abrupt-completion contexts pass through every enclosing loop to (Fn).
@@ -1458,7 +1475,7 @@ which remains outside this rule's scope.
   target there is. The compiler agrees: an outer binding moved inside an inner
   `loop { …; break; }` whose outer loop then reaches its own back edge is
   E0205 "moved in a previous iteration".
-- **Compiler agreement.** The compiler computes the post-loop state from the
+- <a id="5.7:14"></a>**[§5.7:14]** **Compiler agreement.** The compiler computes the post-loop state from the
   reachable exit-edge join required by (Loop-Break) and 3.8:80. It types the
   body at the loop-head state, iterated from the entry to a fixpoint, and reads
   the exits off that pass, so a `break` taken on a later iteration, after an
@@ -1476,7 +1493,7 @@ which remains outside this rule's scope.
   iteration. Explicit `continue` edges and ordinary reachable body-completion
   paths remain back edges and retain the recheck required by 3.8:79.
 
-> **Rewritten into judgment form (RUE-2234, 2026-09-22).** The previous text
+> <a id="5.7:15"></a>**[§5.7:15]** **Rewritten into judgment form (RUE-2234, 2026-09-22).** The previous text
 > obtained `B` and `X` from `edge-observations(D)`, a projection defined over
 > the *derivation* `D` of the body rather than over its judgment, and (Fn)
 > likewise read an `Edge(D_body)` set off the derivation tree. That left three
@@ -1524,7 +1541,7 @@ which remains outside this rule's scope.
 > (RUE-2326) may keep that architecture — check each edge where it fires — so
 > long as the sets `B` and `X` it computes are the ones these rules define.
 
-A `never`-typed expression is accepted wherever a value of any type is expected —
+<a id="5.7:16"></a>**[§5.7:16]** A `never`-typed expression is accepted wherever a value of any type is expected —
 this is the coercion, stated as **subsumption on the bottom type** (`3.4:3/4`):
 
 ```
@@ -1533,7 +1550,7 @@ this is the coercion, stated as **subsumption on the bottom type** (`3.4:3/4`):
   Γ;Σ;Λ ⊢ e ⇒ T ⊣ Ω
 ```
 
-Because `never` has no values (`3.4:1`), this coercion is vacuously sound: there
+<a id="5.7:17"></a>**[§5.7:17]** Because `never` has no values (`3.4:1`), this coercion is vacuously sound: there
 is no run-time value to convert, so re-typing a diverging expression at `T`
 cannot misclassify any value. It also creates no ownership obligation: `never` is
 zero-sized (`3.4:9`) and §3 sets `qual(never) = Copy`, so a `never`-typed
@@ -1541,7 +1558,7 @@ expression has nothing to move, drop, or leak, and (Sub-Never) leaves its
 outcome `Ω` untouched — in particular a divergent `⊥;Δ` stays divergent, with
 its abrupt-completion contexts, when it is re-typed.
 
-(Sub-Never) is what makes §5.5's (If)/(Match) admit a diverging arm while their
+<a id="5.7:18"></a>**[§5.7:18]** (Sub-Never) is what makes §5.5's (If)/(Match) admit a diverging arm while their
 premises still demand a single common type `T`. In
 `if c { 5 } else { return 0 }` the `else` arm has type `never`, which
 (Sub-Never) re-types to `i32` to meet the `then` arm; the whole `if` is `i32`,
@@ -1566,7 +1583,7 @@ converting any stored value.
 
 ### 5.8 Leaf, operator, aggregate, and call forms
 
-§5.5 gave the rules for the branching and enum forms (`if`/`match`, enum
+<a id="5.8:1"></a>**[§5.8:1]** §5.5 gave the rules for the branching and enum forms (`if`/`match`, enum
 intro/elim) and §5.7 the diverging forms (`return`/`break`, (Loop-Div)) together
 with the break-exited loop ((Loop-Break), RUE-1278). This subsection completes
 the statics with the remaining expression forms of §2 — literals, primitive
@@ -1584,7 +1601,7 @@ each below — `@panic` among them despite diverging, because §5.7 states its
 `!`-typing in prose only — so that the "every §2 expression form" claim above
 stays true now that all three are §2 productions (RUE-1600).
 
-**Literals.** A literal denotes a fresh `Copy` value of its own type and reads no
+<a id="5.8:2"></a>**[§5.8:2]** **Literals.** A literal denotes a fresh `Copy` value of its own type and reads no
 place, so Σ is unchanged.
 
 ```
@@ -1593,13 +1610,13 @@ place, so Σ is unchanged.
   Γ;Σ;Λ ⊢ lit ⇒ T ⊣ Σ
 ```
 
-An integer literal's width and signedness are fixed *before* the core: elaboration
+<a id="5.8:3"></a>**[§5.8:3]** An integer literal's width and signedness are fixed *before* the core: elaboration
 has already resolved the surface "an integer literal defaults to `i32` unless the
 context requires another type" (`4.1:3`) into a concrete `int(w, s)`, so the core
 sees only the resolved type (`4.1:2` for integers, `4.1:5` for `true`/`false`,
 `4.1:7` for `()`).
 
-A **float** literal is resolved before the core by the same mechanism, and this
+<a id="5.8:4"></a>**[§5.8:4]** A **float** literal is resolved before the core by the same mechanism, and this
 rule mirrors the integer case exactly. `3.12:7` takes the literal's concrete
 type from its context and `3.12:8` defaults it to `f64` when the context
 supplies none — the float counterpart of `4.1:3`'s `i32` default; `3.12:9`
@@ -1612,7 +1629,7 @@ inference (`3.12:3`, `4.1:13`, `4.1:14`), which elaboration discharges, so the
 core sees a resolved `float(w)` literal and never a `comptime_float` — just as
 it never sees an unresolved integer literal.
 
-`3.12:10` is **not** discharged that way. It is a legality rule, and (Lit)
+<a id="5.8:5"></a>**[§5.8:5]** `3.12:10` is **not** discharged that way. It is a legality rule, and (Lit)
 carries it as a premise on a float literal exactly as the integer case carries
 §6.1's `n_T` bound: the written decimal's exact value must lie **below** the
 width's round-to-nearest overflow threshold, `max_{𝔽_w}` plus half an ulp
@@ -1625,7 +1642,7 @@ boundary are pinned against the compiler). *Underflow* is not covered by it:
 `3.12:10` speaks of an infinity only, and a literal too small for the width
 rounds to `±0` and is legal.
 
-**Primitive arithmetic / bitwise `⊕`.** Both operands share one integer type and
+<a id="5.8:6"></a>**[§5.8:6]** **Primitive arithmetic / bitwise `⊕`.** Both operands share one integer type and
 the result has that same type; the operands are `Copy` scalars, so each is an
 ordinary value-context use that *copies* (§4.2) and the only effect on Σ is
 whatever uses the operand subexpressions themselves perform.
@@ -1636,12 +1653,12 @@ whatever uses the operand subexpressions themselves perform.
   Γ;Σ;Λ ⊢ e1 ⊕ e2 ⇒ int(w,s) ⊣ Σ2
 ```
 
-The same-type/same-result-type shape is `4.2:1`. Overflow, division-by-zero, and
+<a id="5.8:7"></a>**[§5.8:7]** The same-type/same-result-type shape is `4.2:1`. Overflow, division-by-zero, and
 remainder-by-zero are *dynamic* panics (§6), not typing errors. (Equality `≟` is
 a separate rule below because, unlike `⊕`, it *borrows* rather than copies its
 operands.)
 
-**Unary operators `⊖`.** The three unary forms are typed like one-operand
+<a id="5.8:8"></a>**[§5.8:8]** **Unary operators `⊖`.** The three unary forms are typed like one-operand
 `⊕`: the operand is a `Copy` scalar, used by value (a copy), and the result
 has the operand's type — `bool` for `not`. Negation demands a *signed*
 operand (`4.2:6`; rejecting `neg` on unsigned is `4.2:14`); `not` demands
@@ -1654,7 +1671,7 @@ operand (`4.2:6`; rejecting `neg` on unsigned is `4.2:14`); `not` demands
   Γ;Σ;Λ ⊢ neg e ⇒ int(w,signed) ⊣ Σ'            Γ;Σ;Λ ⊢ not e ⇒ bool ⊣ Σ'        Γ;Σ;Λ ⊢ ~ e ⇒ int(w,s) ⊣ Σ'
 ```
 
-**Ordering compare `⋚`.** Ordering works **only on the numeric types** —
+<a id="5.8:9"></a>**[§5.8:9]** **Ordering compare `⋚`.** Ordering works **only on the numeric types** —
 integers by the rule here and floats by `(Float-Ord)` below (`4.3:5`; ordering
 a bool, string, unit, or aggregate is rejected, `4.3:6`) — so unlike
 `≟` there is no borrow subtlety: both operands are `Copy` scalars and their
@@ -1666,10 +1683,10 @@ occurrences are ordinary value-context uses (copies), exactly as for `⊕`.
   Γ;Σ;Λ ⊢ e1 ⋚ e2 ⇒ bool ⊣ Σ2
 ```
 
-This closes the citation from prose `4.3:1`/`4.3:5`, which referenced the §6.4
+<a id="5.8:10"></a>**[§5.8:10]** This closes the citation from prose `4.3:1`/`4.3:5`, which referenced the §6.4
 ordering dynamics before these static rules existed (RUE-526).
 
-**Equality compare `≟`.** Comparison of two values of the same type yields `bool`.
+<a id="5.8:11"></a>**[§5.8:11]** **Equality compare `≟`.** Comparison of two values of the same type yields `bool`.
 Unlike `⊕`, a place appearing **directly** as an operand is read through a
 call-scoped *shared loan* and is **not** moved, even when its type is `Affine` or
 `Linear` — this side condition overrides the default (Use-Move) of §4.2 for the
@@ -1682,7 +1699,7 @@ operand position, exactly the equality-compare loan of §5.4 (`4.3:3f`).
   Γ;Σ;Λ ⊢ e1 ≟ e2 ⇒ bool ⊣ Σ2
 ```
 
-The result is always `bool` (`4.3:1`); equality is defined for scalars, `unit`,
+<a id="5.8:12"></a>**[§5.8:12]** The result is always `bool` (`4.3:1`); equality is defined for scalars, `unit`,
 strings, and the aggregate types — structs, arrays, enums (`4.3:2`) — and
 recurses structurally without ever consuming an operand. Because a place operand
 leaves Σ untouched, its move obligation is undischarged: `let c = a; a ≟ b` is
@@ -1691,7 +1708,7 @@ well-formed, and two shared reads are always consistent, so `a == a` is too
 subexpressions (e.g. `f() == g()`), never a move of a directly-named operand
 place.
 
-**Float arithmetic, negation, and comparison.** The four arithmetic operators
+<a id="5.8:13"></a>**[§5.8:13]** **Float arithmetic, negation, and comparison.** The four arithmetic operators
 work at one float type shared by both operands and produce that type. A float
 is a `Copy` scalar (§3), so each operand occurrence is an ordinary
 value-context copy and the only effect on Σ is whatever the operand
@@ -1712,7 +1729,7 @@ different type and, in §6.4, without any trap.
   Γ;Σ;Λ ⊢ e1 ⋚ e2 ⇒ bool ⊣ Σ2
 ```
 
-The single `w` shared by both operands is `3.12:13`: there is no implicit
+<a id="5.8:14"></a>**[§5.8:14]** The single `w` shared by both operands is `3.12:13`: there is no implicit
 widening, so `(Float-Arith)` and `(Float-Ord)` reject an `f32`/`f64` mix, and no
 rule of §5 relates a float operand to an integer one (`3.12:14`) — the only
 bridges are the conversion intrinsics below. `(Float-Neg)` is `3.12:24` and
@@ -1724,18 +1741,18 @@ integers; `3.12:27`'s partiality is entirely dynamic — statically the result i
 already types `e1 ≟ e2` at any shared `T`, and at `T = float(w)` its borrow side
 condition is vacuous, a float being `Copy` and so never moved by a use.
 
-Three operator forms are rejected on floats **by the absence of a rule**, which
+<a id="5.8:15"></a>**[§5.8:15]** Three operator forms are rejected on floats **by the absence of a rule**, which
 is how §5 rejects everything it does not admit:
 
-- `%` — `(Arith)` admits it only at `int(w,s)` and `(Float-Arith)` omits it, so
+- <a id="5.8:16"></a>**[§5.8:16]** `%` — `(Arith)` admits it only at `int(w,s)` and `(Float-Arith)` omits it, so
   `e1 % e2` at a float type has no derivation (`3.12:25`; the exact truncated
   remainder is the library's `std.math.rem`, ADR-0065 Amendment 1 §7);
-- the bitwise and shift operators `& | ^ << >> ~` — `(Arith)` and `(BitNot)`
+- <a id="5.8:17"></a>**[§5.8:17]** the bitwise and shift operators `& | ^ << >> ~` — `(Arith)` and `(BitNot)`
   admit them only at `int(w,s)`, and a float is a datum rather than a bit
   pattern here (§2), so there is nothing for them to act on;
-- `not` — `(Not)` demands `bool` (`4.4:2`).
+- <a id="5.8:18"></a>**[§5.8:18]** `not` — `(Not)` demands `bool` (`4.4:2`).
 
-**Float conversions and the float intrinsics.** The `@f` forms of §2 are the
+<a id="5.8:19"></a>**[§5.8:19]** **Float conversions and the float intrinsics.** The `@f` forms of §2 are the
 only bridges between `float(w)` and the rest of the types. Each takes its
 result type from context (`3.12:16`, `3.12:17`, `3.12:19`), which elaboration
 has already resolved to the concrete `int(w',s')` / `float(w')` the rules name;
@@ -1764,7 +1781,7 @@ through them and nothing more.
   Γ;Σ;Λ ⊢ ⊙(e) ⇒ float(w) ⊣ Σ'
 ```
 
-`(Int-To-Float)` accepts an operand of any integer type, signed or unsigned
+<a id="5.8:20"></a>**[§5.8:20]** `(Int-To-Float)` accepts an operand of any integer type, signed or unsigned
 (`3.12:16`, `4.13:139`); `(Float-To-Int)`'s result may likewise be signed or
 unsigned (`3.12:17`, `4.13:140`), and it is the one float form whose *dynamics*
 can trap (`3.12:18`; §6.4, `(D-Float-To-Int-Trap)`); `(Float-Cast)` converts
@@ -1775,7 +1792,7 @@ intrinsics of `3.12:34` / `4.13:143`. None of the five touches Σ beyond its
 operands' own uses, and a *diverging* operand needs no bottom rule here:
 (Strict-Bottom) (§5.7) already ranges over intrinsic operands.
 
-**The integer conversion `@intCast`.** The integer-to-integer conversion has
+<a id="5.8:21"></a>**[§5.8:21]** **The integer conversion `@intCast`.** The integer-to-integer conversion has
 the same shape as the float ones: elaboration has resolved the target type
 from the use site (`4.13:26`, `4.13:27` — an unresolved or non-integer target
 is a compile-time error, E0709), the operand is an integer of any width and
@@ -1791,13 +1808,13 @@ value cannot be represented exactly in the target type, and §6.4's
   Γ;Σ;Λ ⊢ @intCast(e) ⇒ int(w,s) ⊣ Σ'
 ```
 
-Unlike `(Float-Cast)` there is no `w' ≠ w` side condition: `4.13:24`–`4.13:28`
+<a id="5.8:22"></a>**[§5.8:22]** Unlike `(Float-Cast)` there is no `w' ≠ w` side condition: `4.13:24`–`4.13:28`
 put none on the source, so a cast between two types that happen to coincide is
 well-formed and, dynamically, the identity. A *diverging* operand needs no
 bottom rule here either — (Strict-Bottom) (§5.7) already ranges over intrinsic
 operands.
 
-**Struct construction.** Each field initializer is a value-context use of the
+<a id="5.8:23"></a>**[§5.8:23]** **Struct construction.** Each field initializer is a value-context use of the
 declared field type — a move for a non-`Copy` field, a copy for a `Copy` one
 (§4.2) — and the result owns every field.
 
@@ -1808,7 +1825,7 @@ declared field type — a move for a non-`Copy` field, a copy for a `Copy` one
   Γ;Σ;Λ ⊢ S { f1: e1, ..., fk: ek } ⇒ S ⊣ Σk
 ```
 
-Initializers are typed in the order written and Σ is threaded through them,
+<a id="5.8:24"></a>**[§5.8:24]** Initializers are typed in the order written and Σ is threaded through them,
 matching the source-order evaluation of `3.6:16`/`4.0:9` even though the stored
 value places each field in its *declaration* slot (`3.6:9`). A well-formed
 literal supplies every field exactly once (`3.6:5`, `3.6:6`); a surface literal
@@ -1816,7 +1833,7 @@ written field-out-of-order (`3.6:15`) is presented here in declaration order by
 elaboration without loss of generality. The result owns all fields, so
 `qual(S)` is the field join of §3.
 
-**Array construction.** All `n` elements share one element type `T`, and the
+<a id="5.8:25"></a>**[§5.8:25]** **Array construction.** All `n` elements share one element type `T`, and the
 result has type `[T; n]`.
 
 ```
@@ -1825,7 +1842,7 @@ result has type `[T; n]`.
   Γ;Σ;Λ ⊢ [ e1, ..., en ] ⇒ [T; n] ⊣ Σn
 ```
 
-Every element is a value-context use of `T` (`3.5:3`, `7.1:3` — one shared
+<a id="5.8:26"></a>**[§5.8:26]** Every element is a value-context use of `T` (`3.5:3`, `7.1:3` — one shared
 element type),
 typed left-to-right with Σ threaded, and the array owns all `n` elements;
 `qual([T; n])` is given by §3 (`3.5:1` for the type form). The empty array `[]`
@@ -1833,7 +1850,7 @@ typed left-to-right with Σ threaded, and the array owns all `n` elements;
 `Copy` when `qual(T)` is and `Affine` otherwise — droppable because it carries
 nothing (`3.8:74`), but not duplicable (RUE-526).
 
-**Call.** A call's type is the callee's return type; its arguments are checked
+<a id="5.8:27"></a>**[§5.8:27]** **Call.** A call's type is the callee's return type; its arguments are checked
 against the parameter list, each in its call-site mode. By-value arguments are
 value-context uses that thread Σ; by-reference arguments take a call-scoped loan
 and leave Σ unchanged, per §5.4.
@@ -1861,7 +1878,7 @@ and leave Σ unchanged, per §5.4.
   Γ;Σ;Λ ⊢ g ( a1, ..., am ) ⇒ never ⊣ ⊥;Δ_call
 ```
 
-The result type is the callee's return type `Tr` (`4.10:5`); the argument count
+<a id="5.8:28"></a>**[§5.8:28]** The result type is the callee's return type `Tr` (`4.10:5`); the argument count
 must match the parameter count (`4.10:3`) and each argument's type its parameter
 (`4.10:4`). A by-value argument moves a non-`Copy` value into the parameter and
 copies a `Copy` one (§4.2), recording that in Σ; a `borrow`/`inout` argument
@@ -1886,7 +1903,7 @@ carries only the moves performed by the by-value arguments. Because the core is
 fully monomorphic (§1), `g` names a single concrete signature: there is no
 overload or generic instantiation to resolve at the call.
 
-**Intrinsic forms `@panic` / `@dbg`.** `@panic` transfers control away instead
+<a id="5.8:29"></a>**[§5.8:29]** **Intrinsic forms `@panic` / `@dbg`.** `@panic` transfers control away instead
 of yielding a value, so it is typed exactly like the §5.7 diverging forms —
 `never` — and (Sub-Never) then admits it wherever a value of any type is
 expected. Its output provenance is `⊥_panic` only when its message evaluates
@@ -1909,7 +1926,7 @@ value-context use.
   Γ;Σ;Λ ⊢ @dbg(e) ⇒ unit ⊣ Σ'
 ```
 
-`(Panic)`'s `⊥_panic` is what makes a panicking branch contribute nothing to
+<a id="5.8:30"></a>**[§5.8:30]** `(Panic)`'s `⊥_panic` is what makes a panicking branch contribute nothing to
 §5.5's join, exactly as `return`/`break` do, while its provenance means that
 §5.6 performs no scope-exit check or drop on that edge — verified against the
 compiler: an `if` arm that moves a value and then panics leaves that value
@@ -1923,7 +1940,7 @@ is prose (`3.12:40`–`3.12:42` for the float cases, including `NaN`, `inf`,
 `-inf`, and `-0.0`), and the differential harness compares the two artifacts'
 output rather than deriving it from a rule here.
 
-**Accessor calls (ADR-0062).** The accessor definition form `fn A.f(…) -> r T
+<a id="5.8:31"></a>**[§5.8:31]** **Accessor calls (ADR-0062).** The accessor definition form `fn A.f(…) -> r T
 { b }`, its `yield` body form `b`, and the call expression `p.f(e1..ek)` are §2
 productions (RUE-1600 added them; the note there says why an accessor call
 cannot be desugared to an ordinary call). Spelled out, an accessor is a method
@@ -1933,7 +1950,7 @@ of the form
   A.f : fn ( self_mode self : A, x1:T1, ..., xk:Tk ) -> result_mode T { e_guard ; yield p_y }
 ```
 
-whose body is well-formed iff every non-diverging exit is the single trailing
+<a id="5.8:32"></a>**[§5.8:32]** whose body is well-formed iff every non-diverging exit is the single trailing
 `yield` of a place `p_y` rooted at the receiver parameter — a projection chain
 `self.f…[e]…` (possibly through a nested accessor call), whose guards `e_guard`
 either diverge (trap, `@panic`) or fall through, with an empty post-`yield`
@@ -1954,7 +1971,7 @@ a mode-bearing place, not a value:
   Γ;Σ;Λ ⊢ p.f(e1, ..., ek) ⇒ place(mode(result_mode), T) ⊣ Σk
 ```
 
-The **full expression** of an occurrence (RUE-1279 — the loan extent above,
+<a id="5.8:33"></a>**[§5.8:33]** The **full expression** of an occurrence (RUE-1279 — the loan extent above,
 previously undefined) is the largest enclosing §2 expression that is not itself
 a proper subexpression of another: walk outward from the occurrence and stop at
 the first *full-expression position* — the bound expression `e1` of
@@ -1967,7 +1984,7 @@ discarded by an unwinding form, §6.9/§6.10). This is the same granularity at
 which §6.7's temporaries die, so the loan cannot outlive any storage it
 depends on.
 
-The result is usable in **place contexts only**: it may be read (a `Copy`-shaped
+<a id="5.8:34"></a>**[§5.8:34]** The result is usable in **place contexts only**: it may be read (a `Copy`-shaped
 read; reading out an owning value would mint a second owner and is rejected —
 the same argument as the RUE-651 `get` gate), projected further, passed as a
 `borrow` argument, or compared (§5.4's compare loan). It may **not** be
@@ -1983,7 +2000,7 @@ canonical rejection). This is the first construct that makes the dormant
 expression, so second-classness, view-intact, loan-extent-nesting, and
 handle-uniqueness quantify over it unchanged.
 
-Dynamically an accessor call is not a `(D-Call)`: the call reduces **by the
+<a id="5.8:35"></a>**[§5.8:35]** Dynamically an accessor call is not a `(D-Call)`: the call reduces **by the
 accessor's inlined body** — the guards run in the caller (and may trap, §6.12)
 and the redex is then replaced by the projected place itself, `(ℓ, π·π_y)` for
 a user accessor over §6.9's by-ref place plumbing, or `view⟨A | o, 1⟩` for the
@@ -1992,7 +2009,7 @@ calling convention for
 "returning a place" exists; that absence is the RUE-1012 forward-compatibility
 contract.
 
-For an exclusive result, assignment through the yielded place is a place write:
+<a id="5.8:36"></a>**[§5.8:36]** For an exclusive result, assignment through the yielded place is a place write:
 the right-hand side is evaluated first, then the destination's old value is
 dropped, then the new value is stored. The ordinary linear-overwrite premise
 therefore applies to the yielded destination; a live linear value cannot be
@@ -2006,7 +2023,7 @@ path-granular disjointness.
 
 ## 6. Dynamic semantics (small-step, with an executable presentation)
 
-This section gives the small-step operational semantics for **every** core form
+<a id="6:1"></a>**[§6:1]** This section gives the small-step operational semantics for **every** core form
 of §2. It has two executable presentations that must agree with it: the
 mechanization's definitional interpreter (`lean/`, ADR-0097), whose semantic
 equivalence with the reduction relation here is a lemma `03-metatheory.md` owes, and
@@ -2021,7 +2038,7 @@ executable semantics are one artifact read two ways: **the thing that governs th
 spec is the thing we can run.** Where a rule and the interpreter disagree, one of
 them is a bug (RUE-305) — that is the point of pinning both.
 
-> The oracle interprets over the compiler's typed **CFG**, not directly over the
+> <a id="6:2"></a>**[§6:2]** The oracle interprets over the compiler's typed **CFG**, not directly over the
 > §2 surface AST; the CFG is that AST after control flow is made explicit
 > (`if`/`match`/`loop` become `Branch`/`Switch`/`Goto`, `let`/`;` become straight-
 > line SSA). The reduction below is over the §2 forms; the correspondence is the
@@ -2029,6 +2046,8 @@ them is a bug (RUE-305) — that is the point of pinning both.
 > is a differential-test obligation.
 
 ### 6.1 The machine configuration
+
+<a id="6.1:1"></a>**[§6.1:1]**
 
 ```
   Block ids      A ∈ BlockId                 -- memory-block identities (the RUE-390 ruling: memory blocks, not addresses)
@@ -2063,14 +2082,14 @@ them is a bug (RUE-305) — that is the point of pinning both.
                      | ✓n                        -- halted normally with process exit code n
 ```
 
-The reduction relation is `C → C'`. The store `H` is global (locations never
+<a id="6.1:2"></a>**[§6.1:2]** The reduction relation is `C → C'`. The store `H` is global (locations never
 alias across activation records except through the by-reference sharing of §6.9); `φ` and `K`
 carry the per-call control state the sketch attributed to `K`. This matches the
 oracle's `Interp`/`Frame` types: a `Frame` is `φ`, its
 `locals`/`params` vectors are the cells reachable through `ρ`, and its evaluation
 proceeds block-by-block exactly as `E`-decomposition proceeds redex-by-redex.
 
-The store's allocations come in two kinds, distinguished only by how they are
+<a id="6.1:3"></a>**[§6.1:3]** The store's allocations come in two kinds, distinguished only by how they are
 minted (the RUE-390 ruling: stack storage and dynamically allocated buffers
 are both memory blocks, separated only where the semantics requires
 it). **Binding allocations** `ℓ ∈ Loc` are minted by `(D-Let)`, `(D-Match)`,
@@ -2084,7 +2103,7 @@ fresh identity is one not in `dom(H)`; dead allocations stay in the domain as
 `†`, so an identity is never reused — which is what makes a stale `buf⟨A⟩` or
 `view⟨A | o, k⟩` permanently dead rather than accidentally valid again.
 
-`n_T` records the value's integer type because overflow, comparison signedness,
+<a id="6.1:4"></a>**[§6.1:4]** `n_T` records the value's integer type because overflow, comparison signedness,
 and bitwise width all depend on it; the oracle carries the same information out of
 band on each CFG instruction's `ty` field. `f_T` records its width for the same
 kind of reason — rounding, the comparison predicates, and `@total_cmp`'s order
@@ -2096,7 +2115,7 @@ A discriminant-only enum value `Kj⟨⟩` is stored as its bare tag (the oracle'
 `Value::Int` tag); a payload-carrying `Kj⟨v1..va⟩` as the tagged aggregate
 (`Value::Aggregate`, RUE-285).
 
-Five **unwinding helpers** on activation records, used by the rules below, all defined in terms of
+<a id="6.1:5"></a>**[§6.1:5]** Five **unwinding helpers** on activation records, used by the rules below, all defined in terms of
 the drop relation `drop(H, ℓ)` of §6.11 (which is itself a no-op on a `⊘` or
 `Copy` cell, so these fold harmlessly over non-droppable bindings):
 
@@ -2108,7 +2127,7 @@ the drop relation `drop(H, ℓ)` of §6.11 (which is itself a no-op on a `⊘` o
   unwind-drops(H, φ', φ)         = run-scope-drops repeatedly on φ' until its open-drop-scope stack equals φ's (break: down to a boundary)
 ```
 
-A scope gains a cell to drop when a `let` (§6.7) or a `match` arm (§6.6) binds one;
+<a id="6.1:6"></a>**[§6.1:6]** A scope gains a cell to drop when a `let` (§6.7) or a `match` arm (§6.6) binds one;
 `inout`/`borrow` parameters are deliberately never recorded (§6.9), which is how
 they escape the drop obligation (§5.6). Tombstoning the binding allocation after
 its drop is the RUE-390 change: a scope-exited cell's identity is dead, so any
@@ -2119,7 +2138,7 @@ reinitializable there.
 
 ### 6.2 Evaluation order: contexts, search, and panic propagation
 
-Evaluation is left-to-right, inheriting the prose order `4.0:3–9` verbatim (the
+<a id="6.2:1"></a>**[§6.2:1]** Evaluation is left-to-right, inheriting the prose order `4.0:3–9` verbatim (the
 same order §5 threads Σ through). This is fixed by a grammar of single-hole
 **evaluation contexts** `E`, whose hole marks the one subexpression reduced next:
 
@@ -2146,7 +2165,7 @@ same order §5 threads Σ through). This is fixed by a grammar of single-hole
                                                          --   this context, a let's body could never take a step)
 ```
 
-A place `p` used in value context (the `e ::= p` production) is a redex once its
+<a id="6.2:2"></a>**[§6.2:2]** A place `p` used in value context (the `e ::= p` production) is a redex once its
 index subexpressions are values; the contexts `E[e]`/`v[E]` reduce those indices
 left-to-right first (as `resolve_path` does). An assignment **target** is the
 other way round (`5.2:14`, normative, with its worked example
@@ -2170,12 +2189,12 @@ rules that drive every reduction:
   ⟨ H ; φ ; K ; E[r] ⟩ → ↯κ
 ```
 
-(Search) also carries `Call`/`Return`/`break` steps that rewrite `φ`/`K`; those
+<a id="6.2:3"></a>**[§6.2:3]** (Search) also carries `Call`/`Return`/`break` steps that rewrite `φ`/`K`; those
 appear below with the activation record explicit. (Panic-Lift) is why a trap anywhere
 abandons the whole configuration: a panic is not a value and no context can
 consume it, so it propagates to the top and halts (`Interp::run`).
 
-`return v` and `break` have the same *shape* of behavior — no context can
+<a id="6.2:4"></a>**[§6.2:4]** `return v` and `break` have the same *shape* of behavior — no context can
 consume them, so they discard the context around them — but unlike a panic
 they unwind **with drops**: `(D-Return)`/`(D-Return-Value)` (§6.9) and
 `(D-Break)` (§6.10) fire on `E[return v]` / `E[break]` for any context `E`,
@@ -2187,11 +2206,11 @@ when an unwinding form throws the marker away (RUE-1277).
 
 ### 6.3 Literals and the use of a place (copy / move)
 
-A literal is already a value; it takes no step except to *be* one. Its width and
+<a id="6.3:1"></a>**[§6.3:1]** A literal is already a value; it takes no step except to *be* one. Its width and
 signedness were resolved by elaboration (§5.8), so the machine stores the concrete
 `n_T` / `b` / `⟨⟩` (`Const`/`BoolConst`).
 
-Using a place `p` in value context is the operational side of §4.2 / §5.1. At
+<a id="6.3:2"></a>**[§6.3:2]** Using a place `p` in value context is the operational side of §4.2 / §5.1. At
 static elaboration, every such use receives a closed annotation `μ`; it is one
 of `Declared(d,π_s,T)`, `Untrackable(f,T)`, or `Ordinary(qual(T),T)`. The
 `Untrackable` annotation contains the concrete `uf` data from §4.2, including
@@ -2201,13 +2220,13 @@ by-reference or equality context receives `Borrowed` instead. Thus the dynamic
 rules consume elaboration metadata; they never consult `Γ`, recompute a
 declared-linear prefix, or recover constant-index provenance after reduction.
 
-Let `p` resolve, under ρ, to a root cell `ℓ` and an evaluated projection path
+<a id="6.3:3"></a>**[§6.3:3]** Let `p` resolve, under ρ, to a root cell `ℓ` and an evaluated projection path
 `π` (field indices and already-reduced array indices, §6.2); write `H(ℓ)@π` for the
 sub-value reached by following `π` into `H(ℓ)`, and `H[ℓ@π ↦ ⊘]` for the store
 with that sub-position replaced by the moved-out marker. Reading navigates the
 stored aggregate exactly as `place_read` does.
 
-The declared-linear projection case is a distinct redex. If the elaboration
+<a id="6.3:4"></a>**[§6.3:4]** The declared-linear projection case is a distinct redex. If the elaboration
 annotation is `μ = Declared(d,π_s,T)` and `d` resolves to `ℓ@π_d`, let
 `split(H(ℓ)@π_d, π_s) = (v, [r_1, ..., r_m])` expose the selected leaf `v` and
 the ordered unselected residue values. `split` walks structs in declaration
@@ -2227,7 +2246,7 @@ immediately and exactly once, while a linear residue is excluded by the
   ⟨ H ; φ ; K ; p ⟩ → ⟨ H' ; φ ; K ; v ⟩
 ```
 
-Only the selected place `d` is replaced by `⊘`; a declared-linear ancestor and
+<a id="6.3:5"></a>**[§6.3:5]** Only the selected place `d` is replaced by `⊘`; a declared-linear ancestor and
 all of its unrelated residue remain in the store and retain their ownership
 obligations. The selected value `v` is the result transferred to the context,
 not a value dropped by `destructure`. An untrackable path follows its closed
@@ -2235,7 +2254,7 @@ not a value dropped by `destructure`. An untrackable path follows its closed
 ordinary path after reduction. A by-reference or equality projection is not a
 value-context use and never fires this rule.
 
-For an untrackable path with an applicable declared-linear prefix, static
+<a id="6.3:6"></a>**[§6.3:6]** For an untrackable path with an applicable declared-linear prefix, static
 checking rejects the use with E0904 before evaluation: no dynamic redex may discharge an
 unidentified linear sibling obligation. Otherwise, `μ =
 Untrackable(OrdinaryDynamic,T)` retains the ordinary dynamic-index behavior: a
@@ -2260,7 +2279,7 @@ dynamic-index rule.
   ⟨ H ; φ ; K ; p ⟩ → ⟨ H[ℓ@π ↦ ⊘] ; φ ; K ; v ⟩               -- whole- or partial-place move; source becomes ⊘
 ```
 
-`(D-Use-Move)` writes `⊘` at exactly the sub-position moved (the whole cell for a
+<a id="6.3:7"></a>**[§6.3:7]** `(D-Use-Move)` writes `⊘` at exactly the sub-position moved (the whole cell for a
 whole-place use, one field/element for a projection — the *partial move* of
 §4.2), so the later scope-exit drop of `ℓ` (§6.11) skips it and cannot free it a
 second time. In a **well-typed** program `H(ℓ)@π` is never `⊘` when a use fires —
@@ -2272,7 +2291,7 @@ is needed (`run_drop`'s note); the paper machine marks it
 dynamically. The two are observably identical: the same values are dropped the
 same number of times.
 
-Equality operands are the exception (§4.1, §5.4, `4.3:3f`): the operand place is
+<a id="6.3:8"></a>**[§6.3:8]** Equality operands are the exception (§4.1, §5.4, `4.3:3f`): the operand place is
 **read through a shared loan and not moved**, regardless of whether its path
 would otherwise receive a declared or untrackable plan. The explicit place-read
 redex is:
@@ -2284,14 +2303,14 @@ redex is:
   ⟨ H ; φ ; K ; p ⟩ → ⟨ H ; φ ; K ; v ⟩
 ```
 
-It leaves the cell `Owned`; no destructure, fallback action, or drop is run.
+<a id="6.3:9"></a>**[§6.3:9]** It leaves the cell `Owned`; no destructure, fallback action, or drop is run.
 By-reference arguments likewise carry `Borrowed` place metadata but are
 consumed by the call's loan rules rather than this value-producing redex. The
 oracle simply reads both equality operands without disturbing storage (`cmp`).
 
 ### 6.4 Primitive operators
 
-All operands are `Copy` scalars, already reduced to `n_T`, `f_T`, or `b` by
+<a id="6.4:1"></a>**[§6.4:1]** All operands are `Copy` scalars, already reduced to `n_T`, `f_T`, or `b` by
 §6.2. The integer operator rules below are stated over `n_T` at
 `T = int(w,s)` and the float ones over `f_T` at `T = float(w)`, and **no
 operator rule's premises are met by both** — which is what keeps the integer
@@ -2299,7 +2318,7 @@ traps off floats without any rule having to say so. Only `(D-Eq)`, which is
 stated over arbitrary values, spans the two, and it does so through the leaf
 clauses of `≈`.
 
-**Arithmetic `+ - *` and unary `neg`** compute over ℤ and **trap on overflow** —
+<a id="6.4:2"></a>**[§6.4:2]** **Arithmetic `+ - *` and unary `neg`** compute over ℤ and **trap on overflow** —
 Rue arithmetic never wraps (`3.1:6/13`). Let `n1 ⊕_ℤ n2` be the exact integer
 result:
 
@@ -2313,12 +2332,12 @@ result:
   (n1)_T ⊕ (n2)_T  →  ↯overflow
 ```
 
-`(D-Arith)`/`(D-Arith-Trap)` are `arith` + `range_check`: the interpreter computes in `i128` (wide enough that no host
+<a id="6.4:3"></a>**[§6.4:3]** `(D-Arith)`/`(D-Arith-Trap)` are `arith` + `range_check`: the interpreter computes in `i128` (wide enough that no host
 overflow precedes the range check) and traps when the result leaves `[min_T,
 max_T]`. `neg` is the unary case: `neg (min_T)_T → ↯overflow` because `-min_T >
 max_T` for a signed `T` (`Neg`).
 
-**Division and remainder `/ %`** add two extra traps before the range check
+<a id="6.4:4"></a>**[§6.4:4]** **Division and remainder `/ %`** add two extra traps before the range check
 (`divmod`):
 
 ```
@@ -2333,11 +2352,11 @@ max_T` for a signed `T` (`Neg`).
                                                   (n1)_T / (n2)_T → ↯overflow
 ```
 
-`%` is identical with `q` the truncated remainder `n1 rem n2`, trapping
+<a id="6.4:5"></a>**[§6.4:5]** `%` is identical with `q` the truncated remainder `n1 rem n2`, trapping
 `↯rem-zero` on a zero divisor and `↯overflow` on `min_T % -1` (the hardware
 `idiv` faults there even though the mathematical remainder is 0 — `divmod`'s remainder arm).
 
-**Float arithmetic `+ - * /` and unary `neg` never trap** (`3.12:21`). Write
+<a id="6.4:6"></a>**[§6.4:6]** **Float arithmetic `+ - * /` and unary `neg` never trap** (`3.12:21`). Write
 `f1 ⊕_w f2` for the IEEE 754 binary-`w` operation named by `⊕`: the exact
 mathematical result on the two data, rounded by `rnd_w` (§2 — nearest, ties to
 even), together with the special cases IEEE 754 fixes for zero, infinite, and
@@ -2353,7 +2372,7 @@ one rule suffices and there is no companion trap rule:
   neg (f)_{float(w)}  →  (-f)_{float(w)}      -- sign flip only: -(+0) = -0, -NaN(σ) = NaN(-σ) (3.12:24)
 ```
 
-None of `(D-Arith-Trap)`, `(D-Div-Zero)`, or `(D-Div-Overflow)` applies to a
+<a id="6.4:7"></a>**[§6.4:7]** None of `(D-Arith-Trap)`, `(D-Div-Zero)`, or `(D-Div-Overflow)` applies to a
 float redex: each is stated over `n_T` at an integer `T`, so its premises are
 never met. That is exactly the divergence `3.12:22` names — the integer
 division rule "does not apply to floating-point operands" — and `3.12:23`'s
@@ -2368,7 +2387,7 @@ extra rules:
   either operand a NaN            ⟹  the result is a NaN                            (IEEE 754)
 ```
 
-The last clause fixes only that a NaN comes out, because that is all IEEE 754
+<a id="6.4:8"></a>**[§6.4:8]** The last clause fixes only that a NaN comes out, because that is all IEEE 754
 promises. Which NaN splits two ways. A NaN an **invalid operation creates** —
 `0/0`, `inf - inf`, `0 · inf`, `inf/inf`, `@sqrt` of a negative — is
 `NaN(σ_NaN)` (`3.12:44`). A NaN that is merely **propagated** from an operand
@@ -2379,12 +2398,12 @@ mechanization does not: `RueCore.FloatLaws.arith_nan` says `isNaN` and no
 more, and the propagation its executable instance implements is checked against
 the compiler rather than assumed.
 
-`neg` on a float is not the integer `neg` of `(D-Arith)`: "`neg (min_T)_T →
+<a id="6.4:9"></a>**[§6.4:9]** `neg` on a float is not the integer `neg` of `(D-Arith)`: "`neg (min_T)_T →
 ↯overflow`" is a statement about `int(w,signed)`, while `3.12:24` makes float
 negation total — it flips a sign bit and changes nothing else, on `-0.0` and on
 a NaN alike. No float arithmetic redex can step to a panic.
 
-**Comparison `≟` and the ordering compares `< > <= >=`** yield `bool`
+<a id="6.4:10"></a>**[§6.4:10]** **Comparison `≟` and the ordering compares `< > <= >=`** yield `bool`
 (`cmp`). Integer scalars compare by their integer value, respecting
 signedness (the value `n_T` already carries the sign). A **float** scalar
 compares by the IEEE 754 predicate at its width (`3.12:27`, `4.3:5`): `-0.0`
@@ -2398,7 +2417,7 @@ is `false` and `!=` is the only compare that is `true`.
   (f1)_{float(w)} ⋚ (f2)_{float(w)}  →  r        -- r = false whenever f1 or f2 is a NaN (3.12:27)
 ```
 
-Only `==`/`!=` may reach an aggregate (ordering on aggregates is a §5 type
+<a id="6.4:11"></a>**[§6.4:11]** Only `==`/`!=` may reach an aggregate (ordering on aggregates is a §5 type
 error); there they compare **structurally** — a struct field-by-field, an array
 element-by-element, an enum same-tag-and-equal-payload, recursing into nested
 aggregates (RUE-285) — and compare a value of each canonical text rung (`str`,
@@ -2412,7 +2431,7 @@ aggregates (RUE-285) — and compare a value of each canonical text rung (`str`,
   v1 == v2 → (v1 ≈ v2)                v1 != v2 → ¬(v1 ≈ v2)
 ```
 
-**`≈` is a partial equivalence on the core's types, and a total predicate
+<a id="6.4:12"></a>**[§6.4:12]** **`≈` is a partial equivalence on the core's types, and a total predicate
 (RUE-2007, amended by RUE-2158).** Every `T` of §2 bottoms out in an
 `int(w, s)`, `float(w)`, `bool`, or `unit` leaf, and the canonical text rungs
 added by §6.13.4 compare by byte content. The float leaf is the whole reason
@@ -2426,7 +2445,7 @@ the qualification is needed; its clause of `≈` is IEEE 754 equality
                                     and NEVER when either is a NaN    (3.12:27)
 ```
 
-Every other leaf relation is reflexive, so `≈` is symmetric and transitive
+<a id="6.4:13"></a>**[§6.4:13]** Every other leaf relation is reflexive, so `≈` is symmetric and transitive
 everywhere, and reflexive everywhere *except* through a NaN: `¬(v ≈ v)` for any
 `v` reaching a NaN, at any depth (`3.12:29`). `≈` is therefore a *partial*
 equivalence — a partial equivalence *relation* in the usual sense, symmetric
@@ -2437,7 +2456,7 @@ or not, so `(D-Eq)` still fires on every pair and progress is untouched. What
 cite this rule, say the same, and now cite it exactly: the float leaf they
 describe is in the model, not outside it.
 
-The float leaf is **conservative for §7**. `≈` occurs in exactly two rule
+<a id="6.4:14"></a>**[§6.4:14]** The float leaf is **conservative for §7**. `≈` occurs in exactly two rule
 statements in this document — `(D-Eq)` here and the container equations of
 §6.13.4 — and neither appeals to reflexivity: `(D-Eq)` only forwards `≈`'s truth
 value into a `bool`, and `≟` neither moves nor drops its operands (§4.1, §6.3),
@@ -2448,7 +2467,7 @@ about the value produced, and the meta-level `=` of `(D-Use-Shared-Read)` and of
 whatever IEEE says. A leaf whose equality is irreflexive therefore invalidates no
 §7 theorem; it changes which `bool` a compare produces and nothing else.
 
-Equality also reaches values through the container **searches** §6.13.3 leaves as
+<a id="6.4:15"></a>**[§6.4:15]** Equality also reaches values through the container **searches** §6.13.3 leaves as
 compositions rather than writing out (`index_of`, `contains`): those evaluate `≟`
 and so inherit this answer without naming `≈`. A buffer holding a `NaN` does not
 report that it `contains` one, for the same reason the aggregate around a `NaN`
@@ -2457,7 +2476,7 @@ it, and it is why prose `4.3:3g`'s pointer at `@total_cmp` is advice about
 comparison rather than about the current search methods — the total order itself
 is `(D-Total-Cmp)` below, and a container that needs reflexivity uses it.
 
-**Bitwise `& | ^ ~` and shifts `<< >>`** operate on the `w`-bit two's-complement
+<a id="6.4:16"></a>**[§6.4:16]** **Bitwise `& | ^ ~` and shifts `<< >>`** operate on the `w`-bit two's-complement
 representation and never trap (`bitop`/`shift`). Write `β_w(n)` for
 the `w`-bit pattern of `n` and `val_{w,s}(β)` for its reinterpretation at
 signedness `s`:
@@ -2470,7 +2489,7 @@ signedness `s`:
   (n1)_{int(w,s)}  ~  → ( val_{w,s}( ¬β_w(n1) ) )_{int(w,s)}       -- bitwise complement (BitNot)
 ```
 
-Shifts mask the shift amount modulo the operand width `w` (`4.3a:10`); `>>` on a
+<a id="6.4:17"></a>**[§6.4:17]** Shifts mask the shift amount modulo the operand width `w` (`4.3a:10`); `>>` on a
 signed type is arithmetic (sign-replicating), on an unsigned type logical
 (`shift`):
 
@@ -2484,7 +2503,7 @@ signed type is arithmetic (sign-replicating), on an unsigned type logical
   (n)_{int(w,s)} >> (amt)_T → ( val_{w,s}(β) )_{int(w,s)}
 ```
 
-`mod` above is fixed to the **Euclidean** remainder — the representative in
+<a id="6.4:18"></a>**[§6.4:18]** `mod` above is fixed to the **Euclidean** remainder — the representative in
 `[0, w)` — because the amount can be negative and `4.3a:10` does not reach
 that case. `4.3a:9` gives the amount the shifted value's own type, so on a
 signed type `amt < 0` is writable, while `4.3a:10` speaks only of an amount
@@ -2494,9 +2513,9 @@ signed type `amt < 0` is writable, while `4.3a:10` speaks only of an amount
 width (verified by hand). The truncating reading, which would make `k`
 negative and the rules undefined there, is therefore not the one.
 
-`not` on `bool` is `not true → false`, `not false → true` (`Not`).
+<a id="6.4:19"></a>**[§6.4:19]** `not` on `bool` is `not true → false`, `not false → true` (`Not`).
 
-**The float intrinsics `@f`** (§2, §5.8) reduce by their specification equations,
+<a id="6.4:20"></a>**[§6.4:20]** **The float intrinsics `@f`** (§2, §5.8) reduce by their specification equations,
 like every other intrinsic with no core body (§6.9's intrinsic note). Four of
 the five groups are total; `@float_to_int` is the one float form that traps.
 
@@ -2527,7 +2546,7 @@ the five groups are total; `@float_to_int` is the one float form that traps.
   ⊙( (f)_{float(w)} )  →  (f')_{float(w)}                         -- never traps (3.12:37)
 ```
 
-**The integer conversion `@intCast`** reduces by the same shape, and the
+<a id="6.4:21"></a>**[§6.4:21]** **The integer conversion `@intCast`** reduces by the same shape, and the
 same partition keeps progress intact: the value is carried across when it
 denotes a value of the target type and traps when it does not (`4.13:28`).
 The conversion is on the *value*, not on the bit pattern — reinterpretation is
@@ -2543,7 +2562,7 @@ The conversion is on the *value*, not on the bit pattern — reinterpretation is
   @intCast( (n)_{int(w',s')} )  →  ↯cast-overflow          -- (4.13:28)
 ```
 
-`↯cast-overflow` is §6.12's sixth category. It is kept apart from `↯overflow`
+<a id="6.4:22"></a>**[§6.4:22]** `↯cast-overflow` is §6.12's sixth category. It is kept apart from `↯overflow`
 because the two are distinguishable at the process boundary: the compiler and
 the oracle report `integer cast overflow` here and `integer overflow` for the
 arithmetic traps (verified against both), so a model that merged them would
@@ -2551,7 +2570,7 @@ make a real difference invisible to the differential harness. `(D-Int-Cast)`
 covers the identity case `int(w,s) → int(w,s)` without a side condition, since
 `(Int-Cast)` imposes none.
 
-`(D-Float-To-Int)` and `(D-Float-To-Int-Trap)` **partition** `𝔽_w`, which is
+<a id="6.4:23"></a>**[§6.4:23]** `(D-Float-To-Int)` and `(D-Float-To-Int-Trap)` **partition** `𝔽_w`, which is
 what keeps progress intact for the one trapping form. `3.12:18` states the
 guard both ways — the conversion succeeds exactly when `MIN - 1 < f < MAX + 1`
 for the result type's bounds, equivalently when `f` is not a NaN and its
@@ -2560,7 +2579,7 @@ both infinities failing under either. The trap is **not** a new category: it is
 `↯overflow`, the same `overflow` §6.12 already lists, reported as `integer
 overflow` (`8.1:7`). Float *arithmetic* still never reaches it (`3.12:23`).
 
-`rnd_{w'}` in `(D-Float-Cast)` is exact when `w' > w` (widening is
+<a id="6.4:24"></a>**[§6.4:24]** `rnd_{w'}` in `(D-Float-Cast)` is exact when `w' > w` (widening is
 value-preserving, `3.12:19`), rounds to nearest with ties to even when
 `w' < w`, and yields `±inf` when the operand's magnitude is too large for
 `𝔽_{w'}`; on a special it carries the class across, an infinity giving the same
@@ -2570,27 +2589,27 @@ one the conversion creates, so it keeps the operand's sign rather than taking
 the compiler, which casts a negative `f64` NaN to a negative `f32` NaN
 (`RueCore.FloatLaws.narrow_nan`, `RueCore.FloatLaws.cast_nan`).
 
-`≺_w` is the IEEE 754 `totalOrder` predicate on `𝔽_w` (`3.12:32`):
+<a id="6.4:25"></a>**[§6.4:25]** `≺_w` is the IEEE 754 `totalOrder` predicate on `𝔽_w` (`3.12:32`):
 
 ```
   NaN(-)  ≺  -inf  ≺  the negative finite values (descending magnitude)  ≺  -0
           ≺  +0  ≺  the positive finite values (ascending magnitude)  ≺  +inf  ≺  NaN(+)
 ```
 
-— a **total** order, under which `k = 0` holds exactly when the two operands
+<a id="6.4:26"></a>**[§6.4:26]** — a **total** order, under which `k = 0` holds exactly when the two operands
 are the same datum. That is this model's reading of `3.12:32`'s "the same bit
 pattern" (§2's representation decision, and §9 item 5 for the residual). It is
 the total order `4.3:3g` points at, and it is total precisely where `≈` is not:
 `@total_cmp(f, f) = 0` for every `f`, NaN included.
 
-`⊙_w` is the total function `3.12:35` and `3.12:36` define: the IEEE 754 square
+<a id="6.4:27"></a>**[§6.4:27]** `⊙_w` is the total function `3.12:35` and `3.12:36` define: the IEEE 754 square
 root for `@sqrt` (`NaN(σ_NaN)` on a negative operand, `-0.0` on `-0.0`, `+inf`
 on `+inf`), and rounding toward `-inf`, toward `+inf`, toward zero, and to
 nearest with ties *away* from zero for `@floor`, `@ceil`, `@trunc`, and
 `@round` — each exact, since an integral value near `f` is always
 representable. `3.12:37` fixes the special cases and makes all five trap-free.
 
-**The oracle runs the float rules** (corrected 2026-09-21; this paragraph said
+<a id="6.4:28"></a>**[§6.4:28]** **The oracle runs the float rules** (corrected 2026-09-21; this paragraph said
 the opposite). Every §6 rule group names the `crates/rue-oracle` function that
 realizes it, and the float groups are no exception: `(D-Float-Arith)`,
 `(D-Float-Neg)` and `(D-Float-Ord)` are `eval_float_operation`, and
@@ -2601,7 +2620,7 @@ and re-encodes — so no float operation traps but `@float_to_int`, a division
 by zero yields an infinity or a NaN, and comparison is the partial order
 `3.12:27` fixes.
 
-The earlier text claimed the interpreter reported floats as a *modeled gap*
+<a id="6.4:29"></a>**[§6.4:29]** The earlier text claimed the interpreter reported floats as a *modeled gap*
 instead, on the ground that it stores scalars as integer bit patterns and
 would therefore model bit equality where `3.12:27` asks for IEEE equality.
 That is no longer true of the code, and the specific worry is answered:
@@ -2611,7 +2630,7 @@ identify it as an `f32`, and `@float_to_int` of an infinity traps — each read
 off the interpreter itself. `SemanticGapKind::FloatArithmetic` survives in the
 enum with no site that raises it.
 
-So the RUE-50 differential obligation on the float rules is **live**: the
+<a id="6.4:30"></a>**[§6.4:30]** So the RUE-50 differential obligation on the float rules is **live**: the
 Lean↔oracle pair of ADR-0097's differential testing compares the float corpus like any
 other, and step 5 of the README's rubric is met for this construct. One thing
 the harness cannot compare away is `σ_NaN` (§2): it is fixed per target, so a
@@ -2626,7 +2645,7 @@ the target's `σ_NaN`.
 
 ### 6.5 Aggregate introduction and projection
 
-A struct, array, or enum literal is a redex once **all** its components are values
+<a id="6.5:1"></a>**[§6.5:1]** A struct, array, or enum literal is a redex once **all** its components are values
 (the `E` contexts of §6.2 reduce them left-to-right, threading `H`). It steps to
 the corresponding aggregate value, owning every component (`StructInit`/
 `ArrayInit`):
@@ -2639,7 +2658,7 @@ the corresponding aggregate value, owning every component (`StructInit`/
   [ v1, …, vn ] → [ v1, …, vn ]                       -- (n ≥ 0; the empty array [] is the zero-sized [T;0])
 ```
 
-Projection in value context is subsumed by the place-use rules of §6.3 (a
+<a id="6.5:2"></a>**[§6.5:2]** Projection in value context is subsumed by the place-use rules of §6.3 (a
 projection `p.f` / `p[e]` is a place). A statically trackable projection from a
 declared-linear place uses `(D-Use-Declared-Linear)` there; an untrackable
 projection with an applicable declared-linear prefix is rejected by the E0904 rule above,
@@ -2660,7 +2679,7 @@ bounds-checked** at the moment the path is navigated, and an out-of-range or neg
 
 ### 6.6 Enum introduction and the `match` elimination
 
-Enum construction evaluates its payload left-to-right (§6.2) and builds the tagged
+<a id="6.6:1"></a>**[§6.6:1]** Enum construction evaluates its payload left-to-right (§6.2) and builds the tagged
 value; a discriminant-only variant is just its tag (`EnumVariant`):
 
 ```
@@ -2668,7 +2687,7 @@ value; a discriminant-only variant is just its tag (`EnumVariant`):
   E::Kj( v1, …, va ) → Kj⟨ v1, …, va ⟩                -- a = 0 ⇒ the bare tag Kj⟨⟩
 ```
 
-`match` first reduces its scrutinee to an enum value `Kj⟨v1,…,va⟩` (a
+<a id="6.6:2"></a>**[§6.6:2]** `match` first reduces its scrutinee to an enum value `Kj⟨v1,…,va⟩` (a
 value-context **use** of the scrutinee, §5.5: a move for a non-`Copy` enum — its
 source cell became `⊘` by §6.3 — a copy otherwise). The tag `Kj` selects the one
 covering arm (exhaustiveness, §5.5, guarantees exactly one), which **binds the
@@ -2683,7 +2702,7 @@ those cells; the other arms never come into being (`Terminator::Switch` +
   ⟨ H ; φ ; K ; match Kj⟨v1,…,va⟩ { …, Kj(x1..xa) => ej, … } ⟩  →  ⟨ H' ; φ' ; K ; endscope([ℓ1,…,ℓa]) in ej ⟩
 ```
 
-The payload cells are bound exactly as a `let` binds one (§6.7): appended to the
+<a id="6.6:3"></a>**[§6.6:3]** The payload cells are bound exactly as a `let` binds one (§6.7): appended to the
 innermost drop scope *and* owed to the arm's `endscope` marker, so their drops
 run **when the arm's body becomes a value** — the arm's end, `6.3:17`'s timing —
 rather than at some later activation-record pop, and an unwinding `return`/`break` inside
@@ -2703,12 +2722,12 @@ payload runs its destructor exactly once when its binding leaves scope"
   if true { e1 } else { e2 } → e1                            if false { e1 } else { e2 } → e2
 ```
 
-`if`'s arms are entered directly (they open drop scopes for their own `let`-bindings by
+<a id="6.6:4"></a>**[§6.6:4]** `if`'s arms are entered directly (they open drop scopes for their own `let`-bindings by
 §6.7); the boolean scrutinee is `Copy`, so no drop attends the branch itself.
 
 ### 6.7 `let`, sequencing, and scope-exit drop
 
-`let x = v ; e2` allocates a fresh cell for `x`, binds it, and reduces the body in
+<a id="6.7:1"></a>**[§6.7:1]** `let x = v ; e2` allocates a fresh cell for `x`, binds it, and reduces the body in
 a scope in which **`x` has a drop obligation**. That obligation is recorded in **two places at
 once**, and the redundancy is load-bearing (RUE-1277): the cell is appended to
 the activation record's innermost open drop scope `s` — so the activation-record-level unwinding of
@@ -2728,7 +2747,7 @@ later exit drops them again.
   ⟨ H ; φ ; K ; endscope([ℓ1,…,ℓq]) in v ⟩ → ⟨ drop-retire(H, ℓq) ; …; drop-retire(H, ℓ1) ; ⟨ρ; (s minus ℓ1..ℓq)::σ⟩ ; K ; v ⟩
 ```
 
-where `drop(H, ℓ)` is the drop relation of §6.11 (a no-op on a `⊘` or `Copy`
+<a id="6.7:2"></a>**[§6.7:2]** where `drop(H, ℓ)` is the drop relation of §6.11 (a no-op on a `⊘` or `Copy`
 cell). The suffix side condition is an invariant, not a check the machine
 performs: cells are appended to the innermost drop scope in creation order, an
 `endscope` closes the most recently created ones, and nothing between a
@@ -2739,7 +2758,7 @@ expression nesting; a nested `loop` pushes and — by `(D-Loop-Iter)`/
 activation record). Nested `let`s nest their `endscope`s, so cells are dropped in **reverse
 declaration order** (RAII) — the innermost/newest binding first.
 
-The environment `ρ[x↦ℓ]` is never restored when the binding dies, and no rule
+<a id="6.7:3"></a>**[§6.7:3]** The environment `ρ[x↦ℓ]` is never restored when the binding dies, and no rule
 needs it to be: elaboration **α-renames** binders so every binding in a
 function body has a distinct name (the Barendregt convention — surface
 shadowing, `3.8:12/13`, is resolved *by renaming* before the core, like every
@@ -2756,14 +2775,14 @@ for a `Copy` value) and control passes to `e2`:
   ⟨ H ; φ ; K ; v1 ; e2 ⟩ → ⟨ drop(H, v1) ; φ ; K ; e2 ⟩       -- drop the discarded temporary, then continue
 ```
 
-(The oracle realizes both via the compiler's explicit `Drop` CFG instructions,
+<a id="6.7:4"></a>**[§6.7:4]** (The oracle realizes both via the compiler's explicit `Drop` CFG instructions,
 which its elaboration inserts at exactly these scope/temporary boundaries and the
 interpreter executes with `run_drop`; `drop(H, v)` on an already-
 owned temporary value is `drop` on a cell whose contents is `v` and never `⊘`.)
 
 ### 6.8 Assignment: overwrite-drop and reinitialisation
 
-`assign p = v` stores `v` into the cell/sub-position `p` denotes. If that position
+<a id="6.8:1"></a>**[§6.8:1]** `assign p = v` stores `v` into the cell/sub-position `p` denotes. If that position
 currently holds an `Owned` droppable value, it is **dropped first** (overwrite-
 drop, §5.2, `3.8:55`); reinitialising a `⊘` (moved-out) position drops nothing.
 The result is `⟨⟩` and the position becomes `Owned` (`place_write`):
@@ -2774,7 +2793,7 @@ The result is `⟨⟩` and the position becomes `Owned` (`place_write`):
   ⟨ H ; φ ; K ; assign p = v ⟩ → ⟨ H2 ; φ ; K ; ⟨⟩ ⟩
 ```
 
-(The compiler elaborates the overwrite-drop as an explicit `Drop` emitted before
+<a id="6.8:2"></a>**[§6.8:2]** (The compiler elaborates the overwrite-drop as an explicit `Drop` emitted before
 the store, so the oracle's `place_write` needs only to overwrite — the drop
 instruction ran first; consistent with `3.8` overwrite-drop.) By the (Assign)
 premise (§5.2, `3.8:77`), whenever the dropped value `c ≠ ⊘` here has a type that
@@ -2785,7 +2804,7 @@ at an assignment.
 
 ### 6.9 Calls, parameters, and return
 
-A call `g(a1, …, am)` evaluates its arguments left-to-right (§6.2). A by-value
+<a id="6.9:1"></a>**[§6.9:1]** A call `g(a1, …, am)` evaluates its arguments left-to-right (§6.2). A by-value
 argument reduces to a value `vi` that is **moved or copied into** the parameter
 cell (per §4.2 — the source place, if any, was already marked `⊘` by §6.3). A
 by-reference argument `inout p` / `borrow p` is **not** reduced to a value:
@@ -2803,7 +2822,7 @@ is read-only. Let `g` be `fn g(m1 x1:T1, …, mm xm:Tm) -> Tr { e_body }`:
   ⟨ H ; φ ; K ; E[ g(a1,…,am) ] ⟩ → ⟨ H' ; φ_g ; ret(E, φ)·K ; e_body ⟩
 ```
 
-The callee's entry scope holds a drop obligation **only** for the by-value parameter cells;
+<a id="6.9:2"></a>**[§6.9:2]** The callee's entry scope holds a drop obligation **only** for the by-value parameter cells;
 `inout`/`borrow` parameters are owned by the caller and are exempt (§5.6,
 `3.8:62`). A by-ref binding carries both the root cell and the projection path
 that was passed; reading or writing parameter `xi` therefore reaches exactly the
@@ -2828,7 +2847,7 @@ context:
   ⟨ H ; φ_main ; K_main ; E'[return v] ⟩ → ⟨ run-all-scope-drops(H, φ_main) ; φ_main ; halt ; v ⟩
 ```
 
-`(D-Return-Value)` is the "a function evaluates to the value its body evaluates
+<a id="6.9:3"></a>**[§6.9:3]** `(D-Return-Value)` is the "a function evaluates to the value its body evaluates
 to" rule of §4.3 — there is no implicit action, the body simply *is* an
 expression that reduced to `v`. `(D-Return)` is the explicit form, and it fires
 with `return v` **in any evaluation context `E'`** (RUE-1277 — the unwinding
@@ -2855,7 +2874,7 @@ place is unaliased for the call's duration, so copy-out is observably identical 
 the shared-cell rule above; the paper machine takes the sharing form because it is
 simpler to state and the two agree exactly on well-typed programs.
 
-A call whose callee is an intrinsic with no core body (e.g. `@dbg` or
+<a id="6.9:4"></a>**[§6.9:4]** A call whose callee is an intrinsic with no core body (e.g. `@dbg` or
 `@to_string`) reduces by the intrinsic's specification equation rather than by
 `(D-Call)`; these are elaboration-level primitives, and the oracle dispatches them
 directly (`@dbg` appends its argument's rendering
@@ -2864,7 +2883,7 @@ every user function.
 
 ### 6.10 `loop` and `break`
 
-`loop { e }` pushes a loop boundary and enters the body in a fresh scope; when the
+<a id="6.10:1"></a>**[§6.10:1]** `loop { e }` pushes a loop boundary and enters the body in a fresh scope; when the
 body reduces to a value (necessarily `⟨⟩`, discarded), its scope drops run and the
 loop **re-enters** its body — so a value's storage from one iteration is reclaimed
 before the next, exactly as a `let` inside the loop body drops each turn (in the
@@ -2884,7 +2903,7 @@ discards, and the whole `loop` yields `⟨⟩`:
   ⟨ H ; φ' ; loopβ(e, φ)·K ; E'[break] ⟩ → ⟨ unwind-drops(H, φ', φ) ; φ ; K ; ⟨⟩ ⟩
 ```
 
-Like `(D-Return)`, `(D-Break)` fires with `break` **in any evaluation context
+<a id="6.10:2"></a>**[§6.10:2]** Like `(D-Return)`, `(D-Break)` fires with `break` **in any evaluation context
 `E'`** (RUE-1277): `1 + (if c { break } else { 2 })` reduces by discarding
 `E'` — pending `endscope` markers included — and running the discarded
 bindings' drops from the drop scopes that §6.7 registered them in, via
@@ -2892,7 +2911,7 @@ bindings' drops from the drop scopes that §6.7 registered them in, via
 (a `break` in a callee would be ill-formed, §5.7, and any inner loop the body
 entered pushed — and by exiting, popped — its own boundary above this one).
 
-`unwind-drops(H, φ', φ)` runs the scope-exit drops of every scope open in `φ'`
+<a id="6.10:3"></a>**[§6.10:3]** `unwind-drops(H, φ', φ)` runs the scope-exit drops of every scope open in `φ'`
 that is not already open in the enclosing `φ`. A `loop` containing no `break`
 never fires `(D-Break)` and so runs forever — its static type is `never` (§5.7,
 `Loop-Div`), consistent with its never yielding a value to its context. A loop
@@ -2903,7 +2922,7 @@ surface, `4.8:22`.)
 
 ### 6.11 Drop
 
-`drop(H, ℓ)` and `drop(H, c)` are the operational core of Rue's memory safety.
+<a id="6.11:1"></a>**[§6.11:1]** `drop(H, ℓ)` and `drop(H, c)` are the operational core of Rue's memory safety.
 Dropping a cell holding `⊘` — a moved-out or uninitialised position — does
 **nothing** (this single skip is what makes double-free impossible, §7). Otherwise
 the value's user destructor, if any, runs **first**, then its droppable *contents*
@@ -2918,9 +2937,9 @@ drop in `3.9` order (`run_drop`):
   drop(H, Kj⟨ c1,…,ca ⟩)           = drop*( H , [c1,…,ca] )              -- ONLY the ACTIVE variant Kj's payload (6.3:20)
 ```
 
-where `drop*(H, [c1,…,cm])` folds `drop` over the list left-to-right.
+<a id="6.11:2"></a>**[§6.11:2]** where `drop*(H, [c1,…,cm])` folds `drop` over the list left-to-right.
 
-The aggregate rules are stated over **cell contents** rather than over values,
+<a id="6.11:3"></a>**[§6.11:3]** The aggregate rules are stated over **cell contents** rather than over values,
 and that is load-bearing. §6.1's value forms write an aggregate's members as
 values `v_i`, but what a cell holds after a partial move is a tree with moved-out parts
 in it: the `⊘` a (D-Use-Move) writes at `ℓ@π` sits at a field slot or an array
@@ -2934,7 +2953,7 @@ rules would have no clause at all for what a constant-index element move
 (`3.8:68`) leaves behind, and the `⊘`-skip that makes §7's double-free argument
 work would apply only to a whole cell.
 
-The destructor case is a **nested machine run** — the formal shape of "the
+<a id="6.11:4"></a>**[§6.11:4]** The destructor case is a **nested machine run** — the formal shape of "the
 destructor runs as an ordinary call" (RUE-1279; earlier drafts typed `dtor_S`
 as a store function `H → H` while *saying* it could step and trap, with no
 definition connecting the two):
@@ -2945,14 +2964,14 @@ definition connecting the two):
   H1(ℓ) = { c1', …, ck' }_S             -- the residual fields; no ci or ci' can be ⊘ (see the vacuity note below)
 ```
 
-The destructor body runs in its own activation record whose single drop scope is
+<a id="6.11:5"></a>**[§6.11:5]** The destructor body runs in its own activation record whose single drop scope is
 **empty**: `self` is exempt from the drop obligation (§5.6 — otherwise
 dropping `self` would re-run the destructor, an infinite regress), so the
 nested run's activation-record pop drops only the destructor's own locals. Afterward the
 cell contents `c1',…,ck'` as the nested run left them — not the original
 `c1,…,ck` — drop in declaration order; the scratch cell `ℓ` is then tombstoned.
 
-**The `⊘` case here is vacuous for well-formed programs** (RUE-1600), and the
+<a id="6.11:6"></a>**[§6.11:6]** **The `⊘` case here is vacuous for well-formed programs** (RUE-1600), and the
 rule is written this way only so it stays honest if that ever changes. No `ci`
 and no `ci'` can be `⊘`: reaching this rule means `S` declares a destructor, and
 `3.9:34` forbids moving a field out of *any* value whose type declares one, so
@@ -2983,13 +3002,13 @@ has no storage, and a discriminant-only active variant (`a = 0`) drops nothing
 (`run_drop`'s enum arm). A payload already moved out by a `match` binding (§6.6) left the
 enum place `⊘`, so it is skipped here and never dropped twice.
 
-Because a destructor is a normal function, dropping can itself step the machine
+<a id="6.11:7"></a>**[§6.11:7]** Because a destructor is a normal function, dropping can itself step the machine
 (and can even trap — a destructor that overflows halts with `↯overflow`, exactly
 as the oracle would, since `run_drop` calls back into `call`). Drops are therefore
 sequenced, not atomic; `endscope`/`return`/`break`/overwrite all expand to `drop`
 applications in the orders fixed above.
 
-The surface intrinsic `@drop(p)` is the explicit version of the same relation.
+<a id="6.11:8"></a>**[§6.11:8]** The surface intrinsic `@drop(p)` is the explicit version of the same relation.
 For a non-`Copy` place resolving to `ℓ@π`, it runs `drop(H, H(ℓ)@π)` — whose
 recursive walk skips every already-`⊘` sub-place — writes `⊘` back to `ℓ@π`,
 and returns `⟨⟩`; for a `Copy` place it returns `⟨⟩` without changing the
@@ -2999,7 +3018,7 @@ suppresses the later scope-exit drop through the original place.
 
 ### 6.12 Traps and the top-level result
 
-The six trap categories — `overflow` (integer arithmetic, integer `neg`,
+<a id="6.12:1"></a>**[§6.12:1]** The six trap categories — `overflow` (integer arithmetic, integer `neg`,
 `min_T / -1`, `min_T % -1` (`8.1:3`), and `@float_to_int` on a NaN or out of
 range — `3.12:18`, `8.1:7`), `div-zero`, `rem-zero`, `bounds` (a negative or out-of-range array
 index), `cast-overflow` (an `@intCast` whose value does not fit the target
@@ -3015,7 +3034,7 @@ category and only one producer: `@float_to_int` joins the `overflow` list above
 `@total_cmp`, and the five rounding intrinsics never trap at all (`3.12:21`,
 `3.12:23`, `3.12:24`, `3.12:19`, `3.12:32`, `3.12:37`) — §6.4.
 
-The `user` category is `@panic`'s specification equation (RUE-526 — previously the
+<a id="6.12:2"></a>**[§6.12:2]** The `user` category is `@panic`'s specification equation (RUE-526 — previously the
 paper machine had no rule for it). `@panic` is an intrinsic (§6.9's
 external-call note): it evaluates its message operand, appends
 `panic: <message>` to the observable output, and abandons the configuration:
@@ -3025,7 +3044,7 @@ external-call note): it evaluates its message operand, appends
   @panic(v_msg)  →  ↯user                    -- after emitting "panic: v_msg" to the observable output
 ```
 
-Statically `@panic(…)` is a diverging `!`-typed call (§5.7); dynamically it
+<a id="6.12:3"></a>**[§6.12:3]** Statically `@panic(…)` is a diverging `!`-typed call (§5.7); dynamically it
 yields no value at all — `↯user` is lifted past every context by
 (Panic-Lift). Verified against the compiler: a `@panic` prints its message and
 exits 101, indistinguishable from the four machine traps at the process
@@ -3054,7 +3073,7 @@ previously named by the rules below but never built):
   program result = ✓101
 ```
 
-`main`'s returned `i32` is masked to a byte for the process exit code, and a
+<a id="6.12:4"></a>**[§6.12:4]** `main`'s returned `i32` is masked to a byte for the process exit code, and a
 `unit`-returning `main` exits 0 (`Interp::run`); any trap exits 101
 (`Interp::run`). These two rules, plus the observable `@dbg` output accumulated
 during reduction and the exact runtime diagnostic emitted by a trap, are
@@ -3063,7 +3082,7 @@ harness compares against the compiled binary (RUE-50). Both executions retain
 stderr only up to the same fixed bound and reject overflow or a truncated native
 prefix, so bounded observation cannot manufacture agreement.
 
-The interpreter implementing this whole relation is the executable oracle
+<a id="6.12:5"></a>**[§6.12:5]** The interpreter implementing this whole relation is the executable oracle
 (`crates/rue-oracle`; README § "The executable oracle" / RUE-50). Every rule group
 above names the function that realizes it, so a change to either must be mirrored
 in the other or the differential tests will diverge — which is the mechanism that
@@ -3071,7 +3090,7 @@ keeps the paper semantics and the running semantics one artifact.
 
 ### 6.13 The block store: buffers, views, and container specification equations
 
-This section is the ratified RUE-390 modeling decision (maintainer ruling,
+<a id="6.13:1"></a>**[§6.13:1]** This section is the ratified RUE-390 modeling decision (maintainer ruling,
 2026-07-14): the machine models **memory blocks**, not a language-level
 heap. §6.1's store already gives every binding a single-cell allocation; this
 section adds the multi-cell **buffer allocations** that back `ArrayBuf(T)` and
@@ -3088,6 +3107,8 @@ reported).
 
 #### 6.13.1 Machine operations on buffer allocations
 
+<a id="6.13.1:1"></a>**[§6.13.1:1]**
+
 ```
   mint(H, n)        = (A, H[A ↦ [⊘, …, ⊘]])      where A ∉ dom(H); n ≥ 0 cells, all ⊘
   H(A).i            = ci                           iff H(A) = [c0, …, c_{m-1}] and 0 ≤ i < m      -- cell read
@@ -3098,9 +3119,9 @@ reported).
                                                    H2 = H1[A'.i ↦ ci  for 0 ≤ i < min(m, n')]
 ```
 
-Three commitments, each load-bearing:
+<a id="6.13.1:2"></a>**[§6.13.1:2]** Three commitments, each load-bearing:
 
-- **Partiality is stuckness, not a trap.** An operation on a `†` allocation, or
+- <a id="6.13.1:3"></a>**[§6.13.1:3]** **Partiality is stuckness, not a trap.** An operation on a `†` allocation, or
   outside a live allocation's cells, has no rule — the configuration is
   **stuck**, deliberately distinct from the defined `↯` traps of §6.12. A trap
   is defined behavior an alternate compiler must reproduce; a stuck
@@ -3110,13 +3131,13 @@ Three commitments, each load-bearing:
   equation bounds-checks against its own `len` before touching a cell, and
   traps `↯bounds` at *its* boundary), so their uses of these operations never
   stick — that unreachability is now theorem content, not vacuity.
-- **Identities are never reused.** `mint` freshness is `A ∉ dom(H)`, and dead
+- <a id="6.13.1:4"></a>**[§6.13.1:4]** **Identities are never reused.** `mint` freshness is `A ∉ dom(H)`, and dead
   allocations remain in the domain as `†`, so no fresh identity ever collides
   with a tombstoned one. A dangling handle or view is permanently dead — it cannot
   come back to life aliasing an unrelated later allocation. (This is the
   abstract form of provenance; concrete address reuse is the runtime's
   business, invisible here.)
-- **`realloc` moves identity.** Growth mints a *fresh* allocation, copies the
+- <a id="6.13.1:5"></a>**[§6.13.1:5]** **`realloc` moves identity.** Growth mints a *fresh* allocation, copies the
   preserved cells, and tombstones the old identity (the ruling's stated initial
   model). Every stale copy of the old handle, and every view into it, is dead
   the moment the container grows — the dangling-after-realloc class that §5.4's
@@ -3125,9 +3146,9 @@ Three commitments, each load-bearing:
 
 #### 6.13.2 Buffer handles and views
 
-Two §6.1 value forms name allocations:
+<a id="6.13.2:1"></a>**[§6.13.2:1]** Two §6.1 value forms name allocations:
 
-- `buf⟨A⟩` — an **owned pointer**. It is opaque: no §2 expression form
+- <a id="6.13.2:2"></a>**[§6.13.2:2]** `buf⟨A⟩` — an **owned pointer**. It is opaque: no §2 expression form
   and no §6.3–§6.11 rule operates on it; it exists only as the abstracted
   pointer field inside an abstract data type's header struct (the `ptr mut T` of
   `std/arraybuf.rue`, the `ptr mut u8` of `std/strbuf.rue`'s header),
@@ -3136,7 +3157,7 @@ Two §6.1 value forms name allocations:
   never `@copy`) and core code cannot duplicate a header — and with it a
   handle — by (Use-Copy); handle uniqueness inside the *trusted code* is obligation
   (O1) of §6.13.5.
-- `view⟨A | o, k⟩` — a **second-class view**: cells `o … o+k-1` of allocation
+- <a id="6.13.2:3"></a>**[§6.13.2:3]** `view⟨A | o, k⟩` — a **second-class view**: cells `o … o+k-1` of allocation
   `A`. Views are the model's slices (`borrow [T]` / `inout [T]` / `str` —
   ADR-0043's second-class fat pointer, `ptr` + runtime `len`, abstracted to
   identity + offset + length). A view is created at a by-ref argument position
@@ -3149,14 +3170,14 @@ Two §6.1 value forms name allocations:
   str ruling (RUE-386) a `Str(N)`/`StrBuf` borrow in `str` position *is* such
   a view, so that ruling and this model line up one-to-one.
 
-A **static string literal** is an immortal live allocation: the initial store
+<a id="6.13.2:4"></a>**[§6.13.2:4]** A **static string literal** is an immortal live allocation: the initial store
 `H0` (§6.12) contains one live allocation per distinct literal, minted before
 `main` and never tombstoned. `"hello" : str` is `view⟨A_lit | 0, 5⟩`, and its
 `Copy`, storable, cannot-dangle status (ADR-0043's static-backed exemption
 from the second-class rule) is literal: no reduction exists that could kill
 `A_lit`.
 
-One scope cut, stated so it is not silent: the equations below mint views only
+<a id="6.13.2:5"></a>**[§6.13.2:5]** One scope cut, stated so it is not silent: the equations below mint views only
 over **buffer** allocations. A view of a *fixed stack array* (`borrow a[i..j]`
 with `a : [T; N]`) still rides §6.9's by-ref place mechanism (a `(ℓ, π)`
 binding), because a binding allocation holds its array as one structured cell,
@@ -3167,7 +3188,7 @@ decided here.
 
 #### 6.13.3 `ArrayBuf(T)`: representation, invariant, and specification equations
 
-`ArrayBuf(T)` is an ordinary source-defined library type (`std/arraybuf.rue`,
+<a id="6.13.3:1"></a>**[§6.13.3:1]** `ArrayBuf(T)` is an ordinary source-defined library type (`std/arraybuf.rue`,
 per ADR-0043 — not a compiler builtin), but its method bodies contain
 `checked {}` blocks over the raw intrinsics, which are **outside the core**
 (§2). The model therefore gives each public method a **specification equation**:
@@ -3179,7 +3200,7 @@ obligation (O4) of §6.13.5. An `ArrayBuf(T)` instantiation's values are
   { h ; len ; cap }_ArrayBuf(T)        h ::= buf⟨A⟩ | null        len, cap : u64
 ```
 
-(`null` abstracts the no-allocation empty state — `@int_to_ptr(zero)` over a
+<a id="6.13.3:2"></a>**[§6.13.3:2]** (`null` abstracts the no-allocation empty state — `@int_to_ptr(zero)` over a
 `u64` binding `zero = 0` in the source; `@int_to_ptr` takes exactly a `u64`, so
 a bare `0` literal is not the spelling.) The **representation invariant** `Inv`
 holds at every method boundary — entry and exit of every specification equation, and
@@ -3194,14 +3215,14 @@ at the destructor:
     qual(T) ≠ Linear            -- the RUE-388 instantiation gate (@require_droppable, E0499)
 ```
 
-Mid-equation the invariant may be broken (a grow is mid-flight between `mint`
+<a id="6.13.3:3"></a>**[§6.13.3:3]** Mid-equation the invariant may be broken (a grow is mid-flight between `mint`
 and the header update); it must be re-established on exit — obligation (O2).
 The `⊘` in cells `len … cap-1` is the RUE-390 "⊘-skip extension": per-cell
 initializedness now exists for dynamically allocated elements, and the
 destructor's skip below has a `⊘` to write for a buffer element exactly as
 §6.11's has for a stack cell.
 
-The specification equations: `self` is an `inout` place for the mutators, so
+<a id="6.13.3:4"></a>**[§6.13.3:4]** The specification equations: `self` is an `inout` place for the mutators, so
 header updates write the caller's cell per §6.9's sharing rule. Each equation
 is the model of the corresponding `std/arraybuf.rue` body, together with the
 `std/rawbuf.rue` layer it delegates its storage to — the one place that holds
@@ -3258,7 +3279,7 @@ byte-oriented allocation family takes (ADR-0059 Phase 3):
     tombstone(H, A) if h = buf⟨A⟩
 ```
 
-In `pop`/`get`/`set`/`clear`, `A` names the handle's allocation implicitly:
+<a id="6.13.3:5"></a>**[§6.13.3:5]** In `pop`/`get`/`set`/`clear`, `A` names the handle's allocation implicitly:
 the guard (`len > 0`, resp. `i < len`) plus `Inv`'s `h = null ⇒ len = 0`
 forces `h = buf⟨A⟩` on every arm that touches a cell. The remaining methods
 (`get_or`/`pop_or`, `first`/`last`, `index_of`/`contains`, `swap`/`reverse`,
@@ -3267,12 +3288,12 @@ bridges) are compositions of the equations above plus ordinary core
 evaluation; they add no new machine operation. Notes, each carrying a
 citation:
 
-- **`pop` writes `⊘`** where the source merely decrements `len` past the slot:
+- <a id="6.13.3:6"></a>**[§6.13.3:6]** **`pop` writes `⊘`** where the source merely decrements `len` past the slot:
   observably identical (the cell is beyond the new `len` either way, and `Inv`
   reclassifies it), but the `⊘` states *why* the destructor will not drop it —
   the returned value is now the element's sole owner. This is `3.9`'s
   exactly-once discipline, mechanized for heap elements.
-- **`get` copies**, which is why it is gated to trivially-droppable `T` at the
+- <a id="6.13.3:7"></a>**[§6.13.3:7]** **`get` copies**, which is why it is gated to trivially-droppable `T` at the
   surface (E0711, RUE-651): a by-copy read of a drop-glue element would create
   a second owner of that element's own buffer — in the model, two values
   holding the same inner `buf⟨A⟩`, violating (O1) and double-freeing at drop.
@@ -3281,20 +3302,20 @@ citation:
   not a value. Its trusted source body is `yield checked {
   @place(@ptr_offset(...)) };`; `@place` is not a general user intrinsic and
   the checked bridge is accepted only in this receiver-rooted accessor context.
-- **Growth invalidates references** (§6.13.1's `realloc`): a view into the old
+- <a id="6.13.3:8"></a>**[§6.13.3:8]** **Growth invalidates references** (§6.13.1's `realloc`): a view into the old
   buffer held by an enclosing call would now be stuck — but §5.4's exclusivity
   already rejects that shape (`v[0..2] == g(inout v)`): the `inout` loan
   needed to reach `push` conflicts with any live view of `v`. The model and
   the loan rules close the same hole from opposite sides.
-- **The destructor's `⊘`-skip** covers mid-equation states and future move-out
+- <a id="6.13.3:9"></a>**[§6.13.3:9]** **The destructor's `⊘`-skip** covers mid-equation states and future move-out
   APIs (a `swap_remove`, a `take_at`) as well as `pop`'s tombstoned slot; under
   `Inv` at boundaries the skip fires only past `len`, so drop glue runs
   exactly once per live element, ascending (`3.9` order, RUE-646).
-- **Capacity policy** (`grow`: double from `max(cap, 4)` until ≥ required)
+- <a id="6.13.3:10"></a>**[§6.13.3:10]** **Capacity policy** (`grow`: double from `max(cap, 4)` until ≥ required)
   mirrors the source's current contract and is observable only through
   `capacity()`; a policy change is a library change that amends the equation,
   not a soundness matter. `StrBuf`'s floor is 16 (§6.13.4).
-- **Resource exhaustion is outside the model.** `mint`/`realloc` are total
+- <a id="6.13.3:11"></a>**[§6.13.3:11]** **Resource exhaustion is outside the model.** `mint`/`realloc` are total
   here; the real bodies fail fast — a byte-size arithmetic overflow or a null
   allocation is `@panic("out of memory")` — per ADR-0043's explicit
   fallible-allocation non-decision. This is a stated (O4) refinement escape:
@@ -3302,7 +3323,7 @@ citation:
 
 #### 6.13.4 `StrBuf`, `Str(N)`, and `str`
 
-`StrBuf` is the `u8` refinement of the trio's growable rung plus the
+<a id="6.13.4:1"></a>**[§6.13.4:1]** `StrBuf` is the `u8` refinement of the trio's growable rung plus the
 byte-string convention (ADR-0043; the RUE-386 two-types ruling), and like
 `ArrayBuf` it is **source-defined** (`std/strbuf.rue`) over the byte-oriented
 unchecked intrinsics — `@byte_copy` for bulk moves, `@ptr_read`/`@ptr_write`
@@ -3323,7 +3344,7 @@ source pins in its header comment: **`cap = 0` is the non-owning state.**
                  (NON-owning: free/drop must not tombstone it — a literal-backed value)
 ```
 
-The `cap = 0` literal-backed state is why a `StrBuf` built from a literal is
+<a id="6.13.4:2"></a>**[§6.13.4:2]** The `cap = 0` literal-backed state is why a `StrBuf` built from a literal is
 safe to store indefinitely: the allocation it does not own is one of `H0`'s
 immortal literals, which no reduction can tombstone. Mutation of such a value
 first performs **copy-on-write** (`grow`'s `cap = 0` arm): mint a fresh
@@ -3331,25 +3352,25 @@ allocation, copy the live cells, and only then write — the non-owned
 allocation is never written through and never tombstoned. Equations, as `u8`
 instances of §6.13.3 with these deltas:
 
-- `grow(self, additional)` is `reserve` with the copy-on-write arm: `cap = 0`
+- <a id="6.13.4:3"></a>**[§6.13.4:3]** `grow(self, additional)` is `reserve` with the copy-on-write arm: `cap = 0`
   mints and copies (never `realloc`s an allocation it does not own); `cap > 0`
   is §6.13.3's `realloc` arm. The doubling floor is 16.
-- `push`/`append_byte` appends one raw byte; a byte ≥ `0x80` may make the
+- <a id="6.13.4:4"></a>**[§6.13.4:4]** `push`/`append_byte` appends one raw byte; a byte ≥ `0x80` may make the
   content invalid UTF-8, which the byte-string model permits (ADR-0035) —
   strictness lives at the decode boundary only.
-- `push_str(self, other)` **consumes** `other` (a by-value `Self` — its
+- <a id="6.13.4:5"></a>**[§6.13.4:5]** `push_str(self, other)` **consumes** `other` (a by-value `Self` — its
   header's move obligation discharges into the call, §4.2) and appends its
   live cells; `append_borrowed`/`append_str`/`append_bytes` are the
   non-consuming forms over a `borrow` loan. `concat` mints a third allocation
   and copies both operands' cells.
-- `clone`/`copy` **mint** a fresh allocation and copy the live cells — always,
+- <a id="6.13.4:6"></a>**[§6.13.4:6]** `clone`/`copy` **mint** a fresh allocation and copy the live cells — always,
   even for an empty or literal-backed value — a deep copy with a new
   identity, never a second handle to the same allocation. Likewise every
   cross-container bridge (`from_str`, `from_bytes`, `to_bytes`,
   `from_byte_range`): the source's own contract line — "no bridge aliases or
   transfers either container's private allocation" — is obligation (O1)
   stated in the trusted code's voice.
-- The trapping index form `s[i]` (`StrBuf` or a `str` view) checks `i < len`
+- <a id="6.13.4:7"></a>**[§6.13.4:7]** The trapping index form `s[i]` (`StrBuf` or a `str` view) checks `i < len`
   (resp. `i < k` for `view⟨A | o, k⟩`) and traps out of range exactly like
   array indexing (§6.5; ADR-0035's byte indexing); the machine cell read it
   then performs is in range by construction, so it never sticks. (The source
@@ -3357,26 +3378,26 @@ instances of §6.13.3 with these deltas:
   bounds-trap primitive — its comment tracks that; observably it is the
   canonical bounds diagnostic. The Option-returning `byte_at` is the
   non-trapping companion.)
-- `clear` drops nothing (`u8` is `Copy`) and resets `len` to 0, keeping the
+- <a id="6.13.4:8"></a>**[§6.13.4:8]** `clear` drops nothing (`u8` is `Copy`) and resets `len` to 0, keeping the
   capacity. `free` tombstones only an owned allocation (`cap > 0`) and resets to
   `new()`'s state; the `drop fn` likewise tombstones only when `cap > 0` — the
   non-owning arm of `Inv` is what makes that conditional correct.
-- Equality (§6.4's `≈`) on each canonical text rung compares **content** — the
+- <a id="6.13.4:9"></a>**[§6.13.4:9]** Equality (§6.4's `≈`) on each canonical text rung compares **content** — the
   live cells in order (`equals_borrowed`) — never allocation identity: two
   distinct allocations with equal bytes are `≈`-equal (`4.3:2`).
-- The **UTF-8 decoder methods** (`char_scalar`, `char_next`, and their `_lossy`
+- <a id="6.13.4:10"></a>**[§6.13.4:10]** The **UTF-8 decoder methods** (`char_scalar`, `char_next`, and their `_lossy`
   variants, still runtime calls dispatched by the oracle) are deliberately
   **not pinned here**: their strict forms introduce a trap category (invalid
   UTF-8) that §6.12's taxonomy does not yet carry, so their equations belong to
   a string-decode amendment of their own. A cut, stated rather than silent.
 
-`Str(N)` is `[u8; N]` plus the convention — a fixed array, already fully
+<a id="6.13.4:11"></a>**[§6.13.4:11]** `Str(N)` is `[u8; N]` plus the convention — a fixed array, already fully
 inside §6.3–§6.11; a `Str(N)` borrow in `str` position becomes a view per
 §6.13.2 (RUE-386).
 
 #### 6.13.5 The trusted-code refinement obligation (RustBelt-style)
 
-The §7 theorems quantify over core programs whose container-method calls step
+<a id="6.13.5:1"></a>**[§6.13.5:1]** The §7 theorems quantify over core programs whose container-method calls step
 by the equations above. The real implementations — the `checked {}` blocks of
 `std/arraybuf.rue` and `std/strbuf.rue` over the raw and byte intrinsics —
 are **unchecked code, outside the core by design** (§2): the core type system
@@ -3385,24 +3406,24 @@ a stated proof obligation, discharged per method at the trusted-code boundary (b
 review today; by mechanized verification when `03-metatheory.md` exists), in
 exactly the position RustBelt gives `Vec`'s unsafe internals:
 
-- **(O1) Unique handle.** No operation fabricates or duplicates a live buffer
+- <a id="6.13.5:2"></a>**[§6.13.5:2]** **(O1) Unique handle.** No operation fabricates or duplicates a live buffer
   identity: at every method boundary, distinct live container values hold
   distinct allocations, and no other value holds any. This is the invariant
   that extends exclusivity (§7) to buffer roots: a buffer's cells are
   reachable only through its one owning header, so §5.4's root-granular loans
   on the header place cover the cells, and the root-separation lemma extends
   to allocations.
-- **(O2) Representation invariant.** Every method entered on a representation
+- <a id="6.13.5:3"></a>**[§6.13.5:3]** **(O2) Representation invariant.** Every method entered on a representation
   satisfying `Inv` re-establishes `Inv` at exit — and at every call it makes
   back into user code (element drop glue must observe the container
   mid-teardown only through values it owns).
-- **(O3) Footprint.** A method touches only its own allocation(s) and its
+- <a id="6.13.5:4"></a>**[§6.13.5:4]** **(O3) Footprint.** A method touches only its own allocation(s) and its
   arguments — never another allocation, live or dead.
-- **(O4) Refinement.** The method's observable behavior — result value, header
+- <a id="6.13.5:5"></a>**[§6.13.5:5]** **(O4) Refinement.** The method's observable behavior — result value, header
   effect, traps, `@dbg` output, and the cells' contents — equals its specification
   equation's.
 
-A violation inside a checked block is a **trusted-code bug**, not a refutation of
+<a id="6.13.5:6"></a>**[§6.13.5:6]** A violation inside a checked block is a **trusted-code bug**, not a refutation of
 the core theorems; conversely, the theorems say nothing about a program that
 adds new unchecked code without discharging the same four obligations. This
 conditionality is the ruling's Rust/RustBelt-style separation, stated rather
@@ -3412,7 +3433,7 @@ replaceable abstractions with proof obligations.
 
 #### 6.13.6 Oracle correspondence and the differential obligation
 
-Today the oracle dispatches only the residual true builtins — `@to_string`
+<a id="6.13.6:1"></a>**[§6.13.6:1]** Today the oracle dispatches only the residual true builtins — `@to_string`
 (both signednesses), the trapping `str` byte index, and the UTF-8 decode
 family (`string_builtin`, with `preflight_string_builtin` enforcing the
 modeled signatures) — over immutable byte-content values, a copy-in/copy-out
@@ -3436,10 +3457,10 @@ it is not mistaken for coverage.
 
 ## 7. Soundness — what we get to state, and then prove
 
-With §5 (statics) and §6 (dynamics) precise, Rue's guarantees become *theorems*
+<a id="7:1"></a>**[§7:1]** With §5 (statics) and §6 (dynamics) precise, Rue's guarantees become *theorems*
 rather than hopes. Stated now; proved in `03-metatheory.md`.
 
-They quantify over **elaborated** core programs — which, by §2's
+<a id="7:2"></a>**[§7:2]** They quantify over **elaborated** core programs — which, by §2's
 reachability-pruning assumption (`10.5:4`), are the bodies reachable from
 `main`. A surface body no call reaches has no core image and so lies outside
 every theorem below; it lies outside the compiler's analysis for the same
@@ -3447,7 +3468,7 @@ reason, so the two artifacts are silent about exactly the same programs, and
 neither claims anything about an uninhabited-parameter function such as
 `fn absurd(n: Never) -> i32 { match n {} }` (RUE-1600).
 
-- **Type safety (progress + preservation).** A well-typed core program does not
+- <a id="7:3"></a>**[§7:3]** **Type safety (progress + preservation).** A well-typed core program does not
   get stuck: it either reduces, halts with a value, or halts with one of the
   defined panics. Types are preserved under reduction. The mechanization states
   this over its interpreter instead (ADR-0097): a well-typed program evaluates
@@ -3458,7 +3479,7 @@ neither claims anything about an uninhabited-parameter function such as
   variants `K1..Kn`, and the arms cover exactly those, so some arm always
   matches — a `match` is never stuck on an uncovered tag.
 
-- **No use-after-move.** In a well-typed program, no ordinary, declared-linear,
+- <a id="7:4"></a>**[§7:4]** **No use-after-move.** In a well-typed program, no ordinary, declared-linear,
   or untrackable dynamic use redex is applied to a `MovedOut` place. *Because:*
   the static plan requires `fully-owned(Σ,p)` or `fully-owned(Σ,d)` for a
   consumed place, while `Borrowed` place reads require an owned base;
@@ -3466,7 +3487,7 @@ neither claims anything about an uninhabited-parameter function such as
   initialization. The dynamic declared rule therefore cannot navigate through
   a moved-out part before its `split`.
 
-- **No double-free.** Every stored value's destructor runs at most once. *Because:*
+- <a id="7:5"></a>**[§7:5]** **No double-free.** Every stored value's destructor runs at most once. *Because:*
   an ordinary move sets its consumed place to `MovedOut`, and the
   declared-linear rule transfers its selected leaf, applies each planned
   droppable residue drop exactly once in order, then sets `d ↦ MovedOut`/`⊘`;
@@ -3486,7 +3507,7 @@ neither claims anything about an uninhabited-parameter function such as
   identities close the aliasing half: a dead identity cannot come back as
   somebody else's allocation.
 
-- **No use-after-drop / no leak of drops.** Every `Owned`, droppable,
+- <a id="7:6"></a>**[§7:6]** **No use-after-drop / no leak of drops.** Every `Owned`, droppable,
   non-moved place is dropped exactly once, at the end of its scope, and never read
   afterward. *Because:* §5.6 schedules the drop, §6 executes it at the scope's
   close — the binding's `endscope` on the normal path, or the σ-walk of a
@@ -3501,7 +3522,7 @@ neither claims anything about an uninhabited-parameter function such as
   (§6.13.3 under (O1)), so buffer storage neither leaks nor outlives its
   owner.
 
-- **No use-after-free** *(new with RUE-390)*. In a well-typed program, under
+- <a id="7:7"></a>**[§7:7]** **No use-after-free** *(new with RUE-390)*. In a well-typed program, under
   the §6.13.5 obligations, no reduction applies a §6.13.1 machine operation to
   a dead allocation: every `H(A)` an equation touches is live. *Because:*
   views are second-class — a view exists only inside a call whose loan covers
@@ -3516,7 +3537,7 @@ neither claims anything about an uninhabited-parameter function such as
   oracle obligation of §6.13.6 is what will falsify it mechanically if the
   trusted code or the equations are wrong.
 
-- **Linear values are consumed exactly once.** No value whose type carries a
+- <a id="7:8"></a>**[§7:8]** **Linear values are consumed exactly once.** No value whose type carries a
   linear value reaches end of scope `Owned` (§5.6 rejects it) or is discarded
   (§5.3 rejects it) or is consumed on only some paths (§5.5 join rejects it) or is
   **overwritten by an assignment while still live** (§5.2's (Assign) premise
@@ -3536,7 +3557,7 @@ neither claims anything about an uninhabited-parameter function such as
   dropped exactly once at scope exit via its active payload (§5.6), unless a
   `match` already moved that payload out.
 
-- **Exclusivity / no aliased mutation.** At any point in a well-typed reduction,
+- <a id="7:9"></a>**[§7:9]** **Exclusivity / no aliased mutation.** At any point in a well-typed reduction,
   no location is reachable through both a live exclusive loan and any other live
   access. *Because:* §5.4's `Λ` consistency admits either one exclusive or many
   shared loans of a root, never both, and loans are second-class (do not escape
@@ -3546,7 +3567,7 @@ neither claims anything about an uninhabited-parameter function such as
   cells — no new rule is needed, which is precisely why the RUE-390 ruling
   wanted allocations abstract.
 
-**Floats add no obligation to any of the seven** (RUE-2158). `qual(float(w))`
+<a id="7:10"></a>**[§7:10]** **Floats add no obligation to any of the seven** (RUE-2158). `qual(float(w))`
 is `Copy` (§3), so a float value is never moved, never leaves a `⊘` behind, has
 no drop glue, is never registered in a drop scope, and never names an
 allocation: the no-use-after-move, no-double-free, no-use-after-drop,
@@ -3561,23 +3582,23 @@ redex can always take its step. Equality is handled separately by §6.4's `≈`
 paragraph, which shows that the reflexivity the float leaf costs is appealed to
 by no theorem here.
 
-The eventual metatheory proof also owes these explicit lemmas:
+<a id="7:11"></a>**[§7:11]** The eventual metatheory proof also owes these explicit lemmas:
 
-- **Loan/drop non-interference.** No live loan root may be in a drop scope that
+- <a id="7:12"></a>**[§7:12]** **Loan/drop non-interference.** No live loan root may be in a drop scope that
   is being dropped or in an overwrite target whose old contents are being
   dropped. This is what prevents drop glue from invalidating storage reachable
   through a live by-ref parameter.
-- **Loan-extent nesting.** If a callee forwards a by-ref parameter as another
+- <a id="7:13"></a>**[§7:13]** **Loan-extent nesting.** If a callee forwards a by-ref parameter as another
   loan, the inner loan's extent is dominated by the outer loan's call extent.
   This makes root-granular checking compose transitively across calls.
-- **Root separation.** Distinct roots occupy disjoint storage in the tree store.
+- <a id="7:14"></a>**[§7:14]** **Root separation.** Distinct roots occupy disjoint storage in the tree store.
   Exclusivity is stated per root, so the proof must justify that different roots
   cannot alias the same mutable location.
-- **View-intact.** For the lifetime of a loaned root, there is no `⊘` beneath the
+- <a id="7:15"></a>**[§7:15]** **View-intact.** For the lifetime of a loaned root, there is no `⊘` beneath the
   loaned place. This follows from `fully-owned` at loan creation plus the
   no-move-while-loaned premise, and it is the invariant the §6.13.2 view rules
   rely on when runtime indices prevent per-element ownership tracking.
-- **Totality of the float operations.** For each `w ∈ {32, 64}`: `⊕_w` is a
+- <a id="7:16"></a>**[§7:16]** **Totality of the float operations.** For each `w ∈ {32, 64}`: `⊕_w` is a
   total function `𝔽_w × 𝔽_w → 𝔽_w`, `rnd_w` is total into `𝔽_w`, `≺_w` is a
   total order on `𝔽_w`, each `⊙_w` of §6.4 is total on `𝔽_w`, and the premises
   of `(D-Float-To-Int)` and `(D-Float-To-Int-Trap)` partition `𝔽_w`. This is
@@ -3585,7 +3606,7 @@ The eventual metatheory proof also owes these explicit lemmas:
   floats create (`3.12:21`, `3.12:23`, `3.12:32`, `3.12:37`, and `3.12:18` for
   the partition). It is a statement about IEEE 754, discharged against the
   standard rather than against Rue.
-- **Handle-uniqueness preservation.** Reduction preserves (O1): every live
+- <a id="7:17"></a>**[§7:17]** **Handle-uniqueness preservation.** Reduction preserves (O1): every live
   buffer allocation is named by exactly one live handle (plus, transiently,
   the views its loans justify). The §6.13 equations must be audited to
   preserve it (`clone` mints, `realloc` tombstones, `free` nulls the header) —
@@ -3593,7 +3614,7 @@ The eventual metatheory proof also owes these explicit lemmas:
   container/element multiplicity propagation) will be designed against, per
   the ruling.
 
-These seven are the memory-safety-without-GC claim, decomposed. Note which of
+<a id="7:18"></a>**[§7:18]** These seven are the memory-safety-without-GC claim, decomposed. Note which of
 them was *unprovable* against the prose spec until now: all of them, because
 each rests on "use", "moved", "consumed", "dropped" being defined — which
 §3–§6 finally do. And note which were **vacuous for the flagship collection
