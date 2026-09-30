@@ -27,7 +27,7 @@ prints one JSON object on standard output, with three parts:
   the groups are the hash buckets (checked with `==`) holding two or more names. `exact`
   compares the normalized type itself. `skeleton` first replaces every package constant that
   is a predicate (its type ends in `Prop`) by one placeholder, so two lemmas that say the same
-  thing about different predicates (`Tidy.bind` and a `Settled.bind` of the same form, say)
+  thing about different predicates (`LivePost.withTrace` and a `Tidy.withTrace` of the same form, say)
   fall in one group.
 -/
 
