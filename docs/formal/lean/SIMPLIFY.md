@@ -440,9 +440,9 @@ does not need. The edges are MAP.md's; the helper counts are the baseline's.
    Verdict (RUE-2520): kept, as a cross-check. `step_no_double_free_stmt`'s
    doc-comment in `Spec/Trace.lean` says `no_double_free` follows from the
    prefix bound and names this theorem as the proof, and SPINE.md and
-   README.md repeat the claim. Removing it would leave that sentence unproved
-   or need a Spec-layer edit, which a simplification does not make. Its
-   doc-comment now says it is a cross-check that nothing uses.
+   README.md repeat the claim. Removing it would leave that sentence without
+   a proof or need a Spec-layer edit, which a simplification does not make.
+   Its doc-comment now says it is a cross-check that nothing uses.
 
 Two edges that look like detours are not, and are recorded so nobody chases
 them:
@@ -811,3 +811,41 @@ The four fuel inductions, in lines per declaration: `eval_quiet` 226 to
   follow-up outside this module.
 - The heartbeat floor rose from 12000 to 13000: `eval_quiet`'s selector adds a
   little unfolding per case. The default budget is 200000.
+
+### RUE-2520: the exact duplicates outside `TraceExact`
+
+From trunk `514e9e17b`, measured by `python3 bin/simplify-metrics.py --no-time`
+before and after. Spec and `spine-fingerprints.txt` are unchanged, Comparator
+re-certifies, and every survivor's axioms are what they were (`propext`, and
+`Quot.sound` for the two ledgers).
+
+- Merged, one name per fact: `Activation.unwindScope_push` now sits in
+  `Step.Lemmas`, beside `Activation.unwindScope`'s other lemmas, and replaces
+  `Equivalence`'s copy and `Tombstone.Activation.unwindScope_ext` (neither
+  module imports the other; all three users import `Step.Lemmas`). `Sharp`
+  uses `Nonvacuous.withTrace_nil` and `Trace`'s `StoreCC.single` in place of
+  its own `withTrace_nil` and `storeCC_one`.
+- Twins: `Cons.assign` and `assign_count` are the old `Cons.assignDyn` and
+  `assignDyn_count`, a static place being the empty dynamic path, as
+  `Exact.assign` already was. `evalUnOp_val_arg` and its siblings stay apart
+  from `Trace.lean`'s `evalUnOp_scalar` and the rest: one bounds the operand,
+  the other the result, so neither statement is an instance of the other, and
+  one lemma per operator would be a new conjunctive statement, not a merge.
+- `no_double_free_of_step` stays, as detour 3's verdict above says; it is
+  now the only exact group outside the glue modules.
+
+| Measure | Before | After | Change |
+| --- | ---: | ---: | ---: |
+| Lines, all modules | 57211 | 57171 | −40 |
+| Code lines | 37270 | 37230 | −40 |
+| Theorems | 1543 | 1538 | −5 |
+| Exact groups outside the glue modules | 4 | 1 | −3 |
+| `whole_program_exactly_once` helpers: all, their lines, own | 564, 9875, 243 | 562, 9846, 241 | −2, −29, −2 |
+| `step_no_double_free` helpers: all, their lines, own | 453, 7391, 212 | 452, 7375, 211 | −1, −16, −1 |
+
+Per module, lines (code lines) and theorems: `Trace` 2187 (1758), 106 to
+2169 (1742), 105; `TraceWhole` 1587 (1264), 66 to 1573 (1251), 65; `Sharp`
+1362 (1214), 56 to 1352 (1208), 54; `Tombstone` 1496 (1245), 56 to 1489
+(1240), 55; `Equivalence` 2004 (1437), 104 to 1998 (1433), 103;
+`Step.Lemmas` 481 (367), 32 to 490 (371), 33; `TracePrefix` 762 to 768
+lines, code unchanged (the cross-check's doc-comment).
