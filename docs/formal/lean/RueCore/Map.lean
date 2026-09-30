@@ -87,7 +87,7 @@ def milestones : List (Name × String) := [
   (``eval_tidy, "every cell an evaluation allocates is tombstoned by its end — the activation-record-pop invariant behind `drop_exactly_once`"),
   (``rest_step, "the ledger for the rest of every form, behind `rest_exactly_once`"),
   (``run_blocks, "every terminating run's trace is in the block grammar `Blocks`: each drop marker followed by exactly its own walk"),
-  (``step_blocks, "carries `run_blocks` to `Step`"),
+  (``step_blocks, "reads `drop_glue_order` as `Blocks`, through `DropGlueBlocks.toBlocks`"),
   (``reachable_ordered, "every drop scope is in location order"),
   (``reachable_nested, "scopes nest, a pending `endscope` being the tail of its record"),
   (``reachable_stackDiscipline, "the registration stack is dropped newest-first"),

@@ -768,9 +768,10 @@ Both halves are over §6's `Step`.
   exactly §6.11's walk of what it names (`dropEvents`). That is the
   destructor first, then the fields in declaration order, an array's
   elements ascending, and an enum's active payload only. A destructor event
-  has no other place in the grammar. It is proved over `eval`
-  (`run_blocks`) and carried to `Step`'s terminating runs by `eval_small_to_big`
-  (`step_blocks`).
+  has no other place in the grammar. It is proved over `eval` and carried
+  to `Step`'s terminating runs by `eval_small_to_big` in `drop_glue_order`'s
+  terms below, then read as `Blocks` (`step_blocks`, through
+  `DropGlueBlocks.toBlocks`).
   `Blocks` reads each drop's events off `dropEvents`, so it moves with that
   definition. `drop_glue_order` (RUE-2487) states the same order in §6.11's
   own terms: its grammar `DropGlueBlocks` gives each drop's events by

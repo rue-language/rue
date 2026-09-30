@@ -67,8 +67,9 @@ reachable from `Config.init`:
   swapped: every record is in order and every step drops one cell, yet it
   drops oldest first — and it is not `Nested`, so no run reaches it.
 
-`drop_order` states both halves over `Step`: the within-value half reaches
-`Step`'s terminating runs through `eval_small_to_big` (`step_blocks`).
+`drop_order` states both halves over `Step`: the within-value half is
+`drop_glue_order`, which reaches `Step`'s terminating runs through
+`eval_small_to_big`, read as `Blocks` (`step_blocks`).
 
 ## What the grammar does not constrain
 
@@ -1196,24 +1197,6 @@ theorem reachable_stackDiscipline {M : FloatSig} {P : Program} {C C' : Config}
 
 /-! ## `drop_order` -/
 
-/-- `Blocks` on §6's terminal configurations: a terminating `Step` run's trace
-is the one `eval` answers (`eval_small_to_big`), so it is in the block grammar
-(helper). -/
-theorem step_blocks (M : FloatLaws) {P : Program} (h : ProgramTyped P) :
-    (∀ H φ v tr, Steps M.toFloatSig P Config.init (.run H φ [] (.ret v) tr) → Blocks P.decls tr) ∧
-    (∀ κ tr, Steps M.toFloatSig P Config.init (.panic κ tr) → Blocks P.decls tr) := by
-  obtain ⟨hv, hp⟩ := eval_small_to_big M h
-  have hdt := h.wf.decls.dtorNotCopy
-  refine ⟨fun H φ v tr hs => ?_, fun κ tr hs => ?_⟩
-  · obtain ⟨n, hn⟩ := hv H φ v tr hs
-    have := run_blocks M.toFloatSig hdt (n + 1)
-    rw [hn (n + 1) (Nat.lt_succ_self n)] at this
-    exact this
-  · obtain ⟨n, hn⟩ := hp κ tr hs
-    have := run_blocks M.toFloatSig hdt (n + 1)
-    rw [hn (n + 1) (Nat.lt_succ_self n)] at this
-    exact this
-
 /-- **§6.11's order within a value, in §6.11's own terms** (§3.9, §6.11;
 RUE-2487), over §6's relation, for a program the checker accepts: every
 terminating run's trace — a terminal value or a trap — is in the block grammar
@@ -1239,6 +1222,14 @@ theorem drop_glue_order (M : FloatLaws) {P : Program} (h : ProgramTyped P) :
     have := run_glue_blocks M.toFloatSig hdt (n + 1)
     rw [hn (n + 1) (Nat.lt_succ_self n)] at this
     exact this
+
+/-- `Blocks` on §6's terminal configurations: `drop_glue_order` read through
+`DropGlueBlocks.toBlocks` (helper). -/
+theorem step_blocks (M : FloatLaws) {P : Program} (h : ProgramTyped P) :
+    (∀ H φ v tr, Steps M.toFloatSig P Config.init (.run H φ [] (.ret v) tr) → Blocks P.decls tr) ∧
+    (∀ κ tr, Steps M.toFloatSig P Config.init (.panic κ tr) → Blocks P.decls tr) :=
+  ⟨fun H φ v tr hs => ((drop_glue_order M h).1 H φ v tr hs).toBlocks,
+    fun κ tr hs => ((drop_glue_order M h).2 κ tr hs).toBlocks⟩
 
 /-- **Drop order** (§3.9, §6.7, §6.9, §6.10, §6.11; §7's "no use-after-drop /
 no leak of drops" bullet, its *when*), over §6's relation, for a program the
