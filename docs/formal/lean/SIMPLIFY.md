@@ -1012,15 +1012,15 @@ per-step invariant (`SimBy`, over runs `ISteps` whose every step satisfies the
 invariant), and one long-run relation (`LongBy`), in `Step.Lemmas`. It then
 made `Equivalence`'s `Sim` and `Long` their `True` instances and retired the
 Equivalence side of the skeleton pairs (`Sim.pre`, `.withTrace`, `.absorb`,
-`.peel`, `sim_brk`, `Steps.peel`). Every Spec statement was unchanged and
+`.peel`, `sim_brk`, `Steps.peel`, and the `Sim`/`Long` combinators). Every Spec statement was unchanged and
 Comparator re-certified. The branch is kept as
 `dorianscheidt/rue-2517-one-simulation-measured`.
 
-On `Equivalence` alone the package grew by 86 lines (43 code) and 7
-theorems. `Equivalence` shrank by 171 lines and 10 theorems, but
+With only `Equivalence` converted, the whole package grew by 86 lines (43
+code) and 7 theorems. `Equivalence` shrank by 171 lines and 10 theorems, but
 `Step.Lemmas` grew by 257 lines and 17 theorems. The helper counts of
 `whole_program_exactly_once` (562 to 567) and `step_no_double_free` (451 to
-455) rose, and `Long` had to become "a run of at least `n` steps", with a
+455, both measured at `77d3051d7`) rose, and `Long` had to become "a run of at least `n` steps", with a
 `Long.exact` to recover the exact count its three users need.
 
 Making `TraceWhole`'s `MSim`/`MSteps` an instance (the ledger invariant, and
