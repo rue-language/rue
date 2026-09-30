@@ -23,7 +23,7 @@ the missing tools.
 | --- | --- | --- | --- |
 | `faithfulness` | 1 blocking | 1 | no: fixed by RUE-2487 |
 | `non-vacuity` | 4 blocking | 4 | 1, filed as RUE-2527 |
-| advisory (8 angles, one reviewer) | 14 | 14 | 3, added to RUE-2522; the documentation overclaim is RUE-2527 |
+| advisory (9 angles, one reviewer) | 14 | 14 | 3, added to RUE-2522; the documentation overclaim is RUE-2527 |
 
 The original review ran two rounds. It found one blocking gap, cross-step
 order holding only within one step, fixed before merge by `Config.Nested`,
@@ -33,8 +33,9 @@ checked the fix and found it holds.
 **`faithfulness`.** The within-value half of `drop_order` took §6.11's order
 from `Dynamics.dropEvents`, the machine's own closed form of its walk. A
 mutant machine that ran a struct's destructor after its fields still proved
-`drop_order` with its statement unchanged. What caught the mutant were `rfl`
-examples and a brittle proof elsewhere, not a statement. RUE-2487 later
+`drop_order` with its statement unchanged. What caught the mutant were two non-spine order
+lemmas in `Soundness.lean` (which the mutant had to delete), `rfl` examples
+and a brittle `omega`: no spine statement. RUE-2487 later
 closed this by stating the order in §6.11's own terms (`drop_glue_order`).
 
 **`non-vacuity`.**
@@ -69,13 +70,13 @@ None of the 14 was in the original review.
 
 The angles found what a single reviewer with a risk list did not.
 
-- **Blocking gaps.** Five gaps that block, each of which the project later
-  found and fixed by other means: red-team passes, mutation testing,
-  sharpness pairs. One is still open.
+- **Blocking gaps.** Five gaps that block. Four were later found and fixed
+  by other means (red-team passes, mutation testing, sharpness pairs); one,
+  RUE-2527, is still open.
 - **Maintenance debt.** The simplification work (RUE-2471) independently
   rediscovered much of the same debt, days later.
 
-The cost was three reviewers, each taking roughly five to eight minutes.
+The cost was three reviewers.
 Most of the non-vacuity findings would have needed tools the package built
 afterwards; the question the angle asks found them without those tools.
 

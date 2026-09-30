@@ -13,7 +13,7 @@ see; this reviewer runs it and covers what it cannot.
 
 Every prose change under `docs/formal/`, and every doc-comment change in the
 L0 and L1 modules (the check reads their Lean names). The documents the check
-covers are its `DOCS` list (`scripts/glossary-check.py`); the glossary's
+covers are its `MARKDOWN_DOCS` list (`scripts/glossary-check.py`); the glossary's
 opening paragraph names them.
 
 ## What to run
@@ -49,7 +49,7 @@ whether a row's class and source are right.
   without a second row.
 - **R5. A new formal document is covered.** A new document under
   `docs/formal/` that states or explains the claim is added to the check's
-  `DOCS` list, or the description says why it is not.
+  `MARKDOWN_DOCS` list, or the description says why it is not.
 
 ## What counts as a finding
 

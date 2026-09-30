@@ -34,7 +34,7 @@ From `docs/formal/lean`, after `lake build`:
 ```bash
 lake build ruecore-corpus ruecore-explain ruecore-digest ruecore-layers ruecore-lint
 lake exe ruecore-lint            # fails on a spine theorem no witness names, a glue theorem missing, a hypothesis with neither counter-example nor reason
-lake exe ruecore-digest --spine > "$SCRATCH/SPINE.md"   # each statement's "Non-vacuous" line and hypothesis count
+lake exe ruecore-digest --spine > "$SCRATCH/SPINE.md"   # each statement's "Non-vacuous" line and numbered hypotheses
 git diff <base>...HEAD -- RueCore/Spec.lean RueCore/Spec/Nonvacuous.lean RueCore/Spec/Sharp.lean
 ```
 
@@ -42,7 +42,7 @@ When the checker or the statics change:
 
 ```bash
 lake exe ruecore-corpus --profile > "$SCRATCH/profile-head.txt"
-git show <base>:docs/formal/lean/README.md > "$SCRATCH/README-base.md"   # "The checker's acceptance profile": the counts at <base>
+git show <base>:docs/formal/lean/README.md > "$SCRATCH/README-base.md"   # "The checker's acceptance profile": the counts at <base>; they can be stale, so a difference the change cannot explain is a note, not a finding
 ```
 
 Compare the accepted counts at the head with those at `<base>`. A seed case
