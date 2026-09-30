@@ -156,18 +156,12 @@ theorem dropEvents_allCopy {D : Decls} (hdt : DtorNotCopy D) :
       simp only [dropEvents, dropEventsList_allCopy hdt hac.2, List.append_nil]
       split
       · rename_i sd hd
-        have : sd.dtor = false := by
-          cases hsd : sd.dtor
-          · rfl
-          · exact absurd hac.1 (hdt s sd hd hsd)
+        have : sd.dtor = false := Bool.eq_false_iff.mpr fun hsd => absurd hac.1 (hdt s sd hd hsd)
         simp [this]
       · rfl
-  | .enum _ _ _ cs, hac => by
+  | .enum _ _ _ cs, hac | .array _ _ cs, hac => by
       simp only [Contents.allCopy, Bool.and_eq_true] at hac
-      simp only [dropEvents]; exact dropEventsList_allCopy hdt hac.2
-  | .array _ _ cs, hac => by
-      simp only [Contents.allCopy, Bool.and_eq_true] at hac
-      simp only [dropEvents]; exact dropEventsList_allCopy hdt hac.2
+      exact dropEventsList_allCopy hdt hac.2
 
 /-- The same over a list (helper). -/
 theorem dropEventsList_allCopy {D : Decls} (hdt : DtorNotCopy D) :
@@ -781,7 +775,7 @@ theorem dropLocs_dropEvents (D : Decls) : ∀ c : Contents, dropLocs (dropEvents
       split
       · split <;> rfl
       · rfl
-  | .enum _ _ _ cs | .array _ _ cs => by simp only [dropEvents]; exact dropLocs_dropEventsList D cs
+  | .enum _ _ _ cs | .array _ _ cs => dropLocs_dropEventsList D cs
 
 /-- The same over a list (helper). -/
 theorem dropLocs_dropEventsList (D : Decls) : ∀ cs : List Contents,
@@ -922,17 +916,10 @@ theorem step_drop_order {M : FloatSig} {P : Program} {C C' : Config} (h : Step M
   case dropDeclared H φ K tr p ℓ c πd πs cd leaf evs levs c' _ _ _ hd hl _ =>
     refine ⟨_, rfl, one ℓ (fun x hx => ?_)⟩
     rw [dropLocs_append, List.mem_append] at hx
-    rcases hx with hx | hx
-    · exact plainDestructure_locs hd x hx
-    · exact dropCell_locs hl x hx
+    exact hx.elim (plainDestructure_locs hd x) (dropCell_locs hl x)
   case dropMove H φ K tr p ℓ c sub evs c' _ _ _ _ hd _ => exact ⟨_, rfl, one ℓ (dropCell_locs hd)⟩
-  case callReturn H φ K tr φs v H' evs hu =>
-    exact ⟨_, rfl, StrictStackOrder.teardown hC.1 (plainUnwind_locs hu)⟩
-  case ret hu => exact ⟨_, rfl, StrictStackOrder.teardown hC.1 (plainUnwind_locs hu)⟩
-  case loopIter hu =>
-    exact ⟨_, rfl, StrictStackOrder.teardown (hC.1.sublist (List.drop_sublist _ _))
-      (plainUnwind_locs hu)⟩
-  case brk hu =>
+  case callReturn hu | ret hu => exact ⟨_, rfl, StrictStackOrder.teardown hC.1 (plainUnwind_locs hu)⟩
+  case loopIter hu | brk hu =>
     exact ⟨_, rfl, StrictStackOrder.teardown (hC.1.sublist (List.drop_sublist _ _))
       (plainUnwind_locs hu)⟩
   all_goals exact ⟨[], by simp [Config.trace], none rfl⟩
@@ -1009,9 +996,7 @@ theorem StackDiscipline.newer {S S' ls : List Nat} (hS : S.Pairwise (· < ·)) (
   rcases h with h | ⟨⟨rest, rfl⟩, hs⟩
   · exact absurd h hcut
   · intro ℓ hℓ
-    have hr : ℓ ∈ rest := by
-      have := hs.subset hℓ
-      simpa using this
+    have hr : ℓ ∈ rest := by simpa using hs.subset hℓ
     have hlt : ∀ ℓ' ∈ S', ℓ' < ℓ := fun ℓ' hℓ' =>
       (List.pairwise_append.mp hS).2.2 ℓ' hℓ' ℓ hr
     exact ⟨fun hm => Nat.lt_irrefl ℓ (hlt ℓ hm), hlt⟩
