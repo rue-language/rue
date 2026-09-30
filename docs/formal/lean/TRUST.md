@@ -15,7 +15,7 @@ statements are.
 - Toolchain: Lean 4.33.1 (the pin in `lean-toolchain` and in
   `toolchains/lean/defs.bzl`, held equal by
   `scripts/validate-lean-toolchain-pin.py`).
-- Theorems checked: 1532.
+- Theorems checked: 1535.
 - Proofs depending on `sorryAx`: 0.
 - Axioms declared by this package: 0.
 - Distinct axioms used: `Quot.sound`, `propext`.
@@ -300,6 +300,11 @@ and diffs them against the committed copies.
 | `Contents.qual_toVal` | `RueCore.Dynamics.Lemmas` | `Quot.sound`, `propext` |
 | `inBoundsIdx_eq_true` | `RueCore.Dynamics.Lemmas` | `propext` |
 | `dropEventsList_eq_flatten` | `RueCore.Dynamics.Lemmas` | `propext` |
+| `EvalRes.withTrace_append` | `RueCore.Dynamics.Lemmas` | `propext` |
+| `Contents.ofVals_append` | `RueCore.Dynamics.Lemmas` | `propext` |
+| `ArgsRes.bind_evalArgs_cons` | `RueCore.Dynamics.Lemmas` | `propext` |
+| `EvalInv.bind` | `RueCore.Dynamics.Lemmas` | `propext` |
+| `EvalInv.args` | `RueCore.Dynamics.Lemmas` | `propext` |
 | `Activation.unwindScope_push` | `RueCore.Step.Lemmas` | `propext` |
 | `Activation.unwindScope_let` | `RueCore.Step.Lemmas` | `propext` |
 | `Step.step_eq` | `RueCore.Step.Lemmas` | `propext` |
@@ -942,7 +947,6 @@ and diffs them against the committed copies.
 | `Tombstone.LiveActivation.grow` | `RueCore.Tombstone` | `propext` |
 | `Tombstone.LivePost.withTrace` | `RueCore.Tombstone` | `propext` |
 | `Tombstone.LivePost.lift` | `RueCore.Tombstone` | `propext` |
-| `Tombstone.LivePost.andThen` | `RueCore.Tombstone` | `propext` |
 | `Tombstone.LivePost.scoped` | `RueCore.Tombstone` | `Quot.sound`, `propext` |
 | `Tombstone.Contents.getAt_ne_uad` | `RueCore.Tombstone` | `propext` |
 | `Tombstone.Contents.resolveDyn_ne_uad` | `RueCore.Tombstone` | `Quot.sound`, `propext` |
@@ -961,7 +965,6 @@ and diffs them against the committed copies.
 | `Tombstone.freshParams_live` | `RueCore.Tombstone` | `Quot.sound`, `propext` |
 | `Tombstone.OpRes.toRes_live` | `RueCore.Tombstone` | `propext` |
 | `Tombstone.introVal_live` | `RueCore.Tombstone` | `propext` |
-| `Tombstone.evalArgs_live` | `RueCore.Tombstone` | `propext` |
 | `Tombstone.LiveActivation.root` | `RueCore.Tombstone` | `propext` |
 | `Tombstone.eval_live` | `RueCore.Tombstone` | `Quot.sound`, `propext` |
 | `Tombstone.plainDropRetire_live` | `RueCore.Tombstone` | `propext` |
