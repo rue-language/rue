@@ -701,10 +701,11 @@ a slice author writes:
   - a paragraph of the calculus's §5–§7: `§5.3:4`, `§6.13.3:5`, `§7:3`, the
     id the calculus prints at the paragraph's start (RUE-2511). It also
     counts as citing its section, and the gate fails on an id the calculus
-    does not declare, or one written malformed (`§7:3.1`), anywhere in a
-    text file under `docs/formal`: Lean strings and `--` comments,
-    `explain/*.txt` and the Markdown documents included, and at both ends
-    of a range such as `§6.4:3–9`;
+    does not declare, or one written malformed (a `.`-numbered tail after
+    the paragraph number, which no id has), anywhere in a text file under
+    `docs/formal`: Lean strings and `--` comments, `explain/*.txt` and the
+    Markdown documents included, and at both ends of a range such as
+    `§6.4:3–9`;
   - a prose-specification paragraph: `3.8:73`.
 
   Citations count only inside `/-- … -/` and `/-! … -/` comments, including
