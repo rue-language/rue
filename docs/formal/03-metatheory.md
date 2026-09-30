@@ -414,7 +414,8 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
   carrier's residue droppable. "Exactly once" (that every owned, droppable,
   non-moved value *is* dropped) is `RueCore.drop_exactly_once`, in the next
   section; this section is the "at most once" half. `RueCore.step_blocks`
-  (next section; `RueCore.run_blocks` over `eval`, carried to `Step`) lifts the
+  (next section; `RueCore.drop_glue_order` read through
+  `RueCore.DropGlueBlocks.toBlocks`) lifts the
   closed form from one drop to every terminating run's trace:
   every destructor event sits inside the walk of the marker before it.
 
@@ -541,8 +542,9 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
   accepts, in two halves.
 - **Within a value (§3.9, §6.11):** every **terminating** run's trace (a
   terminal value or a trap that `→*` reaches from `Config.init`) is in the
-  block grammar `RueCore.Blocks` (`RueCore.step_blocks`, which reaches
-  `Step` from `eval`'s `RueCore.run_blocks` through `eval_small_to_big`). The
+  block grammar `RueCore.Blocks` (`RueCore.step_blocks`, which reads
+  `RueCore.drop_glue_order` through `RueCore.DropGlueBlocks.toBlocks`; that
+  theorem reaches `Step` from `eval` through `eval_small_to_big`). The
   grammar is a sequence of `@dbg` lines, consume events, and drop markers
   (`drop ℓ c`, `dropTemp v`), each marker followed by *exactly* §6.11's walk
   of what it names (`RueCore.dropEvents`). The grammar has no other place
