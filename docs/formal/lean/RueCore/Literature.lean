@@ -4,7 +4,9 @@ import RueCore.Spec
 /-!
 # RueCore.Literature — the spine against the literature (RUE-2467)
 
-One row per spine theorem (`RueCore.Spec.spine`): the standard theorem it
+One row per spine theorem (`RueCore.Spec.spine`): the `../01-core-calculus.md`
+§7 paragraph it realizes, by id (RUE-2511; none for a statement about §5 or §6
+alone); the standard theorem it
 corresponds to, cited from the field map `../FIELD.md`; our form, in the
 glossary's notation (`../GLOSSARY.md`); and the difference between the two in
 one sentence, or "Identical up to notation." `lake exe ruecore-digest --spine`
@@ -33,10 +35,14 @@ absence, or the nearest accepted term.
 namespace RueCore.Literature
 
 /-- (helper) One row of the table: the spine theorem (as `Spec.spine`
-names it), the literature's form with its `FIELD.md` citation, our form in
-the glossary's notation, and the difference in one sentence. -/
+names it), the §7 paragraph ids it realizes, the literature's form with its
+`FIELD.md` citation, our form in the glossary's notation, and the difference
+in one sentence. -/
 structure Row where
   thm : Lean.Name
+  /-- The `../01-core-calculus.md` §7 paragraph(s) the statement realizes, by
+  id (`§7:3`, RUE-2511); empty for a statement about §5 or §6 alone. -/
+  paras : String := ""
   lit : String
   cite : String
   ours : String
@@ -46,46 +52,55 @@ structure Row where
 def rows : List Row := [
   -- type safety over `eval`
   { thm := `RueCore.soundness
+    paras := "§7:3"
     lit := "Soundness via a definitional interpreter: `⊢ e : T ∧ eval n e = r ≠ Timeout ⇒ r = Val v ∧ v : T`"
     cite := "FIELD §3: Amin & Rompf Lemma 3; Owens et al. §5"
     ours := "`WfProgram P`, `Typed P R Γ e T Ω` and an activation record and store agreeing with `Γ` ⇒ `EvalOk` of `eval` at every fuel"
     diff := "The same theorem for an open expression, from any activation record and store that agree with its context (`ActivationTyping`), with an unwinding `return` or `break`, a defined panic and exhausted fuel among the allowed outcomes, and with `.refused` excluded, which covers `eval`'s monitors as well as stuck states." },
   { thm := `RueCore.run_safe
+    paras := "§7:3"
     lit := "Syntactic soundness: `⊢ e : τ ⇒ e⇑ ∨ (e ↦* v ∧ ⊢ v : τ)`"
     cite := "FIELD §2: Wright & Felleisen Thm 4.12 (preprint numbering)"
     ours := "`WfProgram P` and a parameterless entry point ⇒ at every fuel, `run` is out of fuel, a panic, or a value of the entry point's type"
     diff := "Wright & Felleisen's three-way form, read per fuel bound over the interpreter: divergence is exhausting this fuel rather than `⇑`, and a defined panic, PFPL's checked error, is an allowed outcome." },
   { thm := `RueCore.no_refusal
+    paras := "§7:4, §7:6, §7:8"
     lit := "Weak soundness: a well-typed program never yields `wrong` (\"well-typed programs do not go wrong\")"
     cite := "FIELD §2: Wright & Felleisen §§1–2; Milner 1978"
     ours := "`ProgramTyped P` ⇒ `run` is never `.refused w`, at any fuel and for any `w`"
     diff := "`.refused w` is wider than `wrong`: it includes the refusals of `eval`'s four monitors, which are not stuck states of §6, so the statement also says that no monitor fires (R3 of `REDTEAM-LOG.md`)." },
   { thm := `RueCore.no_use_after_move
+    paras := "§7:4"
     lit := "No named theorem; reading a moved-from (deinitialized) place is a use of uninitialized memory, one of the memory access errors of memory safety"
     cite := "FIELD §5: Rust Reference, Expressions and Glossary (moved from); Hicks 2014 (memory safety)"
     ours := "`ProgramTyped P` ⇒ `run` never refuses with `useAfterMove`"
     diff := "It is `no_refusal` at one tag, so it rules out a read of a `⊘` cell only as far as `eval` checks every read and labels it so." },
   { thm := `RueCore.no_use_after_drop
+    paras := "§7:6"
     lit := "No use after free: the program never \"reuses or references memory after it has been freed\""
     cite := "FIELD §5: CWE-416"
     ours := "`ProgramTyped P` ⇒ `run` never refuses with `useAfterDrop`"
     diff := "The freed object is a dropped binding's tombstoned (`†`) cell rather than heap memory, the error is ruled out as far as `eval` labels an access to it, and the typing hypothesis is redundant (`run_no_use_after_drop`)." },
   { thm := `RueCore.run_no_use_after_drop
+    paras := "§7:6"
     lit := "No use after free (CWE-416), as above"
     cite := "FIELD §5: CWE-416"
     ours := "every program ⇒ `run` never refuses with `useAfterDrop`, at any fuel and any float operations"
     diff := "No typing hypothesis: the property is structural, since a cell is minted fresh and nothing names it once its scope has tombstoned it." },
   { thm := `RueCore.no_linear_leak
+    paras := "§7:8"
     lit := "Linearity: a linear assumption is used exactly once, so there is no weakening; failing the \"at least once\" half is a leak"
     cite := "FIELD §4: Walker §1.1; FIELD §5: CWE-401"
     ours := "`ProgramTyped P` ⇒ `run` never refuses with `linearLeak`"
     diff := "Walker's rule is a property of the typing context. Ours is its dynamic image at the drop scopes: no scope exit, activation record pop or unwind meets a live linear binding, as `eval`'s monitor for it watches. A linear operand value that a sibling's `return` or `break` abandons is outside it (RUE-2316)." },
   { thm := `RueCore.no_linear_overwrite
+    paras := "§7:8"
     lit := "Linearity, no weakening (Walker), for an assignment"
     cite := "FIELD §4: Walker §1.1"
     ours := "`ProgramTyped P` ⇒ `run` never refuses with `linearOverwrite`"
     diff := "The dynamic image of no weakening at an assignment, which would discard the live linear value it overwrites, as `eval`'s monitor for it watches." },
   { thm := `RueCore.no_linear_discard
+    paras := "§7:8"
     lit := "Linearity, no weakening (Walker), for a sequence"
     cite := "FIELD §4: Walker §1.1"
     ours := "`ProgramTyped P` ⇒ `run` never refuses with `linearDiscard`"
@@ -118,11 +133,13 @@ def rows : List Row := [
     diff := "Soundness only, lifted to a program; a typed program the checker rejects is possible." },
   -- the trace
   { thm := `RueCore.no_double_free
+    paras := "§7:5"
     lit := "No double free: no program run \"calls free() twice on the same memory address\", an at-most-once safety property of the trace"
     cite := "FIELD §5: CWE-415; FIELD §6: Alpern & Schneider §2"
     ours := "`ProgramTyped P` ⇒ at every fuel, `run` is not refused and its trace frees each identity, and runs a destructor on each, at most once"
     diff := "It counts drop and destructor events per object identity rather than calls of `free()` per address, and holds of terminating runs only (an `outOfFuel` result has an empty trace), so the safety-property form is `step_no_double_free`." },
   { thm := `RueCore.step_no_double_free
+    paras := "§7:5"
     lit := "A safety property: every violation has a finite prefix no continuation repairs"
     cite := "FIELD §6: Alpern & Schneider §2; FIELD §5: CWE-415"
     ours := "`ProgramTyped P` and `init →* C` ⇒ `C`'s trace frees each identity, and runs a destructor on each, at most once"
@@ -138,26 +155,31 @@ def rows : List Row := [
     ours := "`DtorNotCopy` ⇒ a terminating run's trace runs a destructor on each identity at most once"
     diff := "Its only hypothesis is that a destructor-bearing struct is not `Copy`, and it counts destructor runs per identity, over terminating runs." },
   { thm := `RueCore.drop_exactly_once
+    paras := "§7:6"
     lit := "Exactly once = at most once ∧ at least once; linear use is exactly one use; a memory leak is the failure of \"at least once\""
     cite := "FIELD §6: Confluent (delivery), Walker (linear use); FIELD §5: CWE-401"
     ours := "a typed, `pendingSafe` expression of a checked program, from an activation record and store agreeing with its context ⇒ its evaluation is not refused, ends every identity exactly as often as held (`Exact`), and tombstones what it allocated (`Tidy`)"
     diff := "Per evaluation of one expression from a matching activation record and store, not per run from `Config.init`, under `pendingSafe` (RUE-2316) and with nothing about a panic; the whole-run form is `whole_program_exactly_once`." },
   { thm := `RueCore.rest_exactly_once
+    paras := "§7:6"
     lit := "Exactly once (as above), for values minted during an evaluation"
     cite := "FIELD §6: Confluent (delivery), Walker (linear use)"
     ours := "the hypotheses of `drop_exactly_once`, and a form's leading operands evaluated (`Lead`) ⇒ the rest of the form ends them and the store's identities exactly once (`Exact`) and tombstones what it allocated (`Settled`)"
     diff := "The induction form behind `drop_exactly_once`, listed as a linking statement because it covers the values a form mints mid-evaluation; the literature has no separate counterpart." },
   { thm := `RueCore.whole_program_exactly_once
+    paras := "§7:6"
     lit := "Exactly once = at most once ∧ at least once, over a whole run; a memory leak is a value the run allocates and never releases"
     cite := "FIELD §6: Confluent (delivery), Walker (linear use); FIELD §5: CWE-401"
     ours := "`ProgramTyped P`, `P.pendingSafe`, `init →* C`, `a` held by `C` (`Config.held`) and `C →* ✓v` with trace `tr` ⇒ `a` is ended in `tr` or owned by `v`, exactly once between the two"
     diff := "Per owned object identity, for every value a terminating run holds rather than per allocation site, under `pendingSafe` (RUE-2316), and with nothing about a panic, whose trap runs no drop, or a run that never terminates." },
   { thm := `RueCore.drop_order
+    paras := "§7:6"
     lit := "Drop order: variables are dropped in reverse order of declaration, temporaries in reverse order of creation"
     cite := "FIELD §5: Rust Reference, Destructors; FIELD §6: trace property over terminating traces (no accepted name)"
     ours := "`ProgramTyped P` ⇒ a terminating run's trace is in §6.11's block grammar (`Blocks`), and each step from a reachable configuration drops newest first (`StrictStackOrder`, `StackDiscipline`) from a location-ordered stack"
     diff := "Newest first by location rather than reverse declaration order, where `StackDiscipline` constrains only a step that pops a scope (it holds of every step that keeps its stack), and `Blocks` holds of terminating traces only (R7 of `REDTEAM-LOG.md`)." },
   { thm := `RueCore.drop_glue_order
+    paras := "§7:6"
     lit := "Drop glue: `Drop::drop` if implemented, then each field's drop glue; struct fields in declaration order, array elements first to last"
     cite := "FIELD §5: rustc-dev-guide, Drop elaboration; Rust Reference, Destructors"
     ours := "`ProgramTyped P` ⇒ a terminating run's trace is in §6.11's block grammar with each drop's events given by §6.11's rules (`DropGlueBlocks`, `DropGlue`)"
@@ -194,27 +216,32 @@ def rows : List Row := [
     ours := "`C` stuck on `w` ⇒ `w` is one of §6's own four stuck states"
     diff := "Says that `Step`'s stuck states are §6's own and never one of `eval`'s monitors, which the literature, with no monitors, has no need of." },
   { thm := `RueCore.step_progress
+    paras := "§7:3"
     lit := "Progress: `⊢ e : τ ⇒ e val ∨ ∃e′. e ↦ e′`; along runs, `safe(e)`: every state reachable from `e` is progressive"
     cite := "FIELD §2: PFPL Thm 6.4; Timany et al. §2.4"
     ours := "`ProgramTyped P` and `init →* C` ⇒ `C` terminal or `C → C′` for some `C′`"
     diff := "Not the one-step lemma over typed configurations, since no configuration typing is defined (RUE-2423), but its consequence along every run from `Config.init`, Timany's `safe(init)` with traps final." },
   { thm := `RueCore.step_safeAt
+    paras := "§7:3"
     lit := "Preservation (subject reduction): `Γ ⊢ e : τ ∧ e ↦ e′ ⇒ Γ ⊢ e′ : τ`"
     cite := "FIELD §2: PFPL Thm 6.2; Wright & Felleisen Lemma 4.3"
     ours := "`ProgramTyped P` and `init →* C` ⇒ `C.SafeAt` the entry point's return type"
     diff := "Substantive: `SafeAt` is a semantic invariant (Timany's `safe` plus typed halting values), closed under `→*` by definition, so the statement is `SafeAt` at `Config.init`, the conclusion of Timany's Cor. 2.3, and no syntactic `⊢ C : T` is preserved (R4 of `REDTEAM-LOG.md`; RUE-2423)." },
   { thm := `RueCore.step_type_safety
+    paras := "§7:3"
     lit := "Type safety = preservation ∧ progress; in Wright & Felleisen's form, `⊢ e : τ ⇒ e⇑ ∨ (e ↦* v ∧ ⊢ v : τ)`"
     cite := "FIELD §2: PFPL Thm 6.1; Wright & Felleisen Thm 4.12"
     ours := "`ProgramTyped P` ⇒ for every `n`, `init →ⁿ D` for some `D`, or `init →* ✓v` with `v` of the entry point's type, or `init →* ↯κ`"
     diff := "Wright & Felleisen's three-way form per horizon `n`, with a trap as an allowed outcome (PFPL's checked error) and divergence read as having run `n` steps, rather than a conjunction of progress and preservation." },
   { thm := `RueCore.step_no_use_after_drop
+    paras := "§7:6"
     lit := "No use after free (CWE-416), a safety property of runs"
     cite := "FIELD §5: CWE-416; FIELD §6: Alpern & Schneider §2"
     ours := "every program and `init →* C` ⇒ `C` is not stuck on a tombstoned (`†`) cell"
     diff := "Over §6's relation on every program, checked or not, with a dropped binding's cell in the role of freed memory." },
   -- semantic equivalence of `eval` and `Step`
   { thm := `RueCore.eval_big_to_small
+    paras := "§7:3"
     lit := "Semantic equivalence, interpreter to small-step: `eval n e = r ⇒ ∃e′. e →* e′ ∧ r ∼ e′`; big-step to small-step, `a ⇒ v ⇒ a →* v`"
     cite := "FIELD §3: Amin & Rompf Thm 2; Leroy & Grall Thm 9"
     ours := "`ProgramTyped P` ⇒ at every fuel, `run` is not refused, a value it answers is `init →* ✓v` and a panic is `init →* ↯κ`, with the same store and trace"
@@ -225,6 +252,7 @@ def rows : List Row := [
     ours := "every program ⇒ at every fuel, a value `run` answers is `init →* ✓v` and a panic is `init →* ↯κ`"
     diff := "The literature's unconditional direction for values and panics, with a refusal or exhausted fuel left outside it." },
   { thm := `RueCore.eval_small_to_big
+    paras := "§7:3"
     lit := "Semantic equivalence, small-step to interpreter: `e →* e′ ⇒ ∃n. eval n e ∼ e′`; small-step to big-step, `a →* v ∧ v value ⇒ a ⇒ v`"
     cite := "FIELD §3: Amin & Rompf Thm 2; Leroy & Grall Thm 9; Owens et al. §3.4"
     ours := "`ProgramTyped P` and `init →* ✓v` (or `↯κ`) ⇒ `run` answers that value (or panic), with the same store and trace, at every fuel past some `n`"
@@ -235,11 +263,13 @@ def rows : List Row := [
     ours := "every program and `init →* ✓v` (or `↯κ`) ⇒ past some fuel, `run` answers that value (or panic) or refuses"
     diff := "On every program only up to a refusal, since `eval`'s monitors are stricter than §6, which makes it much weaker than the literature's unconditional direction." },
   { thm := `RueCore.never_refused_iff
+    paras := "§7:3"
     lit := "No named counterpart: the interpreter's weak soundness against the small-step `safe(init)`"
     cite := "FIELD §2: Wright & Felleisen §§1–2 (weak soundness); Timany et al. §2.4 (`safe`)"
     ours := "`ProgramTyped P` ⇒ (`run` never refused at any fuel ⇔ every `C` with `init →* C` is terminal or steps)"
     diff := "Under `ProgramTyped` both sides hold outright (`no_refusal`, `step_progress`), so the `⇔` adds nothing; its content is the forward direction on every program, `step_never_stuck_of_run` (R5 of `REDTEAM-LOG.md`)." },
   { thm := `RueCore.step_never_stuck_of_run
+    paras := "§7:3"
     lit := "No named counterpart: `safe(init)` transferred from the interpreter"
     cite := "FIELD §2: Timany et al. §2.4 (`safe`); FIELD §3: Amin & Rompf Thm 2"
     ours := "every program, `run` never refused at any fuel ⇒ every `C` with `init →* C` is terminal or steps"
@@ -250,6 +280,7 @@ def rows : List Row := [
     ours := "`init →* C` and `C` stuck ⇒ past some fuel, `run` refuses, perhaps with another `Refusal`"
     diff := "The error half of the equivalence, stated separately because `run` and `Step` may name the same failure by different violations." },
   { thm := `RueCore.eval_diverges_iff
+    paras := "§7:3"
     lit := "Big-step/small-step equivalence for diverging runs: `a ⇒∞ ⇔ a →∞`; clock-based divergence, timing out at every clock"
     cite := "FIELD §3: Leroy & Grall Thm 11; Owens et al. §3.4"
     ours := "`ProgramTyped P` ⇒ (`run` out of fuel at every fuel ⇔ `init →ⁿ D` for every `n` and some `D`)"

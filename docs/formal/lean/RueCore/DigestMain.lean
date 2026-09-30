@@ -175,14 +175,16 @@ where
 
 /-- (helper) `SPINE.md`'s table "The spine against the literature"
 (RUE-2467): one row of `Literature.rows` per spine theorem, in `Spec.spine`'s
-order, with the theorem, the literature's form and its `../FIELD.md`
+order, with the theorem, the §7 paragraph ids it realizes, the literature's form and its `../FIELD.md`
 citation, our form, and the difference in one sentence. -/
 def literatureTable : Array String := Id.run do
   let mut out : Array String := #[
     "## The spine against the literature",
     "",
     "Each spine theorem beside the standard theorem it corresponds to (RUE-2467):",
-    "the literature's form, cited from the field map `../FIELD.md` (its section, then",
+    "the `../01-core-calculus.md` §7 paragraph it realizes, by id (RUE-2511; a dash",
+    "for a statement about §5 or §6 alone); the literature's form, cited from the",
+    "field map `../FIELD.md` (its section, then",
     "the source and the theorem or section number that section records); our form,",
     "in the notation of `../GLOSSARY.md`; and the difference, in one sentence, or",
     "\"Identical up to notation.\" Generated from `RueCore.Literature.rows`, a",
@@ -198,10 +200,11 @@ def literatureTable : Array String := Id.run do
     "Rompf; `../FIELD.md` §3); RUE-2466 renamed its Spec module's file to the",
     "field's name too, `RueCore.Spec.Equivalence`.",
     "",
-    "| Theorem | Literature (`../FIELD.md`) | Ours | Difference |",
-    "|---|---|---|---|"]
+    "| Theorem | §7 | Literature (`../FIELD.md`) | Ours | Difference |",
+    "|---|---|---|---|---|"]
   for r in Literature.rows do
-    out := out.push s!"| `{Digest.shortName r.thm}` | {r.lit} ({r.cite}) | {r.ours} | {r.diff} |"
+    let paras := if r.paras.isEmpty then "—" else r.paras
+    out := out.push s!"| `{Digest.shortName r.thm}` | {paras} | {r.lit} ({r.cite}) | {r.ours} | {r.diff} |"
   return out.push ""
 
 /-- (helper) `SPINE.md`: every Spec statement — the Lean statement, its

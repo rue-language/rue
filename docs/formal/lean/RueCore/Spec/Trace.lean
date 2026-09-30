@@ -7,10 +7,10 @@ public import RueCore.Trace.Defs
 /-!
 # RueCore.Spec.Trace — what the drop trace says (Spec layer)
 
-§7's "No double-free" and "No use-after-drop / no leak of drops" bullets,
-read off the trace every run records: each drop, destructor, consume event and
-`@dbg`, in order, with the identity of the value each one is of. The
-multiplicity statements are over `run`'s and `eval`'s results, so over runs
+§7's "No double-free" (§7:5) and "No use-after-drop / no leak of drops"
+(§7:6) bullets, read off the trace every run records: each drop, destructor,
+consume event and `@dbg`, in order, with the identity of the value each one
+is of. The multiplicity statements are over `run`'s and `eval`'s results, so over runs
 that terminate (a result at some fuel), except `step_no_double_free`, which bounds
 the trace of every configuration §6's relation `Step` reaches, terminating or
 not; the order statements are over `Step` too.
@@ -18,7 +18,7 @@ not; the order statements are over `Step` too.
 
 namespace RueCore.Spec
 
-/-- **No double free** (§7 "No double-free"). A checked program's run is never
+/-- **No double free** (§7:5 "No double-free"). A checked program's run is never
 refused, and its trace frees no identity twice and runs no destructor twice
 on one. Narrower than the bullet: an `outOfFuel` result has an empty trace,
 so a run that never terminates is not covered here; `step_no_double_free`
@@ -29,7 +29,7 @@ def no_double_free_stmt : Prop :=
       (∀ a, (freedIds P.decls (run M.toFloatSig P fuel).trace).count a ≤ 1) ∧
       (∀ a, (dtorIds (run M.toFloatSig P fuel).trace).count a ≤ 1)
 
-/-- **No double free, on every prefix of a run** (§7 "No double-free", read as a
+/-- **No double free, on every prefix of a run** (§7:5 "No double-free", read as a
 safety property; RUE-2477). For a checked program, every configuration §6's
 relation reaches from `Config.init` — the run so far, whether or not it ever
 terminates — has a trace that frees no identity twice and runs no destructor
@@ -62,7 +62,7 @@ def dtor_once_stmt : Prop :=
   ∀ (M : FloatSig) {P : Program} (_ : DtorNotCopy P.decls) (fuel : Nat),
     ∀ a, (dtorIds (run M P fuel).trace).count a ≤ 1
 
-/-- **Every owned value ends exactly once** (§7 "No use-after-drop / no leak of
+/-- **Every owned value ends exactly once** (§7:6 "No use-after-drop / no leak of
 drops"). A typed expression of a checked program, the expression and the
 program both `pendingSafe` (`e.pendingSafe`, `P.pendingSafe`), run from an
 agreeing activation record and store, is never refused; every identity the store
@@ -81,7 +81,7 @@ def drop_exactly_once_stmt : Prop :=
       Tidy φ H (eval M.toFloatSig fuel P H φ e)
 
 /-- **Values minted during an evaluation end exactly once too** (the same §7
-bullet; §6.7, §6.9, §6.10): under the same hypotheses, once a form's leading
+bullet, §7:6; §6.7, §6.9, §6.10): under the same hypotheses, once a form's leading
 operands produced `vs` in `H₁` (`Lead`), the rest of the form ends them and
 `H₁`'s identities as `Exact` counts, and tombstones what it allocated
 (`Settled`). This is the form the proof of `drop_exactly_once` inducts on
@@ -97,7 +97,7 @@ def rest_exactly_once_stmt : Prop :=
     (∀ w, r ≠ .refused w) ∧
       Exact P.decls H₁ (Contents.ownList P.decls (Contents.ofVals vs)) r ∧ Settled φ H₁ r
 
-/-- **Every owned value of a run that terminates with a value ends exactly once** (§7 "No
+/-- **Every owned value of a run that terminates with a value ends exactly once** (§7:6 "No
 use-after-drop / no leak of drops", over a whole program; RUE-2478). For a
 checked, `pendingSafe` program, take any configuration `C` §6's relation
 reaches from `Config.init` and any owned identity `a` that `C` holds — in a
@@ -119,7 +119,7 @@ def whole_program_exactly_once_stmt : Prop :=
     (_ : Steps M.toFloatSig P C (.run H φ [] (.ret v) tr)),
     (v.own P.decls).count a + (freedIds P.decls tr).count a = 1
 
-/-- **Drop order** (§7 "No use-after-drop / no leak of drops", "at the end of
+/-- **Drop order** (§7:6 "No use-after-drop / no leak of drops", "at the end of
 its scope"; §6.7, §6.9–§6.11), over `Step`. A terminating run's trace — value
 or panic — is in §6.11's block grammar (`Blocks`). Each step from a
 reachable configuration drops one cell or distinct cells newest first, and
@@ -135,7 +135,7 @@ def drop_order_stmt : Prop :=
       ∃ evs, C'.trace = C.trace ++ evs ∧ StrictStackOrder (dropLocs evs) ∧
         StackDiscipline C.stack C'.stack (dropLocs evs) ∧ (C.stack.Pairwise (· < ·))
 
-/-- **Drop glue order, in §6.11's own terms** (§3.9, §6.11; §7 "No
+/-- **Drop glue order, in §6.11's own terms** (§3.9, §6.11; §7:6 "No
 use-after-drop / no leak of drops", *how* a value is dropped; RUE-2487), over
 `Step`. A terminating run's trace — value or panic — is in §6.11's block grammar
 with each drop's events given by §6.11's rules (`DropGlueBlocks`, `DropGlue`):
