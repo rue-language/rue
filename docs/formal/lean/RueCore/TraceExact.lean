@@ -1641,27 +1641,20 @@ theorem Tidy.bind {φ : Activation} {H : Store} {r : EvalRes} {k : Store → Val
   | ok H₁ v tr => exact Tidy.prefix hf hr.1 hr.2 (hk H₁ v tr rfl)
   | _ => exact hr
 
-/-- `drop-retire` tombstones exactly its cell (helper). -/
+/-- `drop-retire` tombstones exactly its cell, which existed (helper). -/
 theorem dropRetire_shape {D : Decls} {H H' : Store} {ℓ : Nat} {evs : List Event}
-    (h : dropRetire D H ℓ = .ok (H', evs)) : H' = H.set ℓ .dead := by
+    (h : dropRetire D H ℓ = .ok (H', evs)) : ℓ < H.length ∧ H' = H.set ℓ .dead := by
   unfold dropRetire at h
   split at h
   · cases h
   · cases h
-  · split at h
+  · rename_i c hc
+    refine ⟨(List.getElem?_eq_some_iff.mp hc).1, ?_⟩
+    split at h
     · cases h
     · split at h
       · cases h
       · cases h; rfl
-
-/-- The same at a tombstoned cell: `drop-retire` refuses (helper). -/
-theorem dropRetire_live {D : Decls} {H H' : Store} {ℓ : Nat} {evs : List Event}
-    (h : dropRetire D H ℓ = .ok (H', evs)) : ℓ < H.length := by
-  unfold dropRetire at h
-  split at h
-  · cases h
-  · cases h
-  · rename_i c hc; exact (List.getElem?_eq_some_iff.mp hc).1
 
 /-- **`run-scope-drops` tombstones exactly its cells** (§6.1): the store keeps its
 length, every listed cell is `†`, every other cell is untouched (helper). -/
@@ -1680,7 +1673,7 @@ theorem unwindLocs_shape {D : Decls} : ∀ {H H' : Store} {ls : List Nat} {evs :
         · cases h
         · rename_i H₂ evs₂ h₂
           cases h
-          have e₁ := dropRetire_shape h₁
+          obtain ⟨hlive, e₁⟩ := dropRetire_shape h₁
           obtain ⟨l₂, d₂, u₂⟩ := unwindLocs_shape h₂
           subst e₁
           refine ⟨by simp [l₂], fun ℓ' hm => ?_, fun ℓ' hn => ?_⟩
@@ -1688,7 +1681,7 @@ theorem unwindLocs_shape {D : Decls} : ∀ {H H' : Store} {ls : List Nat} {evs :
             · by_cases hl : ℓ' ∈ ls
               · exact d₂ ℓ' hl
               · rw [u₂ ℓ' hl]
-                exact List.getElem?_set_self (dropRetire_live h₁)
+                exact List.getElem?_set_self hlive
             · exact d₂ ℓ' hm
           · have hne : ℓ ≠ ℓ' := fun e => hn (e ▸ List.mem_cons_self)
             rw [u₂ ℓ' (fun hm => hn (List.mem_cons_of_mem _ hm)), List.getElem?_set_ne hne]
@@ -1721,8 +1714,7 @@ theorem dropRetire_kills {D : Decls} {H : Store} {v : Val} {ℓ : Nat} :
   split
   · exact .inl ⟨_, rfl⟩
   · rename_i H' evs hd
-    have he := dropRetire_shape hd
-    have hlive := dropRetire_live hd
+    obtain ⟨hlive, he⟩ := dropRetire_shape hd
     subst he
     refine .inr ⟨_, evs, rfl, by simp, fun ℓ' hm => ?_, fun ℓ' hn => ?_⟩
     · simp only [List.mem_singleton] at hm; subst hm
