@@ -2346,6 +2346,20 @@ def lostActivation : Activation := { env := [1], scope := [1] }
 /-- The checker accepts the program (helper). -/
 theorem lostProgram_typed : ProgramTyped lostProgram := checkProgram_sound (by rfl)
 
+/-- `g`'s entry activation record agrees with its entry context (helper). -/
+theorem lostActivation_typing : ActivationTyping lostDecls lostCtx lostActivation lostStore :=
+  ⟨.cons (by rfl) ⟨_, rfl, ContentsOwnTyping.ofVal (v := .struct 0 0 [.int .w64 .signed 7])
+    (HasTy.struct (by rfl) (.cons (.int (w := .w64) (s := .signed) (n := 7) (by decide)) .nil))⟩
+    (by simp) .nil, rfl⟩
+
+/-- `g`'s entry store is copy-contained (helper). -/
+theorem lostStore_cc : StoreCC lostDecls lostStore := by
+  intro ℓ c hc
+  match ℓ, hc with
+  | 0, hc => simp [lostStore] at hc
+  | 1, hc => simp [lostStore] at hc; subst hc; rfl
+  | _ + 2, hc => simp [lostStore] at hc
+
 /-- **The RUE-2316 carve-out is load-bearing** (§6.9's (D-Return), §7): at a
 typed configuration of a checked program that is not `pendingSafe`, the exact
 ledger fails — `x`'s
@@ -2358,15 +2372,7 @@ theorem pendingSafe_needed (M : FloatSig) :
       StoreCC lostProgram.decls lostStore ∧
       lostBody.pendingSafe = false ∧
       ¬ Exact lostProgram.decls lostStore [] (eval M 100 lostProgram lostStore lostActivation lostBody) := by
-  refine ⟨check_sound _ (by rfl) _ (by rfl), ⟨.cons (by rfl) ⟨_, rfl, ?_⟩ (by simp) .nil, rfl⟩,
-    ?_, by rfl, ?_⟩
-  · exact ContentsOwnTyping.ofVal (v := .struct 0 0 [.int .w64 .signed 7])
-      (HasTy.struct (by rfl) (.cons (.int (w := .w64) (s := .signed) (n := 7) (by decide)) .nil))
-  · intro ℓ c hc
-    match ℓ, hc with
-    | 0, hc => simp [lostStore] at hc
-    | 1, hc => simp [lostStore] at hc; subst hc; rfl
-    | _ + 2, hc => simp [lostStore] at hc
+  refine ⟨check_sound _ (by rfl) _ (by rfl), lostActivation_typing, lostStore_cc, by rfl, ?_⟩
   · have hev : eval M 100 lostProgram lostStore lostActivation lostBody
         = .returned [.dead, .dead] (.int .w64 .signed 0) [] := by rfl
     rw [hev]
@@ -2403,20 +2409,6 @@ theorem typed_of_check {P : Program} {R : Ty} {Γ : Ctx} {e : Expr} (T : Ty)
   cases hc : check P R Γ e with
   | none => simp [hc] at h
   | some p => obtain ⟨c, Ω⟩ := p; simp [hc] at h; exact ⟨Ω, check_sound e hc T h⟩
-
-/-- `g`'s entry activation record agrees with its entry context (helper). -/
-theorem lostActivation_typing : ActivationTyping lostDecls lostCtx lostActivation lostStore :=
-  ⟨.cons (by rfl) ⟨_, rfl, ContentsOwnTyping.ofVal (v := .struct 0 0 [.int .w64 .signed 7])
-    (HasTy.struct (by rfl) (.cons (.int (w := .w64) (s := .signed) (n := 7) (by decide)) .nil))⟩
-    (by simp) .nil, rfl⟩
-
-/-- `g`'s entry store is copy-contained (helper). -/
-theorem lostStore_cc : StoreCC lostDecls lostStore := by
-  intro ℓ c hc
-  match ℓ, hc with
-  | 0, hc => simp [lostStore] at hc
-  | 1, hc => simp [lostStore] at hc; subst hc; rfl
-  | _ + 2, hc => simp [lostStore] at hc
 
 /-- `g` ignores its `S0` parameter (helper). -/
 def orphanProgram : Program :=
