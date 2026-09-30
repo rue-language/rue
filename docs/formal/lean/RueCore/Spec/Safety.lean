@@ -44,8 +44,8 @@ def run_safe_stmt : Prop :=
     run M.toFloatSig P fuel = .outOfFuel ∨ (∃ k tr, run M.toFloatSig P fuel = .panic k tr) ∨
       (∃ H v tr, run M.toFloatSig P fuel = .ok H v tr ∧ HasTy P.decls v fd.ret)
 
-/-- **No refusal of any kind** (§7's memory-safety bullets, §7:4, §7:6 and
-§7:8). A checked program's run is never `.refused`. Narrower than the bullets: a value built for
+/-- **No refusal of any kind** (§7:3's "does not get stuck" and §7's
+memory-safety bullets, §7:4, §7:5, §7:6 and §7:8). A checked program's run is never `.refused`. Narrower than the bullets: a value built for
 a sibling operand that a later one abandons by `return` or `break` is dropped
 by nobody (RUE-2316), and a `@panic` runs no drop (§5.7's `⊥_panic`). Like
 every "never `.refused`" statement, it holds because `eval`'s checks and
