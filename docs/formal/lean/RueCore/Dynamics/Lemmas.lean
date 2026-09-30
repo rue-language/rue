@@ -123,7 +123,8 @@ structure EvalInv where
 
 /-- **§6.2's search through one operand keeps any `EvalInv`** (helper): the
 operand's promise, and the context's from the store its value left, holding
-that value. -/
+that value. The operand also supplies `hkp`, what its run is known to `Keep`
+(proved outside the induction); it defaults to `trivial` for `Keep := True`. -/
 theorem EvalInv.bind (I : EvalInv) {H : Store} {vs : List Val} {r : EvalRes}
     {k : Store → Val → EvalRes} (hp : I.Pre H vs) (hr : I.Post H [] r)
     (hk : ∀ H₁ v tr, r = .ok H₁ v tr → I.Pre H₁ (vs ++ [v]) → I.Post H₁ (vs ++ [v]) (k H₁ v))
@@ -142,7 +143,9 @@ theorem EvalInv.bind₀ (I : EvalInv) {H : Store} {r : EvalRes} {k : Store → V
 
 /-- **§6.2's search through an argument list keeps any `EvalInv`** (helper):
 operands in order, then compute. Each argument keeps the promise from wherever
-it starts, and the computation keeps it holding every value. -/
+it starts, and the computation keeps it holding every value. Each argument's
+`hev` gives its promise and, as a second half, what its run is known to `Keep`
+(`trivial` for `Keep := True`). -/
 theorem EvalInv.args (I : EvalInv) {ev : Store → Expr → EvalRes}
     (hev : ∀ H vs e, I.Pre H vs → I.Post H [] (ev H e) ∧ I.Keep H (ev H e)) :
     ∀ (es : List Expr) {H : Store} {vs : List Val} {c : Store → List Val → EvalRes},

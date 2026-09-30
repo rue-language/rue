@@ -1812,6 +1812,9 @@ theorem eval_tidy (M : FloatSig) (P : Program) :
     | unop op e₁ | intCast w sg e₁ | fintrin k e₁ =>
         exact (Tidy.inv φ).bind₀ hf (ih H φ e₁ hf) fun _ _ _ _ _ => Tidy.opRes
     | dbg e₁ =>
+        -- `show Tidy φ _ _` here and below: unfolding `Tidy.inv`'s promise on an
+        -- `.ok` result drops its value and trace, which `Tidy.same`/`Tidy.write`
+        -- are stated with, so the goal is restated as a `Tidy` first.
         refine (Tidy.inv φ).bind₀ hf (ih H φ e₁ hf) fun _ _ _ _ _ => show Tidy φ _ _ from ?_
         split
         · exact Tidy.same

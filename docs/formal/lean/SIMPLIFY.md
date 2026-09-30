@@ -979,7 +979,8 @@ For part 2, how the other targets fit the interface as it stands:
 - `eval_tidy` (`TraceExact`): fits directly. `Tidy φ H` with `φ.In H` as the
   precondition is `LivePost`'s shape; `Tidy.bind` and its argument-list
   reasoning would go the way `LivePost.andThen` and `evalArgs_live` went.
-- `eval_glue_blocks` (`TraceOrder`): fits only after strengthening `Post`.
+- `eval_glue_blocks` (`TraceOrder`) (superseded: part 2 found this plan
+  unworkable and added `Keep` instead; see "RUE-2518 part 2"): fits only after strengthening `Post`.
   `EvalInv.pre` derives the next operand's precondition from `Post`, and
   `DropGlueBlocks` of a trace says nothing about the store, so `Post` must also
   carry `StoreCC` preservation (today `evalArgs_blocks`' separate `hcc`,
