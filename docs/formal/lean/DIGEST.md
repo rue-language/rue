@@ -9274,6 +9274,82 @@ theorem RueCore.dropEventsList_eq_flatten (D : Decls) (cs : List Contents) :
   dropEventsList D cs = (List.map (dropEvents D) cs).flatten
 ```
 
+### `EvalRes.withTrace_append`
+
+*theorem* · module `RueCore.Dynamics.Lemmas`
+
+A prefixed trace composes (helper).
+
+```lean
+theorem RueCore.EvalRes.withTrace_append (r : EvalRes) (tr₁ tr₂ : List Event) :
+  EvalRes.withTrace tr₁ (EvalRes.withTrace tr₂ r) =
+    EvalRes.withTrace (tr₁ ++ tr₂) r
+```
+
+### `Contents.ofVals_append`
+
+*theorem* · module `RueCore.Dynamics.Lemmas`
+
+`ofVals` distributes over concatenation (helper).
+
+```lean
+theorem RueCore.Contents.ofVals_append (vs ws : List Val) :
+  Contents.ofVals (vs ++ ws) = Contents.ofVals vs ++ Contents.ofVals ws
+```
+
+### `ArgsRes.bind_evalArgs_cons`
+
+*theorem* · module `RueCore.Dynamics.Lemmas`
+
+An argument list is its first argument, `bind`, then the rest (helper).
+
+```lean
+theorem RueCore.ArgsRes.bind_evalArgs_cons (ev : Store → Expr → EvalRes) (H : Store)
+  (e : Expr) (es : List Expr) (c : Store → List Val → EvalRes) :
+  (evalArgs ev H (e :: es)).bind c =
+    (ev H e).bind fun H₁ v =>
+      (evalArgs ev H₁ es).bind fun H₂ vs => c H₂ (v :: vs)
+```
+
+### `EvalInv.bind`
+
+*theorem* · module `RueCore.Dynamics.Lemmas`
+
+**§6.2's search through one operand keeps any `EvalInv`** (helper): the
+operand's promise, and the context's from the store its value left, holding
+that value.
+
+```lean
+theorem RueCore.EvalInv.bind (I : EvalInv) {H : Store} {vs : List Val} {r : EvalRes}
+  {k : Store → Val → EvalRes} (hp : I.Pre H vs) (hr : I.Post H [] r)
+  (hk :
+    ∀ (H₁ : Store) (v : Val) (tr : List Event),
+      r = EvalRes.ok H₁ v tr →
+        I.Pre H₁ (vs ++ [v]) → I.Post H₁ (vs ++ [v]) (k H₁ v)) :
+  I.Post H vs (r.bind k)
+```
+
+### `EvalInv.args`
+
+*theorem* · module `RueCore.Dynamics.Lemmas`
+
+**§6.2's search through an argument list keeps any `EvalInv`** (helper):
+operands in order, then compute. Each argument keeps the promise from wherever
+it starts, and the computation keeps it holding every value.
+
+```lean
+theorem RueCore.EvalInv.args (I : EvalInv) {ev : Store → Expr → EvalRes}
+  (hev :
+    ∀ (H : Store) (vs : List Val) (e : Expr),
+      I.Pre H vs → I.Post H [] (ev H e))
+  (es : List Expr) {H : Store} {vs : List Val}
+  {c : Store → List Val → EvalRes} :
+  I.Pre H vs →
+    (∀ (H₁ : Store) (vs' : List Val),
+        I.Pre H₁ (vs ++ vs') → I.Post H₁ (vs ++ vs') (c H₁ vs')) →
+      I.Post H vs ((evalArgs ev H es).bind c)
+```
+
 ### `Activation.unwindScope_push`
 
 *theorem* · module `RueCore.Step.Lemmas`
@@ -16255,21 +16331,6 @@ theorem RueCore.Tombstone.LivePost.lift {H H₁ : Store} {φ : Activation} {r : 
   Tombstone.LivePost H φ r
 ```
 
-### `Tombstone.LivePost.andThen`
-
-*theorem* · module `RueCore.Tombstone`
-
-§6.2's search keeps the promise (helper).
-
-```lean
-theorem RueCore.Tombstone.LivePost.andThen {H : Store} {φ : Activation} {r : EvalRes}
-  {k : Store → Val → EvalRes} (h : Tombstone.LivePost H φ r)
-  (hk :
-    ∀ (H₁ : Store) (v : Val),
-      Tombstone.Grow H H₁ → Tombstone.LivePost H₁ φ (k H₁ v)) :
-  Tombstone.LivePost H φ (r.bind k)
-```
-
 ### `Tombstone.LivePost.scoped`
 
 *theorem* · module `RueCore.Tombstone`
@@ -16501,22 +16562,6 @@ Minting a object identity appends a `†` slot no binding names (helper).
 ```lean
 theorem RueCore.Tombstone.introVal_live {D : Decls} {H : Store} {φ : Activation}
   (mk : Nat → Val) : Tombstone.LivePost H φ (introVal D H mk)
-```
-
-### `Tombstone.evalArgs_live`
-
-*theorem* · module `RueCore.Tombstone`
-
-An argument list keeps the promise, argument by argument (§6.2's left-to-right
-search) (helper).
-
-```lean
-theorem RueCore.Tombstone.evalArgs_live {φ : Activation} {ev : Store → Expr → EvalRes}
-  (hev :
-    ∀ (H : Store) (e : Expr),
-      Tombstone.LiveActivation H φ → Tombstone.LivePost H φ (ev H e))
-  (H : Store) (es : List Expr) :
-  Tombstone.LiveActivation H φ → Tombstone.ArgsLive H φ (evalArgs ev H es)
 ```
 
 ### `Tombstone.LiveActivation.root`
@@ -31225,6 +31270,29 @@ swappedMarkers =
     (Focus.ret (Examples.v64 7)) []
 ```
 
+### `ArgsRes.bind`
+
+*def* · module `RueCore.Dynamics.Lemmas`
+
+An argument list's outcome, sequenced into the context that consumes its
+values: a failed argument is the whole form's outcome, and the values go to
+`c` with the arguments' trace prefixed — the shape every argument-list form of
+`eval` has (helper).
+
+```lean
+def RueCore.ArgsRes.bind (a : ArgsRes) (c : Store → List Val → EvalRes) : EvalRes
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (c : Store → List Val → EvalRes) (r : EvalRes),
+  (ArgsRes.abort r).bind c = r
+∀ (c : Store → List Val → EvalRes) (H : Store) (vs : List Val)
+  (tr : List Event),
+  (ArgsRes.ok H vs tr).bind c = EvalRes.withTrace tr (c H vs)
+```
+
 ### `ArgsTidy`
 
 *def* · module `RueCore.TraceExact`
@@ -31273,6 +31341,46 @@ Constructors:
 ```lean
 RueCore.EnumDecl.Wf.mk {D : Decls} {ed : EnumDecl}
   (classIsJoin : ed.cls = EnumDecl.payloadJoin D ed) : EnumDecl.Wf D ed
+```
+
+### `EvalInv`
+
+*inductive* · module `RueCore.Dynamics.Lemmas`
+
+**An invariant of evaluation, closed under §6.2's search** (helper).
+`Pre H vs` is what a start holds of its store `H`, with the values `vs` of the
+operands already run held; `Post H vs r` is the promise about the result `r`
+of a run from there. `pre` and `seq` are the search's step: an operand run
+from `H`, holding nothing, that produced a value, leaves a start holding that
+value too, and a result from that start keeps the promise from `H` once the
+operand's trace is prefixed. `hold` is the rest of the search: an operand's
+result that the form passes on unchanged keeps the promise with the held
+values abandoned.
+
+```lean
+inductive RueCore.EvalInv : Type
+```
+
+Constructors:
+
+**`EvalInv.mk`**
+
+```lean
+RueCore.EvalInv.mk (Pre : Store → List Val → Prop)
+  (Post : Store → List Val → EvalRes → Prop)
+  (pre :
+    ∀ {H : Store} {vs : List Val} {H₁ : Store} {v : Val} {tr : List Event},
+      Pre H vs → Post H [] (EvalRes.ok H₁ v tr) → Pre H₁ (vs ++ [v]))
+  (seq :
+    ∀ {H : Store} {vs : List Val} {H₁ : Store} {v : Val} {tr : List Event}
+      {r : EvalRes},
+      Pre H vs →
+        Post H [] (EvalRes.ok H₁ v tr) →
+          Post H₁ (vs ++ [v]) r → Post H vs (EvalRes.withTrace tr r))
+  (hold :
+    ∀ {H : Store} {vs : List Val} {r : EvalRes},
+      Pre H vs → Post H [] r → Post H vs r) :
+  EvalInv
 ```
 
 ### `EvalRes.bind`
@@ -32205,19 +32313,6 @@ names a cell already tombstoned, `eval` does refuse (`Sharp.tombstoned_cell`). L
 def RueCore.Spec.run_no_use_after_drop_stmt : Prop :=
   ∀ (M : FloatSig) (P : Program) (fuel : Nat),
     run M P fuel ≠ EvalRes.refused Refusal.useAfterDrop
-```
-
-### `Tombstone.ArgsLive`
-
-*def* · module `RueCore.Tombstone`
-
-The promise over an argument list (helper).
-
-```lean
-def RueCore.Tombstone.ArgsLive (H : Store) (φ : Activation) : ArgsRes → Prop :=
-  match x✝ with
-  | ArgsRes.ok H' vs tr => Tombstone.Grow H H'
-  | ArgsRes.abort r => Tombstone.LivePost H φ r
 ```
 
 ### `Tombstone.StepLive`
