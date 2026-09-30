@@ -893,7 +893,8 @@ What was done:
 - Detour 2: `step_blocks` is `drop_glue_order` read through
   `DropGlueBlocks.toBlocks` (17 lines to 7), so `drop_order`'s within-value
   half has one route. `run_blocks` stays, as `eval`'s statement of the
-  grammar and a MAP milestone, though no proof uses it now.
+  grammar, though no proof uses it now; the MAP milestone is
+  `run_glue_blocks`, on the route (RUE-2528).
 - One `dropCell_locs`: the strong form (names nothing, or its own cell
   once); `step_drop_order` reads the weak form off it inline.
 - Local 2: RUE-2455's accepted golf edits, re-applied by hand one at a time,
