@@ -1544,6 +1544,18 @@ theorem eval_exact (M : FloatSig) {P : Program} (hp : P.pendingSafe = true) :
       evalArgs_exact (ev := fun H'' e' => eval M n P H'' φ e') (es := es)
         (fun H'' e' hm hc' => ih H'' φ e' hc' (Expr.pendingSafeList_mem hps hm))
         (fun H'' e' hm => hq H'' e' (Expr.quietList_mem hql hm)) H' hc
+    -- a form led by one operand: the operand's ledger, then the rest's (`rest_step`)
+    have one : ∀ {e : Expr} (e₁ : Expr) {k : Store → Val → EvalRes}, e.pendingSafe = true →
+        e₁.pendingSafe = true → eval M (n + 1) P H φ e = (eval M n P H φ e₁).bind k →
+        (∀ {H₁ v₁ tr}, eval M n P H φ e₁ = .ok H₁ v₁ tr → Lead M P n H φ H₁ [v₁] tr e) →
+        Exact P.decls H [] (eval M (n + 1) P H φ e) := by
+      intro e e₁ k he he₁ hev hl
+      rw [hev]
+      refine Exact.bind (ih H φ e₁ hcc he₁) (fun H₁ v₁ tr hr hc₁ hv₁ => ?_)
+      rw [← Contents.ownList_ofVals_single]
+      exact rest_step M hp ih he (hl hr) hc₁
+        (by simpa [Contents.ofVals, Contents.copyContainedList] using hv₁) _
+        (by rw [hev, hr]; rfl)
     cases e with
     | intLit w sg m => exact Exact.scalar hcc trivial (fun _ _ => rfl)
     | floatLit w l => exact Exact.scalar hcc trivial (fun _ _ => rfl)
@@ -1588,130 +1600,33 @@ theorem eval_exact (M : FloatSig) {P : Program} (hp : P.pendingSafe = true) :
                     · trivial
                     · rename_i c' hw
                       exact Exact.move hcc hc hr hw hv
-    | binop op e₁ e₂ =>
-        have he₁ : e₁.pendingSafe = true := by have h := he; simp only [Expr.pendingSafe, Bool.and_eq_true] at he; exact he.1.1
-        simp only [eval]
-        refine Exact.bind (ih H φ e₁ hcc he₁) (fun H₁ v₁ tr hr hc₁ hv₁ => ?_)
-        rw [← Contents.ownList_ofVals_single]
-        exact rest_step M hp ih (e := .binop op e₁ e₂) he ⟨v₁, rfl, hr⟩ hc₁
-          (by simpa [Contents.ofVals, Contents.copyContainedList] using hv₁) _
-          (by simp only [eval, hr, EvalRes.bind])
-    | unop op e₁ =>
-        have he₁ : e₁.pendingSafe = true := by simpa [Expr.pendingSafe] using he
-        simp only [eval]
-        refine Exact.bind (ih H φ e₁ hcc he₁) (fun H₁ v₁ tr hr hc₁ hv₁ => ?_)
-        rw [← Contents.ownList_ofVals_single]
-        exact rest_step M hp ih (e := .unop op e₁) he ⟨v₁, rfl, hr⟩ hc₁
-          (by simpa [Contents.ofVals, Contents.copyContainedList] using hv₁) _
-          (by simp only [eval, hr, EvalRes.bind])
-    | intCast w sg e₁ =>
-        have he₁ : e₁.pendingSafe = true := by simpa [Expr.pendingSafe] using he
-        simp only [eval]
-        refine Exact.bind (ih H φ e₁ hcc he₁) (fun H₁ v₁ tr hr hc₁ hv₁ => ?_)
-        rw [← Contents.ownList_ofVals_single]
-        exact rest_step M hp ih (e := .intCast w sg e₁) he ⟨v₁, rfl, hr⟩ hc₁
-          (by simpa [Contents.ofVals, Contents.copyContainedList] using hv₁) _
-          (by simp only [eval, hr, EvalRes.bind])
-    | fintrin k e₁ =>
-        have he₁ : e₁.pendingSafe = true := by simpa [Expr.pendingSafe] using he
-        simp only [eval]
-        refine Exact.bind (ih H φ e₁ hcc he₁) (fun H₁ v₁ tr hr hc₁ hv₁ => ?_)
-        rw [← Contents.ownList_ofVals_single]
-        exact rest_step M hp ih (e := .fintrin k e₁) he ⟨v₁, rfl, hr⟩ hc₁
-          (by simpa [Contents.ofVals, Contents.copyContainedList] using hv₁) _
-          (by simp only [eval, hr, EvalRes.bind])
-    | dbg e₁ =>
-        have he₁ : e₁.pendingSafe = true := by simpa [Expr.pendingSafe] using he
-        simp only [eval]
-        refine Exact.bind (ih H φ e₁ hcc he₁) (fun H₁ v₁ tr hr hc₁ hv₁ => ?_)
-        rw [← Contents.ownList_ofVals_single]
-        exact rest_step M hp ih (e := .dbg e₁) he ⟨v₁, rfl, hr⟩ hc₁
-          (by simpa [Contents.ofVals, Contents.copyContainedList] using hv₁) _
-          (by simp only [eval, hr, EvalRes.bind])
-    | mkStruct s args =>
-        have he' := he
-        simp only [Expr.pendingSafe, Bool.and_eq_true] at he'
-        simp only [eval]
-        have ka := hargs args he'.1 he'.2 H hcc
-        split
-        · rename_i r hra; rw [hra] at ka; exact ka
-        · rename_i H₁ vs tr hra
-          rw [hra] at ka
-          obtain ⟨l₁, c₁, cv₁, i₁⟩ := ka
-          refine Exact.prefix (Y := Contents.ownList P.decls (Contents.ofVals vs)) l₁
-            (fun a ha => by have := i₁ a ha; simp only [List.count_nil] at *; omega) ?_
-          exact rest_step M hp ih (e := .mkStruct s args) he hra c₁ cv₁ _ (by simp only [eval, hra])
-    | mkEnum e k args =>
-        have he' := he
-        simp only [Expr.pendingSafe, Bool.and_eq_true] at he'
-        simp only [eval]
-        have ka := hargs args he'.1 he'.2 H hcc
-        split
-        · rename_i r hra; rw [hra] at ka; exact ka
-        · rename_i H₁ vs tr hra
-          rw [hra] at ka
-          obtain ⟨l₁, c₁, cv₁, i₁⟩ := ka
-          refine Exact.prefix (Y := Contents.ownList P.decls (Contents.ofVals vs)) l₁
-            (fun a ha => by have := i₁ a ha; simp only [List.count_nil] at *; omega) ?_
-          exact rest_step M hp ih (e := .mkEnum e k args) he hra c₁ cv₁ _ (by simp only [eval, hra])
-    | mkArray T args =>
-        have he' := he
-        simp only [Expr.pendingSafe, Bool.and_eq_true] at he'
-        simp only [eval]
-        have ka := hargs args he'.1 he'.2 H hcc
-        split
-        · rename_i r hra; rw [hra] at ka; exact ka
-        · rename_i H₁ vs tr hra
-          rw [hra] at ka
-          obtain ⟨l₁, c₁, cv₁, i₁⟩ := ka
-          refine Exact.prefix (Y := Contents.ownList P.decls (Contents.ofVals vs)) l₁
-            (fun a ha => by have := i₁ a ha; simp only [List.count_nil] at *; omega) ?_
-          exact rest_step M hp ih (e := .mkArray T args) he hra c₁ cv₁ _ (by simp only [eval, hra])
-    | «match» scrut arms =>
-        have he₁ : scrut.pendingSafe = true := by have h := he; simp only [Expr.pendingSafe, Bool.and_eq_true] at he; exact he.1
-        simp only [eval]
-        refine Exact.bind (ih H φ scrut hcc he₁) (fun H₁ v₁ tr hr hc₁ hv₁ => ?_)
-        rw [← Contents.ownList_ofVals_single]
-        exact rest_step M hp ih (e := .«match» scrut arms) he ⟨v₁, rfl, hr⟩ hc₁
-          (by simpa [Contents.ofVals, Contents.copyContainedList] using hv₁) _
-          (by simp only [eval, hr, EvalRes.bind])
-    | repeatArray T e₁ m =>
-        have he₁ : e₁.pendingSafe = true := by simpa [Expr.pendingSafe] using he
-        simp only [eval]
-        refine Exact.bind (ih H φ e₁ hcc he₁) (fun H₁ v₁ tr hr hc₁ hv₁ => ?_)
-        rw [← Contents.ownList_ofVals_single]
-        exact rest_step M hp ih (e := .repeatArray T e₁ m) he ⟨v₁, rfl, hr⟩ hc₁
-          (by simpa [Contents.ofVals, Contents.copyContainedList] using hv₁) _
-          (by simp only [eval, hr, EvalRes.bind])
-    | indexRead p idx πs =>
-        have he' := he
-        simp only [Expr.pendingSafe, Bool.and_eq_true] at he'
-        simp only [eval]
-        have ka := hargs idx he'.1 he'.2 H hcc
-        split
-        · rename_i r hra; rw [hra] at ka; exact ka
-        · rename_i H₁ vs tr hra
-          rw [hra] at ka
-          obtain ⟨l₁, c₁, cv₁, i₁⟩ := ka
-          refine Exact.prefix (Y := Contents.ownList P.decls (Contents.ofVals vs)) l₁
-            (fun a ha => by have := i₁ a ha; simp only [List.count_nil] at *; omega) ?_
-          exact rest_step M hp ih (e := .indexRead p idx πs) he hra c₁ cv₁ _ (by simp only [eval, hra])
+    | unop _ e₁ | intCast _ _ e₁ | fintrin _ e₁ | dbg e₁ | repeatArray _ e₁ _ | assign _ e₁
+    | ret e₁ =>
+        exact one e₁ he (by simpa [Expr.pendingSafe] using he) rfl fun hr => ⟨_, rfl, hr⟩
     | indexDrop p idx πs =>
-        have he₁ : (Expr.indexRead p idx πs).pendingSafe = true := by simpa [Expr.pendingSafe] using he
+        exact one (.indexRead p idx πs) he (by simpa [Expr.pendingSafe] using he) rfl
+          fun hr => ⟨_, rfl, hr⟩
+    | binop _ e₁ _ | indexWrite _ _ _ e₁ | ite e₁ _ _ =>
+        have he₁ : e₁.pendingSafe = true := by
+          simp only [Expr.pendingSafe, Bool.and_eq_true] at he; exact he.1.1
+        exact one e₁ he he₁ rfl fun hr => ⟨_, rfl, hr⟩
+    | letIn _ e₁ _ | seq e₁ _ | «match» e₁ _ =>
+        have he₁ : e₁.pendingSafe = true := by
+          simp only [Expr.pendingSafe, Bool.and_eq_true] at he; exact he.1
+        exact one e₁ he he₁ rfl fun hr => ⟨_, rfl, hr⟩
+    | mkStruct _ args | mkEnum _ _ args | mkArray _ args | indexRead _ args _ | call _ args =>
+        have he' := he
+        simp only [Expr.pendingSafe, Bool.and_eq_true] at he'
         simp only [eval]
-        refine Exact.bind (ih H φ (Expr.indexRead p idx πs) hcc he₁) (fun H₁ v₁ tr hr hc₁ hv₁ => ?_)
-        rw [← Contents.ownList_ofVals_single]
-        exact rest_step M hp ih (e := .indexDrop p idx πs) he ⟨v₁, rfl, hr⟩ hc₁
-          (by simpa [Contents.ofVals, Contents.copyContainedList] using hv₁) _
-          (by simp only [eval, hr, EvalRes.bind])
-    | indexWrite p idx πs e₁ =>
-        have he₁ : e₁.pendingSafe = true := by have h := he; simp only [Expr.pendingSafe, Bool.and_eq_true] at he; exact he.1.1
-        simp only [eval]
-        refine Exact.bind (ih H φ e₁ hcc he₁) (fun H₁ v₁ tr hr hc₁ hv₁ => ?_)
-        rw [← Contents.ownList_ofVals_single]
-        exact rest_step M hp ih (e := .indexWrite p idx πs e₁) he ⟨v₁, rfl, hr⟩ hc₁
-          (by simpa [Contents.ofVals, Contents.copyContainedList] using hv₁) _
-          (by simp only [eval, hr, EvalRes.bind])
+        have ka := hargs args he'.1 he'.2 H hcc
+        split
+        · rename_i r hra; rw [hra] at ka; exact ka
+        · rename_i H₁ vs tr hra
+          rw [hra] at ka
+          obtain ⟨l₁, c₁, cv₁, i₁⟩ := ka
+          refine Exact.prefix (Y := Contents.ownList P.decls (Contents.ofVals vs)) l₁
+            (fun a ha => by have := i₁ a ha; simp only [List.count_nil] at *; omega) ?_
+          exact rest_step M hp ih he hra c₁ cv₁ _ (by simp only [eval, hra])
     | drop p =>
         simp only [eval]
         split
@@ -1751,59 +1666,6 @@ theorem eval_exact (M : FloatSig) {P : Program} (hp : P.pendingSafe = true) :
                       · trivial
                       · rename_i c' hw
                         exact Exact.dropPlace hcc hc hr hd hw
-    | letIn m e₁ e₂ =>
-        have he₁ : e₁.pendingSafe = true := by have h := he; simp only [Expr.pendingSafe, Bool.and_eq_true] at he; exact he.1
-        simp only [eval]
-        refine Exact.bind (ih H φ e₁ hcc he₁) (fun H₁ v₁ tr hr hc₁ hv₁ => ?_)
-        rw [← Contents.ownList_ofVals_single]
-        exact rest_step M hp ih (e := .letIn m e₁ e₂) he ⟨v₁, rfl, hr⟩ hc₁
-          (by simpa [Contents.ofVals, Contents.copyContainedList] using hv₁) _
-          (by simp only [eval, hr, EvalRes.bind])
-    | assign p e₁ =>
-        have he₁ : e₁.pendingSafe = true := by simpa [Expr.pendingSafe] using he
-        simp only [eval]
-        refine Exact.bind (ih H φ e₁ hcc he₁) (fun H₁ v₁ tr hr hc₁ hv₁ => ?_)
-        rw [← Contents.ownList_ofVals_single]
-        exact rest_step M hp ih (e := .assign p e₁) he ⟨v₁, rfl, hr⟩ hc₁
-          (by simpa [Contents.ofVals, Contents.copyContainedList] using hv₁) _
-          (by simp only [eval, hr, EvalRes.bind])
-    | seq e₁ e₂ =>
-        have he₁ : e₁.pendingSafe = true := by have h := he; simp only [Expr.pendingSafe, Bool.and_eq_true] at he; exact he.1
-        simp only [eval]
-        refine Exact.bind (ih H φ e₁ hcc he₁) (fun H₁ v₁ tr hr hc₁ hv₁ => ?_)
-        rw [← Contents.ownList_ofVals_single]
-        exact rest_step M hp ih (e := .seq e₁ e₂) he ⟨v₁, rfl, hr⟩ hc₁
-          (by simpa [Contents.ofVals, Contents.copyContainedList] using hv₁) _
-          (by simp only [eval, hr, EvalRes.bind])
-    | ite c e₁ e₂ =>
-        have he₁ : c.pendingSafe = true := by have h := he; simp only [Expr.pendingSafe, Bool.and_eq_true] at he; exact he.1.1
-        simp only [eval]
-        refine Exact.bind (ih H φ c hcc he₁) (fun H₁ v₁ tr hr hc₁ hv₁ => ?_)
-        rw [← Contents.ownList_ofVals_single]
-        exact rest_step M hp ih (e := .ite c e₁ e₂) he ⟨v₁, rfl, hr⟩ hc₁
-          (by simpa [Contents.ofVals, Contents.copyContainedList] using hv₁) _
-          (by simp only [eval, hr, EvalRes.bind])
-    | call f args =>
-        have he' := he
-        simp only [Expr.pendingSafe, Bool.and_eq_true] at he'
-        simp only [eval]
-        have ka := hargs args he'.1 he'.2 H hcc
-        split
-        · rename_i r hra; rw [hra] at ka; exact ka
-        · rename_i H₁ vs tr hra
-          rw [hra] at ka
-          obtain ⟨l₁, c₁, cv₁, i₁⟩ := ka
-          refine Exact.prefix (Y := Contents.ownList P.decls (Contents.ofVals vs)) l₁
-            (fun a ha => by have := i₁ a ha; simp only [List.count_nil] at *; omega) ?_
-          exact rest_step M hp ih (e := .call f args) he hra c₁ cv₁ _ (by simp only [eval, hra])
-    | ret e₁ =>
-        have he₁ : e₁.pendingSafe = true := by simpa [Expr.pendingSafe] using he
-        simp only [eval]
-        refine Exact.bind (ih H φ e₁ hcc he₁) (fun H₁ v₁ tr hr hc₁ hv₁ => ?_)
-        rw [← Contents.ownList_ofVals_single]
-        exact rest_step M hp ih (e := .ret e₁) he ⟨v₁, rfl, hr⟩ hc₁
-          (by simpa [Contents.ofVals, Contents.copyContainedList] using hv₁) _
-          (by simp only [eval, hr, EvalRes.bind])
     | loop e₁ =>
         simp only [eval]
         have hbe : e₁.pendingSafe = true := by simpa [Expr.pendingSafe] using he
