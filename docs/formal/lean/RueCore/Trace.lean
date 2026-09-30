@@ -1545,28 +1545,10 @@ theorem Cons.dropDeclared {D : Decls} {F : Event → List Nat} (hF : TraceMeasur
     List.count_append]
   omega
 
-/-- **(D-Assign) §6.8, as a ledger**: the old contents at the place is dropped
-and the held value takes its position (helper). -/
+/-- **(D-Assign) §6.8, as a ledger**, at a place below a dynamic index (`ρ`,
+empty for a static place): the old contents at the place is dropped and the
+held value takes its position (helper). -/
 theorem Cons.assign {D : Decls} {F : Event → List Nat} (hF : TraceMeasure D F)
-    {H : Store} {Y : List Nat} {ℓ : Nat} {c c' old : Contents} {π : List Nat} {v : Val}
-    {evs : List Event} (hcc : StoreCC D H) (hc : H[ℓ]? = some (.full c))
-    (hr : c.getAt π = .ok old) (hd : dropCell D ℓ old = .ok evs)
-    (hw : c.setAt π (Contents.ofVal v) = some c') (hc' : c'.copyContained D = true) :
-    Cons D F H (v.own D ++ Y) (.ok (H.set ℓ (.full c')) .unit evs) := by
-  have hccc := hcc ℓ c hc
-  have hold := Contents.getAt_copyContained π hccc hr
-  refine ⟨by simp, hcc.set hc', rfl, fun a => ?_⟩
-  have h1 := storeOwn_set_count D a (.full c') hc
-  have h2 := Contents.setAt_own a π hccc hr hw
-  have h3 := dropCell_measure hF hold hd a
-  simp only [Cell.own] at h1
-  simp only [List.count_append, Fresh.set, Val.own_unit, List.count_nil]
-  simp only [Val.own] at *
-  omega
-
-/-- **(D-Assign) below a dynamic index, as a ledger**: the same, at the leaf
-the index resolved to, one level down (helper). -/
-theorem Cons.assignDyn {D : Decls} {F : Event → List Nat} (hF : TraceMeasure D F)
     {H : Store} {Y : List Nat} {ℓ : Nat} {c c' sub sub' old : Contents} {π ρ : List Nat}
     {v : Val} {evs : List Event} (hcc : StoreCC D H) (hc : H[ℓ]? = some (.full c))
     (hr : c.getAt π = .ok sub) (hr' : sub.getAt ρ = .ok old)
@@ -1833,7 +1815,7 @@ theorem eval_conserves (M : FloatSig) {P : Program} {F : Event → List Nat}
                     · rename_i c' hw
                       split
                       · rename_i hc'
-                        exact Cons.assignDyn hF c₂ hc hr hr' hd hw' hw hc'
+                        exact Cons.assign hF c₂ hc hr hr' hd hw' hw hc'
                       · trivial
     | indexDrop p idx πs =>
         simp only [eval]
@@ -1914,7 +1896,7 @@ theorem eval_conserves (M : FloatSig) {P : Program} {F : Event → List Nat}
                   · rename_i c' hw
                     split
                     · rename_i hc'
-                      exact (Cons.assign (Y := []) hF hc₁ hc hr hd hw hc').weaken (by simp)
+                      exact (Cons.assign (Y := []) (ρ := []) hF hc₁ hc hr rfl hd rfl hw hc').weaken (by simp)
                     · trivial
     | seq e₁ e₂ =>
         simp only [eval]
