@@ -619,9 +619,9 @@ theorem evalArgs_msimAbort (IH : MSimIH M P fuel) (t : ArgsFrame)
             simp only [ArgsRes.abort.injEq] at h
             subst h
             have hq : r'.NoRet ∧ r'.NoBrk :=
-              ⟨evalArgs_noRet H₁ (fun H' e' hm =>
+              ⟨evalArgs_abort_of (Q := EvalRes.NoRet) EvalRes.withTrace_noRet H₁ (fun H' e' hm =>
                   (eval_quiet M P fuel H' φ e').1 (Expr.quietList_mem hql hm).1) r' h₂,
-                evalArgs_noBrk H₁ (fun H' e' hm =>
+                evalArgs_abort_of (Q := EvalRes.NoBrk) EvalRes.withTrace_noBrk H₁ (fun H' e' hm =>
                   (eval_quiet M P fuel H' φ e').2 (Expr.quietList_mem hql hm).2) r' h₂⟩
             refine MSim.of_quiet ⟨EvalRes.withTrace_noRet hq.1, EvalRes.withTrace_noBrk hq.2⟩ ?_
             intro H' v' tr' hok
@@ -1101,9 +1101,9 @@ theorem msim_indexWrite (hp : P.pendingSafe = true) (IH : MSimIH M P fuel)
   split
   · rename_i r hr
     have hq : r.NoRet ∧ r.NoBrk :=
-      ⟨evalArgs_noRet H₁ (fun H' e' hm =>
+      ⟨evalArgs_abort_of (Q := EvalRes.NoRet) EvalRes.withTrace_noRet H₁ (fun H' e' hm =>
           (eval_quiet M P fuel H' φ e').1 (Expr.quietList_mem he.2 hm).1) r hr,
-        evalArgs_noBrk H₁ (fun H' e' hm =>
+        evalArgs_abort_of (Q := EvalRes.NoBrk) EvalRes.withTrace_noBrk H₁ (fun H' e' hm =>
           (eval_quiet M P fuel H' φ e').2 (Expr.quietList_mem he.2 hm).2) r hr⟩
     exact MSim.of_quiet hq (evalArgs_abort_ne_ok hr)
   · rename_i H₂ vs tr₂ hr

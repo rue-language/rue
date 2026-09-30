@@ -144,26 +144,6 @@ def EvalRes.NoBrk : EvalRes → Prop
   | .broke _ _ _ => False
   | _ => True
 
-/-- `bind` completes abruptly only where its operand or its context does (helper). -/
-theorem EvalRes.bind_noRet {r : EvalRes} {k : Store → Val → EvalRes} (hr : r.NoRet)
-    (hk : ∀ H v tr, r = .ok H v tr → (k H v).NoRet) : (r.bind k).NoRet := by
-  cases r with
-  | ok H v tr =>
-      have := hk H v tr rfl
-      simp only [EvalRes.bind]
-      cases h : k H v <;> simp_all [EvalRes.withTrace, EvalRes.NoRet]
-  | _ => simp_all [EvalRes.bind, EvalRes.NoRet]
-
-/-- The same for `break` (helper). -/
-theorem EvalRes.bind_noBrk {r : EvalRes} {k : Store → Val → EvalRes} (hr : r.NoBrk)
-    (hk : ∀ H v tr, r = .ok H v tr → (k H v).NoBrk) : (r.bind k).NoBrk := by
-  cases r with
-  | ok H v tr =>
-      have := hk H v tr rfl
-      simp only [EvalRes.bind]
-      cases h : k H v <;> simp_all [EvalRes.withTrace, EvalRes.NoBrk]
-  | _ => simp_all [EvalRes.bind, EvalRes.NoBrk]
-
 /-- A prefixed trace does not change whether a result completes abruptly (helper). -/
 theorem EvalRes.withTrace_noRet {r : EvalRes} {tr : List Event} (h : r.NoRet) :
     (r.withTrace tr).NoRet := by
@@ -174,28 +154,23 @@ theorem EvalRes.withTrace_noBrk {r : EvalRes} {tr : List Event} (h : r.NoBrk) :
     (r.withTrace tr).NoBrk := by
   cases r <;> simp_all [EvalRes.withTrace, EvalRes.NoBrk]
 
-/-- An argument list whose members do not return aborts with no `return`
-(helper). -/
-theorem evalArgs_noRet {ev : Store → Expr → EvalRes} :
-    ∀ {es : List Expr} (H : Store), (∀ H e, e ∈ es → (ev H e).NoRet) →
-      ∀ r, evalArgs ev H es = .abort r → r.NoRet
-  | [], H, _, r, h => by simp [evalArgs] at h
-  | e :: es, H, hq, r, h => by
-      simp only [evalArgs] at h
-      split at h
-      · rename_i H₁ v tr he
-        split at h
-        · cases h
-        · rename_i r' hr'
-          cases h
-          exact EvalRes.withTrace_noRet
-            (evalArgs_noRet H₁ (fun H e' hm => hq H e' (List.mem_cons_of_mem _ hm)) r' hr')
-      · cases h; exact hq H e List.mem_cons_self
+/-- `bind` completes abruptly only where its operand or its context does: a
+property of results that a prefixed trace keeps — `NoRet` or `NoBrk`, whichever
+abrupt result is excluded — holds of `bind` where it holds of the operand and
+of the context (helper). -/
+theorem EvalRes.bind_of {Q : EvalRes → Prop} (hQ : ∀ {r tr}, Q r → Q (r.withTrace tr))
+    {r : EvalRes} {k : Store → Val → EvalRes} (hr : Q r)
+    (hk : ∀ H v tr, r = .ok H v tr → Q (k H v)) : Q (r.bind k) := by
+  cases r with
+  | ok H v tr => exact hQ (hk H v tr rfl)
+  | _ => exact hr
 
-/-- The same for `break` (helper). -/
-theorem evalArgs_noBrk {ev : Store → Expr → EvalRes} :
-    ∀ {es : List Expr} (H : Store), (∀ H e, e ∈ es → (ev H e).NoBrk) →
-      ∀ r, evalArgs ev H es = .abort r → r.NoBrk
+/-- An argument list whose members keep such a property aborts only with a
+result that keeps it (helper). -/
+theorem evalArgs_abort_of {Q : EvalRes → Prop} (hQ : ∀ {r tr}, Q r → Q (r.withTrace tr))
+    {ev : Store → Expr → EvalRes} :
+    ∀ {es : List Expr} (H : Store), (∀ H e, e ∈ es → Q (ev H e)) →
+      ∀ r, evalArgs ev H es = .abort r → Q r
   | [], H, _, r, h => by simp [evalArgs] at h
   | e :: es, H, hq, r, h => by
       simp only [evalArgs] at h
@@ -205,8 +180,7 @@ theorem evalArgs_noBrk {ev : Store → Expr → EvalRes} :
         · cases h
         · rename_i r' hr'
           cases h
-          exact EvalRes.withTrace_noBrk
-            (evalArgs_noBrk H₁ (fun H e' hm => hq H e' (List.mem_cons_of_mem _ hm)) r' hr')
+          exact hQ (evalArgs_abort_of hQ H₁ (fun H e' hm => hq H e' (List.mem_cons_of_mem _ hm)) r' hr')
       · cases h; exact hq H e List.mem_cons_self
 
 /-- `introVal` produces a value or a refusal (helper). -/
@@ -241,10 +215,12 @@ theorem eval_quiet (M : FloatSig) (P : Program) : ∀ (fuel : Nat) (H : Store) (
   | zero => intro H φ e; exact ⟨fun _ => trivial, fun _ => trivial⟩
   | succ n ih =>
     intro H φ e
-    have hargR := fun (H : Store) (es : List Expr) =>
-      evalArgs_noRet (ev := fun H' e' => eval M n P H' φ e') (es := es) H
-    have hargB := fun (H : Store) (es : List Expr) =>
-      evalArgs_noBrk (ev := fun H' e' => eval M n P H' φ e') (es := es) H
+    have hargR := fun (H : Store) (es : List Expr) => evalArgs_abort_of (Q := EvalRes.NoRet)
+      EvalRes.withTrace_noRet (ev := fun H' e' => eval M n P H' φ e') (es := es) H
+    have hargB := fun (H : Store) (es : List Expr) => evalArgs_abort_of (Q := EvalRes.NoBrk)
+      EvalRes.withTrace_noBrk (ev := fun H' e' => eval M n P H' φ e') (es := es) H
+    have bR {r : EvalRes} {k : Store → Val → EvalRes} := @EvalRes.bind_of EvalRes.NoRet EvalRes.withTrace_noRet r k
+    have bB {r : EvalRes} {k : Store → Val → EvalRes} := @EvalRes.bind_of EvalRes.NoBrk EvalRes.withTrace_noBrk r k
     cases e with
     | intLit | floatLit | boolLit | unitLit | panic =>
         simp only [eval]; exact ⟨fun _ => trivial, fun _ => trivial⟩
@@ -256,35 +232,35 @@ theorem eval_quiet (M : FloatSig) (P : Program) : ∀ (fuel : Nat) (H : Store) (
         simp only [eval]
         refine ⟨fun h => ?_, fun h => ?_⟩
         · simp only [Expr.returns, Bool.or_eq_false_iff] at h
-          exact EvalRes.bind_noRet ((ih H φ e₁).1 h.1) fun H₁ _ _ _ =>
-            EvalRes.bind_noRet ((ih H₁ φ e₂).1 h.2) fun _ _ _ _ => OpRes.toRes_quiet.1
+          exact bR ((ih H φ e₁).1 h.1) fun H₁ _ _ _ =>
+            bR ((ih H₁ φ e₂).1 h.2) fun _ _ _ _ => OpRes.toRes_quiet.1
         · simp only [Expr.breaks, Bool.or_eq_false_iff] at h
-          exact EvalRes.bind_noBrk ((ih H φ e₁).2 h.1) fun H₁ _ _ _ =>
-            EvalRes.bind_noBrk ((ih H₁ φ e₂).2 h.2) fun _ _ _ _ => OpRes.toRes_quiet.2
+          exact bB ((ih H φ e₁).2 h.1) fun H₁ _ _ _ =>
+            bB ((ih H₁ φ e₂).2 h.2) fun _ _ _ _ => OpRes.toRes_quiet.2
     | unop op e₁ | intCast w sg e₁ | fintrin k e₁ =>
         simp only [eval]
         refine ⟨fun h => ?_, fun h => ?_⟩
         · simp only [Expr.returns] at h
-          exact EvalRes.bind_noRet ((ih H φ e₁).1 h) fun _ _ _ _ => OpRes.toRes_quiet.1
+          exact bR ((ih H φ e₁).1 h) fun _ _ _ _ => OpRes.toRes_quiet.1
         · simp only [Expr.breaks] at h
-          exact EvalRes.bind_noBrk ((ih H φ e₁).2 h) fun _ _ _ _ => OpRes.toRes_quiet.2
+          exact bB ((ih H φ e₁).2 h) fun _ _ _ _ => OpRes.toRes_quiet.2
     | dbg e₁ =>
         simp only [eval]
         refine ⟨fun h => ?_, fun h => ?_⟩
         · simp only [Expr.returns] at h
-          exact EvalRes.bind_noRet ((ih H φ e₁).1 h) fun _ _ _ _ => by split <;> trivial
+          exact bR ((ih H φ e₁).1 h) fun _ _ _ _ => by split <;> trivial
         · simp only [Expr.breaks] at h
-          exact EvalRes.bind_noBrk ((ih H φ e₁).2 h) fun _ _ _ _ => by split <;> trivial
+          exact bB ((ih H φ e₁).2 h) fun _ _ _ _ => by split <;> trivial
     | repeatArray T e₁ m =>
         simp only [eval]
         refine ⟨fun h => ?_, fun h => ?_⟩
         · simp only [Expr.returns] at h
-          exact EvalRes.bind_noRet ((ih H φ e₁).1 h) fun _ _ _ _ => by
+          exact bR ((ih H φ e₁).1 h) fun _ _ _ _ => by
             split
             · exact introVal_quiet.1
             · trivial
         · simp only [Expr.breaks] at h
-          exact EvalRes.bind_noBrk ((ih H φ e₁).2 h) fun _ _ _ _ => by
+          exact bB ((ih H φ e₁).2 h) fun _ _ _ _ => by
             split
             · exact introVal_quiet.2
             · trivial
@@ -306,22 +282,22 @@ theorem eval_quiet (M : FloatSig) (P : Program) : ∀ (fuel : Nat) (H : Store) (
     | indexDrop p idx πs =>
         simp only [eval]
         refine ⟨fun h => ?_, fun h => ?_⟩
-        · exact EvalRes.bind_noRet ((ih H φ (.indexRead p idx πs)).1 (by
+        · exact bR ((ih H φ (.indexRead p idx πs)).1 (by
             simpa [Expr.returns] using h)) fun _ _ _ _ => trivial
-        · exact EvalRes.bind_noBrk ((ih H φ (.indexRead p idx πs)).2 (by
+        · exact bB ((ih H φ (.indexRead p idx πs)).2 (by
             simpa [Expr.breaks] using h)) fun _ _ _ _ => trivial
     | indexWrite p idx πs e₁ =>
         simp only [eval]
         refine ⟨fun h => ?_, fun h => ?_⟩
         · simp only [Expr.returns, Bool.or_eq_false_iff] at h
-          refine EvalRes.bind_noRet ((ih H φ e₁).1 h.1) fun H₁ _ _ _ => ?_
+          refine bR ((ih H φ e₁).1 h.1) fun H₁ _ _ _ => ?_
           split
           · rename_i r hr
             exact hargR H₁ idx (fun H' e' hm => (ih H' φ e').1 (Expr.returnsList_mem h.2 hm)) r hr
           · apply EvalRes.withTrace_noRet
             (repeat' split) <;> trivial
         · simp only [Expr.breaks, Bool.or_eq_false_iff] at h
-          refine EvalRes.bind_noBrk ((ih H φ e₁).2 h.1) fun H₁ _ _ _ => ?_
+          refine bB ((ih H φ e₁).2 h.1) fun H₁ _ _ _ => ?_
           split
           · rename_i r hr
             exact hargB H₁ idx (fun H' e' hm => (ih H' φ e').2 (Expr.breaksList_mem h.2 hm)) r hr
@@ -331,22 +307,22 @@ theorem eval_quiet (M : FloatSig) (P : Program) : ∀ (fuel : Nat) (H : Store) (
         simp only [eval]
         refine ⟨fun h => ?_, fun h => ?_⟩
         · simp only [Expr.returns, Bool.or_eq_false_iff] at h
-          refine EvalRes.bind_noRet ((ih H φ scrut).1 h.1) fun H₀ v _ _ => ?_
+          refine bR ((ih H φ scrut).1 h.1) fun H₀ v _ _ => ?_
           split
           · split
             · trivial
             · rename_i body hb
-              exact EvalRes.withTrace_noRet (EvalRes.bind_noRet
+              exact EvalRes.withTrace_noRet (bR
                 ((ih _ _ body).1 (Expr.returnsList_mem h.2 (List.mem_of_getElem? hb)))
                 fun _ _ _ _ => by split <;> trivial)
           · trivial
         · simp only [Expr.breaks, Bool.or_eq_false_iff] at h
-          refine EvalRes.bind_noBrk ((ih H φ scrut).2 h.1) fun H₀ v _ _ => ?_
+          refine bB ((ih H φ scrut).2 h.1) fun H₀ v _ _ => ?_
           split
           · split
             · trivial
             · rename_i body hb
-              exact EvalRes.withTrace_noBrk (EvalRes.bind_noBrk
+              exact EvalRes.withTrace_noBrk (bB
                 ((ih _ _ body).2 (Expr.breaksList_mem h.2 (List.mem_of_getElem? hb)))
                 fun _ _ _ _ => by split <;> trivial)
           · trivial
@@ -354,25 +330,25 @@ theorem eval_quiet (M : FloatSig) (P : Program) : ∀ (fuel : Nat) (H : Store) (
         simp only [eval]
         refine ⟨fun h => ?_, fun h => ?_⟩
         · simp only [Expr.returns, Bool.or_eq_false_iff] at h
-          exact EvalRes.bind_noRet ((ih H φ e₁).1 h.1) fun _ _ _ _ =>
-            EvalRes.bind_noRet ((ih _ _ e₂).1 h.2) fun _ _ _ _ => by split <;> trivial
+          exact bR ((ih H φ e₁).1 h.1) fun _ _ _ _ =>
+            bR ((ih _ _ e₂).1 h.2) fun _ _ _ _ => by split <;> trivial
         · simp only [Expr.breaks, Bool.or_eq_false_iff] at h
-          exact EvalRes.bind_noBrk ((ih H φ e₁).2 h.1) fun _ _ _ _ =>
-            EvalRes.bind_noBrk ((ih _ _ e₂).2 h.2) fun _ _ _ _ => by split <;> trivial
+          exact bB ((ih H φ e₁).2 h.1) fun _ _ _ _ =>
+            bB ((ih _ _ e₂).2 h.2) fun _ _ _ _ => by split <;> trivial
     | assign p e₁ =>
         simp only [eval]
         refine ⟨fun h => ?_, fun h => ?_⟩
         · simp only [Expr.returns] at h
-          exact EvalRes.bind_noRet ((ih H φ e₁).1 h) fun _ _ _ _ => by
+          exact bR ((ih H φ e₁).1 h) fun _ _ _ _ => by
             (repeat' split) <;> trivial
         · simp only [Expr.breaks] at h
-          exact EvalRes.bind_noBrk ((ih H φ e₁).2 h) fun _ _ _ _ => by
+          exact bB ((ih H φ e₁).2 h) fun _ _ _ _ => by
             (repeat' split) <;> trivial
     | seq e₁ e₂ =>
         simp only [eval]
         refine ⟨fun h => ?_, fun h => ?_⟩
         · simp only [Expr.returns, Bool.or_eq_false_iff] at h
-          exact EvalRes.bind_noRet ((ih H φ e₁).1 h.1) fun H₁ _ _ _ => by
+          exact bR ((ih H φ e₁).1 h.1) fun H₁ _ _ _ => by
             split
             · trivial
             · split
@@ -380,7 +356,7 @@ theorem eval_quiet (M : FloatSig) (P : Program) : ∀ (fuel : Nat) (H : Store) (
               · exact EvalRes.withTrace_noRet ((ih H₁ φ e₂).1 h.2)
             · exact (ih H₁ φ e₂).1 h.2
         · simp only [Expr.breaks, Bool.or_eq_false_iff] at h
-          exact EvalRes.bind_noBrk ((ih H φ e₁).2 h.1) fun H₁ _ _ _ => by
+          exact bB ((ih H φ e₁).2 h.1) fun H₁ _ _ _ => by
             split
             · trivial
             · split
@@ -391,14 +367,14 @@ theorem eval_quiet (M : FloatSig) (P : Program) : ∀ (fuel : Nat) (H : Store) (
         simp only [eval]
         refine ⟨fun h => ?_, fun h => ?_⟩
         · simp only [Expr.returns, Bool.or_eq_false_iff] at h
-          exact EvalRes.bind_noRet ((ih H φ c).1 h.1.1) fun H₀ _ _ _ => by
+          exact bR ((ih H φ c).1 h.1.1) fun H₀ _ _ _ => by
             split
             · split
               · exact (ih H₀ φ e₁).1 h.1.2
               · exact (ih H₀ φ e₂).1 h.2
             · trivial
         · simp only [Expr.breaks, Bool.or_eq_false_iff] at h
-          exact EvalRes.bind_noBrk ((ih H φ c).2 h.1.1) fun H₀ _ _ _ => by
+          exact bB ((ih H φ c).2 h.1.1) fun H₀ _ _ _ => by
             split
             · split
               · exact (ih H₀ φ e₁).2 h.1.2
@@ -431,7 +407,7 @@ theorem eval_quiet (M : FloatSig) (P : Program) : ∀ (fuel : Nat) (H : Store) (
         simp only [eval]
         refine ⟨fun h => by simp [Expr.returns] at h, fun h => ?_⟩
         simp only [Expr.breaks] at h
-        exact EvalRes.bind_noBrk ((ih H φ e₁).2 h) fun _ _ _ _ => by
+        exact bB ((ih H φ e₁).2 h) fun _ _ _ _ => by
           split <;> trivial
     | loop e₁ =>
         simp only [eval]
