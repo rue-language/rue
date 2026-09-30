@@ -898,13 +898,8 @@ initial one, every drop scope — the current activation record's, every suspend
 caller's and loop boundary's, and every pending `endscope` marker's — lists
 its cells in strictly increasing location order. No typing hypothesis. -/
 theorem reachable_ordered {M : FloatSig} {P : Program} {C : Config}
-    (h : Steps M P Config.init C) : C.Ordered := by
-  have key : ∀ {C₁ C₂ : Config}, Steps M P C₁ C₂ → C₁.Ordered → C₂.Ordered := by
-    intro C₁ C₂ hs
-    induction hs with
-    | refl => exact id
-    | step h₁ _ ih => exact fun hC => ih (step_ordered h₁ hC)
-  exact key h ⟨⟨.nil, by simp⟩, by simp⟩
+    (h : Steps M P Config.init C) : C.Ordered :=
+  Steps.invariant step_ordered h ⟨⟨.nil, by simp⟩, by simp⟩
 
 /-! ## Across cells: every step's drops are newest-first -/
 
@@ -1231,13 +1226,8 @@ in every configuration reachable from §6.12's initial one. In particular
 (D-EndScope)'s pop by count always removes the marker's own cells
 (`Activation.unwindScope_tail`). No typing hypothesis. -/
 theorem reachable_nested {M : FloatSig} {P : Program} {C : Config}
-    (h : Steps M P Config.init C) : C.Nested := by
-  have key : ∀ {C₁ C₂ : Config}, Steps M P C₁ C₂ → C₁.Nested → C₂.Nested := by
-    intro C₁ C₂ hs
-    induction hs with
-    | refl => exact id
-    | step h₁ _ ih => exact fun hC => ih (step_nested h₁ hC)
-  exact key h ⟨trivial, ⟨.nil, by simp [Stk]⟩⟩
+    (h : Steps M P Config.init C) : C.Nested :=
+  Steps.invariant step_nested h ⟨trivial, ⟨.nil, by simp [Stk]⟩⟩
 
 /-- **Every step is last-in first-out** (§6.7, §6.9, §6.10): from a nested
 configuration, a step appends `evs` to the trace and either keeps the

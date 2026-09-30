@@ -1453,14 +1453,8 @@ theorem step_live (M : FloatSig) (P : Program) {C : Config} (h : ConfigLive C) :
 
 /-- `→*` keeps the invariant (helper). -/
 theorem steps_live {M : FloatSig} {P : Program} {C C' : Config} (hs : Steps M P C C') :
-    ConfigLive C → ConfigLive C' := by
-  induction hs with
-  | refl => exact id
-  | step h₁ _ ih =>
-      intro hC
-      have := step_live M P hC
-      rw [step_iff.mp h₁] at this
-      exact ih this
+    ConfigLive C → ConfigLive C' :=
+  Steps.invariant (fun h₁ hC => by have := step_live M P hC; rwa [step_iff.mp h₁] at this) hs
 
 end RueCore.Tombstone
 
