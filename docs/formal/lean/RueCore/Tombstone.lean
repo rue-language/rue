@@ -1112,13 +1112,6 @@ theorem extend_keeps {H H' : Store} {A ls : List Nat} (hnd : A.Nodup)
     · exact hg.2 ℓ (hl ℓ hm)
     · exact (hfresh ℓ hm).2
 
-/-- (D-EndScope)'s pop undoes the extension (D-Let) and (D-Match) made (helper). -/
-theorem Activation.unwindScope_ext (φ₀ : Activation) (ls : List Nat) :
-    ({ env := ls.reverse ++ φ₀.env, scope := φ₀.scope ++ ls } : Activation).unwindScope ls.length
-      = φ₀ := by
-  cases φ₀
-  simp [Activation.unwindScope]
-
 /-- An operator's step touches no cell (helper). -/
 theorem OpRes.toStep_live {H : Store} {φ : Activation} {K : List Kont} {tr : List Event}
     (h : StackLive H φ K) (o : OpRes) : StepLive (o.toStep H φ K tr) := by
@@ -1411,7 +1404,7 @@ theorem stepRet_live (M : FloatSig) (P : Program) {H : Store} {φ : Activation} 
       · rename_i H' evs hu
         obtain ⟨h₁, h₂⟩ := unwind_keeps hnd' hlv' hu
         show StackLive H' _ K
-        rw [Activation.unwindScope_ext]
+        rw [Activation.unwindScope_push]
         exact ⟨hs, h₁, h₂⟩
   | loop e φs =>
       obtain ⟨⟨xs, hφ, hs⟩, hnd, hlv⟩ := h

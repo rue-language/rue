@@ -407,12 +407,6 @@ theorem rootCell_of {H : Store} {φ : Activation} {i ℓ : Nat} {c : Contents}
     (hℓ : φ.env[i]? = some ℓ) (hc : H[ℓ]? = some (.full c)) : rootCell H φ i = .ok (ℓ, c) := by
   simp [rootCell, hℓ, hc]
 
-/-- (D-EndScope) restores the activation record (D-Let) or (D-Match) extended (helper). -/
-theorem Activation.unwindScope_push (φ : Activation) (ls : List Nat) :
-    ({ env := ls.reverse ++ φ.env, scope := φ.scope ++ ls } : Activation).unwindScope ls.length = φ := by
-  cases φ
-  simp [Activation.unwindScope]
-
 /-- (D-EndScope) after (D-Let) (helper). -/
 theorem Activation.unwindScope_let (φ : Activation) (ℓ : Nat) :
     ({ env := ℓ :: φ.env, scope := φ.scope ++ [ℓ] } : Activation).unwindScope 1 = φ := by

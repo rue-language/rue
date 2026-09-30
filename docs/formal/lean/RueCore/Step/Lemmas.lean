@@ -19,6 +19,15 @@ relation — are in `Witnesses.lean`.
 
 namespace RueCore
 
+/-! ## Stack searches and monitor-free drops -/
+
+/-- (D-EndScope)'s pop restores the activation record (D-Let) or (D-Match)
+extended (helper). -/
+theorem Activation.unwindScope_push (φ : Activation) (ls : List Nat) :
+    ({ env := ls.reverse ++ φ.env, scope := φ.scope ++ ls } : Activation).unwindScope ls.length = φ := by
+  cases φ
+  simp [Activation.unwindScope]
+
 /-! ## The sanity theorems -/
 
 /-- Every `Step` is the one `step` computes (§6). -/
