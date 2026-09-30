@@ -118,7 +118,7 @@ field's name too, `RueCore.Spec.Equivalence`.
 |---|---|---|---|---|
 | `soundness` | §7:3 | Soundness via a definitional interpreter: `⊢ e : T ∧ eval n e = r ≠ Timeout ⇒ r = Val v ∧ v : T` (FIELD §3: Amin & Rompf Lemma 3; Owens et al. §5) | `WfProgram P`, `Typed P R Γ e T Ω` and an activation record and store agreeing with `Γ` ⇒ `EvalOk` of `eval` at every fuel | The same theorem for an open expression, from any activation record and store that agree with its context (`ActivationTyping`), with an unwinding `return` or `break`, a defined panic and exhausted fuel among the allowed outcomes, and with `.refused` excluded, which covers `eval`'s monitors as well as stuck states. |
 | `run_safe` | §7:3 | Syntactic soundness: `⊢ e : τ ⇒ e⇑ ∨ (e ↦* v ∧ ⊢ v : τ)` (FIELD §2: Wright & Felleisen Thm 4.12 (preprint numbering)) | `WfProgram P` and a parameterless entry point ⇒ at every fuel, `run` is out of fuel, a panic, or a value of the entry point's type | Wright & Felleisen's three-way form, read per fuel bound over the interpreter: divergence is exhausting this fuel rather than `⇑`, and a defined panic, PFPL's checked error, is an allowed outcome. |
-| `no_refusal` | §7:4, §7:6, §7:8 | Weak soundness: a well-typed program never yields `wrong` ("well-typed programs do not go wrong") (FIELD §2: Wright & Felleisen §§1–2; Milner 1978) | `ProgramTyped P` ⇒ `run` is never `.refused w`, at any fuel and for any `w` | `.refused w` is wider than `wrong`: it includes the refusals of `eval`'s four monitors, which are not stuck states of §6, so the statement also says that no monitor fires (R3 of `REDTEAM-LOG.md`). |
+| `no_refusal` | §7:3, §7:4, §7:5, §7:6, §7:8 | Weak soundness: a well-typed program never yields `wrong` ("well-typed programs do not go wrong") (FIELD §2: Wright & Felleisen §§1–2; Milner 1978) | `ProgramTyped P` ⇒ `run` is never `.refused w`, at any fuel and for any `w` | `.refused w` is wider than `wrong`: it includes the refusals of `eval`'s four monitors, which are not stuck states of §6, so the statement also says that no monitor fires (R3 of `REDTEAM-LOG.md`). |
 | `no_use_after_move` | §7:4 | No named theorem; reading a moved-from (deinitialized) place is a use of uninitialized memory, one of the memory access errors of memory safety (FIELD §5: Rust Reference, Expressions and Glossary (moved from); Hicks 2014 (memory safety)) | `ProgramTyped P` ⇒ `run` never refuses with `useAfterMove` | It is `no_refusal` at one tag, so it rules out a read of a `⊘` cell only as far as `eval` checks every read and labels it so. |
 | `no_use_after_drop` | §7:6 | No use after free: the program never "reuses or references memory after it has been freed" (FIELD §5: CWE-416) | `ProgramTyped P` ⇒ `run` never refuses with `useAfterDrop` | The freed object is a dropped binding's tombstoned (`†`) cell rather than heap memory, the error is ruled out as far as `eval` labels an access to it, and the typing hypothesis is redundant (`run_no_use_after_drop`). |
 | `run_no_use_after_drop` | §7:6 | No use after free (CWE-416), as above (FIELD §5: CWE-416) | every program ⇒ `run` never refuses with `useAfterDrop`, at any fuel and any float operations | No typing hypothesis: the property is structural, since a cell is minted fresh and nothing names it once its scope has tombstoned it. |
@@ -132,8 +132,8 @@ field's name too, `RueCore.Spec.Equivalence`.
 | `checkProgram_sound` | — | Algorithmic soundness (Walker 1.2.9), for a whole program (FIELD §4: Walker 1.2.9) | `checkProgram P = true` ⇒ `ProgramTyped P` | Soundness only, lifted to a program; a typed program the checker rejects is possible. |
 | `no_double_free` | §7:5 | No double free: no program run "calls free() twice on the same memory address", an at-most-once safety property of the trace (FIELD §5: CWE-415; FIELD §6: Alpern & Schneider §2) | `ProgramTyped P` ⇒ at every fuel, `run` is not refused and its trace frees each identity, and runs a destructor on each, at most once | It counts drop and destructor events per object identity rather than calls of `free()` per address, and holds of terminating runs only (an `outOfFuel` result has an empty trace), so the safety-property form is `step_no_double_free`. |
 | `step_no_double_free` | §7:5 | A safety property: every violation has a finite prefix no continuation repairs (FIELD §6: Alpern & Schneider §2; FIELD §5: CWE-415) | `ProgramTyped P` and `init →* C` ⇒ `C`'s trace frees each identity, and runs a destructor on each, at most once | The at-most-once bound stated on every finite prefix of every run, as a property of each reachable configuration rather than of Alpern & Schneider's infinite sequences, which for this property is the same content. |
-| `freed_once` | — | No double free (CWE-415), on every program (FIELD §5: CWE-415) | every program ⇒ a terminating run's trace frees each identity at most once | No typing hypothesis and no destructor count, per object identity, over terminating runs. |
-| `dtor_once` | — | No double free (CWE-415), for destructor runs (FIELD §5: CWE-415; Rust Reference, Destructors) | `DtorNotCopy` ⇒ a terminating run's trace runs a destructor on each identity at most once | Its only hypothesis is that a destructor-bearing struct is not `Copy`, and it counts destructor runs per identity, over terminating runs. |
+| `freed_once` | §7:5 | No double free (CWE-415), on every program (FIELD §5: CWE-415) | every program ⇒ a terminating run's trace frees each identity at most once | No typing hypothesis and no destructor count, per object identity, over terminating runs. |
+| `dtor_once` | §7:5 | No double free (CWE-415), for destructor runs (FIELD §5: CWE-415; Rust Reference, Destructors) | `DtorNotCopy` ⇒ a terminating run's trace runs a destructor on each identity at most once | No typing hypothesis: its only hypothesis is that a destructor-bearing struct is not `Copy`, and it counts destructor runs per identity, over terminating runs. |
 | `drop_exactly_once` | §7:6 | Exactly once = at most once ∧ at least once; linear use is exactly one use; a memory leak is the failure of "at least once" (FIELD §6: Confluent (delivery), Walker (linear use); FIELD §5: CWE-401) | a typed, `pendingSafe` expression of a checked program, from an activation record and store agreeing with its context ⇒ its evaluation is not refused, ends every identity exactly as often as held (`Exact`), and tombstones what it allocated (`Tidy`) | Per evaluation of one expression from a matching activation record and store, not per run from `Config.init`, under `pendingSafe` (RUE-2316) and with nothing about a panic; the whole-run form is `whole_program_exactly_once`. |
 | `rest_exactly_once` | §7:6 | Exactly once (as above), for values minted during an evaluation (FIELD §6: Confluent (delivery), Walker (linear use)) | the hypotheses of `drop_exactly_once`, and a form's leading operands evaluated (`Lead`) ⇒ the rest of the form ends them and the store's identities exactly once (`Exact`) and tombstones what it allocated (`Settled`) | The induction form behind `drop_exactly_once`, listed as a linking statement because it covers the values a form mints mid-evaluation; the literature has no separate counterpart. |
 | `whole_program_exactly_once` | §7:6 | Exactly once = at most once ∧ at least once, over a whole run; a memory leak is a value the run allocates and never releases (FIELD §6: Confluent (delivery), Walker (linear use); FIELD §5: CWE-401) | `ProgramTyped P`, `P.pendingSafe`, `init →* C`, `a` held by `C` (`Config.held`) and `C →* ✓v` with trace `tr` ⇒ `a` is ended in `tr` or owned by `v`, exactly once between the two | Per owned object identity, for every value a terminating run holds rather than per allocation site, under `pendingSafe` (RUE-2316), and with nothing about a panic, whose trap runs no drop, or a run that never terminates. |
@@ -150,12 +150,12 @@ field's name too, `RueCore.Spec.Equivalence`.
 | `step_type_safety` | §7:3 | Type safety = preservation ∧ progress; in Wright & Felleisen's form, `⊢ e : τ ⇒ e⇑ ∨ (e ↦* v ∧ ⊢ v : τ)` (FIELD §2: PFPL Thm 6.1; Wright & Felleisen Thm 4.12) | `ProgramTyped P` ⇒ for every `n`, `init →ⁿ D` for some `D`, or `init →* ✓v` with `v` of the entry point's type, or `init →* ↯κ` | Wright & Felleisen's three-way form per horizon `n`, with a trap as an allowed outcome (PFPL's checked error) and divergence read as having run `n` steps, rather than a conjunction of progress and preservation. |
 | `step_no_use_after_drop` | §7:6 | No use after free (CWE-416), a safety property of runs (FIELD §5: CWE-416; FIELD §6: Alpern & Schneider §2) | every program and `init →* C` ⇒ `C` is not stuck on a tombstoned (`†`) cell | Over §6's relation on every program, checked or not, with a dropped binding's cell in the role of freed memory. |
 | `eval_big_to_small` | §7:3 | Semantic equivalence, interpreter to small-step: `eval n e = r ⇒ ∃e′. e →* e′ ∧ r ∼ e′`; big-step to small-step, `a ⇒ v ⇒ a →* v` (FIELD §3: Amin & Rompf Thm 2; Leroy & Grall Thm 9) | `ProgramTyped P` ⇒ at every fuel, `run` is not refused, a value it answers is `init →* ✓v` and a panic is `init →* ↯κ`, with the same store and trace | The interpreter-to-small-step direction, restricted to checked programs and bundled with "`run` is never refused"; the unconditional direction is `run_sim`. |
-| `run_sim` | — | Semantic equivalence, interpreter to small-step (Amin & Rompf Thm 2), unconditionally (FIELD §3: Amin & Rompf Thm 2; Leroy & Grall Thm 9) | every program ⇒ at every fuel, a value `run` answers is `init →* ✓v` and a panic is `init →* ↯κ` | The literature's unconditional direction for values and panics, with a refusal or exhausted fuel left outside it. |
+| `run_sim` | §7:3 | Semantic equivalence, interpreter to small-step (Amin & Rompf Thm 2), unconditionally (FIELD §3: Amin & Rompf Thm 2; Leroy & Grall Thm 9) | every program ⇒ at every fuel, a value `run` answers is `init →* ✓v` and a panic is `init →* ↯κ` | The literature's unconditional direction for values and panics, with a refusal or exhausted fuel left outside it. |
 | `eval_small_to_big` | §7:3 | Semantic equivalence, small-step to interpreter: `e →* e′ ⇒ ∃n. eval n e ∼ e′`; small-step to big-step, `a →* v ∧ v value ⇒ a ⇒ v` (FIELD §3: Amin & Rompf Thm 2; Leroy & Grall Thm 9; Owens et al. §3.4) | `ProgramTyped P` and `init →* ✓v` (or `↯κ`) ⇒ `run` answers that value (or panic), with the same store and trace, at every fuel past some `n` | Restricted to checked programs, and at every fuel past `n` rather than at some `n`, which folds in the clock lemma (`fuel_mono`). |
-| `run_small_to_big` | — | Semantic equivalence, small-step to interpreter (Amin & Rompf Thm 2), unconditionally (FIELD §3: Amin & Rompf Thm 2) | every program and `init →* ✓v` (or `↯κ`) ⇒ past some fuel, `run` answers that value (or panic) or refuses | On every program only up to a refusal, since `eval`'s monitors are stricter than §6, which makes it much weaker than the literature's unconditional direction. |
+| `run_small_to_big` | §7:3 | Semantic equivalence, small-step to interpreter (Amin & Rompf Thm 2), unconditionally (FIELD §3: Amin & Rompf Thm 2) | every program and `init →* ✓v` (or `↯κ`) ⇒ past some fuel, `run` answers that value (or panic) or refuses | On every program only up to a refusal, since `eval`'s monitors are stricter than §6, which makes it much weaker than the literature's unconditional direction. |
 | `never_refused_iff` | §7:3 | No named counterpart: the interpreter's weak soundness against the small-step `safe(init)` (FIELD §2: Wright & Felleisen §§1–2 (weak soundness); Timany et al. §2.4 (`safe`)) | `ProgramTyped P` ⇒ (`run` never refused at any fuel ⇔ every `C` with `init →* C` is terminal or steps) | Under `ProgramTyped` both sides hold outright (`no_refusal`, `step_progress`), so the `⇔` adds nothing; its content is the forward direction on every program, `step_never_stuck_of_run` (R5 of `REDTEAM-LOG.md`). |
 | `step_never_stuck_of_run` | §7:3 | No named counterpart: `safe(init)` transferred from the interpreter (FIELD §2: Timany et al. §2.4 (`safe`); FIELD §3: Amin & Rompf Thm 2) | every program, `run` never refused at any fuel ⇒ every `C` with `init →* C` is terminal or steps | Carries the interpreter's never-refused to `Step`'s `safe(init)` on every program, a use of the equivalence the literature does not state separately. |
-| `run_refused_of_step_stuck` | — | No named counterpart: the stuck case of the equivalence, where `∼` relates an error result to a stuck term (FIELD §3: Amin & Rompf Thm 2) | `init →* C` and `C` stuck ⇒ past some fuel, `run` refuses, perhaps with another `Refusal` | The error half of the equivalence, stated separately because `run` and `Step` may name the same failure by different violations. |
+| `run_refused_of_step_stuck` | §7:3 | No named counterpart: the stuck case of the equivalence, where `∼` relates an error result to a stuck term (FIELD §3: Amin & Rompf Thm 2) | `init →* C` and `C` stuck ⇒ past some fuel, `run` refuses, perhaps with another `Refusal` | The error half of the equivalence, stated separately because `run` and `Step` may name the same failure by different violations. |
 | `eval_diverges_iff` | §7:3 | Big-step/small-step equivalence for diverging runs: `a ⇒∞ ⇔ a →∞`; clock-based divergence, timing out at every clock (FIELD §3: Leroy & Grall Thm 11; Owens et al. §3.4) | `ProgramTyped P` ⇒ (`run` out of fuel at every fuel ⇔ `init →ⁿ D` for every `n` and some `D`) | Restricted to checked programs, with Owens's clocked divergence on the interpreter side and runs of every length instead of a coinductive `→∞` on the small-step side, which agree because `Step` is deterministic. |
 
 ## Type safety over the interpreter
@@ -226,8 +226,8 @@ Sharp:
 
 ### `no_refusal`
 
-**No refusal of any kind** (§7's memory-safety bullets, §7:4, §7:6 and
-§7:8). A checked program's run is never `.refused`. Narrower than the bullets: a value built for
+**No refusal of any kind** (§7:3's "does not get stuck" and §7's
+memory-safety bullets, §7:4, §7:5, §7:6 and §7:8). A checked program's run is never `.refused`. Narrower than the bullets: a value built for
 a sibling operand that a later one abandons by `return` or `break` is dropped
 by nobody (RUE-2316), and a `@panic` runs no drop (§5.7's `⊥_panic`). Like
 every "never `.refused`" statement, it holds because `eval`'s checks and
@@ -567,7 +567,8 @@ Sharp:
 
 ### `freed_once`
 
-**Nothing freed twice, on every program** (§6.11): a run that answers a
+**Nothing freed twice, on every program** (§6.11; §7:5's "never frees
+twice", with no typing hypothesis): a run that answers a
 value, an unwind or a panic frees each identity at most once, with no typing
 hypothesis. A refused or fuel-exhausted run has an empty trace
 (`EvalRes.trace`), so on an unchecked program the bound rests on `eval`'s
@@ -589,7 +590,8 @@ Sharp: no hypotheses to drop.
 
 ### `dtor_once`
 
-**No destructor twice on one value** (§6.11, `3.9:28`), given only that a
+**No destructor twice on one value** (§6.11, `3.9:28`; §7:5's "Every
+stored value's destructor runs at most once", with no typing hypothesis), given only that a
 destructor-bearing struct is not `Copy` (`3.9:31`). As for `freed_once`, a
 refused or fuel-exhausted run has an empty trace, so the bound is over the
 runs `eval` terminates.
@@ -1078,7 +1080,7 @@ Sharp:
 ### `run_sim`
 
 **`run` is simulated by `Step`, on every program** (§6.12): the same, with
-no typing hypothesis.
+no typing hypothesis (§7:3's semantic-equivalence sentence).
 
 ```lean
 def Spec.run_sim_stmt : Prop :=
@@ -1133,8 +1135,9 @@ Sharp:
 ### `run_small_to_big`
 
 **Completeness on every program** (§6.12): the same, up to a refusal of
-`run`'s (RUE-2314). With no typing hypothesis the escape is wide: a `run` that
-is `.refused` past some fuel satisfies it, whatever `→*` reaches.
+`run`'s (RUE-2314; §7:3's semantic-equivalence sentence). With no typing
+hypothesis the escape is wide: a `run` that is `.refused` past some fuel
+satisfies it, whatever `→*` reaches.
 
 ```lean
 def Spec.run_small_to_big_stmt : Prop :=
@@ -1214,7 +1217,8 @@ Sharp:
 ### `run_refused_of_step_stuck`
 
 **A stuck `Step` run is a refusal of `run`** (§6), at every large enough
-fuel, perhaps with another `Refusal`.
+fuel, perhaps with another `Refusal`: the stuck case of §7:3's
+semantic-equivalence sentence.
 
 ```lean
 def Spec.run_refused_of_step_stuck_stmt : Prop :=
