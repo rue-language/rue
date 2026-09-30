@@ -2352,7 +2352,8 @@ Every top-level declaration in a rule-bearing module (`Syntax`, `Statics`,
 `Dynamics`, `Soundness`, `Checker`, `Print`, `Explain`, `CorpusMain`, and any
 new module) has a doc-comment citing what it mechanizes: a rule label exactly
 as the calculus writes it (`(Use-Move)`, `(D-Let)`, `(@Drop)`), a section
-(`§5.5`), or a prose paragraph (`3.8:73`). `instance`s, `example`s, and
+(`§5.5`), a paragraph of the calculus (`§5.3:4`), or a prose paragraph
+(`3.8:73`). `instance`s, `example`s, and
 constructors without a doc-comment of their own are exempt.
 
 - A declaration that mechanizes nothing on its own (an inversion lemma, a

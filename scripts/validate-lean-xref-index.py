@@ -4,7 +4,8 @@
 The mechanization (``docs/formal/lean/RueCore/*.lean``) cites the calculus
 (``docs/formal/01-core-calculus.md``) from its doc-comments: a rule label as
 the calculus writes it (``(Use-Move)``, ``(D-Let)``, ``(@Drop)``), a section
-(``§5.5``), or a prose-specification paragraph (``3.8:73``). This gate reads
+(``§5.5``), one of the calculus's own paragraphs (``§5.3:4``, RUE-2511), or a
+prose-specification paragraph (``3.8:73``). This gate reads
 those doc-comments and the calculus and writes ``docs/formal/lean/INDEX.md``:
 every declaration with what it cites, and the inverse, every labeled rule and
 every section of the calculus's §5 and §6 with the declarations that mechanize
@@ -20,6 +21,11 @@ The index cannot rot silently because the gate fails when:
 * a doc-comment cites a rule label the calculus does not define;
 * a doc-comment cites a prose-specification paragraph ``docs/spec/src``'s own
   ``{{ rule(id=…) }}`` shortcode does not declare;
+* a doc-comment, or any Markdown document beside the calculus
+  (``docs/formal/**/*.md``: SPINE, GLOSSARY, the metatheory, the guides),
+  cites a calculus paragraph ``§X.Y:Z`` the calculus does not declare;
+* the calculus's own paragraph markers are malformed, duplicated, or declared
+  under a section other than their own;
 * the calculus grows or renames a §2 alternative ``SYNTAX_FORMS`` has no row
   for, or a row names a Lean constructor the sources no longer declare;
 * the committed ``INDEX.md`` differs from what the sources generate (run
@@ -76,7 +82,24 @@ END_LINE = re.compile(r"^end(?:\s+(?P<name>\S+))?\s*$")
 CONTINUATION_LINE = re.compile(r".*\bin$")
 
 SECTION_CITATION = re.compile(r"§(\d+(?:\.\d+)*)")
-PARAGRAPH_CITATION = re.compile(r"(?<![\d.])(\d+\.\d+):(\d+[a-z]?)(?![\da-z])")
+# `§` excluded before the chapter: `§5.3:4` is a calculus paragraph, not the
+# spec's `5.3:4`.
+PARAGRAPH_CITATION = re.compile(r"(?<![\d.§])(\d+\.\d+):(\d+[a-z]?)(?![\da-z])")
+# The calculus's own paragraph ids (RUE-2511): `§` + section + `:` + the
+# paragraph's number within it, with an optional letter suffix for a paragraph
+# inserted later (`§5.3:4a`) — `§5.3:4`, `§6.13.3:5`, `§7:3`. The `§` keeps
+# them apart from the spec's bare `X.Y:Z`, whose chapters 5 and 6 overlap the
+# calculus's sections. A citation counts as citing its section too (the
+# `SECTION_CITATION` match on the same token).
+CALCULUS_PARAGRAPH_CITATION = re.compile(r"§(\d+(?:\.\d+)*):(\d+[a-z]?)(?![\w])")
+CALCULUS_PARAGRAPH_ID = re.compile(r"^\d+(?:\.\d+)*:\d+[a-z]?$")
+# How the calculus declares one: a linkable anchor and the visible tag, both
+# naming the id — ``<a id="5.3:4"></a>**[§5.3:4]**`` — at the start of the
+# paragraph (after ``- `` for a list item, ``> `` for a quoted block).
+CALCULUS_PARAGRAPH_MARKER = re.compile(r'<a id="(?P<anchor>[^"]*)"></a>\*\*\[§(?P<label>[^\]]*)\]\*\*')
+# The documents beside the calculus whose `§X.Y:Z` tokens must resolve; a
+# directory whose name starts with `.` (Lake's `.lake`) is skipped.
+DOC_GLOB = "*.md"
 # `docs/spec/src`'s own paragraph shortcode: ``{{ rule(id="3.8:73", …) }}``.
 # This is the inventory a doc-comment's `PARAGRAPH_CITATION` is checked
 # against — a citation naming a paragraph the spec does not declare is an
@@ -407,12 +430,14 @@ class Declaration:
         self.sections: List[str] = []
         self.rules: List[str] = []
         self.paragraphs: List[str] = []
+        # The calculus's own paragraph ids, without the `§` (`5.3:4`).
+        self.calculus_paragraphs: List[str] = []
         self.unknown_rules: List[str] = []
         self.helper = False
 
     @property
     def cites(self) -> bool:
-        return bool(self.sections or self.rules or self.paragraphs)
+        return bool(self.sections or self.rules or self.paragraphs or self.calculus_paragraphs)
 
 
 class Module:
@@ -447,6 +472,10 @@ class Calculus:
         self.rule_order: List[str] = []
         # §2's T/p/e alternatives, in document order.
         self.forms: List[Form] = []
+        # The paragraph ids the calculus declares (`5.3:4`, no `§`), in
+        # document order, and what is wrong with its markers.
+        self.paragraph_ids: List[str] = []
+        self.errors: List[str] = []
 
 
 # --- Lean parsing -----------------------------------------------------------
@@ -647,6 +676,12 @@ def cite(decl: Declaration, calculus: Calculus) -> None:
         if ref not in paragraphs:
             paragraphs.append(ref)
     decl.paragraphs = paragraphs
+    calculus_paragraphs: List[str] = []
+    for match in CALCULUS_PARAGRAPH_CITATION.finditer(decl.doc):
+        ref = f"{match.group(1)}:{match.group(2)}"
+        if ref not in calculus_paragraphs:
+            calculus_paragraphs.append(ref)
+    decl.calculus_paragraphs = calculus_paragraphs
     for match in PAREN_LABEL.finditer(decl.doc):
         label = match.group(1)
         if label in calculus.rules:
@@ -669,7 +704,8 @@ def parse_calculus(path: Path) -> Calculus:
     calculus = Calculus()
     current = ""
     production: Optional[str] = None
-    for line in path.read_text(encoding="utf-8").splitlines():
+    seen_ids: Dict[str, int] = {}
+    for number_line, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
         heading = CALCULUS_HEADING.match(line)
         if heading is not None:
             number = heading.group("number")
@@ -677,6 +713,8 @@ def parse_calculus(path: Path) -> Calculus:
             current = number
             production = None
             continue
+        for marker in CALCULUS_PARAGRAPH_MARKER.finditer(line):
+            _read_paragraph_marker(calculus, marker, current, f"{path.name}:{number_line}", seen_ids)
         top = current.split(".")[0] if current else ""
         if top == SYNTAX_SECTION:
             production = _read_syntax_line(calculus, line, production)
@@ -689,6 +727,58 @@ def parse_calculus(path: Path) -> Calculus:
                 calculus.rules[label] = current
                 calculus.rule_order.append(label)
     return calculus
+
+
+def _read_paragraph_marker(
+    calculus: Calculus, marker: "re.Match[str]", current: str, where: str, seen: Dict[str, int]
+) -> None:
+    """Record one ``<a id="X.Y:Z"></a>**[§X.Y:Z]**`` paragraph marker.
+
+    The id must be well formed, the anchor and the visible tag must agree, it
+    must sit under its own section's heading (so a paragraph moved to another
+    section cannot keep a stale id), and it must be unique. Gaps are allowed:
+    ids are append-only, so a deleted paragraph leaves its number unused.
+    """
+    anchor, label = marker.group("anchor"), marker.group("label")
+    if anchor != label:
+        calculus.errors.append(f"{where}: paragraph marker's anchor `{anchor}` and tag `§{label}` disagree")
+        return
+    if not CALCULUS_PARAGRAPH_ID.match(label):
+        calculus.errors.append(f"{where}: paragraph marker `§{label}` is not of the form `§X.Y:Z`")
+        return
+    section = label.split(":")[0]
+    if section != current:
+        calculus.errors.append(
+            f"{where}: paragraph marker `§{label}` sits under §{current or '(no section)'}, not §{section}"
+        )
+    if label in seen:
+        calculus.errors.append(f"{where}: paragraph id `§{label}` is declared twice (first at line {seen[label]})")
+        return
+    seen[label] = int(where.rsplit(":", 1)[1])
+    calculus.paragraph_ids.append(label)
+
+
+def calculus_citations_in_docs(formal_dir: Path, calculus_path: Path) -> List[Tuple[str, int, str]]:
+    """Every ``§X.Y:Z`` token in the Markdown documents under ``formal_dir``.
+
+    Returns ``(relative path, line, id without §)``. The calculus's own
+    paragraph markers are declarations, not citations, and are skipped; any
+    other ``§X.Y:Z`` in it (a cross-reference between its own paragraphs) is
+    a citation like any other. Code blocks are scanned too: a citation there
+    is still a claim about where a rule lives.
+    """
+    found: List[Tuple[str, int, str]] = []
+    for path in sorted(formal_dir.rglob(DOC_GLOB)):
+        relative = path.relative_to(formal_dir)
+        if any(part.startswith(".") for part in relative.parts):
+            continue
+        is_calculus = path.resolve() == calculus_path.resolve()
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+            if is_calculus:
+                line = CALCULUS_PARAGRAPH_MARKER.sub("", line)
+            for match in CALCULUS_PARAGRAPH_CITATION.finditer(line):
+                found.append((relative.as_posix(), number, f"{match.group(1)}:{match.group(2)}"))
+    return found
 
 
 def parse_spec_paragraph_ids(spec_dir: Path) -> set:
@@ -767,7 +857,7 @@ def render_index(modules: List[Module], calculus: Calculus) -> str:
         "every alternative of the calculus's §2 grammar, every labeled rule and every "
         "section of its §5 and §6, with the declarations that mechanize them. A row "
         "reading *not yet mechanized* is the fragment boundary, stated rather than "
-        "inferred. Sections, rules, and syntactic forms are those of "
+        "inferred. Sections, rules, paragraphs written `§5.3:4`, and syntactic forms are those of "
         "`../01-core-calculus.md`; paragraphs are `docs/spec` paragraph IDs. "
         "Regenerate with `scripts/validate-lean-xref-index.py --write`; the gate "
         "fails when this file is stale or a declaration lacks its citation "
@@ -795,6 +885,7 @@ def render_index(modules: List[Module], calculus: Calculus) -> str:
             calculus_cell = ", ".join(
                 [f"({rule})" for rule in decl.rules]
                 + [f"§{section}" for section in sorted(decl.sections, key=_section_key)]
+                + [f"§{ref}" for ref in sorted(decl.calculus_paragraphs, key=_paragraph_key)]
             )
             paragraph_cell = ", ".join(f"`{ref}`" for ref in decl.paragraphs) or "—"
             name = decl.name if decl.kind == "module" else f"`{decl.name}`"
@@ -972,9 +1063,10 @@ def collect(
     lean_dir: Path, calculus_path: Path, spec_dir: Path = DEFAULT_SPEC_DIR
 ) -> Tuple[List[Module], Calculus, List[str]]:
     calculus = parse_calculus(calculus_path)
-    errors: List[str] = []
+    errors: List[str] = list(calculus.errors)
     if not calculus.rule_order:
         errors.append(f"{calculus_path}: found no labeled §5/§6 rules; is this the calculus?")
+    calculus_ids = set(calculus.paragraph_ids)
     spec_paragraph_ids = parse_spec_paragraph_ids(spec_dir)
     if not spec_paragraph_ids:
         errors.append(f"{spec_dir}: found no `rule(id=…)` paragraphs; is this docs/spec/src?")
@@ -999,6 +1091,12 @@ def collect(
                         f"{where}: `{decl.name}` cites `{ref}`, which is not a paragraph "
                         f"`docs/spec/src` declares"
                     )
+            for ref in decl.calculus_paragraphs:
+                if ref not in calculus_ids:
+                    errors.append(
+                        f"{where}: `{decl.name}` cites `§{ref}`, which is not a paragraph "
+                        f"`{calculus_path.name}` declares"
+                    )
             if module.examples or decl.kind in ("module", "constructor"):
                 continue
             if decl.doc is None:
@@ -1013,6 +1111,11 @@ def collect(
                 )
         modules.append(module)
     errors.extend(check_syntax_forms(calculus, modules))
+    for relative, number, ref in calculus_citations_in_docs(calculus_path.parent, calculus_path):
+        if ref not in calculus_ids:
+            errors.append(
+                f"{relative}:{number}: cites `§{ref}`, which is not a paragraph `{calculus_path.name}` declares"
+            )
     return modules, calculus, errors
 
 
