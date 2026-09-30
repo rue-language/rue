@@ -15,7 +15,7 @@ statements are.
 - Toolchain: Lean 4.33.1 (the pin in `lean-toolchain` and in
   `toolchains/lean/defs.bzl`, held equal by
   `scripts/validate-lean-toolchain-pin.py`).
-- Theorems checked: 1539.
+- Theorems checked: 1532.
 - Proofs depending on `sorryAx`: 0.
 - Axioms declared by this package: 0.
 - Distinct axioms used: `Quot.sound`, `propext`.
@@ -896,29 +896,18 @@ and diffs them against the committed copies.
 | `Rec.sublist` | `RueCore.TraceOrder` | *none* |
 | `range'_increasing` | `RueCore.TraceOrder` | `Quot.sound`, `propext` |
 | `Rec.fresh` | `RueCore.TraceOrder` | `Quot.sound`, `propext` |
-| `Kont.Ordered.mono` | `RueCore.TraceOrder` | `propext` |
-| `Config.Ordered.keep` | `RueCore.TraceOrder` | `propext` |
-| `Config.Ordered.same` | `RueCore.TraceOrder` | `propext` |
-| `Config.Ordered.push` | `RueCore.TraceOrder` | `propext` |
-| `Config.Ordered.pop` | `RueCore.TraceOrder` | `propext` |
 | `plainDropRetire_length` | `RueCore.TraceOrder` | `propext` |
 | `plainUnwind_length` | `RueCore.TraceOrder` | `propext` |
-| `Kont.toCall_mem` | `RueCore.TraceOrder` | `propext` |
-| `Kont.toLoop_mem` | `RueCore.TraceOrder` | `propext` |
 | `freshParams_eq` | `RueCore.TraceOrder` | `propext` |
-| `step_ordered` | `RueCore.TraceOrder` | `Quot.sound`, `propext` |
-| `reachable_ordered` | `RueCore.TraceOrder` | `Quot.sound`, `propext` |
 | `dropLocs_append` | `RueCore.TraceOrder` | `propext` |
 | `dropLocs_dropEvents` | `RueCore.TraceOrder` | `propext` |
 | `dropLocs_dropEventsList` | `RueCore.TraceOrder` | `propext` |
-| `dropCell_locs'` | `RueCore.TraceOrder` | `propext` |
 | `dropCell_locs` | `RueCore.TraceOrder` | `propext` |
 | `plainResidue_locs` | `RueCore.TraceOrder` | `Quot.sound`, `propext` |
 | `plainDestructure_locs` | `RueCore.TraceOrder` | `Quot.sound`, `propext` |
 | `plainUnwind_locs` | `RueCore.TraceOrder` | `propext` |
 | `StrictStackOrder.teardown` | `RueCore.TraceOrder` | `Quot.sound`, `propext` |
 | `step_drop_order` | `RueCore.TraceOrder` | `Quot.sound`, `propext` |
-| `reachable_drop_order` | `RueCore.TraceOrder` | `Quot.sound`, `propext` |
 | `Activation.unwindScope_tail` | `RueCore.TraceOrder` | `propext` |
 | `Nest.toCall` | `RueCore.TraceOrder` | `propext` |
 | `Nest.toLoop` | `RueCore.TraceOrder` | `propext` |
@@ -927,10 +916,14 @@ and diffs them against the committed copies.
 | `StackDiscipline.cut` | `RueCore.TraceOrder` | `propext` |
 | `step_nested` | `RueCore.TraceOrder` | `Quot.sound`, `propext` |
 | `reachable_nested` | `RueCore.TraceOrder` | `Quot.sound`, `propext` |
+| `Nest.ordered` | `RueCore.TraceOrder` | `propext` |
+| `Config.Nested.ordered` | `RueCore.TraceOrder` | `propext` |
+| `reachable_ordered` | `RueCore.TraceOrder` | `Quot.sound`, `propext` |
+| `reachable_drop_order` | `RueCore.TraceOrder` | `Quot.sound`, `propext` |
 | `step_stackDiscipline` | `RueCore.TraceOrder` | `propext` |
 | `reachable_stackDiscipline` | `RueCore.TraceOrder` | `Quot.sound`, `propext` |
-| `step_blocks` | `RueCore.TraceOrder` | `Quot.sound`, `propext` |
 | `drop_glue_order` | `RueCore.TraceOrder` | `Quot.sound`, `propext` |
+| `step_blocks` | `RueCore.TraceOrder` | `Quot.sound`, `propext` |
 | `drop_order` | `RueCore.TraceOrder` | `Quot.sound`, `propext` |
 | `Blocks.drop_inv` | `RueCore.TraceOrder` | `propext` |
 | `DropGlue.det` | `RueCore.TraceOrder` | `propext` |
