@@ -337,7 +337,7 @@ Differential testing says nothing about these rules:
   fragment's `BinOp` has no `==`;
 * (Accessor-Call) §5.8: accessors return places (ADR-0062);
 * (D-Use-Shared-Read) §6.3: the fragment has no borrows;
-* (Panic-Operand) §5.7: `Expr.panic`'s message is a literal `String` field
+* (Panic-Operand) §5.8:29: `Expr.panic`'s message is a literal `String` field
   (`Syntax.lean`), not an `Expr`, so there is no operand position for the
   message to diverge in. This one is not a gap RUE-2376 or RUE-2330's
   generator could close; no syntax the fragment admits can reach it
@@ -391,7 +391,7 @@ reaches these:
   (below, "Six divergence-rule seeds") seeds all five by hand; the generator
   still draws none of them (RUE-2330's restriction on where it places a
   `return`/`break`/`@panic`).
-* (Call-Bottom) §5.3, which `Explain` had no row for until RUE-2483 named
+* (Call-Bottom) §5.8:27, which `Explain` had no row for until RUE-2483 named
   the call this way when its argument list diverges (below).
 
 **Observable drops are rare in generated programs.** Only 14 of the 115
@@ -861,7 +861,7 @@ apart from one Lean derivation.
 | Rule | Before | After |
 |---|---|---|
 | (Return-Bottom) §5.7 | never exercised | `return_bottom` (seed 194 of 199) |
-| (Call-Bottom) §5.3 | never exercised, no `Explain` row | `call_bottom` (seed 195 of 199); `Explain` now names it |
+| (Call-Bottom) §5.8:27 | never exercised, no `Explain` row | `call_bottom` (seed 195 of 199); `Explain` now names it |
 | (Strict-Bottom) §5.3 at an assignment's RHS | never exercised | `strict_bottom_assign` (seed 196 of 199) |
 | (Loop-Div-Backedge) §5.7 | never exercised | `loop_div_backedge` (seed 197 of 199) |
 | (Seq-Bottom) §5.3 | never exercised | `seq_bottom` (seed 198 of 199) |
