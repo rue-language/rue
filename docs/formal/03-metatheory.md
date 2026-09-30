@@ -557,7 +557,8 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
     stored (it holds only the active payload);
   - every `⊘` skipped.
 
-  `run_blocks` reads no typing derivation, only `3.9:31`
+  `RueCore.run_glue_blocks`, which `step_blocks` now goes through, reads no
+  typing derivation, only `3.9:31`
   (`RueCore.DtorNotCopy`). A declared-linear destructure's `Copy` residue
   subtree is dropped with no marker, and its walk is empty because no `Copy`
   struct declares a destructor and, by Copy containment, nothing under a `Copy`

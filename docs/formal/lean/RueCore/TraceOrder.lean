@@ -26,8 +26,9 @@ marker names. The grammar has no other place for a destructor event, so a
 trace in it runs every destructor inside the walk of the marker before it,
 in §6.11's order, and no destructor anywhere else.
 
-`run_blocks` proves every terminating run's trace is in the grammar. It reads no
-typing derivation, only `DtorNotCopy` (a destructor-bearing struct is not
+`run_glue_blocks` proves every terminating run's trace is in the glue grammar,
+and `run_blocks` reads that as `Blocks`; `step_blocks` goes through the first.
+It reads no typing derivation, only `DtorNotCopy` (a destructor-bearing struct is not
 `Copy`, `3.9:31`), which a declared-linear destructure's `Copy` residue
 subtree needs: that subtree is dropped with no marker, as `@drop` of a `Copy`
 place is, and its walk is empty only because nothing under a `Copy` node owns
