@@ -231,7 +231,7 @@ helper theorems `Map.walk` counted under it before the next marked node:
 | `step_value_typed` | every value a reachable `Step` configuration carries is typed | 10 | 0 |
 | `destructure_plain` | a monitor removes no behaviour: the declared-linear destructure's residue check changes no step it does not refuse | 18 | 1 |
 | `unwindLocs_plain` | a monitor removes no behaviour: an unwind's drops are the same with or without the monitors | 19 | 1 |
-| `eval_conserves` | the conservation law over `eval`'s identities, proved by fuel induction, that `no_double_free` follows from | 390 | 171 |
+| `eval_conserves` | the conservation law over `eval`'s identities, proved by fuel induction, that `no_double_free` follows from | 342 | 173 |
 | `eval_tidy` | every cell an evaluation allocates is tombstoned by its end — the activation-record-pop invariant behind `drop_exactly_once` | 228 | 49 |
 | `rest_step` | the ledger for the rest of every form, behind `rest_exactly_once` | 316 | 160 |
 | `run_blocks` | every terminating run's trace is in the block grammar `Blocks`: each drop marker followed by exactly its own walk | 6 | 79 |
@@ -2421,7 +2421,7 @@ marked node.
 | `no_refusal` | `RueCore.Soundness` | 46 | 3 |
 | `no_use_after_move` | `RueCore.Soundness` | 3 | 0 |
 | `no_use_after_drop` | `RueCore.Soundness` | 12 | 0 |
-| `run_no_use_after_drop` | `RueCore.Tombstone` | 12 | 51 |
+| `run_no_use_after_drop` | `RueCore.Tombstone` | 12 | 56 |
 | `no_linear_leak` | `RueCore.Soundness` | 4 | 0 |
 | `no_linear_overwrite` | `RueCore.Soundness` | 7 | 0 |
 | `no_linear_discard` | `RueCore.Soundness` | 3 | 0 |
@@ -2472,7 +2472,7 @@ marked node.
 | `step_value_typed` | `RueCore.Equivalence` | 10 | 0 |
 | `destructure_plain` | `RueCore.Step.Lemmas` | 18 | 1 |
 | `unwindLocs_plain` | `RueCore.Step.Lemmas` | 19 | 1 |
-| `eval_conserves` | `RueCore.Trace` | 390 | 171 |
+| `eval_conserves` | `RueCore.Trace` | 342 | 173 |
 | `eval_tidy` | `RueCore.TraceExact` | 228 | 49 |
 | `rest_step` | `RueCore.TraceExact` | 316 | 160 |
 | `run_blocks` | `RueCore.TraceOrder` | 6 | 79 |
