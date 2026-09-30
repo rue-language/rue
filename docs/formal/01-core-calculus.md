@@ -15,12 +15,13 @@ then the paragraph's number within it, from 1: `§5.3:4` is the fourth
 paragraph of §5.3, `§6.13.3:5` the fifth of §6.13.3, and `§7:3` the third of
 §7 itself. What gets a number is a prose paragraph, a top-level list item, a
 quoted block, or a rule display together with the paragraph that leads into
-it. The `§` keeps these apart from the prose specification's `X.Y:Z`
+it; a rule display with no lead-in of its own belongs to the preceding
+paragraph's id. The `§` keeps these apart from the prose specification's `X.Y:Z`
 ids, which the calculus cites bare. Ids are append-only, as the specification's
 are: a paragraph inserted mid-section takes a letter suffix after the number it
 follows (`4a` after `4`), and a deleted paragraph's id is retired, not reused.
-The mechanization's cross-reference gate fails on a citation of an id this
-document does not declare.
+A cross-reference check fails on a citation of an id this document does not
+declare.
 
 ---
 
