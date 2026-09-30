@@ -46,7 +46,7 @@ witness by design.
 
 ## From this package's history
 
-- `reachable_ordered`, `reachable_nested` and `steps_live` (`Tombstone.lean`) each
+- `reachable_ordered` and `reachable_nested` (`TraceOrder.lean`) and `steps_live` (`Tombstone.lean`) each
   prove "a property every `Step` preserves holds along `Steps`" by the same
   six-line induction; one shared lemma beside `Steps` replaces the three. R3
   (`../TOOLING.md`, "Golf, on a scratch copy").

@@ -79,8 +79,9 @@ evidence the implementer wrote, not a result the reviewer may rely on.
    implementer, given `_common.md`, that angle's file, and the lane's inputs
    (below). Reviewers of different angles do not see each other's reports in
    the first round. How many run at once is the coordinator's concurrency
-   limit; review order is the table's, cheapest and most likely to block
-   first, when they must run one at a time.
+   limit; when they must run one at a time, the mechanical integrity angles
+   (`spine-change`, `trusted-base`, `glossary`) go first, as the cheapest,
+   then `faithfulness` and `non-vacuity`.
 3. The advisory angles may share one reviewer, given `_common.md` and every
    advisory angle file, reporting under each angle's heading.
 4. Only integrity findings block. The implementer answers each finding: a

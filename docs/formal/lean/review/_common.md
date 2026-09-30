@@ -36,6 +36,9 @@ from elsewhere the toolchain can differ and the build fails with
   hold, is the strongest evidence you can give.
 - Regenerate a report into `$SCRATCH` and compare it with the committed copy;
   never regenerate it in place.
+- Judge a command by its exit code. `lake exe ruecore-*` prints the
+  package's replayed `#eval` output on stderr (tens of kilobytes); that is
+  build output, not a failure.
 
 ## What you must not do
 
