@@ -741,7 +741,13 @@ theorem step_no_double_free (M : FloatLaws) {P : Program} (h : ProgramTyped P) {
 /-- `no_double_free` for a terminating run is a corollary (RUE-2477): a value or a
 panic `run` answers is reached by §6's relation (`eval_big_to_small`), so its trace is
 a reachable configuration's; exhausted fuel carries the empty trace; and a
-checked run is never refused (helper). -/
+checked run is never refused (helper).
+
+A cross-check, kept on purpose: its statement is `no_double_free`'s, and the
+spine proves that one over `eval` (`freed_once`, `dtor_once`). Nothing uses
+this proof; it certifies that the prefix bound is at least as strong as the
+terminating-run one, which `step_no_double_free`'s Spec doc-comment claims by
+naming it (SIMPLIFY.md, detour 3). -/
 theorem no_double_free_of_step (M : FloatLaws) {P : Program} (h : ProgramTyped P) (fuel : Nat) :
     (∀ w, run M.toFloatSig P fuel ≠ .refused w) ∧
       (∀ a, (freedIds P.decls (run M.toFloatSig P fuel).trace).count a ≤ 1) ∧

@@ -437,6 +437,13 @@ does not need. The edges are MAP.md's; the helper counts are the baseline's.
    it. Either keep it as a documented cross-check and say so in its
    doc-comment, or remove it. Expected: at most 20 lines; low value.
 
+   Verdict (RUE-2520): kept, as a cross-check. `step_no_double_free_stmt`'s
+   doc-comment in `Spec/Trace.lean` says `no_double_free` follows from the
+   prefix bound and names this theorem as the proof, and SPINE.md and
+   README.md repeat the claim. Removing it would leave that sentence unproved
+   or need a Spec-layer edit, which a simplification does not make. Its
+   doc-comment now says it is a cross-check that nothing uses.
+
 Two edges that look like detours are not, and are recorded so nobody chases
 them:
 
