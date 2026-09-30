@@ -372,7 +372,7 @@ theorem ite_succ_le (c : Prop) [Decidable c] (x : Nat) : (if c then x + 1 else x
   · exact Nat.le_refl _
   · exact Nat.le_succ _
 
-/-- **Closure of `@sqrt`** (`3.12:35`, §7:16's "each `⊙_w` is total on `𝔽_w`") for `exactOps`: `FloatLaws.sqrt_wf`. -/
+/-- **Closure of `@sqrt`** (`3.12:35`, §7:16's "each `⊙_w` of §6.4 is total on `𝔽_w`") for `exactOps`: `FloatLaws.sqrt_wf`. -/
 theorem sqrt_wf (σ : Bool) (w : FloatWidth) (f : FloatDatum) (hf : f.Wf w) :
     (sqrtD σ w f).Wf w := by
   cases f with

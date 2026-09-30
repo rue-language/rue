@@ -1041,7 +1041,7 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Out → Prop wh
   Both operands share **one** `float(w)`: `3.12:13` gives no implicit
   widening, so an `f32`/`f64` mix has no derivation, and `3.12:14` relates no
   float operand to an integer one — the only bridges are the intrinsics.
-  `BinOp.floatAdmits` is §5.8:15's "rejected by the absence of a rule" for `%`
+  `BinOp.floatAdmits` is §5.8:15's "rejected on floats by the absence of a rule" for `%`
   (`3.12:25`) and for the bitwise and shift operators, written as a side
   condition because one constructor stands for the three rule groups. -/
   | floatBinop {Γ Γ₁ Ω₂ Δ₁ op e₁ e₂ w} :
