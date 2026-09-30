@@ -3777,8 +3777,8 @@ theorem RueCore.run_glue_blocks (M : FloatSig) {P : Program}
 §6.11), each drop marker followed by exactly `dropEvents` of what it names:
 `run_glue_blocks` read through `DropGlueBlocks.toBlocks`. No proof uses it:
 `step_blocks` goes through `drop_glue_order` and `run_glue_blocks`. It is kept
-as the `eval`-level statement of the `Blocks` grammar that 03, FIELD and the
-Buck trust report cite (RUE-2528).
+as the `eval`-level statement of the `Blocks` grammar that FIELD and the Buck
+trust list cite (RUE-2528).
 
 ```lean
 theorem RueCore.run_blocks (M : FloatSig) {P : Program} (hdt : DtorNotCopy P.decls)

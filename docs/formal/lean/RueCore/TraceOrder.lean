@@ -27,7 +27,8 @@ trace in it runs every destructor inside the walk of the marker before it,
 in §6.11's order, and no destructor anywhere else.
 
 `run_glue_blocks` proves every terminating run's trace is in the glue grammar,
-and `run_blocks` reads that as `Blocks`; `step_blocks` goes through the first.
+and `run_blocks` reads that as `Blocks` (no proof uses it); `step_blocks` goes
+through `run_glue_blocks` by way of `drop_glue_order`.
 It reads no typing derivation, only `DtorNotCopy` (a destructor-bearing struct is not
 `Copy`, `3.9:31`), which a declared-linear destructure's `Copy` residue
 subtree needs: that subtree is dropped with no marker, as `@drop` of a `Copy`
@@ -692,8 +693,8 @@ theorem run_glue_blocks (M : FloatSig) {P : Program} (hdt : DtorNotCopy P.decls)
 §6.11), each drop marker followed by exactly `dropEvents` of what it names:
 `run_glue_blocks` read through `DropGlueBlocks.toBlocks`. No proof uses it:
 `step_blocks` goes through `drop_glue_order` and `run_glue_blocks`. It is kept
-as the `eval`-level statement of the `Blocks` grammar that 03, FIELD and the
-Buck trust report cite (RUE-2528). -/
+as the `eval`-level statement of the `Blocks` grammar that FIELD and the Buck
+trust list cite (RUE-2528). -/
 theorem run_blocks (M : FloatSig) {P : Program} (hdt : DtorNotCopy P.decls) (fuel : Nat) :
     Blocks P.decls (run M P fuel).trace :=
   (run_glue_blocks M hdt fuel).toBlocks
