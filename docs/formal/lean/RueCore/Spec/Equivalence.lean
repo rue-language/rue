@@ -30,7 +30,7 @@ HOL-IMP names them (`big_to_small`, `small_to_big`).
 namespace RueCore.Spec
 
 /-- **The big-to-small direction, `eval` to `Step`**: the interpreter-to-small-step direction of
-the semantic equivalence (§7's semantic-equivalence sentence; ADR-0097). For a
+the semantic equivalence (§7:3's semantic-equivalence sentence; ADR-0097). For a
 checked program, `run` is never refused, and its values and panics are reached
 by `→*` from `Config.init` with the same store and trace. -/
 def eval_big_to_small_stmt : Prop :=
@@ -50,7 +50,7 @@ def run_sim_stmt : Prop :=
     (∀ k tr, run M P fuel = .panic k tr → Steps M P Config.init (.panic k tr))
 
 /-- **The small-to-big direction, `Step` to `eval`, modulo fuel**: the small-step-to-interpreter
-direction of the semantic equivalence (§7's semantic-equivalence sentence).
+direction of the semantic equivalence (§7:3's semantic-equivalence sentence).
 For a checked program, a value or panic `→*` reaches is `run`'s answer at
 every large enough fuel. -/
 def eval_small_to_big_stmt : Prop :=
@@ -70,7 +70,7 @@ def run_small_to_big_stmt : Prop :=
     (∀ κ tr, Steps M P Config.init (.panic κ tr) →
       ∃ n, ∀ fuel, n < fuel → run M P fuel = .panic κ tr ∨ ∃ w, run M P fuel = .refused w)
 
-/-- **Never refused iff never stuck** (§7 "Type safety"). For a checked program,
+/-- **Never refused iff never stuck** (§7:3 "Type safety"). For a checked program,
 `run` is never refused iff no reachable configuration is stuck. Under `ProgramTyped` both
 sides hold outright, so the equivalence adds nothing; cite
 `step_never_stuck_of_run` (R5 of `REDTEAM-LOG.md`). -/
@@ -79,7 +79,7 @@ def never_refused_iff_stmt : Prop :=
     (∀ fuel w, run M.toFloatSig P fuel ≠ .refused w) ↔
       ∀ C, Steps M.toFloatSig P Config.init C → C.Terminal ∨ ∃ C', Step M.toFloatSig P C C'
 
-/-- **`eval` never refused, so `Step` never stuck, on every program** (§7 "Type
+/-- **`eval` never refused, so `Step` never stuck, on every program** (§7:3 "Type
 safety": "it either reduces, halts with a value, or halts with one of the
 defined panics"). -/
 def step_never_stuck_of_run_stmt : Prop :=
@@ -93,7 +93,7 @@ def run_refused_of_step_stuck_stmt : Prop :=
     (_ : Steps M P Config.init C) (_ : C.Stuck M P w),
     ∃ n, ∀ fuel, n < fuel → ∃ w', run M P fuel = .refused w'
 
-/-- **Divergence is exhaustion at every fuel** (§7 "Type safety"; §6.12): for a
+/-- **Divergence is exhaustion at every fuel** (§7:3 "Type safety"; §6.12): for a
 checked program, `run` is `outOfFuel` at every fuel iff `Step` has runs of
 every length from `Config.init`. -/
 def eval_diverges_iff_stmt : Prop :=

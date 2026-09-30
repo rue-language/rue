@@ -43,7 +43,7 @@ statement fails once a hypothesis is dropped (its sharpness) is RUE-2485.
 namespace RueCore.Spec.Nonvacuous
 
 
-/-- **The float laws have a model: `Float.exactOps`** (§7's "totality of the
+/-- **The float laws have a model: `Float.exactOps`** (§7:16's "totality of the
 float operations"; RUE-2469). Some `FloatLaws` has the executable instance
 `Float.exactOps` as its operations, so every law of `FloatLaws` holds of the
 model the corpus runs on, and the laws are jointly satisfiable: the 22 spine
