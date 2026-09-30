@@ -336,8 +336,13 @@ class GateTests(unittest.TestCase):
         self.cite_in_statics("`3.8:5`, §5.1:9")
         _, _, errors = self.collect()
         self.assertEqual(len(errors), 1, errors)
-        self.assertIn("`RueCore.Typed.useCopy` cites `§5.1:9`", errors[0])
-        self.assertIn("not a paragraph `calculus.md` declares", errors[0])
+        # reported at the citation's own line, like any other file's
+        line = STATICS.replace("`3.8:5`", "`3.8:5`, §5.1:9").splitlines().index(
+            "  /-- (Use-Copy): copies; Σ unchanged (`3.8:5`, §5.1:9). -/"
+        ) + 1
+        self.assertEqual(
+            errors[0], f"lean/RueCore/Statics.lean:{line}: cites `§5.1:9`, which is not a paragraph `calculus.md` declares"
+        )
 
     def test_calculus_paragraph_letter_suffix_is_its_own_id(self) -> None:
         self.cite_in_statics("`3.8:5`, §5.1:2a")
@@ -377,6 +382,75 @@ class GateTests(unittest.TestCase):
         self.assertEqual(
             errors, ["03-metatheory.md:3: cites `§5.1:7`, which is not a paragraph `calculus.md` declares"]
         )
+
+    def test_lean_string_literal_citation_must_resolve(self) -> None:
+        # Not only doc-comments: a string the explainer prints cites too.
+        self.write(
+            "Explain.lean",
+            '/-! (`xref: examples`) -/\ndef label : String := "(Use-Copy) §5.1:1"\ndef bad : String := "(Use-Copy) §5.1:99"\n',
+        )
+        _, _, errors = self.collect()
+        self.assertEqual(
+            errors, ["lean/RueCore/Explain.lean:3: cites `§5.1:99`, which is not a paragraph `calculus.md` declares"]
+        )
+
+    def test_lean_line_comment_citation_must_resolve(self) -> None:
+        self.write("Statics.lean", STATICS.replace("end RueCore", "-- see §7:1, and §7:30\nend RueCore"))
+        _, _, errors = self.collect()
+        self.assertEqual(len(errors), 1, errors)
+        self.assertRegex(errors[0], r"^lean/RueCore/Statics\.lean:\d+: cites `§7:30`, which is not")
+
+    def test_explain_text_citation_must_resolve(self) -> None:
+        # Every text file under the formal directory, not only Markdown.
+        (self.lean / "explain").mkdir()
+        (self.lean / "explain" / "call.txt").write_text("step (Use-Copy) §5.1:1\nstep (Use-Copy) §5.1:99\n")
+        _, _, errors = self.collect()
+        self.assertEqual(
+            errors, ["lean/explain/call.txt:2: cites `§5.1:99`, which is not a paragraph `calculus.md` declares"]
+        )
+
+    def test_trailing_dot_digit_tail_is_an_error(self) -> None:
+        # `§7:3.1` is not `§7:3`: ids have no sub-paragraph part. A `.` that
+        # ends a sentence is not a tail.
+        (self.root / "03-metatheory.md").write_text("By §7:1.\n\nBy §7:1.1 as well.\n")
+        _, _, errors = self.collect()
+        self.assertEqual(
+            errors,
+            ["03-metatheory.md:3: cites `§7:1.1`: a paragraph id has no `.`-numbered part after its number"],
+        )
+
+    def test_malformed_paragraph_number_is_an_error(self) -> None:
+        (self.root / "03-metatheory.md").write_text("By §7:1_x.\n")
+        _, _, errors = self.collect()
+        self.assertEqual(errors, ["03-metatheory.md:1: cites `§7:1_x`: `1_x` is not a paragraph number (`3`, `4a`)"])
+
+    def test_both_ends_of_a_range_must_resolve(self) -> None:
+        (self.root / "03-metatheory.md").write_text("By §5.1:1–2 and §5.1:1-1a.\n\nBy §5.1:1–9.\n\nBy §5.1:8-2.\n")
+        _, _, errors = self.collect()
+        self.assertEqual(
+            errors,
+            [
+                "03-metatheory.md:3: cites `§5.1:9`, which is not a paragraph `calculus.md` declares",
+                "03-metatheory.md:5: cites `§5.1:8`, which is not a paragraph `calculus.md` declares",
+            ],
+        )
+
+    def test_range_in_a_doc_comment_indexes_both_ends(self) -> None:
+        self.cite_in_statics("`3.8:5`, §5.1:1–2")
+        modules, _, errors = self.collect()
+        self.assertEqual(errors, [])
+        self.assertEqual(self.use_copy(modules).calculus_paragraphs, ["5.1:1", "5.1:2"])
+
+    def test_marker_inside_a_code_fence_is_not_a_declaration(self) -> None:
+        # An example of the marker syntax in a fence declares nothing, and its
+        # `§X.Y:Z` is read as a citation, so an undeclared one fails.
+        fenced = '```\n<a id="7:99"></a>**[§7:99]** example\n```\n'
+        self.calculus.write_text(CALCULUS + "\n" + fenced)
+        calculus = self.gate.parse_calculus(self.calculus)
+        self.assertNotIn("7:99", calculus.paragraph_ids)
+        _, _, errors = self.collect()
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("cites `§7:99`, which is not a paragraph", errors[0])
 
     def test_the_calculus_cross_references_its_own_paragraphs(self) -> None:
         # Its markers are declarations; a `§X.Y:Z` elsewhere in it is a citation.

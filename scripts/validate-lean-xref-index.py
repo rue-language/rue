@@ -21,11 +21,15 @@ The index cannot rot silently because the gate fails when:
 * a doc-comment cites a rule label the calculus does not define;
 * a doc-comment cites a prose-specification paragraph ``docs/spec/src``'s own
   ``{{ rule(id=…) }}`` shortcode does not declare;
-* a doc-comment, or any Markdown document beside the calculus
-  (``docs/formal/**/*.md``: SPINE, GLOSSARY, the metatheory, the guides),
-  cites a calculus paragraph ``§X.Y:Z`` the calculus does not declare;
+* any text beside the calculus (every text file under ``docs/formal`` outside
+  ``.lake``: SPINE, GLOSSARY, the metatheory, the guides, ``explain/*.txt``,
+  and the Lean sources in full, strings and ``--`` comments included) cites a
+  calculus paragraph ``§X.Y:Z`` the calculus does not declare, at either end of
+  a range (``§6.4:3–9``), or writes one malformed (``§7:3.1``); a citation
+  split across two lines is not read, and so not checked;
 * the calculus's own paragraph markers are malformed, duplicated, or declared
-  under a section other than their own;
+  under a section other than their own (a marker inside a code fence is not a
+  declaration);
 * the calculus grows or renames a §2 alternative ``SYNTAX_FORMS`` has no row
   for, or a row names a Lean constructor the sources no longer declare;
 * the committed ``INDEX.md`` differs from what the sources generate (run
@@ -90,16 +94,25 @@ PARAGRAPH_CITATION = re.compile(r"(?<![\d.§])(\d+\.\d+):(\d+[a-z]?)(?![\da-z])"
 # inserted later (`§5.3:4a`) — `§5.3:4`, `§6.13.3:5`, `§7:3`. The `§` keeps
 # them apart from the spec's bare `X.Y:Z`, whose chapters 5 and 6 overlap the
 # calculus's sections. A citation counts as citing its section too (the
-# `SECTION_CITATION` match on the same token).
-CALCULUS_PARAGRAPH_CITATION = re.compile(r"§(\d+(?:\.\d+)*):(\d+[a-z]?)(?![\w])")
+# `SECTION_CITATION` match on the same token). A citation is read more
+# greedily than the id form, so that a malformed one is seen and rejected
+# rather than skipped: the whole word after the `:` (`§7:3ab`, `§7:30_`), a
+# trailing dot-digit tail (`§7:3.1`, which is not a sub-paragraph: ids have
+# none) and a range's far end (`§6.4:3–9`, with an en dash or a hyphen), whose
+# two ends must both be declared. A lone trailing `.` ends a sentence.
+CALCULUS_CITATION_TOKEN = re.compile(
+    r"§(?P<section>\d+(?:\.\d+)*):(?P<first>\w+)(?P<tail>(?:\.\d[\w.]*)?)"
+    r"(?:[–-](?P<last>\d\w*))?"
+)
+CALCULUS_PARAGRAPH_NUMBER = re.compile(r"^\d+[a-z]?$")
 CALCULUS_PARAGRAPH_ID = re.compile(r"^\d+(?:\.\d+)*:\d+[a-z]?$")
 # How the calculus declares one: a linkable anchor and the visible tag, both
 # naming the id — ``<a id="5.3:4"></a>**[§5.3:4]**`` — at the start of the
 # paragraph (after ``- `` for a list item, ``> `` for a quoted block).
 CALCULUS_PARAGRAPH_MARKER = re.compile(r'<a id="(?P<anchor>[^"]*)"></a>\*\*\[§(?P<label>[^\]]*)\]\*\*')
-# The documents beside the calculus whose `§X.Y:Z` tokens must resolve; a
-# directory whose name starts with `.` (Lake's `.lake`) is skipped.
-DOC_GLOB = "*.md"
+# A Markdown code fence: a paragraph marker inside one is an example, not a
+# declaration.
+FENCE_LINE = re.compile(r"^\s*(```|~~~)")
 # `docs/spec/src`'s own paragraph shortcode: ``{{ rule(id="3.8:73", …) }}``.
 # This is the inventory a doc-comment's `PARAGRAPH_CITATION` is checked
 # against — a citation naming a paragraph the spec does not declare is an
@@ -677,10 +690,12 @@ def cite(decl: Declaration, calculus: Calculus) -> None:
             paragraphs.append(ref)
     decl.paragraphs = paragraphs
     calculus_paragraphs: List[str] = []
-    for match in CALCULUS_PARAGRAPH_CITATION.finditer(decl.doc):
-        ref = f"{match.group(1)}:{match.group(2)}"
-        if ref not in calculus_paragraphs:
-            calculus_paragraphs.append(ref)
+    for refs, problem in calculus_citations(decl.doc):
+        if problem is not None:
+            continue  # reported, with its line, by `calculus_citations_in_files`
+        for ref in refs:
+            if ref not in calculus_paragraphs:
+                calculus_paragraphs.append(ref)
     decl.calculus_paragraphs = calculus_paragraphs
     for match in PAREN_LABEL.finditer(decl.doc):
         label = match.group(1)
@@ -705,7 +720,8 @@ def parse_calculus(path: Path) -> Calculus:
     current = ""
     production: Optional[str] = None
     seen_ids: Dict[str, int] = {}
-    for number_line, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+    fenced = _fenced_lines(path.read_text(encoding="utf-8"))
+    for number_line, (line, in_fence) in enumerate(fenced, start=1):
         heading = CALCULUS_HEADING.match(line)
         if heading is not None:
             number = heading.group("number")
@@ -713,7 +729,9 @@ def parse_calculus(path: Path) -> Calculus:
             current = number
             production = None
             continue
-        for marker in CALCULUS_PARAGRAPH_MARKER.finditer(line):
+        # A marker inside a code fence is an example of the syntax, not a
+        # declaration; the citation check reads its `§X.Y:Z` as a citation.
+        for marker in [] if in_fence else CALCULUS_PARAGRAPH_MARKER.finditer(line):
             _read_paragraph_marker(calculus, marker, current, f"{path.name}:{number_line}", seen_ids)
         top = current.split(".")[0] if current else ""
         if top == SYNTAX_SECTION:
@@ -758,27 +776,99 @@ def _read_paragraph_marker(
     calculus.paragraph_ids.append(label)
 
 
-def calculus_citations_in_docs(formal_dir: Path, calculus_path: Path) -> List[Tuple[str, int, str]]:
-    """Every ``§X.Y:Z`` token in the Markdown documents under ``formal_dir``.
+def _fenced_lines(text: str) -> List[Tuple[str, bool]]:
+    """Each line of a Markdown text, with whether it is inside a code fence
+    (the fence lines themselves included)."""
+    lines: List[Tuple[str, bool]] = []
+    in_fence = False
+    for line in text.splitlines():
+        if FENCE_LINE.match(line):
+            lines.append((line, True))
+            in_fence = not in_fence
+        else:
+            lines.append((line, in_fence))
+    return lines
 
-    Returns ``(relative path, line, id without §)``. The calculus's own
-    paragraph markers are declarations, not citations, and are skipped; any
-    other ``§X.Y:Z`` in it (a cross-reference between its own paragraphs) is
-    a citation like any other. Code blocks are scanned too: a citation there
-    is still a claim about where a rule lives.
+
+def calculus_citations(text: str) -> List[Tuple[List[str], Optional[str]]]:
+    """The ``§X.Y:Z`` citations in one line or doc-comment, in order.
+
+    Each is ``(ids, problem)``: the ids it cites without the ``§`` (both ends
+    of a range), or, for a malformed one, ``problem`` saying why.
     """
-    found: List[Tuple[str, int, str]] = []
-    for path in sorted(formal_dir.rglob(DOC_GLOB)):
-        relative = path.relative_to(formal_dir)
-        if any(part.startswith(".") for part in relative.parts):
+    found: List[Tuple[List[str], Optional[str]]] = []
+    for match in CALCULUS_CITATION_TOKEN.finditer(text):
+        section, first, tail, last = match.group("section", "first", "tail", "last")
+        if tail:
+            found.append(([], f"cites `{match.group(0)}`: a paragraph id has no `.`-numbered part after its number"))
             continue
-        is_calculus = path.resolve() == calculus_path.resolve()
-        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
-            if is_calculus:
-                line = CALCULUS_PARAGRAPH_MARKER.sub("", line)
-            for match in CALCULUS_PARAGRAPH_CITATION.finditer(line):
-                found.append((relative.as_posix(), number, f"{match.group(1)}:{match.group(2)}"))
+        bad = [n for n in (first, last) if n is not None and not CALCULUS_PARAGRAPH_NUMBER.match(n)]
+        if bad:
+            found.append(([], f"cites `{match.group(0)}`: `{bad[0]}` is not a paragraph number (`3`, `4a`)"))
+            continue
+        found.append(([f"{section}:{n}" for n in (first, last) if n is not None], None))
     return found
+
+
+def _text_files(directory: Path) -> Iterable[Path]:
+    """Every file under ``directory``, skipping any directory whose name
+    starts with ``.`` (Lake's ``.lake``); the caller skips what is not text."""
+    for path in sorted(directory.rglob("*")):
+        if not path.is_file() or any(part.startswith(".") for part in path.relative_to(directory).parts[:-1]):
+            continue
+        yield path
+
+
+def calculus_citations_in_files(
+    formal_dir: Path, calculus_path: Path, lean_dir: Path, calculus_ids: set
+) -> List[str]:
+    """Check every ``§X.Y:Z`` token in the text files beside the calculus.
+
+    That is every text file under ``formal_dir`` (the Markdown documents, the
+    Lean sources in full — doc-comments, ``--`` comments and string literals
+    alike — ``lean/explain/*.txt`` and the rest), plus the ``.lean`` files
+    under ``lean_dir/RueCore`` wherever that is. A file that is not UTF-8 is
+    not text and is skipped. The calculus's own paragraph markers are
+    declarations, not citations, and are skipped outside code fences; any
+    other ``§X.Y:Z`` in it (a cross-reference between its own paragraphs) is a
+    citation like any other. Code blocks are scanned too: a citation there is
+    still a claim about where a rule lives.
+
+    A citation is read within one line: one split across a line break
+    (``§7:`` at a line's end, ``30`` on the next) is not seen as a citation,
+    so it is not checked. None is written that way.
+    """
+    errors: List[str] = []
+    paths: Dict[Path, str] = {}
+    for path in _text_files(formal_dir):
+        paths[path.resolve()] = path.relative_to(formal_dir).as_posix()
+    source_root = lean_dir / "RueCore"
+    if source_root.is_dir():
+        for path in sorted(source_root.rglob("*.lean")):
+            paths.setdefault(path.resolve(), path.relative_to(lean_dir).as_posix())
+    for resolved, relative in sorted(paths.items(), key=lambda item: item[1]):
+        try:
+            text = resolved.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            continue
+        if "§" not in text:
+            continue
+        is_calculus = resolved == calculus_path.resolve()
+        lines = _fenced_lines(text) if is_calculus else [(line, False) for line in text.splitlines()]
+        for number, (line, in_fence) in enumerate(lines, start=1):
+            if is_calculus and not in_fence:
+                line = CALCULUS_PARAGRAPH_MARKER.sub("", line)
+            for refs, problem in calculus_citations(line):
+                if problem is not None:
+                    errors.append(f"{relative}:{number}: {problem}")
+                    continue
+                for ref in refs:
+                    if ref not in calculus_ids:
+                        errors.append(
+                            f"{relative}:{number}: cites `§{ref}`, which is not a paragraph "
+                            f"`{calculus_path.name}` declares"
+                        )
+    return errors
 
 
 def parse_spec_paragraph_ids(spec_dir: Path) -> set:
@@ -1091,12 +1181,6 @@ def collect(
                         f"{where}: `{decl.name}` cites `{ref}`, which is not a paragraph "
                         f"`docs/spec/src` declares"
                     )
-            for ref in decl.calculus_paragraphs:
-                if ref not in calculus_ids:
-                    errors.append(
-                        f"{where}: `{decl.name}` cites `§{ref}`, which is not a paragraph "
-                        f"`{calculus_path.name}` declares"
-                    )
             if module.examples or decl.kind in ("module", "constructor"):
                 continue
             if decl.doc is None:
@@ -1111,11 +1195,7 @@ def collect(
                 )
         modules.append(module)
     errors.extend(check_syntax_forms(calculus, modules))
-    for relative, number, ref in calculus_citations_in_docs(calculus_path.parent, calculus_path):
-        if ref not in calculus_ids:
-            errors.append(
-                f"{relative}:{number}: cites `§{ref}`, which is not a paragraph `{calculus_path.name}` declares"
-            )
+    errors.extend(calculus_citations_in_files(calculus_path.parent, calculus_path, lean_dir, calculus_ids))
     return modules, calculus, errors
 
 
