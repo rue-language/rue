@@ -2012,8 +2012,9 @@ def enumArmLeaksPayload : Expr :=
 
 /-- **Probe e3b.** The same arm with the payload discharged: accepted, and the
 `@drop` runs the payload's destructor (`1`) before the value (`5`). Consuming the
-payload is what discharges the *enum's* obligation too — §5.5's "consuming the
-enum, for example by a `match` that binds and consumes the payload". -/
+payload is what discharges the *enum's* obligation too — §7:8's "consuming it
+by a `match` that binds and consumes the linear payload discharges the
+obligation (§5.5)". -/
 def enumArmDropsPayload : Expr :=
   letIn false (mkEnum eLinearIdx 0 [resLD (lit 1)])
     («match» (use (.var 0)) [seq (drop (.var 0)) (lit 5), lit 6])

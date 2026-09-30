@@ -460,7 +460,7 @@ def unknownStruct : String :=
   "`S = struct { f1: T1, …, fk: Tk }`, §5.8; elaboration resolves a type name before " ++
   "the core, §2, so no elaborated program reaches this premise)"
 
-/-- (Struct-Intro) §5.8's "all k fields supplied, each exactly once"
+/-- (Struct-Intro) §5.8:23's "all k fields supplied, each exactly once"
 (`3.6:5`, `3.6:6`). -/
 def fieldCountMismatch : String :=
   "the literal does not supply exactly one initializer per declared field " ++

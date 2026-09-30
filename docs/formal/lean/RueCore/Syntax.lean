@@ -80,7 +80,7 @@ plan is ever computed through one.
 
 The plan is therefore a **function of the type and the path**, and the four
 Ordinary rules ((Use-Copy), (Use-Move), (@Drop), (@Drop-Copy)) carry
-`declaredPrefix … = none` as a premise — §5.1's "read only with an `Ordinary`
+`declaredPrefix … = none` as a premise — §5.1:5's "read only with an `Ordinary`
 plan", which is what keeps the two groups from overlapping when the selected
 leaf is `Copy`. A use of a declared-`linear` place *whole* is ordinary (the
 plan looks for a **proper** prefix), so such a struct is still moved, dropped

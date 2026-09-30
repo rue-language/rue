@@ -725,7 +725,7 @@ theorem steps_trace_once (M : FloatSig) {P : Program} {F : Event → List Nat}
   | returned H v tr => exact absurd hr (run_ne_returned M H v tr)
   | broke H sc tr => exact absurd hr (run_ne_broke M H sc tr)
 
-/-- **No double free, on every prefix of a run** (§7 "No double-free", as a
+/-- **No double free, on every prefix of a run** (§7:5 "No double-free", as a
 safety property; RUE-2477). For a checked program, every configuration §6's
 relation reaches from `Config.init` — the run so far, whether or not it ever
 terminates — has a trace that frees no identity twice (`freedIds`) and runs no
