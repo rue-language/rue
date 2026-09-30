@@ -9,7 +9,8 @@ public import RueCore.Statics.Lemmas
 # RueCore.Dynamics.Lemmas — the lemmas about `Dynamics.lean`'s definitions (layer L2)
 
 Every theorem `Dynamics.lean` held, moved here verbatim and in source order so
-that the definitions layer holds definitions only (RUE-2460; README, "Layers").
+that the definitions layer holds definitions only (RUE-2460; README, "Layers"),
+and, after them, the evaluation-context interface below.
 The section headings are `Dynamics.lean`'s own, repeated where a moved
 theorem sits under one.
 
