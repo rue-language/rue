@@ -23,11 +23,12 @@ place, and its build output is ignored.
 v4.34.1. The `v4.33.0` maintenance branch pins Lean v4.33.1, the release the
 formal core is pinned to, so the spike uses that branch's head, commit
 `e0d667222e8222ac4bfd74780f69a2e89cd4655f` (2026-09-29). No toolchain override
-was needed. The project publishes no tags: its template requires a branch
-name, and the README describes the `v4.33.0` branch as retained for backports
-only.
+was needed. The project publishes no tags: its template pins by branch name, and the
+README describes the `v4.33.0` branch as retained for backports only.
 
-**Content.** The blueprint has 110 nodes and 442 edges:
+**Content.** The blueprint has 110 nodes and 441 edges (97 proof, 344
+statement). With the GUIDE node of section 4 it has 111 nodes and 442 edges,
+and every count below is of the 110 unless it says otherwise:
 
 - **41 spine theorems**, one per entry of `RueCore.Spec.spine`, in `SPINE.md`'s
   five sections. Each theorem is linked with `(lean := "…")` to both its proof
@@ -40,27 +41,27 @@ only.
   glossary term and its meaning.
 - **97 proof edges**: exactly the spine diagram's edges in `MAP.md`, written as
   `{uses …}` in each node's proof block.
-- **345 statement edges**: each statement to the glossary definitions it names.
+- **344 statement edges**: each statement to the glossary definitions it names.
 
 No `@[blueprint]` attribute was added to any RueCore source. A 227-line script
 generates the chapters from `Spec/*.lean`, `Spec.lean`, `Map.lean`, `SPINE.md`,
 `MAP.md` and `GLOSSARY.md`. All 110 Lean names resolve.
 
 **Rendering.** `lake exe vbp build` writes a 17-page multi-page HTML site
-(30 MB, with the GUIDE chapter of section 4, whose node makes 111). It has one page per chapter, a dependency-graph page and a summary
-page:
+(30 MB, including the GUIDE chapter). It has one page per chapter, a
+dependency-graph page and a summary page:
 
 - **Chapter pages.** Each node shows its informal text, `uses 12` and
   `used by 3` chips, and a collapsible panel. The panel holds the Lean
   signature, the declaration's own doc-comment, its source file and a
   per-declaration `complete` badge.
-- **Summary page.** It reports "Total entries 110, completed 110, sorries 0",
+- **Summary page.** It reports "Total entries 111, completed 111, sorries 0",
   with collapsible sections: entry index, dependency insights, metadata, and
   structure and coverage.
 - **Graph page.** Graphviz lays the graph out in the browser (d3-graphviz,
   fetched from a CDN at view time), with every node filled green. At the
-  default fit, the full graph is a flat band about twenty times wider than it
-  is tall, and node labels are unreadable. The cause is that nodes are
+  default fit (the screenshot was taken there), the full graph is a thin,
+  wide band and node labels are unreadable. The cause is that nodes are
   clustered by chapter. The spine and milestones alone (66 nodes, the same
   set as MAP's spine diagram) are no better. The page is usable only through
   its interactive zoom, the per-group views in its `View` selector, and
@@ -80,9 +81,8 @@ from `/usr/bin/time -p`.
 | Render, nothing changed | 14.9 s | the render step itself dominates; `lake build` alone is a 1.5 s no-op |
 | Render after editing one chapter | 17.6 s | |
 
-A cold start from nothing costs about 3.5 minutes and 1.1 GB, against about
-1 minute for the formal core alone. That is roughly three and a half times
-the formal core's own build, spent on documentation.
+A cold start from nothing costs about 3.5 minutes and 1.1 GB instead of about
+1 minute, all of the extra spent on documentation.
 
 **Blueprint source per spine node:** 12.2 lines on average, 8 to 22 lines,
 including its statement-edge list and its proof block. The generated
@@ -117,7 +117,10 @@ second place.
   compiled proof terms, through unmarked helpers, equation-compiler auxiliaries
   and Prop-valued definitions. The blueprint's edges are whatever its source
   declares. Its own inference mode (`autoDeps`) was tried on the same 66
-  nodes and is not a substitute: it produced 41 edges among them against
+  nodes, with `(autoDeps := true)` on every node, the manual `uses` dropped
+  and the default `expandUntagged`. The README documents a narrower contract
+  than MAP's (inference "stops at each associated declaration"), so this is a
+  difference of scope, not a fault. It is not a substitute: it produced 41 edges among them against
   MAP's 97, and only 19 were MAP's. It missed 78 of MAP's edges and added 22
   that MAP does not have. So the blueprint's
   edges have to be generated from `Map.walk`, as this spike did.
@@ -131,12 +134,23 @@ second place.
   module, is legible on the page. The blueprint's full graph is not (see
   section 1).
 
-**Status is weaker than the existing gates.** The blueprint's status is local
-to each declaration. A probe declaration whose proof reaches `sorry` only
-through an untagged helper was reported **complete**. Only a directly
-`sorry`-proved declaration was counted as a sorry. The package's
-trusted-base lint, and its `#print axioms` listing for every trusted theorem,
-already catch both cases.
+**Status is weaker than the existing gates.** The blueprint's status is
+progress tracking, not a trust gate. It follows the blueprint's declared edges
+(every node reports `formalizedWithAncestors`, and the summary counts "deps
+incomplete"), not the proof terms, so a `sorry` reached only through an
+unlabeled helper is invisible to it. The probe, rendered in the spike package:
+
+```lean
+theorem gap : False := sorry          -- unlabeled helper
+theorem useGap2 : 1 = 2 := gap.elim   -- linked from a labeled theorem
+-- :::theorem "probe.labeled" (lean := "useGap2") ... :::
+```
+
+Result: the build warned only that `gap` uses `sorry`; the manifest gave
+`probe.labeled` `proofStatus: formalizedWithAncestors`, and the summary read
+"Total entries 112 completed: 112; deps incomplete: 0; sorries: 0". The
+package's trusted-base lint, and its `#print axioms` listing for every trusted
+theorem, catch this case.
 
 ## 4. Against GUIDE.md
 
@@ -173,19 +187,21 @@ directory, so a publish step has to clean it first.
 
 - **The pin.** A Lake workspace builds with one toolchain, so the blueprint
   package and `RueCore` must name the same Lean release, and so must
-  verso-blueprint's line. Today they match only on a branch that receives
-  backports and nothing else. Its new work is on the v4.34 line. Every Rue
-  toolchain bump would wait for a verso-blueprint line on that release. The
-  alternative is to stay on a maintenance branch that stops advancing. The
+  verso-blueprint's line. verso-blueprint keeps one release branch per Lean
+  release (`v4.28.0` through `v4.34.0`), and the README marks the older line
+  backports-only once the next opens. We would pin to a line that becomes
+  backports-only when the next Lean release lands. The alternative is to stay
+  on a maintenance branch that stops advancing. No lag between a Lean release
+  and its line was measured. The
   Buck pin (`toolchains/lean/defs.bzl`) and the pin validation between it and
   `lean-toolchain` would carry the same coupling.
 - **Where it can live.** Not inside `RueCore`: the layering audit
   (`ruecore-layers`) fails the build on any module in the roots' import
   closure that is neither the package's own nor the toolchain's, and
   `RueCore` has no dependencies by design. It must be a separate package, as
-  in the spike. The hermetic `lean_package` build takes a source tree and
-  fetches nothing, so a Buck target would need the eight dependencies
-  vendored (89 MB of sources) or network access at build time.
+  in the spike. The `lean_package` target copies a source tree and runs `lake build`; it has
+  no step that fetches dependencies, so the eight git requires (89 MB of
+  sources) would need to be vendored or fetched at build time.
 - **What would drift.** Everything the blueprint says already exists in
   `Spec/*.lean` doc-comments, `Map.lean`, `MAP.md` and `GLOSSARY.md`.
   - If the blueprint is generated from them, as in the spike, it drifts only
@@ -212,8 +228,9 @@ directory, so a publish step has to clean it first.
   term already exists in a checked or generated file.
 - Its graph is less legible than MAP's Mermaid diagrams at this size.
 - Its status page is weaker than the existing lint.
-- It costs about 3.5 times the formal core's build, 1.1 GB, and a toolchain
-  coupling to a backports-only branch.
+- It turns a cold start of about 1 minute into about 3.5 minutes, adds 1.1 GB,
+  and couples the toolchain pin to a release line that goes backports-only when
+  the next Lean release lands.
 
 **Keep from it:**
 
@@ -241,9 +258,10 @@ directory, so a publish step has to clean it first.
   for GUIDE material, with their Lean blocks elaborated.
 - The chain regenerates and compares the chapters, builds with unresolved
   declarations as errors, and renders.
-- A toolchain bump waits for a matching verso-blueprint line.
+- A toolchain bump needs a matching verso-blueprint line.
 - The rendered site is published with the other documentation, and the Mermaid
   map stays as the in-repository view.
 
 The trigger to revisit is a goal of publishing the proof as a website, or a
-verso-blueprint release line that tracks the Lean pin without lag.
+change in how the Lean pin and the verso-blueprint line move together, such as
+the pin tracking its newest line.
