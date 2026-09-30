@@ -821,7 +821,7 @@ documents rely on.
 | `Config` | `Step` | §6.1's machine configuration `⟨H ; φ ; K ; e⟩` with the output so far, or a trap `↯κ` | standard (FIELD §1: configuration) | — |
 | `Config.init` | `Step` | §6.12's initial configuration: empty store, empty activation record, the entry function called with no arguments | standard (FIELD §1: configuration) | 03 “No use-after-drop / no leak …”; lean/README “Non-vacuity witnesses”; GUIDE §2; MUTATION “The mutants”; SIMPLIFY “Reinvention”; `Step` |
 | `Config.Terminal` | `Step` | The final configurations: a terminal value `✓n` (Result-Ok) or a trap `↯κ` (Result-Panic) | standard (FIELD §1: terminal transition system) | `Step` |
-| `Activation.unwindScope` | `Step` | Removes the cells an `endscope` marker owes from the activation record's environment and drop list (§6.7) | ours, pending audit | SIMPLIFY “RUE-2520: the exact duplicates outside …”; `Step` |
+| `Activation.unwindScope` | `Step` | Removes the cells an `endscope` marker owes from the activation record's environment and drop list (§6.7) | ours, pending audit | `Step` |
 | `Kont.toCall` | `Step` | The nearest call frame below the top of the stack | helper | — |
 | `Kont.toLoop` | `Step` | The nearest loop frame below the top, if no call frame comes first | helper | — |
 | `rootCell` | `Step` | The live cell of a place's root binding | helper | — |

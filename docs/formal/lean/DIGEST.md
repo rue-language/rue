@@ -9303,6 +9303,17 @@ theorem RueCore.Activation.unwindScope_push (φ : Activation) (ls : List Nat) :
     φ
 ```
 
+### `Activation.unwindScope_let`
+
+*theorem* · module `RueCore.Step.Lemmas`
+
+(D-EndScope) after (D-Let) (helper).
+
+```lean
+theorem RueCore.Activation.unwindScope_let (φ : Activation) (ℓ : Nat) :
+  { env := ℓ :: φ.env, scope := φ.scope ++ [ℓ] }.unwindScope 1 = φ
+```
+
 ### `stepEval_complete`
 
 *theorem* · module `RueCore.Step.Lemmas`
@@ -13149,17 +13160,6 @@ The root of a place, as `eval` resolves it inline, is `rootCell` (helper).
 theorem RueCore.rootCell_of {H : Store} {φ : Activation} {i ℓ : Nat} {c : Contents}
   (hℓ : φ.env[i]? = some ℓ) (hc : H[ℓ]? = some (Cell.full c)) :
   rootCell H φ i = Except.ok (ℓ, c)
-```
-
-### `Activation.unwindScope_let`
-
-*theorem* · module `RueCore.Equivalence`
-
-(D-EndScope) after (D-Let) (helper).
-
-```lean
-theorem RueCore.Activation.unwindScope_let (φ : Activation) (ℓ : Nat) :
-  { env := ℓ :: φ.env, scope := φ.scope ++ [ℓ] }.unwindScope 1 = φ
 ```
 
 ### `plainUnwind_single`
