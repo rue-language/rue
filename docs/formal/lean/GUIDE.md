@@ -745,9 +745,12 @@ their cells; the terminating trace drops each once.
 
 **Drop order** (`TraceOrder.lean`). *In every terminating run, every
 destructor runs inside the drop of the value that owns it, in §6.11's order;
-and at every step the machine tears cells down last-in first-out: it drops
-only cells it deregistered, newest first, and every such cell is newer than
-every cell still registered.*
+and every step either keeps the registration stack or tears it down last-in
+first-out: a step that cuts the stack back drops only cells it cut, newest
+first, each newer than every cell still registered.* A step that keeps the
+stack (an overwrite, `@drop`, a residue drop) may drop a cell still
+registered; which cell is not stated here, only that its drops name one cell
+or distinct cells newest first (`StrictStackOrder`).
 
 ```lean
 theorem drop_order (M : FloatLaws) (h : ProgramTyped P) :
