@@ -379,32 +379,7 @@ theorem Contents.setAt_own_eq {D : Decls} (a : Nat) : ∀ (π : List Nat) {c sub
       have hnew : new.copyContained D = true :=
         Contents.getAt_copyContained (f :: π) hcc' (Contents.getAt_setAt (f :: π) hw)
       cases c with
-      | struct s i cs =>
-          simp only [Contents.getAt] at hr
-          simp only [Contents.setAt] at hw
-          split at hr
-          · rename_i cf hcf
-            rw [hcf] at hw
-            simp only [Option.map_eq_some_iff] at hw
-            obtain ⟨cf', hw', rfl⟩ := hw
-            have hlt : f < cs.length := (List.getElem?_eq_some_iff.mp hcf).1
-            simp only [Contents.copyContained] at hcc hcc'
-            by_cases hc : D.classOf s = .copy
-            · rw [if_pos hc] at hcc hcc'
-              have hsub := Contents.getAt_allCopy π (Contents.allCopyList_index hcc hcf) hr
-              have hcf' : cf'.allCopy D = true :=
-                Contents.allCopyList_index hcc' (List.getElem?_set_self hlt)
-              have hn := Contents.getAt_allCopy π hcf' (Contents.getAt_setAt π hw')
-              simp [Contents.own, hc, Contents.allCopy_own hsub, Contents.allCopy_own hn]
-            · rw [if_neg hc] at hcc hcc'
-              have hcf' : cf'.copyContained D = true :=
-                Contents.copyContainedList_index hcc' (List.getElem?_set_self hlt)
-              have ih := Contents.setAt_own_eq a π (Contents.copyContainedList_index hcc hcf) hcf' hr hw'
-              have hset := Contents.ownList_set_count (D := D) a cf' hcf
-              simp only [Contents.own, if_neg hc, List.count_cons]
-              omega
-          · cases hr
-      | array T i cs =>
+      | struct _ i cs | array _ i cs =>
           simp only [Contents.getAt] at hr
           simp only [Contents.setAt] at hw
           split at hr
@@ -414,14 +389,16 @@ theorem Contents.setAt_own_eq {D : Decls} (a : Nat) : ∀ (π : List Nat) {c sub
             obtain ⟨cf', hw', rfl⟩ := hw
             have hlt : f < cs.length := (List.getElem?_eq_some_iff.mp hcf).1
             simp only [Contents.copyContained, List.length_set] at hcc hcc'
-            by_cases hc : Ty.qual D (.array T cs.length) = .copy
-            · rw [if_pos hc] at hcc hcc'
+            split at hcc
+            · rename_i hc
+              rw [if_pos hc] at hcc'
               have hsub := Contents.getAt_allCopy π (Contents.allCopyList_index hcc hcf) hr
               have hcf' : cf'.allCopy D = true :=
                 Contents.allCopyList_index hcc' (List.getElem?_set_self hlt)
               have hn := Contents.getAt_allCopy π hcf' (Contents.getAt_setAt π hw')
               simp [Contents.own, hc, Contents.allCopy_own hsub, Contents.allCopy_own hn]
-            · rw [if_neg hc] at hcc hcc'
+            · rename_i hc
+              rw [if_neg hc] at hcc'
               have hcf' : cf'.copyContained D = true :=
                 Contents.copyContainedList_index hcc' (List.getElem?_set_self hlt)
               have ih := Contents.setAt_own_eq a π (Contents.copyContainedList_index hcc hcf) hcf' hr hw'
