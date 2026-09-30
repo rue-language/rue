@@ -336,7 +336,8 @@ Shared lemmas that several spine proofs re-prove in different forms.
    shrinks: `whole_program_exactly_once` (568 helpers), `step_no_double_free`
    (453). Expected: 800 to 1,200 lines fewer across `Equivalence`,
    `TraceWhole` and `TracePrefix`, about 60 theorems fewer. The largest
-   candidate, and it spans three modules.
+   candidate, and it spans three modules. Measured by RUE-2517 part 1 (below):
+   about 110 lines fewer in all, not 800 to 1,200; not landed.
 2. One induction over `eval`, many times. Eleven proofs are a fuel induction
    over `eval` with one case per construct: `soundness` (861 lines),
    `eval_conserves` (390), `Tombstone.eval_live` (382), `rest_step` (326),
@@ -1003,3 +1004,33 @@ For part 2, how the other targets fit the interface as it stands:
 - `eval_longc` (`TracePrefix`): does not fit. It is a long-run statement
   about `Step` configurations (`LongC`), by strong induction on fuel; it
   belongs with structural 1's parametrized simulation, not here.
+
+### RUE-2517 part 1: the parametrized simulation, measured and not landed
+
+From trunk `77d3051d7`. Part 1 defined one simulation parametrized by a
+per-step invariant (`SimBy`, over runs `ISteps` whose every step satisfies the
+invariant), and one long-run relation (`LongBy`), in `Step.Lemmas`. It then
+made `Equivalence`'s `Sim` and `Long` their `True` instances and retired the
+Equivalence side of the skeleton pairs (`Sim.pre`, `.withTrace`, `.absorb`,
+`.peel`, `sim_brk`, `Steps.peel`). Every Spec statement was unchanged and
+Comparator re-certified. The branch is kept as
+`dorianscheidt/rue-2517-one-simulation-measured`.
+
+On `Equivalence` alone the package grew by 86 lines (43 code) and 7
+theorems. `Equivalence` shrank by 171 lines and 10 theorems, but
+`Step.Lemmas` grew by 257 lines and 17 theorems. The helper counts of
+`whole_program_exactly_once` (562 to 567) and `step_no_double_free` (451 to
+455) rose, and `Long` had to become "a run of at least `n` steps", with a
+`Long.exact` to recover the exact count its three users need.
+
+Making `TraceWhole`'s `MSim`/`MSteps` an instance (the ledger invariant, and
+a discarded-frame guard) would remove about 180 lines more, and `LongC` about
+20: about 110 lines fewer for the whole of structural 1, not the 800 to 1,200
+estimated above. The estimate assumed the per-construct lemmas (`msim_*`,
+`longc_*`) would share proofs with `sim_*`/`long_*`. They differ in each
+step's side condition (a ledger count, `pendingSafe` and quietness, `Cons`),
+not in the simulation plumbing. Sharing them needs `eval_sim` itself stated
+over per-rule obligations, which is structural 2's evaluation-context lemma
+(RUE-2518). So structural 1 is deferred until RUE-2518 part 2 shows whether
+`EvalInv` can carry those obligations; RUE-2517 is back in the backlog with
+this measurement.
