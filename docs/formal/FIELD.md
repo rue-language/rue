@@ -24,7 +24,7 @@ an author or publisher page, or the document itself. A source that could not
 be fetched is not cited. Where the only thing fetched was the bibliographic
 record (the publisher blocked the full text), the Sources table marks the
 entry **(record)**, and no term in this file is attributed to that source's
-content. Section and theorem numbers are given only where they were seen.
+content beyond, for a **(record; abstract)** entry, the words of its abstract. Section and theorem numbers are given only where they were seen.
 Some numbering comes from a preprint (Wright & Felleisen, Felleisen & Hieb,
 the Chen et al. survey), and those cases are flagged.
 
@@ -182,7 +182,7 @@ data abstraction, and put `unsafe` code behind a safe API out of scope.
 | `step_safeAt` over `Config.SafeAt` | Preservation is syntactic (`⊢ e′ : τ`). A statement over "nothing reachable is stuck, and every halted value is typed" is a semantic statement in Timany's safety form. Our own docs already say this: the `Config.SafeAt` docstring ("SafeAt invariance, not syntactic preservation", `Equivalence.lean`), GUIDE §2 and the metatheory's type-safety section call the configuration typing semantic and claim no syntactic `⊢ C : T` | partial: the old name, `step_preservation`, clashed with the accepted syntactic meaning; `step_safeAt` (RUE-2466) names the semantic invariant instead, our docs call it "SafeAt invariance", and they disclose the difference |
 | `Config.SafeAt` | `safe(e)` (Timany §2.4) plus value typing. Timany's adequacy (Thm 6.6) concludes `safe(e)` only; our second conjunct is the syntactic value typing `HasTy` | partial |
 | "syntactic type soundness" `init_safeAt` (metatheory; formerly "the fundamental lemma"): a checked program's initial configuration is `SafeAt` | Timany's fundamental theorem is `⊢ ⇒ ⊨`; `⊢ ⇒ safe` is their Cor. 6.7, which they call semantic type soundness, and also their Cor. 2.3, "Syntactic Type Soundness", proved by progress and preservation. Our proof has no `⊨` and no logical relation, so Cor. 2.3 is the closer counterpart: it is syntactic soundness of `eval` (a `StoreTyping` invariant) followed by the `eval`/`Step` agreement of §3. "The fundamental theorem composed with adequacy" is only an analogy | partial |
-| `ActivationTyping` / `StoreTyping` ("Σ faithfully tracks the store's initialization") | the invariant a syntactic proof carries: store typing / a well-typed machine state. Ours checks each cell against both its ownership state and its type (`ContentsOwnTyping`: "`owned` holds a value"; `Soundness.lean`: "a fully-owned node holds a moved-out-free contents"), and `Soundness/Defs.lean` calls `StoreTyping` "the §7 preservation invariant" | partial: store typing extended with ownership state |
+| `ActivationTyping` / `StoreTyping` ("Σ faithfully tracks the store's initialization") | the invariant a syntactic proof carries: store typing / a well-typed machine state. Ours checks each cell against both its ownership state and its type (`ContentsOwnTyping`: "`owned` holds a value"; `ContentsOwnTyping.noMovedOut` in `Soundness.lean`: "a fully-owned node holds a moved-out-free contents"), and `Soundness/Defs.lean` calls `StoreTyping` "the §7 preservation invariant" | partial: store typing extended with ownership state |
 | Σ for the ownership state (§5) | Σ is store typing in TAPL and the global environment in Oxide | partial: symbol clash |
 | `Refusal` (`useAfterMove`, `useAfterDrop`, …) | `wrong` (Milner), "going wrong" (CompCert), stuck (PFPL) | partial: ours is a named refusal, and four of its eight constructors are the monitors of §6 below, which are not stuck states of §6's `Step` |
 | `soundness`, `run_safe` over `eval` | type soundness via a definitional interpreter (§3 below) | clear |
@@ -372,7 +372,7 @@ SE-0176 (*Enforce Exclusive Access to Memory*); the CWE entries 416, 415 and
 | destructor; dropped | What runs when an initialized variable or temporary leaves scope | Ref. *Destructors* |
 | drop scope; drop order | Variables are dropped in reverse order of declaration, temporaries in reverse order of creation; struct fields in declaration order; arrays from first element to last | Ref. *Destructors* |
 | drop glue | Calls `Drop::drop` if implemented, then the drop glue of every field | rustc-dev-guide *Drop elaboration* |
-| drop obligation | When a local variable becomes initialized, it establishes "a set of structural paths (e.g. a local `a`, or a path to a field `b.f.y`) that need to be dropped"; moving from a path releases the obligations for it and its descendants | rustc-dev-guide *Drop elaboration*, quoting RFC 320 |
+| drop obligation | When a local variable becomes initialized, it establishes "a set of structural paths (e.g. a local `a`, or a path to a field `b.f.y`) that need to be dropped"; moving from a path releases the obligations for it and its descendants | rustc-dev-guide *Drop elaboration* (adapting RFC 320's "Drop obligations"; the descendants clause is the guide's) |
 | drop flag | A per-variable runtime flag recording whether a drop is still owed | Rustonomicon *Drop Flags* |
 | drop elaboration; static / dead / conditional / open drop | Rewriting drops into code guarded by flags. The target is always initialized / always uninitialized / either wholly initialized or wholly uninitialized / possibly partly initialized. "Dynamic drops" is the guide's heading for the flag-based scheme (RFC 320), not a kind | rustc-dev-guide *Drop elaboration* |
 | substructural (context) | RustBelt's typing context is substructural | RustBelt §2, §3.3 |
@@ -538,7 +538,7 @@ RFC 2119.
 | verified validator | A validator with a proof that `Validate(S,C) = true ⇒ S ≈ C` | Leroy CACM §2.2 |
 | certifying compiler | A compiler that emits a proof alongside its code; only the client-side checker is trusted | Leroy CACM §2.2 (Necula §1 mentions one, the Touchstone compiler) |
 | forward / backward simulation | Source behaviors are preserved / target behaviors are allowed by the source. Backward simulation is also called refinement | Leroy JAR §2.1 |
-| trusted computing base | What must be trusted for a guarantee to hold | CakeML §1 |
+| trusted computing base | What must be trusted for a guarantee to hold | CakeML §1, §12.1 "Trusted Computing Base" |
 | program mutation; mutation; mutant | Judge how adequate a test set is by running it on *mutations* of the program: copies that differ from it only by simple errors (for example `.LE.` replaced by `.EQ.`) | DeMillo et al. 1978, p. 36 |
 | dead / live mutant; kill | A mutant is *dead* when the test data gives it a result different from the program's, and *live* otherwise; testers try to *kill* the live ones | DeMillo et al. 1978, pp. 36–37 |
 | killed / survived | A mutant is killed when its result differs from the original's on some test, and has survived otherwise | Jia & Harman §II.B |
@@ -734,7 +734,7 @@ Copeland 1986 **(record)**; the Swift performance guide; Rust's
 
 | Term | Meaning | Source |
 |---|---|---|
-| frame rule; frame property | The frame rule `{P} C {Q} ⇒ {P ∗ R} C {Q ∗ R}`, provided `C` modifies no variable free in `R`, codifies local behaviour: cells beyond those `P` describes "will remain unaltered". The frame property is the semantic condition behind it: "if the command is safe on some heap, then in any outcome of applying the command on a larger heap, the additional heap portion will remain unchanged by the command" | O'Hearn, Reynolds & Yang §3 (the rule); Raza & Gardner §2 (the property, which they credit to Yang & O'Hearn 2002, their ref. [21], fetched only as a record) |
+| frame rule; frame property | The frame rule `{P} C {Q} ⇒ {P ∗ R} C {Q ∗ R}`, provided `C` modifies no variable free in `R`, codifies local behaviour: cells beyond those `P` describes "will remain unaltered". The frame property is the semantic condition behind it: "if the command is safe on some heap, then in any outcome of applying the command on a larger heap, the additional heap portion will remain unchanged by the command" | O'Hearn, Reynolds & Yang §3 (the rule); Raza & Gardner §2.1 (the property, which they credit to Yang & O'Hearn 2002, their ref. [21], fetched only as a record) |
 | activation record; activation frame | The block of storage a procedure call allocates, on a stack, for its local variables (and its return address), released when the procedure terminates | Wirth §12.1 ("The storage blocks are called procedure activation records or activation frames"); Appel ch. 6 "Activation Records" (title seen) |
 | normal / abrupt completion; reason | A statement completes normally when all its steps are carried out. `break`, `yield`, `continue`, `return` and `throw` cause a transfer of control that may make it complete abruptly instead, and "an abrupt completion always has an associated reason" (the statement, with its label or value) | JLS §14.1 |
 | can complete normally | The static, rule-by-rule judgment that a statement can complete normally, which decides reachability | JLS §14.22 |
@@ -742,7 +742,7 @@ Copeland 1986 **(record)**; the Swift performance guide; Rust's
 | match compilation; match compiler | Compiling ML pattern matching to simple tests: a decision tree whose switch nodes test the constructor of one value, with distinct constructors of one signature and a default case only when they do not cover it | Maranget §§1, 3 |
 | abstract data type (ADT) | A type known by its operations ("a type is characterized by the operations you can perform on it"), whose representation is hidden, so that the representation can change without changing client code (representation independence) | MIT 6.005 Reading 12 (introduction; "Representation Independence"); Liskov & Zilles 1974 (record; attribution only) |
 | representation invariant (rep invariant) | A predicate `RI : R → boolean` on representation values that "tells us whether a given rep value is well-formed"; "invariants must be established by creators and producers, and preserved by observers and mutators" | MIT 6.005 Reading 13 |
-| algebraic (axiomatic) specification | Defining an abstract data type "by giving the properties (axioms) of their operations", with "no explicit definition of each operation (no pre- and post-condition, no algorithm)"; the idea dates from the late 1970s | Gaudel & Le Gall §2, crediting Goguen, Thatcher & Wagner and Guttag & Horning 1978 (record) (their refs. [34, 36]) |
+| algebraic (axiomatic) specification | Defining an abstract data type "by giving the properties (axioms) of their operations", with "no explicit definition of each operation (no pre- and post-condition, no algorithm)"; the idea dates from the late 1970s | Gaudel & Le Gall §2, crediting their refs. [34] Goguen, Thatcher & Wagner (not fetched) and [36] Guttag & Horning 1978 (record) |
 | memory block; block reference | CompCert views a memory state "as a collection of separated blocks, identified by block references b"; allocation creates a fresh block, and a location is a block reference and an offset | Leroy & Blazy §3 |
 | field-sensitive / field-insensitive / field-based | Of an analysis over aggregates: each instance of a field is modelled separately / the aggregate is one variable / each field name is one variable | Pearce, Kelly & Hankin §2 |
 | iterator and reference invalidation | After an operation reallocates a container's storage, "all iterators (including the end() iterator) and all references to the elements are invalidated" | cppreference, `std::vector::push_back` |
@@ -755,9 +755,9 @@ Copeland 1986 **(record)**; the Swift performance guide; Rust's
 
 | Our term | Accepted term | Confidence |
 |---|---|---|
-| "abstract data type" (01 §6.13: `ArrayBuf(T)`, `StrBuf`; formerly "library container") | abstract data type (Liskov & Zilles; MIT 6.005) | clear: the core sees the type only through its methods' equations |
+| "abstract data type" (01 §6.13: `ArrayBuf(T)`, `StrBuf`; formerly "library container") | abstract data type (MIT 6.005 Reading 12; Liskov & Zilles, attribution only) | clear: the core sees the type only through its methods' equations |
 | "trusted code", "trusted-code obligations", "trusted-code bug" (01 §6.13.5; formerly "library obligations", "library bug") | trusted code base (§8 above; Lean Reference, "Validating a Lean Proof"); trusted computing base (§7 above; CakeML §1, §12.1) | clear: the theorems hold conditionally on this code meeting (O1)–(O4) |
-| "specification equation" (01 §6.13, the intrinsics of §6.9; formerly "defining equation") | the axioms of an algebraic specification (Guttag & Horning, via Gaudel & Le Gall) | partial: ours give one method's effect on the store, as a function would; algebraic axioms relate the operations to one another |
+| "specification equation" (01 §6.13, the intrinsics of §6.9; formerly "defining equation") | the axioms of an algebraic specification (Goguen, Thatcher & Wagner and Guttag & Horning, via Gaudel & Le Gall) | partial: ours give one method's effect on the store, as a function would; algebraic axioms relate the operations to one another |
 | "(O2) Representation invariant" (01 §6.13.5; formerly "Boundary invariant") | representation invariant (MIT 6.005) | clear |
 | "growth invalidates references" (01 §6.13.3; formerly "growth is identity death") | iterator and reference invalidation (cppreference) | clear: a reallocating growth leaves every view into the old buffer dead |
 | "copy-on-write" (01 §6.13.4: a literal-backed `StrBuf` copies its cells into a fresh buffer on its first mutation; formerly "literal promotion") | copy-on-write (Swift); clone-on-write (Rust `Cow`) | clear: Rust's `Cow` is the same shape, borrowed data made owned on the first mutation |
@@ -780,7 +780,7 @@ Copeland 1986 **(record)**; the Swift performance guide; Rust's
 Fetched means the page title was seen and recorded. **(record)** means the DOI
 or Crossref record was fetched but the full text was not; such a source is
 cited for its existence only, and any content attributed to it comes through
-the secondary source named alongside.
+the secondary source named alongside. **(record; abstract)** means the record and its abstract were fetched but not the full text; only words that appear in the abstract are attributed to it (Lomet 1985: the term "tombstone").
 
 | Short cite | Citation | Link | Fetched |
 |---|---|---|---|
@@ -871,7 +871,7 @@ the secondary source named alongside.
 | Tov & Pucella 2011 | J. A. Tov, R. Pucella. Practical affine types. POPL 2011, 447–458 | https://doi.org/10.1145/1926385.1926436 | Crossref; long-version PDF "Practical Affine Types" |
 | Walker 2005 | D. Walker. Substructural Type Systems. In B. C. Pierce (ed.), *Advanced Topics in Types and Programming Languages*, ch. 1, 3–44. MIT Press | https://doi.org/10.7551/mitpress/1104.003.0003 | Crossref (which dates the chapter 2004); MIT Press sample PDF "1 Substructural Type Systems" |
 | Wadler 1992 | P. Wadler. Monads for Functional Programming. In J. Jeuring, E. Meijer (eds.), *Advanced Functional Programming*, LNCS 925, 24–52. Springer, 1995 (notes appear 1992) | https://homepages.inf.ed.ac.uk/wadler/papers/marktoberdorf/baastad.pdf | the author's PDF, "Monads for functional programming" |
-| WHATWG Encoding | *Encoding Standard* (WHATWG Living Standard), §8.1.1 "UTF-8 decoder" | https://encoding.spec.whatwg.org/ | "Encoding Standard" |
+| WHATWG Encoding | *Encoding Standard* (WHATWG Living Standard), §4.1 "Encoders and decoders" (error modes) and §8.1.1 "UTF-8 decoder" | https://encoding.spec.whatwg.org/ | "Encoding Standard" |
 | Wikipedia *Tombstone* | Wikipedia, *Tombstone (programming)* | https://en.wikipedia.org/wiki/Tombstone_(programming) | "Tombstone (programming)" (its source text) |
 | Wirth 1996/2017 | N. Wirth. *Compiler Construction*. Addison-Wesley, 1996; slightly revised edition, Zürich, May 2017 | https://people.inf.ethz.ch/wirth/CompilerConstruction/ | "Compiler Construction" (the author's PDFs; §12.1 read) |
 | Wright & Felleisen 1994 | A. K. Wright, M. Felleisen. A Syntactic Approach to Type Soundness. *Inf. Comput.* 115(1):38–94, 1994 | https://doi.org/10.1006/inco.1994.1093 | OpenAlex record; the Rice TR91-160 preprint of the same title (numbering here is the preprint's) |
