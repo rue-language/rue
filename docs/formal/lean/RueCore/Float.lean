@@ -667,7 +667,7 @@ structure FloatLaws extends FloatSig where
   into `𝔽_w`. With Lean totality this is §7:16's "`⊕_w` is a total function
   `𝔽_w × 𝔽_w → 𝔽_w`". -/
   arith_wf : ∀ w op a b, a.Wf w → b.Wf w → (toFloatSig.arith w op a b).Wf w
-  /-- **Closure of `@sqrt`** (§7:16's "each `⊙_w` is total on `𝔽_w`"; the other
+  /-- **Closure of `@sqrt`** (§7:16's "each `⊙_w` of §6.4 is total on `𝔽_w`"; the other
   four `⊙_w` are exact and proved closed here). -/
   sqrt_wf : ∀ w f, f.Wf w → (toFloatSig.sqrt w f).Wf w
   /-- **Closure of `rnd_w` on a literal** (`3.12:9`, and §7:16's "`rnd_w` is
