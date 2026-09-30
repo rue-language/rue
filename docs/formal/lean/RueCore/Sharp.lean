@@ -34,10 +34,6 @@ namespace RueCore.Sharp
 /-- The model the statements run on is `Float.exactOps` (helper). -/
 theorem exact_ops : Float.exactModel.toFloatSig = Float.exactOps := rfl
 
-/-- Prefixing an empty trace changes nothing (helper). -/
-theorem withTrace_nil (r : EvalRes) : r.withTrace [] = r := by
-  cases r <;> rfl
-
 /-- A stuck configuration takes no step (helper). -/
 theorem noStep_of_stuck {M : FloatSig} {P : Program} {C : Config} {w : Refusal}
     (h : C.Stuck M P w) : ∀ C', ¬ Step M P C C' :=
@@ -670,7 +666,7 @@ theorem pending_program :
   refine ⟨hPT, by subst hP; rfl, by subst he; rfl, by subst hP; exact ⟨.cons rfl ⟨_, rfl, .owned (.struct rfl (.cons (.int (by decide)) .nil)) rfl⟩ (by simp) .nil, rfl⟩,
     by subst hP; exact storeCC_one rfl,
     by subst he hP; exact ⟨_, _, by rfl, by rfl, check_sound _ (by rfl) _ (by rfl)⟩,
-    by subst he hP; rfl, (withTrace_nil _).symm, ?_, ?_⟩
+    by subst he hP; rfl, (Nonvacuous.withTrace_nil _).symm, ?_, ?_⟩
   · rw [hr]; exact not_exact_ok 0 (by decide) (by subst hP; decide)
   · rw [hr']; exact not_exact_ok 0 (by decide) (by subst hP; decide)
 
@@ -707,7 +703,7 @@ theorem pending_expr :
   refine ⟨hPT, by subst hB hP; rfl, by subst he; rfl, by subst hP; exact ⟨.cons rfl ⟨_, rfl, .owned (.struct rfl (.cons (.int (by decide)) .nil)) rfl⟩ (by simp) .nil, rfl⟩,
     by subst hP; exact storeCC_one rfl,
     by subst he hB hP; exact ⟨_, _, by rfl, by rfl, check_sound _ (by rfl) _ (by rfl)⟩,
-    by subst he; exact ⟨_, rfl, by rfl⟩, (withTrace_nil _).symm, ?_, ?_⟩
+    by subst he; exact ⟨_, rfl, by rfl⟩, (Nonvacuous.withTrace_nil _).symm, ?_, ?_⟩
   · rw [hr]; exact not_exact_returned 0 (by decide) (by subst hB hP; decide)
   · rw [hr']; exact not_exact_returned 0 (by decide) (by subst hB hP; decide)
 
@@ -746,7 +742,7 @@ theorem store_cc :
     subst he hB hP; exact ⟨_, by rfl⟩
   refine ⟨hPT, by subst hB hP; rfl, by subst he; rfl, ⟨.nil, rfl⟩, hcc,
     by subst he hB hP; exact ⟨_, _, by rfl, by rfl, check_sound _ (by rfl) _ (by rfl)⟩,
-    by subst he; exact ⟨_, rfl, by rfl⟩, (withTrace_nil _).symm, ?_, ?_⟩
+    by subst he; exact ⟨_, rfl, by rfl⟩, (Nonvacuous.withTrace_nil _).symm, ?_, ?_⟩
   · rw [hr]; exact not_exact_cc hcc
   · rw [hr']; exact not_exact_cc hcc
 
@@ -781,7 +777,7 @@ theorem no_lead :
     subst hB hP; exact ⟨_, _, _, by rfl, by decide⟩
   refine ⟨hPT, by subst hB hP; rfl, by subst hB; rfl, activationTyping_empty, fun _ _ h => by simp at h,
     by subst hB hP; exact ⟨_, _, by rfl, by rfl, check_sound _ (by rfl) _ (by rfl)⟩, ?_,
-    (withTrace_nil _).symm, by rw [hr]; exact not_exact_ok 0 (by decide) hne⟩
+    (Nonvacuous.withTrace_nil _).symm, by rw [hr]; exact not_exact_ok 0 (by decide) hne⟩
   subst hB hP
   rintro ⟨v, _, h⟩
   cases h
