@@ -620,9 +620,9 @@ documents rely on.
 | `Float.ofInt` | `Float` | `@int_to_float`: an exact integer rounded at the target width (`3.12:16`) | Rue-specific, grounded (spec 3.12:16) | — |
 | `Float.narrow` | `Float` | Narrowing `f64` to `f32`: rounded, giving an infinity when too large (`3.12:19`) | Rue-specific, grounded (spec 3.12:19) | — |
 | `Float.exactOps` | `Float` | The executable float operations the corpus, the printer and the demos run, with a positive NaN sign (the AArch64 choice, `3.12:44`) | ours, pending audit | 03 “Lemmas §7 owes, and the …”; lean/README “Deciding whether to believe it”; GUIDE §5; `Float` |
-| `Qual` | `Syntax` | The three classes a type can have, ordered `Copy ⊑ Affine ⊑ Linear`, more restrictive higher (§3) | Rue-specific, grounded (spec 6.3:19; FIELD §4 notes "multiplicity" means an arrow annotation in Linear Haskell) | — |
+| `Qual` | `Syntax` | The three qualifiers a type can have, ordered `Copy ⊑ Affine ⊑ Linear`, more restrictive higher (§3) | Rue-specific, grounded (spec 6.3:19; FIELD §4 notes "multiplicity" means an arrow annotation in Linear Haskell) | — |
 | `Qual.rank` | `Syntax` | The qualifier order as a number | helper | — |
-| `Qual.join` | `Syntax` | The least upper bound `⊔` of two classes | standard (FIELD §9: join, Tarski 1955 §1; FIELD §4: `⊔`, Tov & Pucella) | MUTATION “What is mutated” |
+| `Qual.join` | `Syntax` | The least upper bound `⊔` of two qualifiers | standard (FIELD §9: join, Tarski 1955 §1; FIELD §4: `⊔`, Tov & Pucella) | MUTATION “What is mutated” |
 | `Attr` | `Syntax` | A struct's declared attribute: none, `@copy` (`3.8:14`), or `linear` (`3.8:57`) | Rue-specific, grounded (spec 3.8:14) | — |
 | `Attr.lift` | `Syntax` | Adjusts a struct's field join by its attribute: `linear` forces `Linear`, `@copy` forces `Copy` (§3) | Rue-specific, grounded (spec 3.8:58) | MUTATION “What is mutated”; `Statics` |
 | `IntWidth` | `Syntax` | The integer widths 8, 16, 32 and 64 bits | Rue-specific, grounded (spec 3.1:1) | — |
@@ -638,14 +638,14 @@ documents rely on.
 | `Ty` | `Syntax` | The types of the core (§2): integers, floats, `bool`, unit, never, arrays, and declared structs and enums | standard (FIELD §2: type `τ`) | lean/README “Doc-comment convention”; GUIDE §1; `Statics` |
 | `Ty.isInt` | `Syntax` | Whether a type is an integer type | helper | — |
 | `Ty.observable` | `Syntax` | Whether `@dbg` can print a value of the type: integers, floats and `bool` | helper | `Statics` |
-| `StructDecl` | `Syntax` | A struct declaration: field types in declaration order, attribute, whether it declares a destructor, and its class | Rue-specific, grounded (spec 3.6:1) | GUIDE “The program” |
-| `EnumDecl` | `Syntax` | An enum declaration: one payload tuple per variant, in declaration order, and its class | Rue-specific, grounded (spec 6.3:1) | `Statics` |
+| `StructDecl` | `Syntax` | A struct declaration: field types in declaration order, attribute, whether it declares a destructor, and its qualifier | Rue-specific, grounded (spec 3.6:1) | GUIDE “The program” |
+| `EnumDecl` | `Syntax` | An enum declaration: one payload tuple per variant, in declaration order, and its qualifier | Rue-specific, grounded (spec 6.3:1) | `Statics` |
 | `Decls` | `Syntax` | A program's type declarations: its struct list and its enum list, indexed the way types name them | Rue-specific, grounded (spec 3.9:17) | `Checker.Defs` |
 | `Decls.ofStructs` | `Syntax` | A declaration list with structs only | helper | — |
 | `Decls.qualOf` | `Syntax` | A declared struct's qualifier, read off its declaration | helper | — |
 | `Decls.enumQualOf` | `Syntax` | A declared enum's qualifier, read off its declaration | helper | — |
-| `Ty.qual` | `Syntax` | A type's class, `qual(T)` (§3): scalars are `Copy`, arrays take their element's, declarations their recorded class | Rue-specific, grounded (spec 6.3:19) | lean/README “Deciding whether to believe it”; GUIDE §7; MUTATION “What is mutated”; `Syntax` |
-| `Ty.carriesLinear` | `Syntax` | A type carries a linear value: its class is `Linear` (§5.3, `3.8:57`) | Rue-specific, grounded (spec 3.8:57) | `Statics` |
+| `Ty.qual` | `Syntax` | A type's qualifier, `qual(T)` (§3): scalars are `Copy`, arrays take their element's, declarations their recorded qualifier | Rue-specific, grounded (spec 6.3:19) | lean/README “Deciding whether to believe it”; GUIDE §7; MUTATION “What is mutated”; `Syntax` |
+| `Ty.carriesLinear` | `Syntax` | A type carries a linear value: its qualifier is `Linear` (§5.3, `3.8:57`) | Rue-specific, grounded (spec 3.8:57) | `Statics` |
 | `Place` | `Syntax` | A place: a variable followed by field projections and constant array indices (§2, §5) | standard (FIELD §5: place) | 03 intro; lean/README “What is mechanized”; `Syntax` |
 | `Place.root` | `Syntax` | The variable a place starts from | helper | — |
 | `Place.path` | `Syntax` | The projection steps of a place, from the variable outward | helper | `Syntax` |
@@ -677,11 +677,11 @@ documents rely on.
 | `FnDef` | `Syntax` | A function definition: parameters left to right, return type and body | Rue-specific, grounded (spec 6.1:1) | — |
 | `Program` | `Syntax` | A program: its type declarations and its functions, the entry point first | Rue-specific, grounded (spec 6.1:8) | `Syntax` |
 | `Program.entry` | `Syntax` | A one-function program with no parameters, given its return type and body | helper | — |
-| `StructDecl.baseOf` | `Statics` | The join of a struct's field classes, before its attribute is applied (§3) | Rue-specific, grounded (spec 6.3:19) | — |
-| `StructDecl.Wf` | `Statics` | A struct declaration is well formed: its recorded class is correct and its `@copy` and destructor constraints hold (`3.8:18`, `3.9:31`) | standard (FIELD §9: well-formed, PFPL §1.2) | `Statics` |
+| `StructDecl.baseOf` | `Statics` | The join of a struct's field qualifiers, before its attribute is applied (§3) | Rue-specific, grounded (spec 6.3:19) | — |
+| `StructDecl.Wf` | `Statics` | A struct declaration is well formed: its recorded qualifier is correct and its `@copy` and destructor constraints hold (`3.8:18`, `3.9:31`) | standard (FIELD §9: well-formed, PFPL §1.2) | `Statics` |
 | `WfStructs` | `Statics` | Every struct declaration is well formed | standard (FIELD §9: well-formed, PFPL §1.2) | 03 intro; lean/README “What is mechanized”; GUIDE “What the checker demands”; `Syntax` |
-| `EnumDecl.payloadJoin` | `Statics` | The join of every payload component's class, over all variants; `Copy` when there are none (`6.3:19`) | Rue-specific, grounded (spec 6.3:19) | — |
-| `EnumDecl.Wf` | `Statics` | An enum declaration is well formed: its recorded class is the join of its payload components' classes | standard (FIELD §9: well-formed, PFPL §1.2) | `Statics` |
+| `EnumDecl.payloadJoin` | `Statics` | The join of every payload component's qualifier, over all variants; `Copy` when there are none (`6.3:19`) | Rue-specific, grounded (spec 6.3:19) | — |
+| `EnumDecl.Wf` | `Statics` | An enum declaration is well formed: its recorded qualifier is the join of its payload components' qualifiers | standard (FIELD §9: well-formed, PFPL §1.2) | `Statics` |
 | `WfEnums` | `Statics` | Every enum declaration is well formed | standard (FIELD §9: well-formed, PFPL §1.2) | 03 intro; lean/README “What is mechanized”; `Syntax` |
 | `TyName` | `Statics` | A struct or enum declaration, named by its kind and index | ours, pending audit | — |
 | `TyName.ty` | `Statics` | The type that names a declaration | helper | — |
@@ -689,7 +689,7 @@ documents rely on.
 | `Decls.byValue` | `Statics` | The types a declaration contains by value: a struct's fields, an enum's payload components (`3.0:5`) | Rue-specific, grounded (spec 3.0:5) | — |
 | `Decls.ByValueEdge` | `Statics` | One step of the contains-by-value relation between declarations (`3.0:5`) | ours, pending audit | 03 “Type safety”; `Statics` |
 | `WfByValueEdge` | `Statics` | The contains-by-value relation is well-founded: no declaration contains itself (`3.0:5`, E0483) | standard (FIELD §8: well-founded recursion, Reference §7.6) | 03 intro; lean/README “What is mechanized”; `Statics` |
-| `WfDecls` | `Statics` | The declarations are well formed: no containment cycle, and every struct and enum class is correct | standard (FIELD §9: well-formed, PFPL §1.2) | 03 “Type safety”; MUTATION “The mutants”; `Checker.Defs` |
+| `WfDecls` | `Statics` | The declarations are well formed: no containment cycle, and every struct and enum qualifier is correct | standard (FIELD §9: well-formed, PFPL §1.2) | 03 “Type safety”; MUTATION “The mutants”; `Checker.Defs` |
 | `OwnSt` | `Statics` | A variable's ownership state, as a tree over its paths: owned, moved out, or per-field states after a partial move (§5) | Rue-specific, grounded (spec 3.8:79) | lean/README “The trusted-base lint”; GUIDE §3 |
 | `OwnSt.decEq` | `Statics` | Decides equality of two ownership states | helper | — |
 | `OwnSt.decEqList` | `Statics` | Decides equality of two lists of ownership states | helper | — |
@@ -746,14 +746,14 @@ documents rely on.
 | `Out.WfPres` | `Statics` | A well-formed input context gives a result whose states are well formed | helper | — |
 | `Out.WfArms` | `Statics` | The same for a `match`'s arms | helper | — |
 | `Val` | `Dynamics` | Machine values of §6.1 (integers, floats, booleans, unit, struct, enum and array values); aggregates carry an identity number fixed when they are built | standard (FIELD §1: value) | lean/README “The trusted-base lint”; `Float` |
-| `Val.qual` | `Dynamics` | The class (`Copy`, `Affine`, `Linear`, §3) of a value: scalars are `Copy`, a struct value has its declaration's class | ours, pending audit | `Syntax` |
+| `Val.qual` | `Dynamics` | The qualifier (`Copy`, `Affine`, `Linear`, §3) of a value: scalars are `Copy`, a struct value has its declaration's qualifier | ours, pending audit | `Syntax` |
 | `Contents` | `Dynamics` | What a store cell holds (§6.1's `c ::= v \| ⊘`), as a tree in which any node may be a moved-out position | ours, pending audit | lean/README “The trusted-base lint”; GUIDE §3; `Dynamics` |
 | `Contents.ofVal` | `Dynamics` | Stores a value into a cell: the same tree with no moved-out position | helper | `Dynamics` |
 | `Contents.ofVals` | `Dynamics` | `Contents.ofVal` over a list of fields or elements | helper | — |
 | `Contents.toVal` | `Dynamics` | The value a cell's contents denotes, or nothing when some position in it is moved out | helper | — |
 | `Contents.toVals` | `Dynamics` | `Contents.toVal` over a list of fields or elements | helper | — |
 | `Contents.isMovedOut` | `Dynamics` | Whether a position holds the moved-out mark `⊘`; `@drop` tests it before dropping | helper | `Step` |
-| `Contents.qual` | `Dynamics` | The class (§3) of cell contents: a moved-out position has nothing to drop, a struct has its declaration's class | helper | `Dynamics` |
+| `Contents.qual` | `Dynamics` | The qualifier (§3) of cell contents: a moved-out position has nothing to drop, a struct has its declaration's qualifier | helper | `Dynamics` |
 | `Contents.allCopy` | `Dynamics` | Whether every node of the contents is `Copy` | helper | — |
 | `Contents.allCopyList` | `Dynamics` | `Contents.allCopy` over a list | helper | — |
 | `Contents.copyContained` | `Dynamics` | No non-`Copy` value sits under a `Copy` node: the store-level form of §3's rule that a `Copy` type's parts are `Copy` (`3.8:18`) | ours, pending audit | 03 “No double-free”; `Dynamics` |
@@ -862,15 +862,15 @@ documents rely on.
 | `armsJoinTy` | `Checker.Defs` | The type all `match` arms must share, taken from the first arm that has one | ours, pending audit | GUIDE “What the checker demands”; `Checker.Defs` |
 | `checkArms` | `Checker.Defs` | (Match) §5.5's arms as an algorithm: each from the same state, at the shared type | standard (FIELD §4: algorithmic typing, Walker 1.2.9) | GUIDE “What the checker demands”; MUTATION “The mutants” |
 | `checkFn` | `Checker.Defs` | (Fn) §5.8 as an algorithm: the body at the declared return type, with the leak check at exit | standard (FIELD §4: algorithmic typing, Walker 1.2.9) | lean/README “What is mechanized”; `Checker.Defs` |
-| `checkStructDecl` | `Checker.Defs` | §3's class assignment for one struct declaration, checked (`@copy`, `linear`, destructor rules) | Rue-specific, grounded (spec 3.8:58) | — |
-| `checkStructs` | `Checker.Defs` | §3's class assignment for every struct declaration | Rue-specific, grounded (spec 3.8:58) | 03 intro; `Statics` |
-| `checkEnumDecl` | `Checker.Defs` | §3's class assignment for one enum: the join of its payloads' classes (`6.3:19`) | Rue-specific, grounded (spec 6.3:1) | — |
-| `checkEnums` | `Checker.Defs` | §3's class assignment for every enum declaration | Rue-specific, grounded (spec 6.3:1) | 03 intro; `Statics` |
+| `checkStructDecl` | `Checker.Defs` | §3's qualifier assignment for one struct declaration, checked (`@copy`, `linear`, destructor rules) | Rue-specific, grounded (spec 3.8:58) | — |
+| `checkStructs` | `Checker.Defs` | §3's qualifier assignment for every struct declaration | Rue-specific, grounded (spec 3.8:58) | 03 intro; `Statics` |
+| `checkEnumDecl` | `Checker.Defs` | §3's qualifier assignment for one enum: the join of its payloads' qualifiers (`6.3:19`) | Rue-specific, grounded (spec 6.3:1) | — |
+| `checkEnums` | `Checker.Defs` | §3's qualifier assignment for every enum declaration | Rue-specific, grounded (spec 6.3:1) | 03 intro; `Statics` |
 | `Ty.grounded` | `Checker.Defs` | Whether a type's declaration is already known not to contain itself by value | ours, pending audit | — |
 | `Decls.topoSortStep` | `Checker.Defs` | One round of the containment check over all declarations | helper | — |
 | `Decls.topoSort` | `Checker.Defs` | The containment check's flags after `n` rounds | helper | — |
 | `checkNoCycle` | `Checker.Defs` | `3.0:5` as an algorithm: no struct or enum contains itself by value | Rue-specific, grounded (spec 3.0:5) | 03 intro; `Statics` |
-| `checkDecls` | `Checker.Defs` | Checks a whole declaration environment: struct classes, enum classes, and no containment cycle | Rue-specific, grounded (spec 3.0:5) | 03 intro; lean/README “What is mechanized”; MUTATION “Proposed issues”; CHECKER-PROFILE “Why a rejected program still …”; `Statics` |
+| `checkDecls` | `Checker.Defs` | Checks a whole declaration environment: struct qualifiers, enum qualifiers, and no containment cycle | Rue-specific, grounded (spec 3.0:5) | 03 intro; lean/README “What is mechanized”; MUTATION “Proposed issues”; CHECKER-PROFILE “Why a rejected program still …”; `Statics` |
 | `checkProgram` | `Checker.Defs` | Checks a whole program: its declarations, every function, and an entry point with no parameters | standard (FIELD §4: algorithmic typing, Walker 1.2.9) | 03 “Linear values are consumed exactly …”; lean/README “Non-vacuity witnesses”; GUIDE §4; BRIDGE-SENSITIVITY “Never exercised”; MUTATION “Method”; CHECKER-PROFILE intro; `Checker.Defs` |
 | `HasTy` | `Soundness.Defs` | Value typing: a machine value has a type (integer ranges, struct fields against the declaration) | standard (FIELD §2: typing judgment `⊢ v : τ`) | REDTEAM “Targets”; lean/README “Sharpness counter-examples”; GUIDE “What the proof needs”; MUTATION “What is mutated”; `Statics` |
 | `HasTys` | `Soundness.Defs` | Value typing for a list, position by position | standard (FIELD §2: typing judgment `⊢ v : τ`) | — |
