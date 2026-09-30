@@ -2961,8 +2961,8 @@ def traceEval (M : FloatSig) (P : Program) :
 -- The budget is per declaration, and the `use` and `drop` arms are where it
 -- goes (about 2.5 s and 3.7 s of the whole, measured arm by arm): `eval`'s two
 -- place arms gained the declared-linear redex (§6.3) on top of the array
--- forms. The default fails and 250000 passes; the proof is unchanged.
-set_option maxHeartbeats 400000 in
+-- forms. Floor: the default 200000 fails and 250000 passes; the proof is unchanged.
+set_option maxHeartbeats 250000 in
 /-- **The trace is the machine.** Projecting a run to its final result
 reproduces `eval fuel P H φ e` exactly, so a rendered step table can never
 report an outcome — a value, an unwinding `return`, a §6.12 trap, a refusal,
