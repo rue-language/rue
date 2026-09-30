@@ -929,8 +929,9 @@ changed or new theorem uses at most `propext` and `Quot.sound`
   computation's obligation holding every value. `ArgsRes.bind` names the one
   shape every argument-list form of `eval` has, so `EvalInv.args` applies to
   `mkStruct`, `mkEnum`, `mkArray`, `indexRead`, `call` and `indexWrite`'s
-  indices as they stand. The section is 92 lines (49 code), five theorems, one
-  definition and the structure.
+  indices as they stand. The section is five theorems, one definition and the
+  structure; with the module doc's note on it, `Dynamics.Lemmas` grows by 92
+  lines (49 code).
 - `Tombstone.eval_live` runs through `LivePost.inv` (the held values
   irrelevant); `LivePost.andThen`, `ArgsLive` and `evalArgs_live` are gone,
   and `unop`, `intCast` and `fintrin` are one case.
@@ -962,7 +963,7 @@ changed or new theorem uses at most `propext` and `Quot.sound`
 | `set_option`, warnings, duplicate groups | unchanged | unchanged | |
 
 It pays for itself on these two users, narrowly: the two inductions lose 99
-lines and their modules 107, against the section's 92, so the package is 15
+lines and their modules 107, against `Dynamics.Lemmas`'s 92, so the package is 15
 lines (58 code lines) smaller. The helper counts rise by the new shared
 lemmas while the lines of helper proof behind each spine theorem fall. The
 cost is elaboration: unfolding `EvalInv`'s projections to the ledger and the
