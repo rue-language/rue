@@ -421,10 +421,24 @@ def code_names(cell: str) -> List[str]:
 # --- first uses ------------------------------------------------------------------
 
 
+# A code span naming a file (`scripts/glossary-check.py`, `GUIDE.md`) is not a
+# use of the words inside it: `validate-lean-xref-index.py` does not use
+# "index" (RUE-2523). A dotted Lean name (`RueCore.eval`) is not a file, so
+# only these extensions count.
+FILE_EXTENSIONS = ("py", "md", "lean", "txt", "toml", "json", "sh", "bzl", "rs", "rue", "yml", "yaml", "html", "diff", "log")
+FILE_SPAN = re.compile(r"^[\w./-]*(/[\w.-]*|\.(" + "|".join(FILE_EXTENSIONS) + r"))$")
+
+
+def mask_file_spans(text: str) -> str:
+    """Blank out the code spans that name a file or a path."""
+    return CODE_SPAN.sub(lambda m: " " * len(m.group(0)) if FILE_SPAN.match(m.group(2).strip()) else m.group(0), text)
+
+
 def first_use(patterns: List[re.Pattern], sources: Sequence[Source]) -> str:
     found: List[str] = []
     for source in sources:
         for section, text in source.lines:
+            text = mask_file_spans(text)
             flat = text.replace("`", "").replace("*", "")
             if any(p.search(flat) or p.search(text) for p in patterns):
                 label = section if source.short.startswith("`") else f"{source.short} {section}"

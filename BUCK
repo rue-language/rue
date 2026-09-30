@@ -1039,6 +1039,15 @@ rue_sh_test(
     ],
 )
 
+rue_tool_test(
+    name = "formal-glossary-tool-tests",
+    test = "scripts/test-glossary-check.py",
+    resources = [
+        "scripts/glossary-check.py",
+        "scripts/validate-lean-xref-index.py",
+    ],
+)
+
 rue_sh_test(
     name = "adr-registry-validation",
     test = "scripts/validate-adrs.py",
