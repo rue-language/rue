@@ -14809,8 +14809,8 @@ theorem RueCore.Exact.of_quiet {D : Decls} {H : Store} {X : List Nat} {r : EvalR
 
 **An argument list keeps the exact ledger** (§6.2's left-to-right search)
 where only its first member may complete abruptly: nothing is pending when the
-first does, and a later member aborts only with a trap, a refusal or exhausted
-fuel, so no built value is ever abandoned (helper).
+first does, and, given that a later member aborts only with a trap, a refusal or
+exhausted fuel, no built value is ever abandoned (helper).
 
 ```lean
 theorem RueCore.evalArgs_exact {D : Decls} {ev : Store → Expr → EvalRes}
