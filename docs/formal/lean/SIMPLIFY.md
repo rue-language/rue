@@ -908,3 +908,92 @@ What was done:
 Not done: `StrictStackOrder.teardown` takes a `Rec` but reads only its
 `Pairwise` half; asking only for that half is a header change left for
 the module's next pass.
+
+### RUE-2518 part 1: one evaluation-context lemma, two users
+
+From trunk `ee7e29e7f`, measured by `python3 bin/simplify-metrics.py` before
+and after. This is structural 2's first step: the generic lemma, and the two
+fuel inductions its shape fits most directly. Spec and
+`spine-fingerprints.txt` are unchanged, Comparator re-certifies, and every
+changed or new theorem uses at most `propext` and `Quot.sound`
+(`eval_conserves` and `Tombstone.eval_live` both, as before).
+
+- `EvalInv` (`Dynamics/Lemmas.lean`, the lowest module every proof module
+  imports) is an invariant of evaluation closed under §6.2's search: a
+  precondition on a start store `Pre H vs` and a promise `Post H vs r` about a
+  run's result, both holding the values `vs` of the operands already run,
+  with three obligations (`pre` and `seq` for an operand that produced a
+  value, `hold` for one whose result the form passes on). `EvalInv.bind`
+  proves `bind` keeps any such invariant, and `EvalInv.args` proves the same
+  of an argument list: operands in order, then compute, with the
+  computation's obligation holding every value. `ArgsRes.bind` names the one
+  shape every argument-list form of `eval` has, so `EvalInv.args` applies to
+  `mkStruct`, `mkEnum`, `mkArray`, `indexRead`, `call` and `indexWrite`'s
+  indices as they stand. The section is 92 lines (49 code), five theorems, one
+  definition and the structure.
+- `Tombstone.eval_live` runs through `LivePost.inv` (the held values
+  irrelevant); `LivePost.andThen`, `ArgsLive` and `evalArgs_live` are gone,
+  and `unop`, `intCast` and `fintrin` are one case.
+- `eval_conserves` runs through `Cons.inv`, which holds the operands' owned
+  identities, for its operator and argument-list forms. The forms whose rest
+  needs the operand's value as `v.own` (`let`, `match`, `;`, `if`, `return`,
+  `=`, the repeat form) keep `Cons.bind`: the invariant holds
+  `ownList (ofVals [v])`, which is not `v.own` up to definitional unfolding,
+  so each would need a rewrite for no gain. `ArgsCons` and `evalArgs_cons`
+  stay, used by `TracePrefix` and `TraceOrder`.
+
+| Measure | Before | After | Change |
+| --- | ---: | ---: | ---: |
+| Lines, all modules | 57165 | 57150 | −15 |
+| Code lines | 37221 | 37163 | −58 |
+| Theorems | 1539 | 1542 | +3 |
+| `eval_conserves`, lines | 384 | 336 | −48 |
+| `Tombstone.eval_live`, lines | 381 | 330 | −51 |
+| `Dynamics.Lemmas`: lines (code), theorems | 56 (29), 4 | 148 (78), 9 | +92 (+49), +5 |
+| `Trace`: lines (code), theorems | 2169 (1742), 105 | 2135 (1705), 105 | −34 (−37), 0 |
+| `Tombstone`: lines (code), theorems | 1483 (1234), 55 | 1410 (1164), 53 | −73 (−70), −2 |
+| Build CPU s: `Dynamics.Lemmas`, `Trace`, `Tombstone` | 0.45, 4.45, 3.72 | 0.71, 4.46, 3.72 | +0.26, noise, noise |
+| Build wall s (median of 3), same | 0.35, 1.71, 1.62 | 0.41, 1.80, 1.70 | noise |
+| Heartbeat floor, `Trace` (`eval_conserves`) | builds at 8000, fails at 7000 | builds at 10000, fails at 9000 | +2000 |
+| Heartbeat floor, `Tombstone` (`eval_live`) | builds at 9000, fails at 8000 | builds at 10000, fails at 9000 | +1000 |
+| `run_no_use_after_drop` helpers: all, their lines, own | 32, 699, 32 | 34, 665, 34 | +2, −34, +2 |
+| `no_double_free` helpers: all, their lines | 332, 5399 | 335, 5356 | +3, −43 |
+| `whole_program_exactly_once` helpers: all, their lines, own | 562, 9846, 241 | 565, 9803, 244 | +3, −43, +3 |
+| `set_option`, warnings, duplicate groups | unchanged | unchanged | |
+
+It pays for itself on these two users, narrowly: the two inductions lose 99
+lines and their modules 107, against the section's 92, so the package is 15
+lines (58 code lines) smaller. The helper counts rise by the new shared
+lemmas while the lines of helper proof behind each spine theorem fall. The
+cost is elaboration: unfolding `EvalInv`'s projections to the ledger and the
+promise at every use raises both inductions' heartbeat floors, against a
+default budget of 200000, with CPU time unchanged within noise but for
+`Dynamics.Lemmas`'s quarter second. The real test is part 2, which reuses the
+section rather than paying for it again.
+
+For part 2, how the other targets fit the interface as it stands:
+
+- `eval_tidy` (`TraceExact`): fits directly. `Tidy φ H` with `φ.In H` as the
+  precondition is `LivePost`'s shape; `Tidy.bind` and its argument-list
+  reasoning would go the way `LivePost.andThen` and `evalArgs_live` went.
+- `eval_glue_blocks` (`TraceOrder`, after #3311 lands): fits directly.
+  `DropGlueBlocks` of a result's trace, with `StoreCC` as the precondition,
+  holds no values; `DropGlueBlocks.bind` becomes an instance.
+- `eval_exact` (`TraceExact`): fits with one change. `Exact` is an equality,
+  so a held value may be abandoned only by a result that is not a `return`
+  or a `break` (`Exact.bindHeld`'s `NoRet ∧ NoBrk`), and `hold` would need
+  that guard, passed through `EvalInv.args` as the operands' quietness. Its
+  local `one` helper already factors the lead through `rest_step`, so the
+  gain is smaller than the other two.
+- `soundness` (`Soundness`): does not fit as stated. `EvalOk` is indexed by
+  the form's type and outcome context, and an operand's promise is at the
+  operand's type, not the form's, so `Post` needs an index for the operand
+  (an indexed `EvalInv`), and the `...Bot` arms are about the outcome
+  context, which `hold` does not see. The largest payoff, and it needs that
+  generalization first.
+- `eval_succ` (`Soundness`): does not fit. Its statement relates two runs
+  at different fuel, not a property of one result; a congruence lemma for
+  `bind` and `ArgsRes.bind` is its evaluation-context lemma instead.
+- `eval_longc` (`TracePrefix`): does not fit. It is a long-run statement
+  about `Step` configurations (`LongC`), by strong induction on fuel; it
+  belongs with structural 1's parametrized simulation, not here.
