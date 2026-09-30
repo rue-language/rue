@@ -203,7 +203,7 @@ What makes both equations definitions rather than fixpoint conditions is
 `3.0:5` (E0483): no struct or enum contains itself by value, directly or
 through a cycle of struct fields and enum payloads. The condition is joint over
 the two layers because the recursion is — a field may name an enum and a
-payload may name a struct — and `class_unique` (`Statics/Lemmas.lean`) is the proof it
+payload may name a struct — and `qual_unique` (`Statics/Lemmas.lean`) is the proof it
 buys, unconditionally: on declarations of the same shapes, at most one
 assignment of qualifiers satisfies §3's equations.
 
@@ -434,7 +434,7 @@ def Decls.ofStructs (D : List StructDecl) : Decls := { structs := D, enums := []
 index the environment does not have is `Affine`, the qualifier of a struct with no
 attribute and no linear field — the conservative reading of a program
 `WfStructs` rejects anyway (helper). -/
-def Decls.classOf (D : Decls) (s : Nat) : Qual :=
+def Decls.qualOf (D : Decls) (s : Nat) : Qual :=
   match D.structs[s]? with
   | some sd => sd.cls
   | none => .affine
@@ -443,7 +443,7 @@ def Decls.classOf (D : Decls) (s : Nat) : Qual :=
 declaration. An index the environment does not have is `Affine`, the
 conservative reading of a program `WfEnums` rejects anyway — `Copy` would let
 such a type be duplicated (helper). -/
-def Decls.enumClassOf (D : Decls) (e : Nat) : Qual :=
+def Decls.enumQualOf (D : Decls) (e : Nat) : Qual :=
   match D.enums[e]? with
   | some ed => ed.cls
   | none => .affine
@@ -466,8 +466,8 @@ itself otherwise, which is §3's "infectiousness is just the join" with the
 element type as the only member. -/
 def Ty.qual (D : Decls) : Ty → Qual
   | .int _ _ | .float _ | .bool | .unit => .copy
-  | .struct s => D.classOf s
-  | .enum e => D.enumClassOf e
+  | .struct s => D.qualOf s
+  | .enum e => D.enumQualOf e
   | .array T n =>
       match Ty.qual D T with
       | .copy => .copy

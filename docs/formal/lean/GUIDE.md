@@ -1231,7 +1231,7 @@ lifted by the declared attribute. For `S5` that is
 `Copy ⊔ qual(S1) = Copy ⊔ Affine = Affine`, and no attribute lifts it
 (`3.8:3`: structs are affine by default). `WfStructs` (`Statics.lean`) checks
 every recorded qualifier against this equation, alongside §3's other declaration
-rules, and `class_unique` shows the recorded qualifier is determined rather than
+rules, and `qual_unique` shows the recorded qualifier is determined rather than
 free.
 
 **The initializers.** (Struct-Intro) §5.8 types them **in declaration

@@ -72,7 +72,7 @@ def milestones : List (Name × String) := [
   (``LoopHead.enter, "a loop body is typed at its head state on first entry"),
   (``LoopHead.backEdge, "a loop body re-typed at its head state after one turn still satisfies the head equation"),
   (``loop_exit_ok, "every one of a loop's abrupt-completion contexts is typed at the state its `break` fires with"),
-  (``class_unique, "§3's qualifier assignment is unique; every derivation that reads a qualifier off a type leans on this"),
+  (``qual_unique, "§3's qualifier assignment is unique; every derivation that reads a qualifier off a type leans on this"),
   (``struct_carriesLinear_iff, "a struct's qualifier carries `linear` iff a field's does — read off by the checker and by the destructure rules"),
   (``enum_carriesLinear_iff, "the same equation for an enum's variants"),
   -- eval/Step simulation

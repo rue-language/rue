@@ -79,7 +79,7 @@ theorem StructDecl.Wf.field_not_linear {D : Decls} {sd : StructDecl}
     rw [hlin] at this
     exact this
   refine hcls ?_
-  rw [h.classIsJoin, hbase]
+  rw [h.qualIsJoin, hbase]
   cases hattr : sd.attr with
   | none => rfl
   | linear => rfl
@@ -97,10 +97,10 @@ theorem struct_carriesLinear_iff {D : Decls} {s : Nat} {sd : StructDecl}
     (Ty.struct s).qual D = .linear ↔
       (sd.attr = .linear ∨ ∃ T ∈ sd.fields, T.qual D = .linear) := by
   have hlookup : (Ty.struct s).qual D = sd.cls := by
-    simp [Ty.qual, Decls.classOf, hd]
+    simp [Ty.qual, Decls.qualOf, hd]
   constructor
   · intro hlin
-    rw [hlookup, h.classIsJoin] at hlin
+    rw [hlookup, h.qualIsJoin] at hlin
     cases hattr : sd.attr with
     | linear => exact Or.inl rfl
     | copy => rw [hattr] at hlin; cases hlin
@@ -114,7 +114,7 @@ theorem struct_carriesLinear_iff {D : Decls} {s : Nat} {sd : StructDecl}
           · exact Or.inr ⟨T, hmem, hT⟩
         · cases hlin
   · intro hsrc
-    rw [hlookup, h.classIsJoin]
+    rw [hlookup, h.qualIsJoin]
     rcases hsrc with hattr | ⟨T, hmem, hT⟩
     · rw [hattr]; rfl
     · have hbase : sd.baseOf D = .linear := by
@@ -145,7 +145,7 @@ shape both equations solve at more than one assignment
 
 `Decls.ByValueEdge` is `3.0:5`'s "contains by value" relation, one step, and
 `WfByValueEdge` is the rule itself: the relation is **well-founded**, so each
-declaration's qualifier is the unique solution of its equation (`class_unique`).
+declaration's qualifier is the unique solution of its equation (`qual_unique`).
 The calculus states the equations but not this side condition; §3 gains the
 paragraph in RUE-2334, and `3.0:5` is the normative form it mechanizes.
 `checkNoCycle` (`Checker/Defs.lean`) decides it by a topological sort. -/
@@ -206,7 +206,7 @@ theorem EnumDecl.Wf.payload_not_linear {D : Decls} {ed : EnumDecl}
     ∀ Ts ∈ ed.variants, ∀ T ∈ Ts, T.qual D ≠ .linear := by
   intro Ts hTs T hT hlin
   refine hcls ?_
-  rw [h.classIsJoin]
+  rw [h.qualIsJoin]
   refine Qual.eq_linear_of_rank ?_
   have := rank_le_payloadFold_of_mem D ed.variants .copy Ts T hTs hT
   rw [hlin] at this
@@ -222,15 +222,15 @@ theorem enum_carriesLinear_iff {D : Decls} {e : Nat} {ed : EnumDecl}
     (hd : D.enums[e]? = some ed) (h : ed.Wf D) :
     (Ty.enum e).qual D = .linear ↔ ∃ Ts ∈ ed.variants, ∃ T ∈ Ts, T.qual D = .linear := by
   have hlookup : (Ty.enum e).qual D = ed.cls := by
-    simp [Ty.qual, Decls.enumClassOf, hd]
+    simp [Ty.qual, Decls.enumQualOf, hd]
   constructor
   · intro hlin
-    rw [hlookup, h.classIsJoin] at hlin
+    rw [hlookup, h.qualIsJoin] at hlin
     rcases payloadFold_linear_inv D ed.variants .copy hlin with h' | hex
     · cases h'
     · exact hex
   · intro ⟨Ts, hTs, T, hT, hlin⟩
-    rw [hlookup, h.classIsJoin]
+    rw [hlookup, h.qualIsJoin]
     refine Qual.eq_linear_of_rank ?_
     have := rank_le_payloadFold_of_mem D ed.variants .copy Ts T hTs hT
     rw [hlin] at this
@@ -249,9 +249,9 @@ an enum and a payload may name a struct, so `struct S { x0: E }` /
 `enum E { K(S) }` satisfies §3's struct equation *and* `6.3:19`'s enum equation
 at more than one assignment, and only a cross-layer condition excludes it
 (`Examples.lean` pins that shape as a refusal witness; the compiler reports
-E0483). `class_unique` is therefore **one** theorem over both layers, assuming
+E0483). `qual_unique` is therefore **one** theorem over both layers, assuming
 nothing about the other layer's qualifiers, and
-`struct_class_unique`/`enum_class_unique` are its two projections.
+`struct_qual_unique`/`enum_qual_unique` are its two projections.
 
 The specification states the rule normatively and across both layers — `3.0:5`,
 "A struct or enum MUST NOT contain itself by value, either directly or through
@@ -298,7 +298,7 @@ The theorem takes no hypothesis about the other layer's qualifiers, which is wha
 "contains" relation rather than over a declaration index, so a field naming an
 enum and a payload naming a struct are the same step. `dtor` does not appear,
 because §3's equations do not read it. -/
-theorem class_unique {D D' : Decls} (hwf : WfDecls D) (hwf' : WfDecls D')
+theorem qual_unique {D D' : Decls} (hwf : WfDecls D) (hwf' : WfDecls D')
     (hslen : D.structs.length = D'.structs.length)
     (helen : D.enums.length = D'.enums.length)
     (hsshape : ∀ (s : Nat) (sd sd' : StructDecl),
@@ -316,7 +316,7 @@ theorem class_unique {D D' : Decls} (hwf : WfDecls D) (hwf' : WfDecls D')
       Ty.qual_congr_tyNames T (fun d' hd' => ih d' ⟨T, hT, hd'⟩)
     cases d with
     | struct s =>
-        show D.classOf s = D'.classOf s
+        show D.qualOf s = D'.qualOf s
         cases hd : D.structs[s]? with
         | none =>
             have : D'.structs[s]? = none := by
@@ -324,7 +324,7 @@ theorem class_unique {D D' : Decls} (hwf : WfDecls D) (hwf' : WfDecls D')
               · rfl
               · exact absurd (List.getElem?_eq_some_iff.mp hd' |>.1)
                   (by have := List.getElem?_eq_none_iff.mp hd; omega)
-            simp [Decls.classOf, hd, this]
+            simp [Decls.qualOf, hd, this]
         | some sd =>
             have hlt : s < D'.structs.length := by
               have := List.getElem?_eq_some_iff.mp hd |>.1; omega
@@ -340,11 +340,11 @@ theorem class_unique {D D' : Decls} (hwf : WfDecls D) (hwf' : WfDecls D')
               unfold StructDecl.baseOf
               rw [← hfields]
               exact joinFold_congr sd.fields .copy hfmem
-            simp only [Decls.classOf, hd, hd']
-            rw [(hwf.structs s sd hd).classIsJoin, (hwf'.structs s sd' hd').classIsJoin,
+            simp only [Decls.qualOf, hd, hd']
+            rw [(hwf.structs s sd hd).qualIsJoin, (hwf'.structs s sd' hd').qualIsJoin,
               hattr, hbase]
     | enum e =>
-        show D.enumClassOf e = D'.enumClassOf e
+        show D.enumQualOf e = D'.enumQualOf e
         cases hd : D.enums[e]? with
         | none =>
             have : D'.enums[e]? = none := by
@@ -352,7 +352,7 @@ theorem class_unique {D D' : Decls} (hwf : WfDecls D) (hwf' : WfDecls D')
               · rfl
               · exact absurd (List.getElem?_eq_some_iff.mp hd' |>.1)
                   (by have := List.getElem?_eq_none_iff.mp hd; omega)
-            simp [Decls.enumClassOf, hd, this]
+            simp [Decls.enumQualOf, hd, this]
         | some ed =>
             have hlt : e < D'.enums.length := by
               have := List.getElem?_eq_some_iff.mp hd |>.1; omega
@@ -370,16 +370,16 @@ theorem class_unique {D D' : Decls} (hwf : WfDecls D) (hwf' : WfDecls D')
               unfold EnumDecl.payloadJoin
               rw [← hvar]
               exact payloadFold_congr ed.variants .copy hpmem
-            simp only [Decls.enumClassOf, hd, hd']
-            rw [(hwf.enums e ed hd).classIsJoin, (hwf'.enums e ed' hd').classIsJoin, hjoin]
+            simp only [Decls.enumQualOf, hd, hd']
+            rw [(hwf.enums e ed hd).qualIsJoin, (hwf'.enums e ed' hd').qualIsJoin, hjoin]
   exact fun T => Ty.qual_congr_tyNames T (fun d _ => key d)
 
 /-- **§3's qualifier assignment for the struct layer has one solution**, the
-projection of `class_unique` §3's own sentence asks for. It needs the enum
+projection of `qual_unique` §3's own sentence asks for. It needs the enum
 layer's shapes as well as the struct layer's, because a field may name an enum
 — that is the mutual recursion `3.0:5` grounds, not a weakness of the
 statement. -/
-theorem struct_class_unique {D D' : Decls} (hwf : WfDecls D) (hwf' : WfDecls D')
+theorem struct_qual_unique {D D' : Decls} (hwf : WfDecls D) (hwf' : WfDecls D')
     (hslen : D.structs.length = D'.structs.length)
     (helen : D.enums.length = D'.enums.length)
     (hsshape : ∀ (s : Nat) (sd sd' : StructDecl),
@@ -387,14 +387,14 @@ theorem struct_class_unique {D D' : Decls} (hwf : WfDecls D) (hwf' : WfDecls D')
         sd.attr = sd'.attr ∧ sd.fields = sd'.fields)
     (heshape : ∀ (e : Nat) (ed ed' : EnumDecl),
       D.enums[e]? = some ed → D'.enums[e]? = some ed' → ed.variants = ed'.variants) :
-    ∀ s, D.classOf s = D'.classOf s :=
-  fun s => class_unique hwf hwf' hslen helen hsshape heshape (.struct s)
+    ∀ s, D.qualOf s = D'.qualOf s :=
+  fun s => qual_unique hwf hwf' hslen helen hsshape heshape (.struct s)
 
 /-- **§3's qualifier assignment for the enum layer has one solution** (`6.3:19`),
-the other projection of `class_unique`. Simpler than the struct one in its own
+the other projection of `qual_unique`. Simpler than the struct one in its own
 layer — an enum records no attribute, so its qualifier *is* the payload join — and
 mutual in the same way: a payload may name a struct. -/
-theorem enum_class_unique {D D' : Decls} (hwf : WfDecls D) (hwf' : WfDecls D')
+theorem enum_qual_unique {D D' : Decls} (hwf : WfDecls D) (hwf' : WfDecls D')
     (hslen : D.structs.length = D'.structs.length)
     (helen : D.enums.length = D'.enums.length)
     (hsshape : ∀ (s : Nat) (sd sd' : StructDecl),
@@ -402,8 +402,8 @@ theorem enum_class_unique {D D' : Decls} (hwf : WfDecls D) (hwf' : WfDecls D')
         sd.attr = sd'.attr ∧ sd.fields = sd'.fields)
     (heshape : ∀ (e : Nat) (ed ed' : EnumDecl),
       D.enums[e]? = some ed → D'.enums[e]? = some ed' → ed.variants = ed'.variants) :
-    ∀ e, D.enumClassOf e = D'.enumClassOf e :=
-  fun e => class_unique hwf hwf' hslen helen hsshape heshape (.enum e)
+    ∀ e, D.enumQualOf e = D'.enumQualOf e :=
+  fun e => qual_unique hwf hwf' hslen helen hsshape heshape (.enum e)
 
 /-! ## The fused `Γ ; Σ` context, keyed by path -/
 
@@ -1247,7 +1247,7 @@ theorem OwnSt.wf_fields_array (D : Decls) (T' : Ty) (n : Nat) (xs : List OwnSt) 
 mutual
 /-- **The §5.5 join is associative**, at one path and its subtree, over states
 that are shapes of their type (`OwnSt.wf`) and under §3's qualifier assignment for
-the struct layer (`WfStructs`, of which only the class-is-join clause is read).
+the struct layer (`WfStructs`, of which only the qual-is-join clause is read).
 Neither premise can be dropped: the section docstring above says which
 counterexample each rules out; `WfStructs` is one a
 well-formed program already carries (`checkStructs_sound`).

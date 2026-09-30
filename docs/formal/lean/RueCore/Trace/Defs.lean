@@ -32,8 +32,8 @@ in it, `⊘` skipped (§6.11's skip) and nothing below a `Copy` node, since a
 `Copy` value is duplicated freely and has no drop glue. -/
 def Contents.own (D : Decls) : Contents → List Nat
   | .movedOut | .int _ _ _ | .float _ _ | .bool _ | .unit => []
-  | .struct s i cs => if D.classOf s = .copy then [] else i :: Contents.ownList D cs
-  | .enum e _ i cs => if D.enumClassOf e = .copy then [] else i :: Contents.ownList D cs
+  | .struct s i cs => if D.qualOf s = .copy then [] else i :: Contents.ownList D cs
+  | .enum e _ i cs => if D.enumQualOf e = .copy then [] else i :: Contents.ownList D cs
   | .array T i cs =>
       if Ty.qual D (.array T cs.length) = .copy then [] else i :: Contents.ownList D cs
 
@@ -102,7 +102,7 @@ def EvalRes.trace : EvalRes → List Event
 /-- A destructor-bearing struct is not `Copy` (`3.9:31`): the one fact about
 the declarations the conservation law reads (helper). -/
 def DtorNotCopy (D : Decls) : Prop :=
-  ∀ (s : Nat) (sd : StructDecl), D.structs[s]? = some sd → sd.dtor = true → D.classOf s ≠ .copy
+  ∀ (s : Nat) (sd : StructDecl), D.structs[s]? = some sd → sd.dtor = true → D.qualOf s ≠ .copy
 
 /-- What the conservation law asks of a projection `F` of the trace onto
 identities: §6.11's walk projects to at most what the dropped contents owns,

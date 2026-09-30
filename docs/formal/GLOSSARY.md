@@ -642,8 +642,8 @@ documents rely on.
 | `EnumDecl` | `Syntax` | An enum declaration: one payload tuple per variant, in declaration order, and its class | Rue-specific, grounded (spec 6.3:1) | `Statics` |
 | `Decls` | `Syntax` | A program's type declarations: its struct list and its enum list, indexed the way types name them | Rue-specific, grounded (spec 3.9:17) | `Checker.Defs` |
 | `Decls.ofStructs` | `Syntax` | A declaration list with structs only | helper | — |
-| `Decls.classOf` | `Syntax` | A declared struct's qualifier, read off its declaration | helper | — |
-| `Decls.enumClassOf` | `Syntax` | A declared enum's qualifier, read off its declaration | helper | — |
+| `Decls.qualOf` | `Syntax` | A declared struct's qualifier, read off its declaration | helper | — |
+| `Decls.enumQualOf` | `Syntax` | A declared enum's qualifier, read off its declaration | helper | — |
 | `Ty.qual` | `Syntax` | A type's class, `qual(T)` (§3): scalars are `Copy`, arrays take their element's, declarations their recorded class | Rue-specific, grounded (spec 6.3:19) | lean/README “Deciding whether to believe it”; GUIDE §7; MUTATION “What is mutated”; `Syntax` |
 | `Ty.carriesLinear` | `Syntax` | A type carries a linear value: its class is `Linear` (§5.3, `3.8:57`) | Rue-specific, grounded (spec 3.8:57) | `Statics` |
 | `Place` | `Syntax` | A place: a variable followed by field projections and constant array indices (§2, §5) | standard (FIELD §5: place) | 03 intro; lean/README “What is mechanized”; `Syntax` |

@@ -31,7 +31,7 @@ payload join over every variant (`6.3:19`). What makes either equation a
 declaration contains itself by value, directly or through a cycle. That rule is
 joint over the two layers — a field may name an enum and a payload may name a
 struct — so `checkNoCycle` decides it once, for the whole environment, and
-`class_unique` is the unconditional uniqueness statement it buys.
+`qual_unique` is the unconditional uniqueness statement it buys.
 
 ## `match`, algorithmically
 
@@ -1160,7 +1160,7 @@ theorem Decls.acc_of_empty {D : Decls} {d : TyName} (h : D.byValue d = []) :
 /-- **Every `checkNoCycle` acceptance is `3.0:5`** (`WfByValueEdge`): the by-value
 "contains" relation over the declarations is well-founded, so no struct or enum
 contains itself by value through any cycle of fields and payloads. This is the
-premise `class_unique` turns into "§3's qualifier assignment has one solution". -/
+premise `qual_unique` turns into "§3's qualifier assignment has one solution". -/
 theorem checkNoCycle_sound {D : Decls} (h : checkNoCycle D = true) : WfByValueEdge D := by
   have key : ∀ (l : List Bool) (i : Nat) (b : Bool), l.all id = true → l[i]? = some b →
       b = true := by

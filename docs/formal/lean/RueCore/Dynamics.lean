@@ -329,8 +329,8 @@ deriving Repr
 /-- The dynamic image of `qual(T)` (§3) on a value: scalars are `Copy`, a
 struct value has the qualifier its declaration records. -/
 def Val.qual (D : Decls) : Val → Qual
-  | .struct s _ _ => D.classOf s
-  | .enum e _ _ _ => D.enumClassOf e
+  | .struct s _ _ => D.qualOf s
+  | .enum e _ _ _ => D.enumQualOf e
   | .array T _ vs => Ty.qual D (.array T vs.length)
   | .int _ _ _ | .float _ _ | .bool _ | .unit => .copy
 
@@ -405,8 +405,8 @@ def Contents.isMovedOut : Contents → Bool
 /-- The dynamic image of `qual(T)` (§3) on cell contents: a moved-out part has nothing
 to drop, and a struct has the qualifier its declaration records (helper). -/
 def Contents.qual (D : Decls) : Contents → Qual
-  | .struct s _ _ => D.classOf s
-  | .enum e _ _ _ => D.enumClassOf e
+  | .struct s _ _ => D.qualOf s
+  | .enum e _ _ _ => D.enumQualOf e
   | .array T _ cs => Ty.qual D (.array T cs.length)
   | .movedOut | .int _ _ _ | .float _ _ | .bool _ | .unit => .copy
 
@@ -415,8 +415,8 @@ mutual
 aggregate is when its own qualifier is and each member is (helper). -/
 def Contents.allCopy (D : Decls) : Contents → Bool
   | .movedOut | .int _ _ _ | .float _ _ | .bool _ | .unit => true
-  | .struct s _ cs => decide (D.classOf s = .copy) && Contents.allCopyList D cs
-  | .enum e _ _ cs => decide (D.enumClassOf e = .copy) && Contents.allCopyList D cs
+  | .struct s _ cs => decide (D.qualOf s = .copy) && Contents.allCopyList D cs
+  | .enum e _ _ cs => decide (D.enumQualOf e = .copy) && Contents.allCopyList D cs
   | .array T _ cs =>
       decide (Ty.qual D (.array T cs.length) = .copy) && Contents.allCopyList D cs
 
@@ -444,9 +444,9 @@ a typing derivation (`Trace.lean`) (helper). -/
 def Contents.copyContained (D : Decls) : Contents → Bool
   | .movedOut | .int _ _ _ | .float _ _ | .bool _ | .unit => true
   | .struct s _ cs =>
-      if D.classOf s = .copy then Contents.allCopyList D cs else Contents.copyContainedList D cs
+      if D.qualOf s = .copy then Contents.allCopyList D cs else Contents.copyContainedList D cs
   | .enum e _ _ cs =>
-      if D.enumClassOf e = .copy then Contents.allCopyList D cs
+      if D.enumQualOf e = .copy then Contents.allCopyList D cs
       else Contents.copyContainedList D cs
   | .array T _ cs =>
       if Ty.qual D (.array T cs.length) = .copy then Contents.allCopyList D cs
@@ -1087,7 +1087,7 @@ node, its payload already bound to the arm's cells. The event names the node
 with every payload slot `⊘`. A `Copy` scrutinee was copied, not consumed, and
 its dead remainder owns nothing, so nothing is recorded (helper). -/
 def matchConsume (D : Decls) (e k i : Nat) (vs : List Val) : List Event :=
-  if D.enumClassOf e = .copy then [] else [.consume (.enum e k i (vs.map fun _ => .movedOut))]
+  if D.enumQualOf e = .copy then [] else [.consume (.enum e k i (vs.map fun _ => .movedOut))]
 
 /-- `@dbg`'s operand domain: the values §6.12's rendering is defined on —
 an integer, a float or a `bool` (§5.8's (Dbg) types the operand
