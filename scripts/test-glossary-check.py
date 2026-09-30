@@ -25,14 +25,25 @@ class FileSpanTests(unittest.TestCase):
     def setUp(self) -> None:
         self.check = load_check()
 
+    def blanked(self, text: str, span: str) -> str:
+        return text.replace(span, " " * len(span))
+
     def test_file_and_path_spans_are_masked(self) -> None:
-        for text in ["see `validate-lean-xref-index.py` here", "the `GUIDE.md` row", "under `docs/formal/lean`"]:
+        for text, span in [
+            ("see `validate-lean-xref-index.py` here", "`validate-lean-xref-index.py`"),
+            ("the `GUIDE.md` row", "`GUIDE.md`"),
+            ("under `docs/formal/lean` now", "`docs/formal/lean`"),
+            ("from `crates/rue-oracle-diff` on", "`crates/rue-oracle-diff`"),
+            ("the renderings (`lean/explain/*.txt`)", "`lean/explain/*.txt`"),
+        ]:
             with self.subTest(text=text):
-                self.assertNotIn("index", self.check.mask_file_spans(text).replace("xref", ""))
-                self.assertEqual(len(self.check.mask_file_spans(text)), len(text))
+                self.assertEqual(self.check.mask_file_spans(text), self.blanked(text, span))
 
     def test_other_spans_are_kept(self) -> None:
-        for text in ["`RueCore.eval` runs", "an `index` word", "`Config.stack`", "`drop ℓ c`"]:
+        for text in [
+            "`RueCore.eval` runs", "an `index` word", "`Config.stack`", "`drop ℓ c`",
+            "`0/0` is NaN", "`a/b` rounds", "results `Rval/Rfail/Rtimeout`", "C's `/`", "`Nat.log`", "`List.diff`",
+        ]:
             with self.subTest(text=text):
                 self.assertEqual(self.check.mask_file_spans(text), text)
 

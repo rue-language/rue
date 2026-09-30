@@ -434,7 +434,7 @@ it has two rows.
 | digest | The generated `DIGEST.md`: every theorem's statement as Lean elaborates it | none | — | ours, pending audit | README intro; REDTEAM “Targets”; lean/README “Deciding whether to believe it”; GUIDE §6; SIMPLIFY “Lines, theorems, build time, overrides …” |
 | proof map | The generated `MAP.md`: Mermaid diagrams of the spine and the milestones, the edges between them, what each spine theorem's statement depends on, and the static assurance chain | none | — | ours, pending audit | lean/README “Layers”; SIMPLIFY intro |
 | milestone lemma; milestone lemmas | A load-bearing internal lemma the proof map marks besides the spine, chosen from the preservation invariants, the `eval`/`Step` simulation lemmas or the key trace lemmas | none | — | ours, pending audit | lean/README “The proof map” |
-| trace rendering; explain | The generated per-case trace of a corpus program under the model | [FIELD §6][F6]: trace (Leucker & Schallhart); the rendering and its format are ours | — | ours, pending audit | 03 “No use-after-drop / no leak …”; lean/README “Explaining a program”; GUIDE “The three trace theorems, one …”; BRIDGE-SENSITIVITY “Rule coverage”; MUTATION “Method”; CHECKER-PROFILE intro; SIMPLIFY “Metric methods” |
+| trace rendering; explain | The generated per-case trace of a corpus program under the model | [FIELD §6][F6]: trace (Leucker & Schallhart); the rendering and its format are ours | — | ours, pending audit | lean/README “Explaining a program”; GUIDE “One program, traced both ways”; BRIDGE-SENSITIVITY “Rule coverage”; MUTATION “Method”; CHECKER-PROFILE intro; SIMPLIFY “Metric methods” |
 
 ### Red-team process
 

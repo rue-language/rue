@@ -421,17 +421,41 @@ def code_names(cell: str) -> List[str]:
 # --- first uses ------------------------------------------------------------------
 
 
-# A code span naming a file (`scripts/glossary-check.py`, `GUIDE.md`) is not a
-# use of the words inside it: `validate-lean-xref-index.py` does not use
-# "index" (RUE-2523). A dotted Lean name (`RueCore.eval`) is not a file, so
-# only these extensions count.
-FILE_EXTENSIONS = ("py", "md", "lean", "txt", "toml", "json", "sh", "bzl", "rs", "rue", "yml", "yaml", "html", "diff", "log")
-FILE_SPAN = re.compile(r"^[\w./-]*(/[\w.-]*|\.(" + "|".join(FILE_EXTENSIONS) + r"))$")
+# A code span naming a file or path (`scripts/glossary-check.py`, `GUIDE.md`,
+# `Trace/Defs`, `docs/formal/lean`) is not a use of the words inside it:
+# `validate-lean-xref-index.py` does not use "index" (RUE-2523). Only these
+# extensions count, so a dotted Lean name (`RueCore.eval`) is not a file; and a
+# span with a `/` counts only when it is a path of this repository (a known
+# top-level directory, or a file or directory of the formal tree), so a formula
+# (`0/0`) or a list of names (`Rval/Rfail`) is not masked. Fenced code and bare
+# (unquoted) filenames are not masked.
+FILE_EXTENSIONS = ("py", "md", "lean", "txt", "toml", "json", "sh", "bzl", "rs", "rue", "yml", "yaml", "html")
+FILE_NAME = re.compile(r"^[\w./$*-]+\.(" + "|".join(FILE_EXTENSIONS) + r")$")
+REPO_DIRS = ("crates/", "docs/", "scripts/", "std/", "toolchains/", ".github/")
+PATH_SPAN = re.compile(r"^[\w.-]+(/[\w.-]+)+/?$")
+_formal_root: Optional[Path] = None
+
+
+def is_file_span(span: str) -> bool:
+    span = span.strip()
+    if FILE_NAME.match(span):
+        return True
+    if not PATH_SPAN.match(span):
+        return False
+    if span.startswith(REPO_DIRS):
+        return True
+    if _formal_root is None:
+        return False
+    rel = span.rstrip("/")
+    for base in (_formal_root, _formal_root / "lean", _formal_root / "lean" / "RueCore"):
+        if (base / rel).exists() or (base / (rel + ".lean")).exists():
+            return True
+    return False
 
 
 def mask_file_spans(text: str) -> str:
     """Blank out the code spans that name a file or a path."""
-    return CODE_SPAN.sub(lambda m: " " * len(m.group(0)) if FILE_SPAN.match(m.group(2).strip()) else m.group(0), text)
+    return CODE_SPAN.sub(lambda m: " " * len(m.group(0)) if is_file_span(m.group(2)) else m.group(0), text)
 
 
 def first_use(patterns: List[re.Pattern], sources: Sequence[Source]) -> str:
@@ -482,6 +506,8 @@ def row_patterns(kind: str, first_cell: str) -> List[re.Pattern]:
 
 
 def load_sources(formal: Path, lean_dir: Path) -> Tuple[List[Source], Dict[str, str], List[str]]:
+    global _formal_root
+    _formal_root = formal
     sources: List[Source] = []
     for relative, short in MARKDOWN_DOCS:
         path = formal / relative
