@@ -233,13 +233,13 @@ helper theorems `Map.walk` counted under it before the next marked node:
 | `unwindLocs_plain` | a monitor removes no behaviour: an unwind's drops are the same with or without the monitors | 19 | 1 |
 | `eval_conserves` | the conservation law over `eval`'s identities, proved by fuel induction, that `no_double_free` follows from | 390 | 173 |
 | `eval_tidy` | every cell an evaluation allocates is tombstoned by its end — the activation-record-pop invariant behind `drop_exactly_once` | 228 | 49 |
-| `rest_step` | the ledger for the rest of every form, behind `rest_exactly_once` | 326 | 169 |
+| `rest_step` | the ledger for the rest of every form, behind `rest_exactly_once` | 316 | 160 |
 | `run_blocks` | every terminating run's trace is in the block grammar `Blocks`: each drop marker followed by exactly its own walk | 6 | 79 |
 | `step_blocks` | carries `run_blocks` to `Step` | 17 | 6 |
 | `reachable_ordered` | every drop scope is in location order | 13 | 23 |
 | `reachable_nested` | scopes nest, a pending `endscope` being the tail of its record | 12 | 17 |
 | `reachable_stackDiscipline` | the registration stack is dropped newest-first | 17 | 13 |
-| `pendingSafe_needed` | the RUE-2316 carve-out (a by-value argument a sibling's `return` destroys) is load-bearing, not vacuous | 28 | 6 |
+| `pendingSafe_needed` | the RUE-2316 carve-out (a by-value argument a sibling's `return` destroys) is load-bearing, not vacuous | 20 | 8 |
 | `roundRat_wf` | rounding an exact rational lands in 𝔽_w — the float algebraic specification's closure law the non-vacuity witness rests on | 19 | 34 |
 ## Definitions the statements rest on
 
@@ -2434,9 +2434,9 @@ marked node.
 | `step_no_double_free` | `RueCore.TracePrefix` | 12 | 167 |
 | `freed_once` | `RueCore.Trace` | 10 | 14 |
 | `dtor_once` | `RueCore.Trace` | 7 | 20 |
-| `drop_exactly_once` | `RueCore.TraceExact` | 55 | 148 |
-| `rest_exactly_once` | `RueCore.TraceExact` | 52 | 151 |
-| `whole_program_exactly_once` | `RueCore.TraceWhole` | 37 | 307 |
+| `drop_exactly_once` | `RueCore.TraceExact` | 55 | 136 |
+| `rest_exactly_once` | `RueCore.TraceExact` | 52 | 139 |
+| `whole_program_exactly_once` | `RueCore.TraceWhole` | 37 | 297 |
 | `drop_order` | `RueCore.TraceOrder` | 36 | 21 |
 | `drop_glue_order` | `RueCore.TraceOrder` | 25 | 82 |
 | `Step.det` | `RueCore.Step.Lemmas` | 11 | 2 |
@@ -2474,11 +2474,11 @@ marked node.
 | `unwindLocs_plain` | `RueCore.Step.Lemmas` | 19 | 1 |
 | `eval_conserves` | `RueCore.Trace` | 390 | 173 |
 | `eval_tidy` | `RueCore.TraceExact` | 228 | 49 |
-| `rest_step` | `RueCore.TraceExact` | 326 | 169 |
+| `rest_step` | `RueCore.TraceExact` | 316 | 160 |
 | `run_blocks` | `RueCore.TraceOrder` | 6 | 79 |
 | `step_blocks` | `RueCore.TraceOrder` | 17 | 6 |
 | `reachable_ordered` | `RueCore.TraceOrder` | 13 | 23 |
 | `reachable_nested` | `RueCore.TraceOrder` | 12 | 17 |
 | `reachable_stackDiscipline` | `RueCore.TraceOrder` | 17 | 13 |
-| `pendingSafe_needed` | `RueCore.TraceExact` | 28 | 6 |
+| `pendingSafe_needed` | `RueCore.TraceExact` | 20 | 8 |
 | `roundRat_wf` | `RueCore.Float.Lemmas` | 19 | 34 |

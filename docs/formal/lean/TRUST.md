@@ -15,7 +15,7 @@ statements are.
 - Toolchain: Lean 4.33.1 (the pin in `lean-toolchain` and in
   `toolchains/lean/defs.bzl`, held equal by
   `scripts/validate-lean-toolchain-pin.py`).
-- Theorems checked: 1547.
+- Theorems checked: 1543.
 - Proofs depending on `sorryAx`: 0.
 - Axioms declared by this package: 0.
 - Distinct axioms used: `Quot.sound`, `propext`.
@@ -770,15 +770,11 @@ and diffs them against the committed copies.
 | `Nonvacuous.whole_drops` | `RueCore.Nonvacuous` | `Quot.sound`, `propext` |
 | `Nonvacuous.whole_result` | `RueCore.Nonvacuous` | `Quot.sound`, `propext` |
 | `Expr.pendingSafeList_mem` | `RueCore.TraceExact` | `propext` |
-| `Expr.returnsList_mem` | `RueCore.TraceExact` | `propext` |
-| `Expr.breaksList_mem` | `RueCore.TraceExact` | `propext` |
 | `Expr.quietList_mem` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
-| `EvalRes.bind_noRet` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
-| `EvalRes.bind_noBrk` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
 | `EvalRes.withTrace_noRet` | `RueCore.TraceExact` | `propext` |
 | `EvalRes.withTrace_noBrk` | `RueCore.TraceExact` | `propext` |
-| `evalArgs_noRet` | `RueCore.TraceExact` | `propext` |
-| `evalArgs_noBrk` | `RueCore.TraceExact` | `propext` |
+| `EvalRes.bind_of` | `RueCore.TraceExact` | `propext` |
+| `evalArgs_abort_of` | `RueCore.TraceExact` | `propext` |
 | `introVal_quiet` | `RueCore.TraceExact` | `propext` |
 | `OpRes.toRes_quiet` | `RueCore.TraceExact` | `propext` |
 | `EvalRes.bindCall_quiet` | `RueCore.TraceExact` | `propext` |
@@ -808,14 +804,12 @@ and diffs them against the committed copies.
 | `Exact.opRes` | `RueCore.TraceExact` | `propext` |
 | `Exact.intro` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
 | `Exact.of_quiet` | `RueCore.TraceExact` | `propext` |
-| `evalArgs_exactQuiet` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
 | `evalArgs_exact` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
 | `Exact.move` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
 | `Exact.destructure` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
 | `Exact.dropPlace` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
 | `Exact.dropDeclared` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
 | `Exact.assign` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
-| `Exact.assignDyn` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
 | `Exact.unwind` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
 | `evalBinOp_val_args` | `RueCore.TraceExact` | `propext` |
 | `evalUnOp_val_arg` | `RueCore.TraceExact` | `propext` |
@@ -840,10 +834,12 @@ and diffs them against the committed copies.
 | `Tidy.prefix` | `RueCore.TraceExact` | `propext` |
 | `Tidy.bind` | `RueCore.TraceExact` | `propext` |
 | `dropRetire_shape` | `RueCore.TraceExact` | `propext` |
-| `dropRetire_live` | `RueCore.TraceExact` | `propext` |
 | `unwindLocs_shape` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
 | `unwind_kills` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
 | `dropRetire_kills` | `RueCore.TraceExact` | `propext` |
+| `Local.lift` | `RueCore.TraceExact` | `propext` |
+| `Tombstoned.lift` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
+| `Tidy.teardown` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
 | `Tidy.scoped` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
 | `freshParams_locs` | `RueCore.TraceExact` | `propext` |
 | `freshParams_mem` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
@@ -859,10 +855,10 @@ and diffs them against the committed copies.
 | `lead_cc` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
 | `rest_exactly_once` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
 | `lostProgram_typed` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
-| `pendingSafe_needed` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
-| `typed_of_check` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
 | `lostActivation_typing` | `RueCore.TraceExact` | `propext` |
 | `lostStore_cc` | `RueCore.TraceExact` | `propext` |
+| `pendingSafe_needed` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
+| `typed_of_check` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
 | `orphan_rejected` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
 | `emptyStore_cc` | `RueCore.TraceExact` | `propext` |
 | `letDropDeleted_rejected` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
