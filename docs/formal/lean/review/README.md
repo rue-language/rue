@@ -112,3 +112,5 @@ Every finding, whatever the angle, has:
 - **the fix**: a concrete change.
 
 The full format is in [`_common.md`](_common.md), "Output".
+
+[`CALIBRATION.md`](CALIBRATION.md) records what the angles found when #3243 was reviewed again with them.
