@@ -897,25 +897,10 @@ theorem Exact.dropDeclared {D : Decls} {H : Store} {ℓ : Nat} {c c' cd leaf : C
   simp only [Val.own, Contents.ofVal, Contents.own, List.count_nil]
   omega
 
-/-- **(D-Assign) §6.8, exactly**: the old contents at the place is freed and
-the held value takes its position (helper). -/
-theorem Exact.assign {D : Decls} {H : Store} {ℓ : Nat} {c c' old : Contents} {π : List Nat}
-    {v : Val} {evs : List Event} (hcc : StoreCC D H) (hc : H[ℓ]? = some (.full c))
-    (hr : c.getAt π = .ok old) (hd : dropCell D ℓ old = .ok evs)
-    (hw : c.setAt π (Contents.ofVal v) = some c') (hc' : c'.copyContained D = true) :
-    Exact D H (v.own D) (.ok (H.set ℓ (.full c')) .unit evs) := by
-  have hccc := hcc ℓ c hc
-  refine ⟨by simp, hcc.set hc', rfl, fun a _ => ?_⟩
-  have h1 := storeOwn_set_count D a (.full c') hc
-  have h2 := Contents.setAt_own_eq a π hccc hc' hr hw
-  rw [dropCell_freed hd]
-  simp only [Cell.own] at h1
-  simp only [Val.own_unit, List.count_nil]
-  simp only [Val.own] at *
-  omega
-
-/-- **(D-Assign) below a dynamic index, exactly** (helper). -/
-theorem Exact.assignDyn {D : Decls} {H : Store} {ℓ : Nat} {c c' sub sub' old : Contents}
+/-- **(D-Assign) §6.8, exactly**, at a place below a dynamic index (`ρ`, empty
+for a static place): the old contents at the place is freed and the held value
+takes its position (helper). -/
+theorem Exact.assign {D : Decls} {H : Store} {ℓ : Nat} {c c' sub sub' old : Contents}
     {π ρ : List Nat} {v : Val} {evs : List Event} (hcc : StoreCC D H)
     (hc : H[ℓ]? = some (.full c)) (hr : c.getAt π = .ok sub) (hr' : sub.getAt ρ = .ok old)
     (hd : dropCell D ℓ old = .ok evs) (hw' : sub.setAt ρ (Contents.ofVal v) = some sub')
@@ -1255,7 +1240,7 @@ theorem rest_step (M : FloatSig) {P : Program} (hp : P.pendingSafe = true) {n : 
                   · rename_i c' hw
                     split
                     · rename_i hc'
-                      exact Exact.assignDyn c₂ hc hr hr' hd hw' hw hc'
+                      exact Exact.assign c₂ hc hr hr' hd hw' hw hc'
                     · trivial
   | letIn m e₁ e₂ =>
       obtain ⟨v₁, rfl, hr⟩ := hl
@@ -1299,7 +1284,7 @@ theorem rest_step (M : FloatSig) {P : Program} (hp : P.pendingSafe = true) {n : 
                 · rename_i c' hw
                   split
                   · rename_i hc'
-                    exact Exact.assign hc₁ hc hr hd hw hc'
+                    exact Exact.assign (ρ := []) hc₁ hc hr rfl hd rfl hw hc'
                   · trivial
   | seq e₁ e₂ =>
       obtain ⟨v₁, rfl, hr⟩ := hl
