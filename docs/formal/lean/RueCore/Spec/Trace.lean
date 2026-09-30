@@ -43,7 +43,8 @@ def step_no_double_free_stmt : Prop :=
     (_ : Steps M.toFloatSig P Config.init C),
     (∀ a, (freedIds P.decls C.trace).count a ≤ 1) ∧ (∀ a, (dtorIds C.trace).count a ≤ 1)
 
-/-- **Nothing freed twice, on every program** (§6.11): a run that answers a
+/-- **Nothing freed twice, on every program** (§6.11; §7:5's "never frees
+twice", with no typing hypothesis): a run that answers a
 value, an unwind or a panic frees each identity at most once, with no typing
 hypothesis. A refused or fuel-exhausted run has an empty trace
 (`EvalRes.trace`), so on an unchecked program the bound rests on `eval`'s
@@ -54,7 +55,8 @@ def freed_once_stmt : Prop :=
   ∀ (M : FloatSig) (P : Program) (fuel : Nat),
     ∀ a, (freedIds P.decls (run M P fuel).trace).count a ≤ 1
 
-/-- **No destructor twice on one value** (§6.11, `3.9:28`), given only that a
+/-- **No destructor twice on one value** (§6.11, `3.9:28`; §7:5's "Every
+stored value's destructor runs at most once", with no typing hypothesis), given only that a
 destructor-bearing struct is not `Copy` (`3.9:31`). As for `freed_once`, a
 refused or fuel-exhausted run has an empty trace, so the bound is over the
 runs `eval` terminates. -/
