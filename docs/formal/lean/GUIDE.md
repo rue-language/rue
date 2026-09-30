@@ -745,8 +745,8 @@ their cells; the terminating trace drops each once.
 
 **Drop order** (`TraceOrder.lean`). *In every terminating run, every
 destructor runs inside the drop of the value that owns it, in §6.11's order;
-and every step either keeps the registration stack or tears it down last-in
-first-out: a step that cuts the stack back drops only cells it cut, newest
+and every step either keeps or extends the registration stack, or tears it
+down last-in first-out: a step that cuts the stack back drops only cells it cut, newest
 first, each newer than every cell still registered.* A step that keeps the
 stack (an overwrite, `@drop`, a residue drop) may drop a cell still
 registered; which cell is not stated here, only that its drops name one cell
