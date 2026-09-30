@@ -226,8 +226,8 @@ helper theorems `Map.walk` counted under it before the next marked node:
 | `struct_carriesLinear_iff` | a struct's qualifier carries `linear` iff a field's does — read off by the checker and by the destructure rules | 42 | 9 |
 | `enum_carriesLinear_iff` | the same equation for an enum's variants | 23 | 11 |
 | `init_safeAt` | `Config.init` is semantically safe: syntactic type soundness, which `step_safeAt` inducts from | 18 | 2 |
-| `eval_sim` | the simulation relation between `eval` and `Step`, proved for every expression, fuel and program | 46 | 60 |
-| `eval_steps_of_outOfFuel` | exhausted fuel is a run of that many `Step`s — the small-to-big direction modulo fuel, behind `eval_small_to_big` | 42 | 63 |
+| `eval_sim` | the simulation relation between `eval` and `Step`, proved for every expression, fuel and program | 46 | 62 |
+| `eval_steps_of_outOfFuel` | exhausted fuel is a run of that many `Step`s — the small-to-big direction modulo fuel, behind `eval_small_to_big` | 42 | 70 |
 | `step_value_typed` | every value a reachable `Step` configuration carries is typed | 10 | 0 |
 | `destructure_plain` | a monitor removes no behaviour: the declared-linear destructure's residue check changes no step it does not refuse | 18 | 1 |
 | `unwindLocs_plain` | a monitor removes no behaviour: an unwind's drops are the same with or without the monitors | 19 | 1 |
@@ -2431,7 +2431,7 @@ marked node.
 | `check_sound` | `RueCore.Checker` | 706 | 22 |
 | `checkProgram_sound` | `RueCore.Checker` | 13 | 24 |
 | `no_double_free` | `RueCore.Trace` | 23 | 6 |
-| `step_no_double_free` | `RueCore.TracePrefix` | 12 | 166 |
+| `step_no_double_free` | `RueCore.TracePrefix` | 12 | 169 |
 | `freed_once` | `RueCore.Trace` | 10 | 14 |
 | `dtor_once` | `RueCore.Trace` | 7 | 20 |
 | `drop_exactly_once` | `RueCore.TraceExact` | 55 | 136 |
@@ -2447,16 +2447,16 @@ marked node.
 | `step_stuck_isStuckState` | `RueCore.Step.Lemmas` | 48 | 27 |
 | `step_progress` | `RueCore.Equivalence` | 11 | 0 |
 | `step_safeAt` | `RueCore.Equivalence` | 13 | 2 |
-| `step_type_safety` | `RueCore.Equivalence` | 25 | 2 |
+| `step_type_safety` | `RueCore.Equivalence` | 25 | 4 |
 | `step_no_use_after_drop` | `RueCore.Tombstone` | 10 | 58 |
 | `eval_big_to_small` | `RueCore.Equivalence` | 17 | 0 |
-| `run_sim` | `RueCore.Equivalence` | 18 | 0 |
+| `run_sim` | `RueCore.Equivalence` | 18 | 1 |
 | `eval_small_to_big` | `RueCore.Equivalence` | 23 | 0 |
 | `run_small_to_big` | `RueCore.Equivalence` | 25 | 10 |
 | `never_refused_iff` | `RueCore.Equivalence` | 14 | 0 |
 | `step_never_stuck_of_run` | `RueCore.Equivalence` | 17 | 0 |
 | `run_refused_of_step_stuck` | `RueCore.Equivalence` | 13 | 12 |
-| `eval_diverges_iff` | `RueCore.Equivalence` | 26 | 8 |
+| `eval_diverges_iff` | `RueCore.Equivalence` | 26 | 10 |
 | `Typed.wf` | `RueCore.Statics.Lemmas` | 127 | 90 |
 | `Ctx.join_absorb` | `RueCore.Statics.Lemmas` | 23 | 28 |
 | `Ctx.joinAll_perm` | `RueCore.Statics.Lemmas` | 25 | 70 |
@@ -2467,8 +2467,8 @@ marked node.
 | `struct_carriesLinear_iff` | `RueCore.Statics.Lemmas` | 42 | 9 |
 | `enum_carriesLinear_iff` | `RueCore.Statics.Lemmas` | 23 | 11 |
 | `init_safeAt` | `RueCore.Equivalence` | 18 | 2 |
-| `eval_sim` | `RueCore.Equivalence` | 46 | 60 |
-| `eval_steps_of_outOfFuel` | `RueCore.Equivalence` | 42 | 63 |
+| `eval_sim` | `RueCore.Equivalence` | 46 | 62 |
+| `eval_steps_of_outOfFuel` | `RueCore.Equivalence` | 42 | 70 |
 | `step_value_typed` | `RueCore.Equivalence` | 10 | 0 |
 | `destructure_plain` | `RueCore.Step.Lemmas` | 18 | 1 |
 | `unwindLocs_plain` | `RueCore.Step.Lemmas` | 19 | 1 |

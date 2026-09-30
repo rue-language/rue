@@ -9563,6 +9563,285 @@ theorem RueCore.Steps.invariant {M : FloatSig} {P : Program} {I : Config → Pro
   Steps M P C C' → I C → I C'
 ```
 
+### `ISteps.trans`
+
+*theorem* · module `RueCore.Step.Lemmas`
+
+Runs under an invariant compose (§6.12) (helper).
+
+```lean
+theorem RueCore.ISteps.trans {M : FloatSig} {P : Program} {I : Config → Config → Prop}
+  {C₁ C₂ C₃ : Config} (h₁ : ISteps M P I C₁ C₂) (h₂ : ISteps M P I C₂ C₃) :
+  ISteps M P I C₁ C₃
+```
+
+### `ISteps.single`
+
+*theorem* · module `RueCore.Step.Lemmas`
+
+One step that keeps the invariant is a run (helper).
+
+```lean
+theorem RueCore.ISteps.single {M : FloatSig} {P : Program}
+  {I : Config → Config → Prop} {C₁ C₂ : Config} (s : Step M P C₁ C₂)
+  (hi : I C₁ C₂) : ISteps M P I C₁ C₂
+```
+
+### `ISteps.one`
+
+*theorem* · module `RueCore.Step.Lemmas`
+
+One step is a run with the `True` invariant (helper).
+
+```lean
+theorem RueCore.ISteps.one {M : FloatSig} {P : Program} {C₁ C₂ : Config}
+  (s : Step M P C₁ C₂) : ISteps M P (fun x x_1 => True) C₁ C₂
+```
+
+### `ISteps.toSteps`
+
+*theorem* · module `RueCore.Step.Lemmas`
+
+A run under an invariant is a run (helper).
+
+```lean
+theorem RueCore.ISteps.toSteps {M : FloatSig} {P : Program}
+  {I : Config → Config → Prop} {C₁ C₂ : Config} (h : ISteps M P I C₁ C₂) :
+  Steps M P C₁ C₂
+```
+
+### `ISteps.peel`
+
+*theorem* · module `RueCore.Step.Lemmas`
+
+**Peeling a step by determinism** (`Step.det`, §6): a run from `C` that
+ends at a configuration with no expression in focus passes through `C`'s one
+successor (helper).
+
+```lean
+theorem RueCore.ISteps.peel {M : FloatSig} {P : Program} {I : Config → Config → Prop}
+  {C C' D : Config} (hs : Step M P C C') (h : ISteps M P I C D)
+  (hC : C.evalFocus) (hD : ¬D.evalFocus) : ISteps M P I C' D
+```
+
+### `SimBy.pre`
+
+*theorem* · module `RueCore.Step.Lemmas`
+
+A run into the family carries its simulation back (helper).
+
+```lean
+theorem RueCore.SimBy.pre {M : FloatSig} {P : Program} {I : Config → Config → Prop}
+  {G : List Kont → List Kont → Prop} {pan : Prop} {φ : Activation}
+  {C C₂ : List Kont → List Event → Config} {r : EvalRes}
+  (hpre :
+    ∀ (K : List Kont) (tr : List Event), ISteps M P I (C K tr) (C₂ K tr))
+  (h : SimBy M P I G pan φ C₂ r) : SimBy M P I G pan φ C r
+```
+
+### `SimBy.withTrace`
+
+*theorem* · module `RueCore.Step.Lemmas`
+
+A run into the family that emits `tr₁` carries its simulation back to
+the result with `tr₁` prefixed (§6.12's accumulating output) (helper).
+
+```lean
+theorem RueCore.SimBy.withTrace {M : FloatSig} {P : Program}
+  {I : Config → Config → Prop} {G : List Kont → List Kont → Prop} {pan : Prop}
+  {φ : Activation} {C C₂ : List Kont → List Event → Config} {r : EvalRes}
+  {tr₁ : List Event}
+  (hpre :
+    ∀ (K : List Kont) (tr : List Event),
+      ISteps M P I (C K tr) (C₂ K (tr ++ tr₁)))
+  (h : SimBy M P I G pan φ C₂ r) :
+  SimBy M P I G pan φ C (EvalRes.withTrace tr₁ r)
+```
+
+### `SimBy.bind`
+
+*theorem* · module `RueCore.Step.Lemmas`
+
+**§6.2's (Search), once**: `eval`'s `bind` is an evaluation-state run
+pushing a frame `F`, the operand run under `F`, and the context's simulation
+from the operand's value. A `return` or a `break` passes through `F` because
+`F` is neither a call frame nor a loop boundary and `G` does not see it
+(`hG`), and a panic because (Panic-Lift) discards every context (helper).
+
+```lean
+theorem RueCore.SimBy.bind {M : FloatSig} {P : Program} {I : Config → Config → Prop}
+  {G : List Kont → List Kont → Prop} {pan : Prop} {φ φ₁ : Activation}
+  {C C₁ : List Kont → List Event → Config} {F : Kont} (hF : F.Transparent)
+  (hC :
+    ∀ (K : List Kont) (tr : List Event),
+      ISteps M P I (C K tr) (C₁ (F :: K) tr))
+  {r : EvalRes} (h₁ : SimBy M P I G pan φ₁ C₁ r) {k : Store → Val → EvalRes}
+  (hk :
+    ∀ (H₁ : Store) (v : Val) (tr₁ : List Event),
+      r = EvalRes.ok H₁ v tr₁ →
+        SimBy M P I G pan φ
+          (fun K tr => Config.run H₁ φ₁ (F :: K) (Focus.ret v) tr) (k H₁ v))
+  (hG : ∀ (K K' : List Kont), G K K' → G (F :: K) K' := by intros; trivial) :
+  SimBy M P I G pan φ C (r.bind k)
+```
+
+### `SimBy.lift`
+
+*theorem* · module `RueCore.Step.Lemmas`
+
+A result that is not a value passes through a transparent frame unchanged
+(helper).
+
+```lean
+theorem RueCore.SimBy.lift {M : FloatSig} {P : Program} {I : Config → Config → Prop}
+  {G : List Kont → List Kont → Prop} {pan : Prop} {φ φ₁ : Activation}
+  {C C₁ : List Kont → List Event → Config} {F : Kont} (hF : F.Transparent)
+  (hC :
+    ∀ (K : List Kont) (tr : List Event),
+      ISteps M P I (C K tr) (C₁ (F :: K) tr))
+  {r : EvalRes} (h₁ : SimBy M P I G pan φ₁ C₁ r)
+  (hr : ∀ (H : Store) (v : Val) (tr : List Event), r ≠ EvalRes.ok H v tr)
+  (hG : ∀ (K K' : List Kont), G K K' → G (F :: K) K' := by intros; trivial) :
+  SimBy M P I G pan φ C r
+```
+
+### `SimBy.absorb`
+
+*theorem* · module `RueCore.Step.Lemmas`
+
+§6.9's call boundary: the body's `returned` is caught at the `call φ`
+frame, which is what `bindCall` turns into a value, and `G` accepts the frame
+it discards (helper).
+
+```lean
+theorem RueCore.SimBy.absorb {M : FloatSig} {P : Program} {I : Config → Config → Prop}
+  {G : List Kont → List Kont → Prop} {pan : Prop} {φ φ₁ : Activation}
+  {C C₁ : List Kont → List Event → Config}
+  (hC :
+    ∀ (K : List Kont) (tr : List Event),
+      ISteps M P I (C K tr) (C₁ (Kont.call φ :: K) tr))
+  {r : EvalRes} (h₁ : SimBy M P I G pan φ₁ C₁ r) {k : Store → Val → EvalRes}
+  (hk :
+    ∀ (H₁ : Store) (v : Val) (tr₁ : List Event),
+      r = EvalRes.ok H₁ v tr₁ →
+        SimBy M P I G pan φ
+          (fun K tr => Config.run H₁ φ₁ (Kont.call φ :: K) (Focus.ret v) tr)
+          (k H₁ v))
+  (hG : ∀ (K : List Kont), G (Kont.call φ :: K) K := by intros; trivial) :
+  SimBy M P I G pan φ C (r.bindCall k)
+```
+
+### `SimBy.peel`
+
+*theorem* · module `RueCore.Step.Lemmas`
+
+Where no target has an expression in focus, a first step of the family
+can be peeled off by determinism (helper).
+
+```lean
+theorem RueCore.SimBy.peel {M : FloatSig} {P : Program} {I : Config → Config → Prop}
+  {G : List Kont → List Kont → Prop} {pan : Prop} {φ : Activation}
+  {C C₂ : List Kont → List Event → Config} {r : EvalRes}
+  (hs : ∀ (K : List Kont) (tr : List Event), Step M P (C K tr) (C₂ K tr))
+  (hC : ∀ (K : List Kont) (tr : List Event), (C K tr).evalFocus)
+  (h : SimBy M P I G pan φ C r) : SimBy M P I G pan φ C₂ r
+```
+
+### `simBy_brk`
+
+*theorem* · module `RueCore.Step.Lemmas`
+
+(D-Break) §6.10: its one step keeps the invariant wherever `G` accepts the
+frames it discards (helper).
+
+```lean
+theorem RueCore.simBy_brk {M : FloatSig} {P : Program} {I : Config → Config → Prop}
+  {G : List Kont → List Kont → Prop} {pan : Prop} {fuel : Nat} {H : Store}
+  {φ : Activation}
+  (hI :
+    ∀ (K : List Kont) (tr : List Event) (φs : Activation) (K' : List Kont)
+      (H' : Store) (evs : List Event),
+      Kont.toLoop K = some (φs, K') →
+        G K K' →
+          plainUnwind P.decls H (List.drop φs.scope.length φ.scope).reverse =
+              Except.ok (H', evs) →
+            I (Config.run H φ K (Focus.eval Expr.brk) tr)
+              (Config.run H' φs K' (Focus.ret Val.unit) (tr ++ evs)) := by
+    intros; trivial) :
+  SimBy M P I G pan φ (evalConf H φ Expr.brk)
+    (eval M (fuel + 1) P H φ Expr.brk)
+```
+
+### `Steps.toN`
+
+*theorem* · module `RueCore.Step.Lemmas`
+
+Every run has a length (helper).
+
+```lean
+theorem RueCore.Steps.toN {M : FloatSig} {P : Program} {C D : Config}
+  (h : Steps M P C D) : ∃ n, StepsN M P n C D
+```
+
+### `StepsN.trans`
+
+*theorem* · module `RueCore.Step.Lemmas`
+
+Counted runs compose (helper).
+
+```lean
+theorem RueCore.StepsN.trans {M : FloatSig} {P : Program} {a b : Nat} {C E D : Config}
+  (h₁ : StepsN M P a C E) (h₂ : StepsN M P b E D) : StepsN M P (a + b) C D
+```
+
+### `LongBy.mono`
+
+*theorem* · module `RueCore.Step.Lemmas`
+
+A family with long runs has shorter ones (helper).
+
+```lean
+theorem RueCore.LongBy.mono {M : FloatSig} {P : Program}
+  {Q : List Event → Config → Prop} {C : List Kont → List Event → Config}
+  {m n : Nat} (hmn : m ≤ n) (h : LongBy M P Q C n) : LongBy M P Q C m
+```
+
+### `LongBy.pre`
+
+*theorem* · module `RueCore.Step.Lemmas`
+
+A run into a family with long runs is at least as long, and its end is
+accepted wherever the family's is (helper).
+
+```lean
+theorem RueCore.LongBy.pre {M : FloatSig} {P : Program}
+  {Q Q₂ : List Event → Config → Prop} {C C₂ : List Kont → List Event → Config}
+  {n : Nat}
+  (hpre :
+    ∀ (K : List Kont) (tr : List Event),
+      ∃ tr',
+        Steps M P (C K tr) (C₂ K tr') ∧ ∀ (D : Config), Q₂ tr' D → Q tr D)
+  (h : LongBy M P Q₂ C₂ n) : LongBy M P Q C n
+```
+
+### `LongBy.pre1`
+
+*theorem* · module `RueCore.Step.Lemmas`
+
+The same with one step first: the run is one step longer (helper).
+
+```lean
+theorem RueCore.LongBy.pre1 {M : FloatSig} {P : Program}
+  {Q Q₂ : List Event → Config → Prop} {C C₂ : List Kont → List Event → Config}
+  {n : Nat}
+  (hpre :
+    ∀ (K : List Kont) (tr : List Event),
+      ∃ C' tr',
+        Step M P (C K tr) C' ∧
+          Steps M P C' (C₂ K tr') ∧ ∀ (D : Config), Q₂ tr' D → Q tr D)
+  (h : LongBy M P Q₂ C₂ n) : LongBy M P Q C (n + 1)
+```
+
 ### `HasTys.length_eq`
 
 *theorem* · module `RueCore.Soundness`
@@ -12942,113 +13221,6 @@ theorem RueCore.Steps.single {M : FloatSig} {P : Program} {C₁ C₂ : Config}
   (h : Step M P C₁ C₂) : Steps M P C₁ C₂
 ```
 
-### `Steps.peel`
-
-*theorem* · module `RueCore.Equivalence`
-
-**Peeling a step by determinism** (`Step.det`, §6): a run from `C` that
-ends at a configuration with no expression in focus passes through `C`'s one
-successor (helper).
-
-```lean
-theorem RueCore.Steps.peel {M : FloatSig} {P : Program} {C C' D : Config}
-  (hs : Step M P C C') (h : Steps M P C D) (hC : C.evalFocus)
-  (hD : ¬D.evalFocus) : Steps M P C' D
-```
-
-### `Sim.pre`
-
-*theorem* · module `RueCore.Equivalence`
-
-A run into the family carries its simulation back (helper).
-
-```lean
-theorem RueCore.Sim.pre {M : FloatSig} {P : Program} {φ : Activation}
-  {C C₂ : List Kont → List Event → Config} {r : EvalRes}
-  (hpre : ∀ (K : List Kont) (tr : List Event), Steps M P (C K tr) (C₂ K tr))
-  (h : Sim M P φ C₂ r) : Sim M P φ C r
-```
-
-### `Sim.withTrace`
-
-*theorem* · module `RueCore.Equivalence`
-
-A run into the family that emits `tr₁` carries its simulation back to
-the result with `tr₁` prefixed (§6.12's accumulating output) (helper).
-
-```lean
-theorem RueCore.Sim.withTrace {M : FloatSig} {P : Program} {φ : Activation}
-  {C C₂ : List Kont → List Event → Config} {r : EvalRes} {tr₁ : List Event}
-  (hpre :
-    ∀ (K : List Kont) (tr : List Event),
-      Steps M P (C K tr) (C₂ K (tr ++ tr₁)))
-  (h : Sim M P φ C₂ r) : Sim M P φ C (EvalRes.withTrace tr₁ r)
-```
-
-### `Sim.bind`
-
-*theorem* · module `RueCore.Equivalence`
-
-**§6.2's (Search), once**: `eval`'s `bind` is an evaluation-state step pushing a
-frame `F`, the operand run under `F`, and a return-state step of its value into `F`'s hole.
-A `return` or a `break` passes through `F` unchanged because `F` is neither a
-call frame nor a loop boundary, and a panic because (Panic-Lift) discards
-every context (helper).
-
-```lean
-theorem RueCore.Sim.bind {M : FloatSig} {P : Program} {φ φ₁ : Activation}
-  {C C₁ : List Kont → List Event → Config} {F : Kont} (hF : F.Transparent)
-  (hC :
-    ∀ (K : List Kont) (tr : List Event), Steps M P (C K tr) (C₁ (F :: K) tr))
-  {r : EvalRes} (h₁ : Sim M P φ₁ C₁ r) {k : Store → Val → EvalRes}
-  (hk :
-    ∀ (H₁ : Store) (v : Val) (tr₁ : List Event),
-      r = EvalRes.ok H₁ v tr₁ →
-        Sim M P φ (fun K tr => Config.run H₁ φ₁ (F :: K) (Focus.ret v) tr)
-          (k H₁ v)) :
-  Sim M P φ C (r.bind k)
-```
-
-### `Sim.lift`
-
-*theorem* · module `RueCore.Equivalence`
-
-A result that is not a value passes through a transparent frame unchanged
-(helper).
-
-```lean
-theorem RueCore.Sim.lift {M : FloatSig} {P : Program} {φ φ₁ : Activation}
-  {C C₁ : List Kont → List Event → Config} {F : Kont} (hF : F.Transparent)
-  (hC :
-    ∀ (K : List Kont) (tr : List Event), Steps M P (C K tr) (C₁ (F :: K) tr))
-  {r : EvalRes} (h₁ : Sim M P φ₁ C₁ r)
-  (hr : ∀ (H : Store) (v : Val) (tr : List Event), r ≠ EvalRes.ok H v tr) :
-  Sim M P φ C r
-```
-
-### `Sim.absorb`
-
-*theorem* · module `RueCore.Equivalence`
-
-§6.9's call boundary: the body's `returned` is caught at the `call φ`
-activation record, which is what `absorb` turns into a value (helper).
-
-```lean
-theorem RueCore.Sim.absorb {M : FloatSig} {P : Program} {φ φ₁ : Activation}
-  {C C₁ : List Kont → List Event → Config}
-  (hC :
-    ∀ (K : List Kont) (tr : List Event),
-      Steps M P (C K tr) (C₁ (Kont.call φ :: K) tr))
-  {r : EvalRes} (h₁ : Sim M P φ₁ C₁ r) {k : Store → Val → EvalRes}
-  (hk :
-    ∀ (H₁ : Store) (v : Val) (tr₁ : List Event),
-      r = EvalRes.ok H₁ v tr₁ →
-        Sim M P φ
-          (fun K tr => Config.run H₁ φ₁ (Kont.call φ :: K) (Focus.ret v) tr)
-          (k H₁ v)) :
-  Sim M P φ C (r.bindCall k)
-```
-
 ### `OpRes.sim`
 
 *theorem* · module `RueCore.Equivalence`
@@ -13088,26 +13260,12 @@ theorem RueCore.evalArgs_sim {M : FloatSig} {P : Program} {fuel : Nat}
   (∀ (H' : Store) (vs : List Val) (tr' : List Event),
       evalArgs (fun H e => eval M fuel P H φ e) H es = ArgsRes.ok H' vs tr' →
         ∀ (K : List Kont) (tr : List Event),
-          Steps M P (Config.run H φ K (Focus.args t vs₀ es) tr)
+          ISteps M P (fun x x_1 => True)
+            (Config.run H φ K (Focus.args t vs₀ es) tr)
             (Config.run H' φ K (Focus.args t (vs₀ ++ vs) []) (tr ++ tr'))) ∧
     ∀ (r : EvalRes),
       evalArgs (fun H e => eval M fuel P H φ e) H es = ArgsRes.abort r →
         Sim M P φ (argsConf H φ t vs₀ es) r
-```
-
-### `Sim.peel`
-
-*theorem* · module `RueCore.Equivalence`
-
-Where no `Sim` target has an expression in focus, a first step of `C`
-can be peeled off by determinism (helper).
-
-```lean
-theorem RueCore.Sim.peel {M : FloatSig} {P : Program} {φ : Activation}
-  {C C₂ : List Kont → List Event → Config} {r : EvalRes}
-  (hs : ∀ (K : List Kont) (tr : List Event), Step M P (C K tr) (C₂ K tr))
-  (hC : ∀ (K : List Kont) (tr : List Event), (C K tr).evalFocus)
-  (h : Sim M P φ C r) : Sim M P φ C₂ r
 ```
 
 ### `evalArgs_abort_ne_ok`
@@ -13452,18 +13610,6 @@ theorem RueCore.sim_ret {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
   Sim M P φ (evalConf H φ e.ret) (eval M (fuel + 1) P H φ e.ret)
 ```
 
-### `sim_brk`
-
-*theorem* · module `RueCore.Equivalence`
-
-(D-Break) §6.10 (helper).
-
-```lean
-theorem RueCore.sim_brk {M : FloatSig} {P : Program} {fuel : Nat} {H : Store}
-  {φ : Activation} :
-  Sim M P φ (evalConf H φ Expr.brk) (eval M (fuel + 1) P H φ Expr.brk)
-```
-
 ### `sim_loop`
 
 *theorem* · module `RueCore.Equivalence`
@@ -13488,28 +13634,6 @@ A counted run is a run (§6.12's `→*`) (helper).
 ```lean
 theorem RueCore.StepsN.toSteps {M : FloatSig} {P : Program} {n : Nat} {C D : Config}
   (h : StepsN M P n C D) : Steps M P C D
-```
-
-### `Steps.toN`
-
-*theorem* · module `RueCore.Equivalence`
-
-Every run has a length (helper).
-
-```lean
-theorem RueCore.Steps.toN {M : FloatSig} {P : Program} {C D : Config}
-  (h : Steps M P C D) : ∃ n, StepsN M P n C D
-```
-
-### `StepsN.trans`
-
-*theorem* · module `RueCore.Equivalence`
-
-Counted runs compose (helper).
-
-```lean
-theorem RueCore.StepsN.trans {M : FloatSig} {P : Program} {a b : Nat} {C E D : Config}
-  (h₁ : StepsN M P a C E) (h₂ : StepsN M P b E D) : StepsN M P (a + b) C D
 ```
 
 ### `StepsN.prefix`
@@ -13575,18 +13699,6 @@ theorem RueCore.Steps.final_unique {M : FloatSig} {P : Program} {C T₁ T₂ : C
   (hf₂ : ∀ (C' : Config), ¬Step M P T₂ C') : T₁ = T₂
 ```
 
-### `Long.mono`
-
-*theorem* · module `RueCore.Equivalence`
-
-A family with long runs has shorter ones (helper).
-
-```lean
-theorem RueCore.Long.mono {M : FloatSig} {P : Program}
-  {C : List Kont → List Event → Config} {m n : Nat} (hmn : m ≤ n)
-  (h : Long M P C n) : Long M P C m
-```
-
 ### `Long.pre`
 
 *theorem* · module `RueCore.Equivalence`
@@ -13599,6 +13711,18 @@ theorem RueCore.Long.pre {M : FloatSig} {P : Program}
   (hpre :
     ∀ (K : List Kont) (tr : List Event), ∃ tr', Steps M P (C K tr) (C₂ K tr'))
   (h : Long M P C₂ n) : Long M P C n
+```
+
+### `Long.exact`
+
+*theorem* · module `RueCore.Equivalence`
+
+A family with long runs has one of exactly `n` steps (helper).
+
+```lean
+theorem RueCore.Long.exact {M : FloatSig} {P : Program}
+  {C : List Kont → List Event → Config} {n : Nat} (h : Long M P C n)
+  (K : List Kont) (tr : List Event) : ∃ D, StepsN M P n (C K tr) D
 ```
 
 ### `Long.pre1`
@@ -13621,7 +13745,7 @@ theorem RueCore.Long.pre1 {M : FloatSig} {P : Program}
 
 *theorem* · module `RueCore.Equivalence`
 
-**§6.2's (Search), counted**: the twin of `Sim.bind` for exhausted
+**§6.2's (Search), counted**: the twin of `SimBy.bind` for exhausted
 fuel. If `eval` spent its fuel on the operand, the operand's run under the
 pushed frame `F` is the long one, one evaluation-state step in; if the operand reached a
 value (`Sim`'s `ok` clause gives the run to it) and the context spent the fuel,
@@ -30009,7 +30133,7 @@ def RueCore.Config.Terminal : Config → Prop :=
 
 ### `Config.evalFocus`
 
-*def* · module `RueCore.Equivalence`
+*def* · module `RueCore.Step.Lemmas`
 
 Whether a configuration has an expression in focus (helper).
 
@@ -30385,7 +30509,7 @@ def RueCore.KillsOnly (ls : List Nat) (H : Store) (v : Val) (R : EvalRes) : Prop
 
 ### `Kont.Transparent`
 
-*def* · module `RueCore.Equivalence`
+*def* · module `RueCore.Step.Lemmas`
 
 A frame `toCall` and `toLoop` look through: every frame but `call` and
 `loop` (helper).
@@ -31043,7 +31167,7 @@ def RueCore.eval (M : FloatSig) :
 
 ### `evalConf`
 
-*def* · module `RueCore.Equivalence`
+*def* · module `RueCore.Step.Lemmas`
 
 The configuration family of an expression in focus: `⟨H ; φ ; K ; E[e]⟩`
 for every context `K` and every trace `tr` already produced (§6.1, §6.2).
@@ -34664,6 +34788,34 @@ RueCore.Step.brk {M : FloatSig} {P : Program} {H : Store} {φ : Activation}
         (Config.run H' φs K' (Focus.ret Val.unit) (tr ++ evs))
 ```
 
+### `ISteps`
+
+*inductive* · module `RueCore.Step.Lemmas`
+
+`→*` along which every step keeps the per-step invariant `I` (helper).
+
+```lean
+inductive RueCore.ISteps (M : FloatSig) (P : Program) (I : Config → Config → Prop) :
+  Config → Config → Prop
+```
+
+Constructors:
+
+**`ISteps.refl`**
+
+```lean
+RueCore.ISteps.refl {M : FloatSig} {P : Program} {I : Config → Config → Prop}
+  (C : Config) : ISteps M P I C C
+```
+
+**`ISteps.step`**
+
+```lean
+RueCore.ISteps.step {M : FloatSig} {P : Program} {I : Config → Config → Prop}
+  {C₁ C₂ C₃ : Config} :
+  Step M P C₁ C₂ → I C₁ C₂ → ISteps M P I C₂ C₃ → ISteps M P I C₁ C₃
+```
+
 ### `MSteps`
 
 *inductive* · module `RueCore.TraceWhole`
@@ -34813,17 +34965,18 @@ RueCore.StepsN.step {M : FloatSig} {P : Program} {n : Nat}
   Step M P C₁ C₂ → StepsN M P n C₂ C₃ → StepsN M P (n + 1) C₁ C₃
 ```
 
-### `Long`
+### `LongBy`
 
-*def* · module `RueCore.Equivalence`
+*def* · module `RueCore.Step.Lemmas`
 
-A run of `n` steps from every member of a configuration family: from
-`⟨H ; φ ; K ; E[e]⟩`, for every context `K` and trace `tr` (helper).
+A run of **at least** `n` steps from every member of a configuration
+family, whose end `Q` accepts given the trace before it (helper).
 
 ```lean
-def RueCore.Long (M : FloatSig) (P : Program)
+def RueCore.LongBy (M : FloatSig) (P : Program) (Q : List Event → Config → Prop)
   (C : List Kont → List Event → Config) (n : Nat) : Prop :=
-  ∀ (K : List Kont) (tr : List Event), ∃ D, StepsN M P n (C K tr) D
+  ∀ (K : List Kont) (tr : List Event),
+    ∃ m D, n ≤ m ∧ StepsN M P m (C K tr) D ∧ Q tr D
 ```
 
 ### `LongC`
@@ -34885,42 +35038,46 @@ def RueCore.MSim (M : FloatSig) (P : Program) (φ : Activation)
   | EvalRes.outOfFuel => True
 ```
 
-### `Sim`
+### `SimBy`
 
-*def* · module `RueCore.Equivalence`
+*def* · module `RueCore.Step.Lemmas`
 
-**The simulation relation** between an `eval` result and §6's `→*`
-(RUE-2289, parts 2 and 3; the module docstring reads it clause by clause). `C`
-is a configuration family indexed by the context `K` below the focus and the
-trace `tr` produced before it, §6.2's `⟨H ; φ ; K ; E[e]⟩`: a value reaches
-`E[v]` in the activation record `φ` (§6.2's (Search)), a panic reaches `↯κ` from every
-context ((Panic-Lift) §6.2), an unwinding `return` reaches the nearest caller
-((D-Return) §6.9), and an unwinding `break` reaches the nearest loop's context
-((D-Break) §6.10). Part 3's completeness (`eval_small_to_big`) takes its runs
-through already-reduced operands from this relation's `ok` clause.
+**The simulation relation, parametrized** (RUE-2517): what `eval`'s result
+`r` promises about `→*` from the configuration family `C`, context `K` and
+prior trace `tr`, with every run keeping the per-step invariant `I`. A value
+reaches `E[v]` in `φ` (§6.2's (Search)); a panic reaches `↯κ` from every
+context ((Panic-Lift) §6.2) when `pan` holds; an unwinding `return` reaches
+the nearest caller ((D-Return) §6.9) and an unwinding `break` the nearest
+loop's context ((D-Break) §6.10), from every context whose discarded frames
+`G` accepts. `Equivalence.lean`'s `Sim` is `I`, `G` and `pan` all `True`.
 
 ```lean
-def RueCore.Sim (M : FloatSig) (P : Program) (φ : Activation)
+def RueCore.SimBy (M : FloatSig) (P : Program) (I : Config → Config → Prop)
+  (G : List Kont → List Kont → Prop) (pan : Prop) (φ : Activation)
   (C : List Kont → List Event → Config) : EvalRes → Prop :=
   match x✝ with
   | EvalRes.ok H v tr' =>
     ∀ (K : List Kont) (tr : List Event),
-      Steps M P (C K tr) (Config.run H φ K (Focus.ret v) (tr ++ tr'))
+      ISteps M P I (C K tr) (Config.run H φ K (Focus.ret v) (tr ++ tr'))
   | EvalRes.panic k tr' =>
-    ∀ (K : List Kont) (tr : List Event),
-      Steps M P (C K tr) (Config.panic k (tr ++ tr'))
+    pan →
+      ∀ (K : List Kont) (tr : List Event),
+        ISteps M P I (C K tr) (Config.panic k (tr ++ tr'))
   | EvalRes.returned H v tr' =>
     ∀ (K : List Kont) (tr : List Event) (φs : Activation) (K' : List Kont),
       Kont.toCall K = some (φs, K') →
-        Steps M P (C K tr) (Config.run H φs K' (Focus.ret v) (tr ++ tr'))
+        G K K' →
+          ISteps M P I (C K tr)
+            (Config.run H φs K' (Focus.ret v) (tr ++ tr'))
   | EvalRes.broke H sc tr' =>
     ∀ (K : List Kont) (tr : List Event) (φs : Activation) (K' : List Kont)
       (H' : Store) (evs : List Event),
       Kont.toLoop K = some (φs, K') →
-        plainUnwind P.decls H (List.drop φs.scope.length sc).reverse =
-            Except.ok (H', evs) →
-          Steps M P (C K tr)
-            (Config.run H' φs K' (Focus.ret Val.unit) (tr ++ tr' ++ evs))
+        G K K' →
+          plainUnwind P.decls H (List.drop φs.scope.length sc).reverse =
+              Except.ok (H', evs) →
+            ISteps M P I (C K tr)
+              (Config.run H' φs K' (Focus.ret Val.unit) (tr ++ tr' ++ evs))
   | EvalRes.refused why => True
   | EvalRes.outOfFuel => True
 ```
@@ -35020,6 +35177,20 @@ def RueCore.Spec.step_no_use_after_drop_stmt : Prop :=
     Steps M P Config.init C → ¬Config.Stuck M P C Refusal.useAfterDrop
 ```
 
+### `Long`
+
+*abbrev* · module `RueCore.Equivalence`
+
+A run of at least `n` steps from every member of a configuration family:
+from `⟨H ; φ ; K ; E[e]⟩`, for every context `K` and trace `tr` — `LongBy`
+with nothing asked of its end (helper).
+
+```lean
+abbrev RueCore.Long (M : FloatSig) (P : Program)
+  (C : List Kont → List Event → Config) (n : Nat) : Prop :=
+  LongBy M P (fun x x_1 => True) C n
+```
+
 ### `LongCIH`
 
 *def* · module `RueCore.TracePrefix`
@@ -35034,6 +35205,23 @@ def RueCore.LongCIH (M : FloatSig) (P : Program) (F : Event → List Nat)
     StoreCC P.decls H →
       eval M fuel P H φ e = EvalRes.outOfFuel →
         LongC M P F H [] (evalConf H φ e) fuel
+```
+
+### `Sim`
+
+*abbrev* · module `RueCore.Equivalence`
+
+**The simulation relation** between an `eval` result and §6's `→*`
+(RUE-2289, parts 2 and 3; the module docstring reads it clause by clause):
+`Step.Lemmas`'s `SimBy` with no per-step invariant, every unwind allowed and
+panics simulated, so its runs are plain `→*`. Part 3's completeness
+(`eval_small_to_big`) takes its runs through already-reduced operands from
+this relation's `ok` clause.
+
+```lean
+abbrev RueCore.Sim (M : FloatSig) (P : Program) (φ : Activation)
+  (C : List Kont → List Event → Config) : EvalRes → Prop :=
+  SimBy M P (fun x x_1 => True) (fun x x_1 => True) True φ C
 ```
 
 ### `LongIH`

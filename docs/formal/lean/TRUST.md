@@ -15,7 +15,7 @@ statements are.
 - Toolchain: Lean 4.33.1 (the pin in `lean-toolchain` and in
   `toolchains/lean/defs.bzl`, held equal by
   `scripts/validate-lean-toolchain-pin.py`).
-- Theorems checked: 1532.
+- Theorems checked: 1539.
 - Proofs depending on `sorryAx`: 0.
 - Axioms declared by this package: 0.
 - Distinct axioms used: `Quot.sound`, `propext`.
@@ -335,6 +335,23 @@ and diffs them against the committed copies.
 | `destructure_plain` | `RueCore.Step.Lemmas` | `propext` |
 | `stepN_steps` | `RueCore.Step.Lemmas` | `Quot.sound`, `propext` |
 | `Steps.invariant` | `RueCore.Step.Lemmas` | `propext` |
+| `ISteps.trans` | `RueCore.Step.Lemmas` | `propext` |
+| `ISteps.single` | `RueCore.Step.Lemmas` | `propext` |
+| `ISteps.one` | `RueCore.Step.Lemmas` | `propext` |
+| `ISteps.toSteps` | `RueCore.Step.Lemmas` | `propext` |
+| `ISteps.peel` | `RueCore.Step.Lemmas` | `propext` |
+| `SimBy.pre` | `RueCore.Step.Lemmas` | `propext` |
+| `SimBy.withTrace` | `RueCore.Step.Lemmas` | `propext` |
+| `SimBy.bind` | `RueCore.Step.Lemmas` | `propext` |
+| `SimBy.lift` | `RueCore.Step.Lemmas` | `Quot.sound`, `propext` |
+| `SimBy.absorb` | `RueCore.Step.Lemmas` | `propext` |
+| `SimBy.peel` | `RueCore.Step.Lemmas` | `propext` |
+| `simBy_brk` | `RueCore.Step.Lemmas` | `propext` |
+| `Steps.toN` | `RueCore.Step.Lemmas` | `propext` |
+| `StepsN.trans` | `RueCore.Step.Lemmas` | `propext` |
+| `LongBy.mono` | `RueCore.Step.Lemmas` | `propext` |
+| `LongBy.pre` | `RueCore.Step.Lemmas` | `Quot.sound`, `propext` |
+| `LongBy.pre1` | `RueCore.Step.Lemmas` | `Quot.sound`, `propext` |
 | `HasTys.length_eq` | `RueCore.Soundness` | `propext` |
 | `HasTy.qual_eq` | `RueCore.Soundness` | `propext` |
 | `HasTy.observable` | `RueCore.Soundness` | `propext` |
@@ -647,15 +664,8 @@ and diffs them against the committed copies.
 | `dupProgram_step_double_free` | `RueCore.Trace` | `Quot.sound`, `propext` |
 | `Steps.trans` | `RueCore.Equivalence` | `propext` |
 | `Steps.single` | `RueCore.Equivalence` | `propext` |
-| `Steps.peel` | `RueCore.Equivalence` | `propext` |
-| `Sim.pre` | `RueCore.Equivalence` | `propext` |
-| `Sim.withTrace` | `RueCore.Equivalence` | `propext` |
-| `Sim.bind` | `RueCore.Equivalence` | `propext` |
-| `Sim.lift` | `RueCore.Equivalence` | `Quot.sound`, `propext` |
-| `Sim.absorb` | `RueCore.Equivalence` | `propext` |
 | `OpRes.sim` | `RueCore.Equivalence` | `propext` |
 | `evalArgs_sim` | `RueCore.Equivalence` | `Quot.sound`, `propext` |
-| `Sim.peel` | `RueCore.Equivalence` | `propext` |
 | `evalArgs_abort_ne_ok` | `RueCore.Equivalence` | `propext` |
 | `EvalRes.withTrace_bind` | `RueCore.Equivalence` | `propext` |
 | `rootCell_of` | `RueCore.Equivalence` | `propext` |
@@ -682,24 +692,21 @@ and diffs them against the committed copies.
 | `sim_ite` | `RueCore.Equivalence` | `propext` |
 | `sim_call` | `RueCore.Equivalence` | `Quot.sound`, `propext` |
 | `sim_ret` | `RueCore.Equivalence` | `propext` |
-| `sim_brk` | `RueCore.Equivalence` | `propext` |
 | `sim_loop` | `RueCore.Equivalence` | `propext` |
 | `eval_sim` | `RueCore.Equivalence` | `Quot.sound`, `propext` |
 | `run_sim` | `RueCore.Equivalence` | `Quot.sound`, `propext` |
 | `eval_big_to_small` | `RueCore.Equivalence` | `Quot.sound`, `propext` |
 | `StepsN.toSteps` | `RueCore.Equivalence` | `propext` |
-| `Steps.toN` | `RueCore.Equivalence` | `propext` |
-| `StepsN.trans` | `RueCore.Equivalence` | `propext` |
 | `StepsN.prefix` | `RueCore.Equivalence` | `propext` |
 | `StepsN.det` | `RueCore.Equivalence` | `propext` |
 | `StepsN.peel` | `RueCore.Equivalence` | `propext` |
 | `StepsN.bound` | `RueCore.Equivalence` | `propext` |
 | `Steps.final_unique` | `RueCore.Equivalence` | `propext` |
-| `Long.mono` | `RueCore.Equivalence` | `propext` |
-| `Long.pre` | `RueCore.Equivalence` | `propext` |
+| `Long.pre` | `RueCore.Equivalence` | `Quot.sound`, `propext` |
+| `Long.exact` | `RueCore.Equivalence` | `propext` |
 | `Long.pre1` | `RueCore.Equivalence` | `Quot.sound`, `propext` |
 | `Long.bind` | `RueCore.Equivalence` | `Quot.sound`, `propext` |
-| `Long.bind0` | `RueCore.Equivalence` | `propext` |
+| `Long.bind0` | `RueCore.Equivalence` | `Quot.sound`, `propext` |
 | `evalArgs_long` | `RueCore.Equivalence` | `Quot.sound`, `propext` |
 | `evalArgs_ok_steps` | `RueCore.Equivalence` | `Quot.sound`, `propext` |
 | `Long.zero` | `RueCore.Equivalence` | `propext` |
