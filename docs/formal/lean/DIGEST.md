@@ -3782,36 +3782,6 @@ theorem RueCore.run_blocks (M : FloatSig) {P : Program} (hdt : DtorNotCopy P.dec
   (fuel : Nat) : Blocks P.decls (run M P fuel).trace
 ```
 
-### `step_ordered`
-
-*theorem* · module `RueCore.TraceOrder`
-
-**Every step keeps every drop scope in registration order** (§6.7,
-§6.9, §6.10): a record is only ever extended with cells allocated at that
-step — (D-Let)'s one, (D-Match)'s payload cells, (D-Call)'s parameter cells —
-which are past every cell already in it, and only ever shortened from its
-end ((D-EndScope)'s pop) or replaced by one the stack held.
-
-```lean
-theorem RueCore.step_ordered {M : FloatSig} {P : Program} {C C' : Config}
-  (h : Step M P C C') (hC : C.Ordered) : C'.Ordered
-```
-
-### `reachable_ordered`
-
-*theorem* · module `RueCore.TraceOrder`
-
-**Registration order is location order, everywhere the machine goes**
-(§6.1, §6.7, §6.9, §6.10): in every configuration reachable from §6.12's
-initial one, every drop scope — the current activation record's, every suspended
-caller's and loop boundary's, and every pending `endscope` marker's — lists
-its cells in strictly increasing location order. No typing hypothesis.
-
-```lean
-theorem RueCore.reachable_ordered {M : FloatSig} {P : Program} {C : Config}
-  (h : Steps M P Config.init C) : C.Ordered
-```
-
 ### `step_drop_order`
 
 *theorem* · module `RueCore.TraceOrder`
@@ -3827,21 +3797,6 @@ activation record pop, (D-Return)'s σ-walk, (D-Loop-Iter)'s end of a turn and
 ```lean
 theorem RueCore.step_drop_order {M : FloatSig} {P : Program} {C C' : Config}
   (h : Step M P C C') (hC : C.Ordered) :
-  ∃ evs, C'.trace = C.trace ++ evs ∧ StrictStackOrder (dropLocs evs)
-```
-
-### `reachable_drop_order`
-
-*theorem* · module `RueCore.TraceOrder`
-
-**Newest-first teardown, on every reachable step** (§6.7, §6.9, §6.10):
-from every configuration reachable from §6.12's initial one, every step's
-`drop` markers name one cell or distinct cells newest-first. No typing
-hypothesis.
-
-```lean
-theorem RueCore.reachable_drop_order {M : FloatSig} {P : Program} {C C' : Config}
-  (hr : Steps M P Config.init C) (h : Step M P C C') :
   ∃ evs, C'.trace = C.trace ++ evs ∧ StrictStackOrder (dropLocs evs)
 ```
 
@@ -3871,6 +3826,36 @@ in every configuration reachable from §6.12's initial one. In particular
 ```lean
 theorem RueCore.reachable_nested {M : FloatSig} {P : Program} {C : Config}
   (h : Steps M P Config.init C) : C.Nested
+```
+
+### `reachable_ordered`
+
+*theorem* · module `RueCore.TraceOrder`
+
+**Registration order is location order, everywhere the machine goes**
+(§6.1, §6.7, §6.9, §6.10): in every configuration reachable from §6.12's
+initial one, every drop scope — the current activation record's, every suspended
+caller's and loop boundary's, and every pending `endscope` marker's — lists
+its cells in strictly increasing location order. No typing hypothesis.
+
+```lean
+theorem RueCore.reachable_ordered {M : FloatSig} {P : Program} {C : Config}
+  (h : Steps M P Config.init C) : C.Ordered
+```
+
+### `reachable_drop_order`
+
+*theorem* · module `RueCore.TraceOrder`
+
+**Newest-first teardown, on every reachable step** (§6.7, §6.9, §6.10):
+from every configuration reachable from §6.12's initial one, every step's
+`drop` markers name one cell or distinct cells newest-first. No typing
+hypothesis.
+
+```lean
+theorem RueCore.reachable_drop_order {M : FloatSig} {P : Program} {C C' : Config}
+  (hr : Steps M P Config.init C) (h : Step M P C C') :
+  ∃ evs, C'.trace = C.trace ++ evs ∧ StrictStackOrder (dropLocs evs)
 ```
 
 ### `step_stackDiscipline`
@@ -15832,71 +15817,6 @@ theorem RueCore.Rec.fresh {n k : Nat} {ls : List Nat} (h : Rec n ls) :
   Rec (n + k) (ls ++ List.range' n k)
 ```
 
-### `Kont.Ordered.mono`
-
-*theorem* · module `RueCore.TraceOrder`
-
-A longer store keeps an activation record ordered (helper).
-
-```lean
-theorem RueCore.Kont.Ordered.mono {n m : Nat} {k : Kont} (h : Kont.Ordered n k)
-  (hn : n ≤ m) : Kont.Ordered m k
-```
-
-### `Config.Ordered.keep`
-
-*theorem* · module `RueCore.TraceOrder`
-
-A step that leaves the activation record alone, grows or keeps the store, and pushes
-only frames that owe nothing keeps the invariant (helper).
-
-```lean
-theorem RueCore.Config.Ordered.keep {H H' : Store} {φ : Activation} {K K' : List Kont}
-  {f f' : Focus} {tr tr' : List Event} (h : (Config.run H φ K f tr).Ordered)
-  (hn : List.length H ≤ List.length H')
-  (hK : ∀ (k : Kont), k ∈ K' → k ∈ K ∨ ∀ (n : Nat), Kont.Ordered n k) :
-  (Config.run H' φ K' f' tr').Ordered
-```
-
-### `Config.Ordered.same`
-
-*theorem* · module `RueCore.TraceOrder`
-
-A step that keeps the stack (helper).
-
-```lean
-theorem RueCore.Config.Ordered.same {H H' : Store} {φ : Activation} {K : List Kont}
-  {f f' : Focus} {tr tr' : List Event} (h : (Config.run H φ K f tr).Ordered)
-  (hn : List.length H ≤ List.length H') : (Config.run H' φ K f' tr').Ordered
-```
-
-### `Config.Ordered.push`
-
-*theorem* · module `RueCore.TraceOrder`
-
-A step that pushes a context frame, which owes nothing (helper).
-
-```lean
-theorem RueCore.Config.Ordered.push {H H' : Store} {φ : Activation} {K : List Kont}
-  {k : Kont} {f f' : Focus} {tr tr' : List Event}
-  (h : (Config.run H φ K f tr).Ordered) (hn : List.length H ≤ List.length H')
-  (hk : ∀ (n : Nat), Kont.Ordered n k) :
-  (Config.run H' φ (k :: K) f' tr').Ordered
-```
-
-### `Config.Ordered.pop`
-
-*theorem* · module `RueCore.TraceOrder`
-
-A step that pops a context frame (helper).
-
-```lean
-theorem RueCore.Config.Ordered.pop {H H' : Store} {φ : Activation} {K : List Kont}
-  {k : Kont} {f f' : Focus} {tr tr' : List Event}
-  (h : (Config.run H φ (k :: K) f tr).Ordered)
-  (hn : List.length H ≤ List.length H') : (Config.run H' φ K f' tr').Ordered
-```
-
 ### `plainDropRetire_length`
 
 *theorem* · module `RueCore.TraceOrder`
@@ -15919,32 +15839,6 @@ The monitor-free unwind keeps the store's length (helper).
 theorem RueCore.plainUnwind_length {D : Decls} {H H' : Store} {ls : List Nat}
   {evs : List Event} :
   plainUnwind D H ls = Except.ok (H', evs) → List.length H' = List.length H
-```
-
-### `Kont.toCall_mem`
-
-*theorem* · module `RueCore.TraceOrder`
-
-(D-Return)'s search: the caller's activation record is on the stack, and what is left
-under it was under it (helper).
-
-```lean
-theorem RueCore.Kont.toCall_mem {K K' : List Kont} {φ : Activation} :
-  Kont.toCall K = some (φ, K') →
-    Kont.call φ ∈ K ∧ ∀ (k : Kont), k ∈ K' → k ∈ K
-```
-
-### `Kont.toLoop_mem`
-
-*theorem* · module `RueCore.TraceOrder`
-
-(D-Break)'s search: the loop boundary is on the stack, and what is left
-under it was under it (helper).
-
-```lean
-theorem RueCore.Kont.toLoop_mem {K K' : List Kont} {φ : Activation} :
-  Kont.toLoop K = some (φ, K') →
-    (∃ e, Kont.loop e φ ∈ K) ∧ ∀ (k : Kont), k ∈ K' → k ∈ K
 ```
 
 ### `freshParams_eq`
@@ -15993,7 +15887,7 @@ theorem RueCore.dropLocs_dropEventsList (D : Decls) (cs : List Contents) :
   dropLocs (dropEventsList D cs) = []
 ```
 
-### `dropCell_locs'`
+### `dropCell_locs`
 
 *theorem* · module `RueCore.TraceOrder`
 
@@ -16001,20 +15895,9 @@ A binding's drop names its own cell once, or nothing for `Copy` contents
 (helper).
 
 ```lean
-theorem RueCore.dropCell_locs' {D : Decls} {ℓ : Nat} {c : Contents} {evs : List Event}
+theorem RueCore.dropCell_locs {D : Decls} {ℓ : Nat} {c : Contents} {evs : List Event}
   (h : dropCell D ℓ c = Except.ok evs) :
   dropLocs evs = [] ∨ dropLocs evs = [ℓ]
-```
-
-### `dropCell_locs`
-
-*theorem* · module `RueCore.TraceOrder`
-
-A binding's drop names at most its own cell (helper).
-
-```lean
-theorem RueCore.dropCell_locs {D : Decls} {ℓ : Nat} {c : Contents} {evs : List Event}
-  (h : dropCell D ℓ c = Except.ok evs) (x : Nat) : x ∈ dropLocs evs → x = ℓ
 ```
 
 ### `plainResidue_locs`
@@ -16143,13 +16026,38 @@ theorem RueCore.StackDiscipline.cut {A m ls : List Nat} (h : ls.Sublist m.revers
   StackDiscipline (A ++ m) A ls
 ```
 
+### `Nest.ordered`
+
+*theorem* · module `RueCore.TraceOrder`
+
+The nesting orders every frame's record: a pending marker's cells and a
+loop boundary's record are parts of the activation record they sit on, and a
+suspended caller's record is part of the stack below it, so each is a part of
+the registration stack in its order (helper).
+
+```lean
+theorem RueCore.Nest.ordered {n : Nat} {K : List Kont} {sc : List Nat} :
+  Nest sc K → Rec n (Stk K ++ sc) → ∀ (k : Kont), k ∈ K → Kont.Ordered n k
+```
+
+### `Config.Nested.ordered`
+
+*theorem* · module `RueCore.TraceOrder`
+
+**Nested scopes are ordered ones**: every drop scope of a nested
+configuration is a part of its registration stack, in the stack's order
+(helper).
+
+```lean
+theorem RueCore.Config.Nested.ordered {C : Config} (h : C.Nested) : C.Ordered
+```
+
 ### `step_blocks`
 
 *theorem* · module `RueCore.TraceOrder`
 
-`Blocks` on §6's terminal configurations: a terminating `Step` run's trace
-is the one `eval` answers (`eval_small_to_big`), so it is in the block grammar
-(helper).
+`Blocks` on §6's terminal configurations: `drop_glue_order` read through
+`DropGlueBlocks.toBlocks` (helper).
 
 ```lean
 theorem RueCore.step_blocks (M : FloatLaws) {P : Program} (h : ProgramTyped P) :
