@@ -42,7 +42,7 @@ def eval_big_to_small_stmt : Prop :=
       Steps M.toFloatSig P Config.init (.panic k tr))
 
 /-- **`run` is simulated by `Step`, on every program** (§6.12): the same, with
-no typing hypothesis. -/
+no typing hypothesis (§7:3's semantic-equivalence sentence). -/
 def run_sim_stmt : Prop :=
   ∀ (M : FloatSig) (P : Program) (fuel : Nat),
     (∀ H v tr, run M P fuel = .ok H v tr →
@@ -61,8 +61,9 @@ def eval_small_to_big_stmt : Prop :=
       ∃ n, ∀ fuel, n < fuel → run M.toFloatSig P fuel = .panic κ tr)
 
 /-- **Completeness on every program** (§6.12): the same, up to a refusal of
-`run`'s (RUE-2314). With no typing hypothesis the escape is wide: a `run` that
-is `.refused` past some fuel satisfies it, whatever `→*` reaches. -/
+`run`'s (RUE-2314; §7:3's semantic-equivalence sentence). With no typing
+hypothesis the escape is wide: a `run` that is `.refused` past some fuel
+satisfies it, whatever `→*` reaches. -/
 def run_small_to_big_stmt : Prop :=
   ∀ (M : FloatSig) (P : Program),
     (∀ H φ v tr, Steps M P Config.init (.run H φ [] (.ret v) tr) →
@@ -87,7 +88,8 @@ def step_never_stuck_of_run_stmt : Prop :=
     ∀ C, Steps M P Config.init C → C.Terminal ∨ ∃ C', Step M P C C'
 
 /-- **A stuck `Step` run is a refusal of `run`** (§6), at every large enough
-fuel, perhaps with another `Refusal`. -/
+fuel, perhaps with another `Refusal`: the stuck case of §7:3's
+semantic-equivalence sentence. -/
 def run_refused_of_step_stuck_stmt : Prop :=
   ∀ (M : FloatSig) (P : Program) {C : Config} {w : Refusal}
     (_ : Steps M P Config.init C) (_ : C.Stuck M P w),
