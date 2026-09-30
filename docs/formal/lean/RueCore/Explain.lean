@@ -1768,8 +1768,9 @@ end
 -- `explain_result` are where it goes: each `check` arm now splits on the
 -- operand's `Ω` (a normal state or §5.7's `⊥`) as well as on its type, so
 -- the case analysis roughly doubles (RUE-2368). The default fails at those two
--- arms and 250000 passes (floor: 200000 fails, 250000 passes); the proof is unchanged.
-set_option maxHeartbeats 250000 in
+-- arms (measured floor: 232000 fails, 240000 passes); 300000 leaves headroom
+-- for other machines and Lean versions. The proof is unchanged.
+set_option maxHeartbeats 300000 in
 mutual
 /-- **The derivation is the checker.** Projecting a derivation to its
 conclusion reproduces `check P R Γ e` exactly, so a rendered derivation can
