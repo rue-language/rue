@@ -452,23 +452,9 @@ theorem dropDeclared_count {D : Decls} {H : Store} {ℓ : Nat} {c c' cd leaf : C
   simp only [Cell.own, Contents.own, List.count_nil] at h1 h2
   omega
 
-/-- (D-Assign) §6.8, at every identity (helper). -/
-theorem assign_count {D : Decls} {H : Store} {ℓ : Nat} {c c' old : Contents} {π : List Nat}
-    {v : Val} {evs : List Event} (hcc : StoreCC D H) (hc : H[ℓ]? = some (.full c))
-    (hr : c.getAt π = .ok old) (hd : dropCell D ℓ old = .ok evs)
-    (hw : c.setAt π (Contents.ofVal v) = some c') (hc' : c'.copyContained D = true) (a : Nat) :
-    (storeOwn D H).count a + (v.own D).count a =
-      (storeOwn D (H.set ℓ (.full c'))).count a + (freedIds D evs).count a := by
-  have hccc := hcc ℓ c hc
-  have h1 := storeOwn_set_count D a (.full c') hc
-  have h2 := Contents.setAt_own_eq a π hccc hc' hr hw
-  rw [dropCell_freed hd]
-  simp only [Cell.own] at h1
-  simp only [Val.own] at *
-  omega
-
-/-- (D-Assign) below a dynamic index, at every identity (helper). -/
-theorem assignDyn_count {D : Decls} {H : Store} {ℓ : Nat} {c c' sub sub' old : Contents}
+/-- (D-Assign) §6.8, at every identity, at a place below a dynamic index (`ρ`,
+empty for a static place) (helper). -/
+theorem assign_count {D : Decls} {H : Store} {ℓ : Nat} {c c' sub sub' old : Contents}
     {π ρ : List Nat} {v : Val} {evs : List Event} (hcc : StoreCC D H)
     (hc : H[ℓ]? = some (.full c)) (hr : c.getAt π = .ok sub) (hr' : sub.getAt ρ = .ok old)
     (hd : dropCell D ℓ old = .ok evs) (hw' : sub.setAt ρ (Contents.ofVal v) = some sub')
@@ -1135,7 +1121,7 @@ theorem msim_indexWrite (hp : P.pendingSafe = true) (IH : MSimIH M P fuel)
                 · rename_i hc'
                   intro K tr
                   exact MSteps.single (.indexWrite hd hold hdrop hw₁ hw₂) (ledger_le_run fun a => by
-                    have := assignDyn_count c₂ hc hsub hold hdrop hw₁ hw₂ hc' a
+                    have := assign_count c₂ hc hsub hold hdrop hw₁ hw₂ hc' a
                     simp only [Focus.own, ArgsFrame.own, Val.ints_own (D := P.decls) his,
                       List.append_nil, Val.own_unit, List.count_nil]
                     omega)
@@ -1264,7 +1250,7 @@ theorem msim_assign (hp : P.pendingSafe = true) (IH : MSimIH M P fuel) (hcc : St
                 intro K tr
                 exact MSteps.single (.assign (rootCell_of hℓ hc) hold hdrop hw)
                   (ledger_le_run fun a => by
-                    have := assign_count c₁ hc hold hdrop hw hc' a
+                    have := assign_count (ρ := []) c₁ hc hold rfl hdrop rfl hw hc' a
                     rw [stackOwn_cons_nil rfl]
                     simp only [Focus.own, Val.own_unit, List.count_nil]
                     omega)
