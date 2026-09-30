@@ -178,7 +178,7 @@ theorem LongC.andThen {H : Store} {X : List Nat} {φ₁ : Activation}
       simp only [EvalRes.bind, EvalRes.withTrace_outOfFuel_iff] at hr
       obtain ⟨l, c, cv, i⟩ := hcons
       exact LongC.pre1 (t := tr₁) l (fun a => by have := i a; omega)
-        (fun K tr => ⟨_, hC K tr, hsim (Fr :: K) tr⟩) (hk H₁ v tr₁ rfl c cv hr)
+        (fun K tr => ⟨_, hC K tr, (hsim (Fr :: K) tr).toSteps⟩) (hk H₁ v tr₁ rfl c cv hr)
   | outOfFuel =>
       have h := h₁ rfl
       exact LongC.step1 (C₂ := fun K tr => C₁ (Fr :: K) tr) (fun a => Nat.le_refl _) hC
@@ -227,7 +227,7 @@ theorem evalArgs_longc {fuel : Nat} {φ : Activation} (hF : TraceMeasure P.decls
             have hs := eval_sim M P fuel H φ e
             rw [he] at hs
             refine LongC.mono (Nat.le_refl _) (LongC.pre (t := tr₁) l (fun a => ?_)
-              (fun K tr => .step (hpush K tr) ((hs _ tr).trans (Steps.single .argsPlug))) ih)
+              (fun K tr => .step (hpush K tr) ((hs _ tr).toSteps.trans (Steps.single .argsPlug))) ih)
             have := i a
             rw [Contents.ownList_ofVals_snoc, List.count_append]
             simp only [List.count_nil] at this
@@ -592,7 +592,7 @@ theorem longc_loop (hF : TraceMeasure P.decls F) (IH : LongCIH M P F fuel)
             LongC.pre1 (t := []) (Nat.le_refl _) (fun a => by simp)
               (fun K tr => ⟨_, .loopIter (by simp [plainUnwind]), .refl _⟩) hL'
           exact LongC.pre1 (t := tr₁) l (fun a => by have := i a; simp at *; omega)
-            (fun K tr => ⟨_, hent K tr, hs _ tr⟩) hit
+            (fun K tr => ⟨_, hent K tr, (hs _ tr).toSteps⟩) hit
   | broke H₁ sc tr₁ =>
       intro h
       simp only [] at h

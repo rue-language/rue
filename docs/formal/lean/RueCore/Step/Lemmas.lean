@@ -2,6 +2,7 @@ module
 
 public import RueCore.Step
 public import RueCore.Dynamics.Lemmas
+public import RueCore.Equivalence.Defs
 
 @[expose] public section
 
@@ -13,7 +14,9 @@ in source order so that the definitions layer holds definitions only
 (RUE-2460; README, "Layers"): the relation's determinism, `step_iff`, the
 trichotomy and the stuck-state lemmas, and the lemmas that a monitor only
 removes behaviour. The section headings are `Step.lean`'s own, repeated where
-a moved theorem sits under one. The demo witnesses — programs run through the
+a moved theorem sits under one. The last section is the simulation between
+`eval` and `Step`, parametrized, which `Equivalence`, `TracePrefix` and
+`TraceWhole` share (RUE-2517). The demo witnesses — programs run through the
 relation — are in `Witnesses.lean`.
 -/
 
@@ -502,5 +505,260 @@ theorem Steps.invariant {M : FloatSig} {P : Program} {I : Config → Prop}
   induction hs with
   | refl => exact id
   | step h₁ _ ih => exact fun hC => ih (hstep h₁ hC)
+
+
+/-! ## The simulation, parametrized (RUE-2517)
+
+One relation between an `eval` result and §6's `→*`, `SimBy`, parametrized by
+a per-step invariant `I` (its runs are `ISteps`), by what an unwind asks of the
+frames it leaves (`G`), and by whether a panic is simulated (`pan`):
+`Equivalence.lean`'s `Sim` has all three `True`. `LongBy` is the long run that
+exhausted fuel pays for, with an invariant on its end (`Long`: none). -/
+
+/-- `→*` along which every step keeps the per-step invariant `I` (helper). -/
+inductive ISteps (M : FloatSig) (P : Program) (I : Config → Config → Prop) :
+    Config → Config → Prop where
+  | refl (C : Config) : ISteps M P I C C
+  | step {C₁ C₂ C₃ : Config} : Step M P C₁ C₂ → I C₁ C₂ → ISteps M P I C₂ C₃ →
+      ISteps M P I C₁ C₃
+
+/-- The configuration family of an expression in focus: `⟨H ; φ ; K ; E[e]⟩`
+for every context `K` and every trace `tr` already produced (§6.1, §6.2). -/
+abbrev evalConf (H : Store) (φ : Activation) (e : Expr) : List Kont → List Event → Config :=
+  fun K tr => .run H φ K (.eval e) tr
+
+/-- Whether a configuration has an expression in focus (helper). -/
+def Config.evalFocus : Config → Prop
+  | .run _ _ _ (.eval _) _ => True
+  | _ => False
+
+/-- A frame `toCall` and `toLoop` look through: every frame but `call` and
+`loop` (helper). -/
+def Kont.Transparent (F : Kont) : Prop :=
+  ∀ K, Kont.toCall (F :: K) = Kont.toCall K ∧ Kont.toLoop (F :: K) = Kont.toLoop K
+
+/-- **The simulation relation, parametrized** (RUE-2517): what `eval`'s result
+`r` promises about `→*` from the configuration family `C`, context `K` and
+prior trace `tr`, with every run keeping the per-step invariant `I`. A value
+reaches `E[v]` in `φ` (§6.2's (Search)); a panic reaches `↯κ` from every
+context ((Panic-Lift) §6.2) when `pan` holds; an unwinding `return` reaches
+the nearest caller ((D-Return) §6.9) and an unwinding `break` the nearest
+loop's context ((D-Break) §6.10), from every context whose discarded frames
+`G` accepts. `Equivalence.lean`'s `Sim` is `I`, `G` and `pan` all `True`. -/
+def SimBy (M : FloatSig) (P : Program) (I : Config → Config → Prop)
+    (G : List Kont → List Kont → Prop) (pan : Prop) (φ : Activation)
+    (C : List Kont → List Event → Config) : EvalRes → Prop
+  | .ok H v tr' => ∀ K tr, ISteps M P I (C K tr) (.run H φ K (.ret v) (tr ++ tr'))
+  | .panic k tr' => pan → ∀ K tr, ISteps M P I (C K tr) (.panic k (tr ++ tr'))
+  | .returned H v tr' => ∀ K tr φs K', Kont.toCall K = some (φs, K') → G K K' →
+      ISteps M P I (C K tr) (.run H φs K' (.ret v) (tr ++ tr'))
+  | .broke H sc tr' => ∀ K tr φs K' H' evs, Kont.toLoop K = some (φs, K') → G K K' →
+      plainUnwind P.decls H (sc.drop φs.scope.length).reverse = .ok (H', evs) →
+      ISteps M P I (C K tr) (.run H' φs K' (.ret .unit) (tr ++ tr' ++ evs))
+  | .refused _ | .outOfFuel => True
+
+/-- A run of **at least** `n` steps from every member of a configuration
+family, whose end `Q` accepts given the trace before it (helper). -/
+def LongBy (M : FloatSig) (P : Program) (Q : List Event → Config → Prop)
+    (C : List Kont → List Event → Config) (n : Nat) : Prop :=
+  ∀ K tr, ∃ m D, n ≤ m ∧ StepsN M P m (C K tr) D ∧ Q tr D
+
+section simulation
+variable {M : FloatSig} {P : Program} {I : Config → Config → Prop}
+  {G : List Kont → List Kont → Prop} {pan : Prop}
+
+/-- Runs under an invariant compose (§6.12) (helper). -/
+theorem ISteps.trans {C₁ C₂ C₃ : Config} (h₁ : ISteps M P I C₁ C₂) (h₂ : ISteps M P I C₂ C₃) :
+    ISteps M P I C₁ C₃ := by
+  induction h₁ with
+  | refl => exact h₂
+  | step s hi _ ih => exact .step s hi (ih h₂)
+
+/-- One step that keeps the invariant is a run (helper). -/
+theorem ISteps.single {C₁ C₂ : Config} (s : Step M P C₁ C₂) (hi : I C₁ C₂) : ISteps M P I C₁ C₂ :=
+  .step s hi (.refl _)
+
+/-- One step is a run with the `True` invariant (helper). -/
+theorem ISteps.one {C₁ C₂ : Config} (s : Step M P C₁ C₂) : ISteps M P (fun _ _ => True) C₁ C₂ :=
+  .step s trivial (.refl _)
+
+/-- A run under an invariant is a run (helper). -/
+theorem ISteps.toSteps {C₁ C₂ : Config} (h : ISteps M P I C₁ C₂) : Steps M P C₁ C₂ := by
+  induction h with
+  | refl C => exact .refl C
+  | step s _ _ ih => exact .step s ih
+
+/-- **Peeling a step by determinism** (`Step.det`, §6): a run from `C` that
+ends at a configuration with no expression in focus passes through `C`'s one
+successor (helper). -/
+theorem ISteps.peel {C C' D : Config} (hs : Step M P C C') (h : ISteps M P I C D)
+    (hC : C.evalFocus) (hD : ¬ D.evalFocus) : ISteps M P I C' D := by
+  cases h with
+  | refl => exact absurd hC hD
+  | step s _ rest => rw [Step.det hs s]; exact rest
+
+/-- A run into the family carries its simulation back (helper). -/
+theorem SimBy.pre {φ : Activation} {C C₂ : List Kont → List Event → Config} {r : EvalRes}
+    (hpre : ∀ K tr, ISteps M P I (C K tr) (C₂ K tr)) (h : SimBy M P I G pan φ C₂ r) :
+    SimBy M P I G pan φ C r := by
+  cases r <;> simp only [SimBy] at h ⊢
+  · intro K tr; exact (hpre K tr).trans (h K tr)
+  · intro K tr φs K' hK hG; exact (hpre K tr).trans (h K tr φs K' hK hG)
+  · intro K tr φs K' H' evs hK hG hu; exact (hpre K tr).trans (h K tr φs K' H' evs hK hG hu)
+  · intro hp K tr; exact (hpre K tr).trans (h hp K tr)
+
+/-- A run into the family that emits `tr₁` carries its simulation back to
+the result with `tr₁` prefixed (§6.12's accumulating output) (helper). -/
+theorem SimBy.withTrace {φ : Activation} {C C₂ : List Kont → List Event → Config} {r : EvalRes}
+    {tr₁ : List Event} (hpre : ∀ K tr, ISteps M P I (C K tr) (C₂ K (tr ++ tr₁)))
+    (h : SimBy M P I G pan φ C₂ r) : SimBy M P I G pan φ C (r.withTrace tr₁) := by
+  cases r <;> simp only [SimBy, EvalRes.withTrace] at h ⊢
+  · intro K tr; have := h K (tr ++ tr₁); simp only [List.append_assoc] at this
+    exact (hpre K tr).trans this
+  · intro K tr φs K' hK hG; have := h K (tr ++ tr₁) φs K' hK hG
+    simp only [List.append_assoc] at this
+    exact (hpre K tr).trans this
+  · intro K tr φs K' H' evs hK hG hu; have := h K (tr ++ tr₁) φs K' H' evs hK hG hu
+    simp only [List.append_assoc] at this ⊢
+    exact (hpre K tr).trans this
+  · intro hp K tr; have := h hp K (tr ++ tr₁); simp only [List.append_assoc] at this
+    exact (hpre K tr).trans this
+
+/-- **§6.2's (Search), once**: `eval`'s `bind` is an evaluation-state run
+pushing a frame `F`, the operand run under `F`, and the context's simulation
+from the operand's value. A `return` or a `break` passes through `F` because
+`F` is neither a call frame nor a loop boundary and `G` does not see it
+(`hG`), and a panic because (Panic-Lift) discards every context (helper). -/
+theorem SimBy.bind {φ φ₁ : Activation} {C C₁ : List Kont → List Event → Config} {F : Kont}
+    (hF : F.Transparent) (hC : ∀ K tr, ISteps M P I (C K tr) (C₁ (F :: K) tr))
+    {r : EvalRes} (h₁ : SimBy M P I G pan φ₁ C₁ r) {k : Store → Val → EvalRes}
+    (hk : ∀ H₁ v tr₁, r = .ok H₁ v tr₁ →
+      SimBy M P I G pan φ (fun K tr => .run H₁ φ₁ (F :: K) (.ret v) tr) (k H₁ v))
+    (hG : ∀ K K', G K K' → G (F :: K) K' := by intros; trivial) :
+    SimBy M P I G pan φ C (r.bind k) := by
+  cases r with
+  | ok H₁ v tr₁ =>
+      simp only [EvalRes.bind]
+      exact SimBy.withTrace (fun K tr => (hC K tr).trans (h₁ (F :: K) tr)) (hk H₁ v tr₁ rfl)
+  | returned H₁ v tr₁ =>
+      simp only [EvalRes.bind, SimBy] at h₁ ⊢
+      intro K tr φs K' hK hg
+      exact (hC K tr).trans (h₁ (F :: K) tr φs K' (by rw [(hF K).1]; exact hK) (hG K K' hg))
+  | broke H₁ sc tr₁ =>
+      simp only [EvalRes.bind, SimBy] at h₁ ⊢
+      intro K tr φs K' H' evs hK hg hu
+      exact (hC K tr).trans
+        (h₁ (F :: K) tr φs K' H' evs (by rw [(hF K).2]; exact hK) (hG K K' hg) hu)
+  | panic κ tr₁ =>
+      simp only [EvalRes.bind, SimBy] at h₁ ⊢
+      intro hp K tr
+      exact (hC K tr).trans (h₁ hp (F :: K) tr)
+  | refused w => simp [EvalRes.bind, SimBy]
+  | outOfFuel => simp [EvalRes.bind, SimBy]
+
+/-- A result that is not a value passes through a transparent frame unchanged
+(helper). -/
+theorem SimBy.lift {φ φ₁ : Activation} {C C₁ : List Kont → List Event → Config} {F : Kont}
+    (hF : F.Transparent) (hC : ∀ K tr, ISteps M P I (C K tr) (C₁ (F :: K) tr))
+    {r : EvalRes} (h₁ : SimBy M P I G pan φ₁ C₁ r) (hr : ∀ H v tr, r ≠ .ok H v tr)
+    (hG : ∀ K K', G K K' → G (F :: K) K' := by intros; trivial) :
+    SimBy M P I G pan φ C r := by
+  have := SimBy.bind (φ := φ) (k := fun _ _ => .outOfFuel) hF hC h₁
+    (fun H v tr h => absurd h (hr H v tr)) hG
+  cases r <;> simp_all [EvalRes.bind]
+
+/-- §6.9's call boundary: the body's `returned` is caught at the `call φ`
+frame, which is what `bindCall` turns into a value, and `G` accepts the frame
+it discards (helper). -/
+theorem SimBy.absorb {φ φ₁ : Activation} {C C₁ : List Kont → List Event → Config}
+    (hC : ∀ K tr, ISteps M P I (C K tr) (C₁ (.call φ :: K) tr))
+    {r : EvalRes} (h₁ : SimBy M P I G pan φ₁ C₁ r) {k : Store → Val → EvalRes}
+    (hk : ∀ H₁ v tr₁, r = .ok H₁ v tr₁ →
+      SimBy M P I G pan φ (fun K tr => .run H₁ φ₁ (.call φ :: K) (.ret v) tr) (k H₁ v))
+    (hG : ∀ K, G (.call φ :: K) K := by intros; trivial) :
+    SimBy M P I G pan φ C (r.bindCall k) := by
+  cases r with
+  | ok H₁ v tr₁ =>
+      simp only [EvalRes.bindCall]
+      exact SimBy.withTrace (fun K tr => (hC K tr).trans (h₁ (.call φ :: K) tr)) (hk H₁ v tr₁ rfl)
+  | returned H₁ v tr₁ =>
+      simp only [EvalRes.bindCall, SimBy] at h₁ ⊢
+      intro K tr
+      exact (hC K tr).trans (h₁ (.call φ :: K) tr φ K rfl (hG K))
+  | panic κ tr₁ =>
+      simp only [EvalRes.bindCall, SimBy] at h₁ ⊢
+      intro hp K tr
+      exact (hC K tr).trans (h₁ hp (.call φ :: K) tr)
+  | _ => simp [EvalRes.bindCall, SimBy]
+
+/-- Where no target has an expression in focus, a first step of the family
+can be peeled off by determinism (helper). -/
+theorem SimBy.peel {φ : Activation} {C C₂ : List Kont → List Event → Config} {r : EvalRes}
+    (hs : ∀ K tr, Step M P (C K tr) (C₂ K tr)) (hC : ∀ K tr, (C K tr).evalFocus)
+    (h : SimBy M P I G pan φ C r) : SimBy M P I G pan φ C₂ r := by
+  cases r <;> simp only [SimBy] at h ⊢
+  · intro K tr; exact (h K tr).peel (hs K tr) (hC K tr) (by simp [Config.evalFocus])
+  · intro K tr φs K' hK hG
+    exact (h K tr φs K' hK hG).peel (hs K tr) (hC K tr) (by simp [Config.evalFocus])
+  · intro K tr φs K' H' evs hK hG hu
+    exact (h K tr φs K' H' evs hK hG hu).peel (hs K tr) (hC K tr) (by simp [Config.evalFocus])
+  · intro hp K tr; exact (h hp K tr).peel (hs K tr) (hC K tr) (by simp [Config.evalFocus])
+
+/-- (D-Break) §6.10: its one step keeps the invariant wherever `G` accepts the
+frames it discards (helper). -/
+theorem simBy_brk {fuel : Nat} {H : Store} {φ : Activation}
+    (hI : ∀ K tr φs K' H' evs, Kont.toLoop K = some (φs, K') → G K K' →
+      plainUnwind P.decls H (φ.scope.drop φs.scope.length).reverse = .ok (H', evs) →
+      I (.run H φ K (.eval .brk) tr) (.run H' φs K' (.ret .unit) (tr ++ evs)) := by
+      intros; trivial) :
+    SimBy M P I G pan φ (evalConf H φ .brk) (eval M (fuel + 1) P H φ .brk) := by
+  simp only [eval]
+  intro K tr φs K' H' evs hK hG hu
+  simpa using ISteps.single (.brk hK hu) (hI K tr φs K' H' evs hK hG hu)
+
+/-- Every run has a length (helper). -/
+theorem Steps.toN {C D : Config} (h : Steps M P C D) : ∃ n, StepsN M P n C D := by
+  induction h with
+  | refl C => exact ⟨0, .refl C⟩
+  | step s _ ih => obtain ⟨n, h⟩ := ih; exact ⟨n + 1, .step s h⟩
+
+/-- Counted runs compose (helper). -/
+theorem StepsN.trans {a b : Nat} {C E D : Config} (h₁ : StepsN M P a C E) (h₂ : StepsN M P b E D) :
+    StepsN M P (a + b) C D := by
+  induction h₁ with
+  | refl => simpa using h₂
+  | step s _ ih => rw [Nat.add_right_comm]; exact .step s (ih h₂)
+
+/-- A family with long runs has shorter ones (helper). -/
+theorem LongBy.mono {Q : List Event → Config → Prop} {C : List Kont → List Event → Config}
+    {m n : Nat} (hmn : m ≤ n) (h : LongBy M P Q C n) : LongBy M P Q C m := by
+  intro K tr
+  obtain ⟨k, D, hk, hD, hq⟩ := h K tr
+  exact ⟨k, D, Nat.le_trans hmn hk, hD, hq⟩
+
+/-- A run into a family with long runs is at least as long, and its end is
+accepted wherever the family's is (helper). -/
+theorem LongBy.pre {Q Q₂ : List Event → Config → Prop} {C C₂ : List Kont → List Event → Config}
+    {n : Nat} (hpre : ∀ K tr, ∃ tr', Steps M P (C K tr) (C₂ K tr') ∧ ∀ D, Q₂ tr' D → Q tr D)
+    (h : LongBy M P Q₂ C₂ n) : LongBy M P Q C n := by
+  intro K tr
+  obtain ⟨tr', hs, hQ⟩ := hpre K tr
+  obtain ⟨j, hj⟩ := hs.toN
+  obtain ⟨k, D, hk, hD, hq⟩ := h K tr'
+  exact ⟨j + k, D, by omega, hj.trans hD, hQ D hq⟩
+
+/-- The same with one step first: the run is one step longer (helper). -/
+theorem LongBy.pre1 {Q Q₂ : List Event → Config → Prop} {C C₂ : List Kont → List Event → Config}
+    {n : Nat}
+    (hpre : ∀ K tr, ∃ C' tr', Step M P (C K tr) C' ∧ Steps M P C' (C₂ K tr') ∧
+      ∀ D, Q₂ tr' D → Q tr D)
+    (h : LongBy M P Q₂ C₂ n) : LongBy M P Q C (n + 1) := by
+  intro K tr
+  obtain ⟨C', tr', s, hs, hQ⟩ := hpre K tr
+  obtain ⟨j, hj⟩ := hs.toN
+  obtain ⟨k, D, hk, hD, hq⟩ := h K tr'
+  exact ⟨j + k + 1, D, by omega, .step s (hj.trans hD), hQ D hq⟩
+
+end simulation
 
 end RueCore
