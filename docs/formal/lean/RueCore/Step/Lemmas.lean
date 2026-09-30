@@ -712,7 +712,6 @@ theorem simBy_brk {fuel : Nat} {H : Store} {φ : Activation}
       I (.run H φ K (.eval .brk) tr) (.run H' φs K' (.ret .unit) (tr ++ evs)) := by
       intros; trivial) :
     SimBy M P I G pan φ (evalConf H φ .brk) (eval M (fuel + 1) P H φ .brk) := by
-  simp only [eval]
   intro K tr φs K' H' evs hK hG hu
   simpa using ISteps.single (.brk hK hu) (hI K tr φs K' H' evs hK hG hu)
 
