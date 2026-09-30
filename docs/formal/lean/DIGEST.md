@@ -121,7 +121,7 @@ theorem RueCore.widen_wf {f : FloatDatum} (h : FloatDatum.Wf FloatWidth.w32 f) :
 
 **The four exact rounding intrinsics preserve `𝔽_w`** (`3.12:36`: "each
 result is exact — an integral value near `x` is always representable"). With
-`negate_wf` and `widen_wf` this discharges §7's "each `⊙_w` of §6.4 is total
+`negate_wf` and `widen_wf` this discharges §7:16's "each `⊙_w` of §6.4 is total
 on `𝔽_w`" for every float operation this module defines; `@sqrt`, the one that
 rounds, is `FloatLaws.sqrt_wf`.
 
@@ -188,7 +188,7 @@ theorem RueCore.toIntIn_inf (b : Bool) (lo hi : Int) :
 
 *theorem* · module `RueCore.Float.Lemmas`
 
-**`rnd_w` lands in `𝔽_w`** (§2, §7's "`rnd_w` is total into `𝔽_w`"):
+**`rnd_w` lands in `𝔽_w`** (§2, §7:16's "`rnd_w` is total into `𝔽_w`"):
 `roundRat` of any rational with a non-zero denominator is a datum of the
 width.
 
@@ -317,7 +317,7 @@ theorem RueCore.Float.ofLit_one (w : FloatWidth) :
 
 *theorem* · module `RueCore.Float.Lemmas`
 
-**Closure of `@sqrt`** (`3.12:35`, §7's "each `⊙_w` is total on `𝔽_w`") for `exactOps`: `FloatLaws.sqrt_wf`.
+**Closure of `@sqrt`** (`3.12:35`, §7:16's "each `⊙_w` is total on `𝔽_w`") for `exactOps`: `FloatLaws.sqrt_wf`.
 
 ```lean
 theorem RueCore.Float.sqrt_wf (σ : Bool) (w : FloatWidth) (f : FloatDatum)
@@ -348,7 +348,7 @@ theorem RueCore.totalCmp_antisymm (a b : FloatDatum) : b.totalCmp a = -a.totalCm
 
 *theorem* · module `RueCore.Float.Lemmas`
 
-**`@total_cmp` is `0` exactly on the same datum**, for well-formed data: §6.4's "`k = 0` holds exactly when the two operands are the same datum". This is where canonicity is used — `±0` are distinct data of distinct rank, the two NaNs likewise, and a finite datum has one significand/exponent pair.
+**`@total_cmp` is `0` exactly on the same datum**, for well-formed data: §6.4:26's "`k = 0` holds exactly when the two operands are the same datum". This is where canonicity is used — `±0` are distinct data of distinct rank, the two NaNs likewise, and a finite datum has one significand/exponent pair.
 
 ```lean
 theorem RueCore.totalCmp_eq_zero_iff {w : FloatWidth} {a b : FloatDatum}
@@ -2036,7 +2036,7 @@ theorem RueCore.no_refusal (M : FloatLaws) {P : Program} (h : ProgramTyped P)
 
 *theorem* · module `RueCore.Soundness`
 
-§7 "No use-after-move": the machine never reads a `⊘` cell.
+§7:4 "No use-after-move": the machine never reads a `⊘` cell.
 
 ```lean
 theorem RueCore.no_use_after_move (M : FloatLaws) {P : Program} (h : ProgramTyped P)
@@ -2048,7 +2048,7 @@ theorem RueCore.no_use_after_move (M : FloatLaws) {P : Program} (h : ProgramType
 
 *theorem* · module `RueCore.Soundness`
 
-§7 "No use-after-drop": the machine never touches a tombstoned (`†`) cell.
+§7:6 "No use-after-drop": the machine never touches a tombstoned (`†`) cell.
 Here it is `no_refusal` at one tag, over checked programs, but typing is not
 what makes it true: `run_no_use_after_drop` (`Tombstone.lean`, RUE-2496) proves
 it for every program. `run-all-scope-drops` (§6.9) walks the activation record's drop
@@ -2069,7 +2069,7 @@ theorem RueCore.no_use_after_drop (M : FloatLaws) {P : Program} (h : ProgramType
 
 *theorem* · module `RueCore.Soundness`
 
-§7 "Linear values are consumed exactly once", leak half: neither a scope
+§7:8 "Linear values are consumed exactly once", leak half: neither a scope
 exit (§6.7) nor an activation record unwind (§6.9) ever sees a live linear value.
 
 ```lean
@@ -3943,7 +3943,7 @@ theorem RueCore.drop_glue_order (M : FloatLaws) {P : Program} (h : ProgramTyped 
 
 *theorem* · module `RueCore.TraceOrder`
 
-**Drop order** (§3.9, §6.7, §6.9, §6.10, §6.11; §7's "no use-after-drop /
+**Drop order** (§3.9, §6.7, §6.9, §6.10, §6.11; §7:6's "no use-after-drop /
 no leak of drops" bullet, its *when*), over §6's relation, for a program the
 checker accepts:
 
@@ -3998,7 +3998,7 @@ theorem RueCore.Blocks.not_dtor {D : Decls} {s : Nat} {c : Contents}
 
 *theorem* · module `RueCore.Tombstone`
 
-**No use-after-drop, on every program** (§7 "No use-after-drop / no leak
+**No use-after-drop, on every program** (§7:6 "No use-after-drop / no leak
 of drops", "never read afterward"; §6.9): `run` never refuses with
 `useAfterDrop`, checked or not.
 
@@ -4042,7 +4042,7 @@ theorem RueCore.eval_longc (M : FloatSig) {P : Program} {F : Event → List Nat}
 
 *theorem* · module `RueCore.TracePrefix`
 
-**No double free, on every prefix of a run** (§7 "No double-free", as a
+**No double free, on every prefix of a run** (§7:5 "No double-free", as a
 safety property; RUE-2477). For a checked program, every configuration §6's
 relation reaches from `Config.init` — the run so far, whether or not it ever
 terminates — has a trace that frees no identity twice (`freedIds`) and runs no
@@ -4061,7 +4061,7 @@ theorem RueCore.step_no_double_free (M : FloatLaws) {P : Program} (h : ProgramTy
 
 *theorem* · module `RueCore.TraceWhole`
 
-**Every owned value of a terminating run ends exactly once** (§7 "No
+**Every owned value of a terminating run ends exactly once** (§7:6 "No
 use-after-drop / no leak of drops", over a whole program; RUE-2478). For a
 checked program whose functions are all `pendingSafe` (RUE-2316), take any
 configuration `C` §6's relation reaches from `Config.init` and any owned
@@ -24212,7 +24212,7 @@ prefix of it is `MovedOut`).
 
 * `owned` — this path and every path under it is `Owned`.
 * `movedOut` — this path is `MovedOut`; every path strictly under it is absent,
-  which is what (Use-Move) §5.1's "every path strictly under `p` removed" does.
+  which is what (Use-Move) §5.1:1's "every path strictly under `p` removed" does.
 * `fields ts` — this path is `Owned` and its fields carry the states `ts`,
   which is the state a **partial move** leaves (`3.8:22`). A field beyond
   `ts`'s length is `owned`, so a partial move records only the fields it
@@ -27213,7 +27213,7 @@ Defining equations, as Lean derived them from the body:
 
 *inductive* · module `RueCore.Float`
 
-**§7's "totality of the float operations", as an algebraic specification.** A
+**§7:16's "totality of the float operations", as an algebraic specification.** A
 `FloatSig` together with the laws §7 owes for floats and §6.4 quotes from
 `3.12:9`, `3.12:22` and `3.12:44`. Every field is a statement that is true of
 IEEE 754 *and* of the compiler — which is why the NaN laws below say only that
@@ -28842,8 +28842,8 @@ RueCore.Config.panic (k : PanicKind) (tr : List Event) : Config
 
 `split`'s step over one node's stored members — a declaration's fields, or
 an array's elements: retain the members before the selected slot, recurse into
-it, and retain the members after — which is §6.3's "visit fields in declaration
-order" (and §5.1's ascending-index order at an array) written as a structural
+it, and retain the members after — which is §5.1:3's "visit fields in declaration
+order" (and its ascending-index order at an array) written as a structural
 recursion rather than as a `take`/`drop` (helper).
 
 ```lean
@@ -30646,7 +30646,7 @@ Defining equations, as Lean derived them from the body:
 
 *def* · module `RueCore.Spec.Nonvacuous`
 
-**The float laws have a model: `Float.exactOps`** (§7's "totality of the
+**The float laws have a model: `Float.exactOps`** (§7:16's "totality of the
 float operations"; RUE-2469). Some `FloatLaws` has the executable instance
 `Float.exactOps` as its operations, so every law of `FloatLaws` holds of the
 model the corpus runs on, and the laws are jointly satisfiable: the 22 spine
@@ -32324,7 +32324,7 @@ def RueCore.Spec.run_ne_returned_stmt : Prop :=
 
 *def* · module `RueCore.Spec.Safety`
 
-**No use-after-drop, on every program** (§7 "No use-after-drop / no leak
+**No use-after-drop, on every program** (§7:6 "No use-after-drop / no leak
 of drops", "never read afterward"; RUE-2496): `run` never refuses with
 `useAfterDrop`, at any fuel and any float operations (not only a `FloatLaws`), **whether or not the program is
 checked**. The property is structural rather than a corollary of typing: a
@@ -32874,7 +32874,7 @@ Defining equations, as Lean derived them from the body:
 
 *def* · module `RueCore.Soundness.Defs`
 
-Per-cell agreement between the static entry and the dynamic cell: §7's
+Per-cell agreement between the static entry and the dynamic cell: §7:4's
 "Σ faithfully tracks the store's initialization", with the §5.5 join's
 asymmetry built into `ContentsOwnTyping`. A tombstoned (`†`) cell matches no entry
 at all, which is what keeps the unwind off one.
@@ -35100,7 +35100,7 @@ def RueCore.Spec.run_small_to_big_stmt : Prop :=
 
 *def* · module `RueCore.Spec.Equivalence`
 
-**`eval` never refused, so `Step` never stuck, on every program** (§7 "Type
+**`eval` never refused, so `Step` never stuck, on every program** (§7:3 "Type
 safety": "it either reduces, halts with a value, or halts with one of the
 defined panics").
 
@@ -35116,7 +35116,7 @@ def RueCore.Spec.step_never_stuck_of_run_stmt : Prop :=
 
 *def* · module `RueCore.Spec.Step`
 
-**No use-after-drop over `Step`, on every program** (§7 "No use-after-drop /
+**No use-after-drop over `Step`, on every program** (§7:6 "No use-after-drop /
 no leak of drops"; §6.1's tombstoned cell; RUE-2496). No configuration reachable
 from `Config.init` is stuck on a tombstoned (`†`) cell, whether or not the
 program is checked. The hypothesis that the configuration is reached is
@@ -35175,7 +35175,7 @@ def RueCore.SimIH (M : FloatSig) (P : Program) (fuel : Nat) : Prop :=
 *inductive* · module `RueCore.Soundness.Defs`
 
 Per-node agreement between Σ's state for a path and the contents stored
-there, at the path's declared type (§7's "Σ faithfully tracks the store's
+there, at the path's declared type (§7:4's "Σ faithfully tracks the store's
 initialization", section docstring): `owned` holds a value, `movedOut` holds
 contents with no live linear sub-value — the §5.5 join's asymmetry, whose
 residue the machine drops path-specifically (`3.8:60`) — and `fields` holds the
@@ -36164,7 +36164,7 @@ RueCore.HasTy.int {D : Decls} {w : IntWidth} {s : Sign} {n : Int} :
   InBounds w s n → HasTy D (Val.int w s n) (Ty.int w s)
 ```
 
-**`HasTy.float`** — §6.1's `f_T` at `T = float(w)`: the datum lies in `𝔽_w`, which is the float counterpart of `n_T`'s `min_T ≤ n ≤ max_T` side condition. Keeping it is what gives §7's "totality of the float operations" lemma something to preserve: the model's closure laws (`FloatLaws`, `Float.lean`) are exactly what re-establishes it after a rounded operation.
+**`HasTy.float`** — §6.1's `f_T` at `T = float(w)`: the datum lies in `𝔽_w`, which is the float counterpart of `n_T`'s `min_T ≤ n ≤ max_T` side condition. Keeping it is what gives §7:16's "totality of the float operations" lemma something to preserve: the model's closure laws (`FloatLaws`, `Float.lean`) are exactly what re-establishes it after a rounded operation.
 
 ```lean
 RueCore.HasTy.float {D : Decls} {w : FloatWidth} {f : FloatDatum} :
@@ -38525,7 +38525,7 @@ def RueCore.Spec.checkProgram_sound_stmt : Prop :=
 
 *def* · module `RueCore.Spec.Trace`
 
-**Drop glue order, in §6.11's own terms** (§3.9, §6.11; §7 "No
+**Drop glue order, in §6.11's own terms** (§3.9, §6.11; §7:6 "No
 use-after-drop / no leak of drops", *how* a value is dropped; RUE-2487), over
 `Step`. A terminating run's trace — value or panic — is in §6.11's block grammar
 with each drop's events given by §6.11's rules (`DropGlueBlocks`, `DropGlue`):
@@ -38552,7 +38552,7 @@ def RueCore.Spec.drop_glue_order_stmt : Prop :=
 
 *def* · module `RueCore.Spec.Trace`
 
-**Drop order** (§7 "No use-after-drop / no leak of drops", "at the end of
+**Drop order** (§7:6 "No use-after-drop / no leak of drops", "at the end of
 its scope"; §6.7, §6.9–§6.11), over `Step`. A terminating run's trace — value
 or panic — is in §6.11's block grammar (`Blocks`). Each step from a
 reachable configuration drops one cell or distinct cells newest first, and
@@ -38587,7 +38587,7 @@ def RueCore.Spec.drop_order_stmt : Prop :=
 *def* · module `RueCore.Spec.Equivalence`
 
 **The big-to-small direction, `eval` to `Step`**: the interpreter-to-small-step direction of
-the semantic equivalence (§7's semantic-equivalence sentence; ADR-0097). For a
+the semantic equivalence (§7:3's semantic-equivalence sentence; ADR-0097). For a
 checked program, `run` is never refused, and its values and panics are reached
 by `→*` from `Config.init` with the same store and trace.
 
@@ -38610,7 +38610,7 @@ def RueCore.Spec.eval_big_to_small_stmt : Prop :=
 
 *def* · module `RueCore.Spec.Equivalence`
 
-**Divergence is exhaustion at every fuel** (§7 "Type safety"; §6.12): for a
+**Divergence is exhaustion at every fuel** (§7:3 "Type safety"; §6.12): for a
 checked program, `run` is `outOfFuel` at every fuel iff `Step` has runs of
 every length from `Config.init`.
 
@@ -38627,7 +38627,7 @@ def RueCore.Spec.eval_diverges_iff_stmt : Prop :=
 *def* · module `RueCore.Spec.Equivalence`
 
 **The small-to-big direction, `Step` to `eval`, modulo fuel**: the small-step-to-interpreter
-direction of the semantic equivalence (§7's semantic-equivalence sentence).
+direction of the semantic equivalence (§7:3's semantic-equivalence sentence).
 For a checked program, a value or panic `→*` reaches is `run`'s answer at
 every large enough fuel.
 
@@ -38652,7 +38652,7 @@ def RueCore.Spec.eval_small_to_big_stmt : Prop :=
 
 *def* · module `RueCore.Spec.Equivalence`
 
-**Never refused iff never stuck** (§7 "Type safety"). For a checked program,
+**Never refused iff never stuck** (§7:3 "Type safety"). For a checked program,
 `run` is never refused iff no reachable configuration is stuck. Under `ProgramTyped` both
 sides hold outright, so the equivalence adds nothing; cite
 `step_never_stuck_of_run` (R5 of `REDTEAM-LOG.md`).
@@ -38672,7 +38672,7 @@ def RueCore.Spec.never_refused_iff_stmt : Prop :=
 
 *def* · module `RueCore.Spec.Trace`
 
-**No double free** (§7 "No double-free"). A checked program's run is never
+**No double free** (§7:5 "No double-free"). A checked program's run is never
 refused, and its trace frees no identity twice and runs no destructor twice
 on one. Narrower than the bullet: an `outOfFuel` result has an empty trace,
 so a run that never terminates is not covered here; `step_no_double_free`
@@ -38696,7 +38696,7 @@ def RueCore.Spec.no_double_free_stmt : Prop :=
 
 *def* · module `RueCore.Spec.Safety`
 
-**No linear discard** (§7, the same bullet, `3.8:64`): no sequence discards
+**No linear discard** (§7:8, the same bullet, `3.8:64`): no sequence discards
 a linear value. The three linear statements hold because `eval`'s monitors
 never fire; what they rule out is what those monitors watch (R3 of
 `REDTEAM-LOG.md`).
@@ -38713,7 +38713,7 @@ def RueCore.Spec.no_linear_discard_stmt : Prop :=
 
 *def* · module `RueCore.Spec.Safety`
 
-**No linear leak** (§7 "Linear values are consumed exactly once", §5.6): no
+**No linear leak** (§7:8 "Linear values are consumed exactly once", §5.6): no
 scope exit, activation record pop or scope unwind meets a live linear binding. Narrower
 than the bullet:
 - a linear value built for a sibling operand, which a later operand abandons
@@ -38737,7 +38737,7 @@ def RueCore.Spec.no_linear_leak_stmt : Prop :=
 
 *def* · module `RueCore.Spec.Safety`
 
-**No linear overwrite** (§7, the same bullet, `3.8:77`): no assignment drops
+**No linear overwrite** (§7:8, the same bullet, `3.8:77`): no assignment drops
 a live linear value.
 
 ```lean
@@ -38752,8 +38752,8 @@ def RueCore.Spec.no_linear_overwrite_stmt : Prop :=
 
 *def* · module `RueCore.Spec.Safety`
 
-**No refusal of any kind** (§7's memory-safety bullets). A checked
-program's run is never `.refused`. Narrower than the bullets: a value built for
+**No refusal of any kind** (§7's memory-safety bullets, §7:4, §7:6 and
+§7:8). A checked program's run is never `.refused`. Narrower than the bullets: a value built for
 a sibling operand that a later one abandons by `return` or `break` is dropped
 by nobody (RUE-2316), and a `@panic` runs no drop (§5.7's `⊥_panic`). Like
 every "never `.refused`" statement, it holds because `eval`'s checks and
@@ -38772,7 +38772,7 @@ def RueCore.Spec.no_refusal_stmt : Prop :=
 
 *def* · module `RueCore.Spec.Safety`
 
-**No use-after-drop** (§7 "No use-after-drop / no leak of drops", "never
+**No use-after-drop** (§7:6 "No use-after-drop / no leak of drops", "never
 read afterward"): `run` never refuses with `useAfterDrop`, the tag `eval`
 raises when it reaches a tombstoned cell. It is `no_refusal` at one tag, so it
 says no tombstoned cell is accessed only as far as `eval` checks every access
@@ -38796,7 +38796,7 @@ def RueCore.Spec.no_use_after_drop_stmt : Prop :=
 
 *def* · module `RueCore.Spec.Safety`
 
-**No use-after-move** (§7 "No use-after-move"): `run` never refuses with
+**No use-after-move** (§7:4 "No use-after-move"): `run` never refuses with
 `useAfterMove`, the tag `eval` raises when it reads a `⊘`. It is
 `no_refusal` at one tag, so it says no read of a moved-out place happens
 only as far as `eval` checks every read and labels it so: what it rules out is
@@ -38814,7 +38814,7 @@ def RueCore.Spec.no_use_after_move_stmt : Prop :=
 
 *def* · module `RueCore.Spec.Trace`
 
-**No double free, on every prefix of a run** (§7 "No double-free", read as a
+**No double free, on every prefix of a run** (§7:5 "No double-free", read as a
 safety property; RUE-2477). For a checked program, every configuration §6's
 relation reaches from `Config.init` — the run so far, whether or not it ever
 terminates — has a trace that frees no identity twice and runs no destructor
@@ -38838,7 +38838,7 @@ def RueCore.Spec.step_no_double_free_stmt : Prop :=
 
 *def* · module `RueCore.Spec.Step`
 
-**Progress over `Step`** (§7 "Type safety": "does not get stuck"). For a
+**Progress over `Step`** (§7:3 "Type safety": "does not get stuck"). For a
 checked program, every `C` with `Config.init →* C` is terminal or has a step
 `C → C'`. This is not the one-step progress lemma over a typed configuration
 (no configuration typing is defined, RUE-2423) but its consequence along every
@@ -38857,7 +38857,7 @@ def RueCore.Spec.step_progress_stmt : Prop :=
 
 *def* · module `RueCore.Spec.Step`
 
-**The invariant `SafeAt` along every run** (§7 "Type safety"; *not* its
+**The invariant `SafeAt` along every run** (§7:3 "Type safety"; *not* its
 sentence "types are preserved under reduction"). For a checked program, every
 `C` with `Config.init →* C` is `SafeAt` the entry type: nothing reachable from
 it is stuck, and every value it halts with has that type.
@@ -38883,7 +38883,7 @@ def RueCore.Spec.step_safeAt_stmt : Prop :=
 
 *def* · module `RueCore.Spec.Step`
 
-**Type safety over `Step`, per horizon** (§7 "Type safety"; §6.12). For a
+**Type safety over `Step`, per horizon** (§7:3 "Type safety"; §6.12). For a
 checked program and every `n`, `Config.init →ⁿ D` for some `D`, or
 `Config.init →* ✓` with a value of the entry type, or `Config.init →* ↯κ`:
 Wright & Felleisen's form (diverge, or a typed value), per horizon and with a
@@ -38908,7 +38908,7 @@ def RueCore.Spec.step_type_safety_stmt : Prop :=
 
 *def* · module `RueCore.Spec.Trace`
 
-**Every owned value of a run that terminates with a value ends exactly once** (§7 "No
+**Every owned value of a run that terminates with a value ends exactly once** (§7:6 "No
 use-after-drop / no leak of drops", over a whole program; RUE-2478). For a
 checked, `pendingSafe` program, take any configuration `C` §6's relation
 reaches from `Config.init` and any owned identity `a` that `C` holds — in a
@@ -40466,7 +40466,7 @@ def RueCore.Spec.check_sound_stmt : Prop :=
 
 *def* · module `RueCore.Spec.Trace`
 
-**Every owned value ends exactly once** (§7 "No use-after-drop / no leak of
+**Every owned value ends exactly once** (§7:6 "No use-after-drop / no leak of
 drops"). A typed expression of a checked program, the expression and the
 program both `pendingSafe` (`e.pendingSafe`, `P.pendingSafe`), run from an
 agreeing activation record and store, is never refused; every identity the store
@@ -40498,7 +40498,7 @@ def RueCore.Spec.drop_exactly_once_stmt : Prop :=
 *def* · module `RueCore.Spec.Trace`
 
 **Values minted during an evaluation end exactly once too** (the same §7
-bullet; §6.7, §6.9, §6.10): under the same hypotheses, once a form's leading
+bullet, §7:6; §6.7, §6.9, §6.10): under the same hypotheses, once a form's leading
 operands produced `vs` in `H₁` (`Lead`), the rest of the form ends them and
 `H₁`'s identities as `Exact` counts, and tombstones what it allocated
 (`Settled`). This is the form the proof of `drop_exactly_once` inducts on
@@ -40533,7 +40533,7 @@ def RueCore.Spec.rest_exactly_once_stmt : Prop :=
 
 *def* · module `RueCore.Spec.Safety`
 
-**Program safety** (§7 "Type safety"). A well-formed program whose entry
+**Program safety** (§7:3 "Type safety"). A well-formed program whose entry
 point (`P.fns[0]?`) takes no parameters, run at any fuel, exhausts it,
 panics, or returns a value of its entry point's type. The entry point's
 return type is not restricted: §2's grammar fixes `fn main() -> i32 | unit`,
@@ -40559,7 +40559,7 @@ def RueCore.Spec.run_safe_stmt : Prop :=
 
 *def* · module `RueCore.Spec.Safety`
 
-**Type safety over `eval`** (§7 "Type safety", in the interpreter form it
+**Type safety over `eval`** (§7:3 "Type safety", in the interpreter form it
 names). A typed expression of a well-formed program, run at any fuel from a
 activation record and store agreeing with its context, ends in `EvalOk`: a well-typed
 value, an unwinding `return` or `break` §5.3's `Ω` allows, a defined panic,
@@ -40608,7 +40608,7 @@ concludes at `⊥`.
 Rule names cite the calculus: `useCopy`/`useMove` are (Use-Copy)/(Use-Move)
 (§5.1) and `useDeclared` is (Use-Declared-Linear-Destructure) §5.1, the
 declared-linear destructure §4.2 selects by the `Declared(d, π_s)` plan, with
-`dropDeclared` its `@drop` half (§5.3's "read the same way"); `binop` is
+`dropDeclared` its `@drop` half (§5.1:5's "read the same way"); `binop` is
 (Arith) and (Ord) at once, `neg`/`notOp`/`bitnot` are
 (Neg)/(Not)/(BitNot), `intCast` is (Int-Cast) and `dbg` is (Dbg), all §5.8;
 `dropCopy`/`dropRes` are (@Drop-Copy)/(@Drop) (§5.3); `mkStruct` is
@@ -40736,7 +40736,7 @@ RueCore.Typed.binopBot {P : Program} {R : Ty} {Γ : Ctx} {Δ₁ : List Ctx}
         { norm := none, brk := Δ₁ }
 ```
 
-**`Typed.floatBinop`** — (Float-Arith), (Float-Ord) and (Total-Cmp) §5.8, in one rule for the same reason `binop` fuses (Arith) and (Ord): they differ only in the type they conclude at (`BinOp.resultTy` — `float(w)`, `bool`, `int(32,signed)`). Both operands share **one** `float(w)`: `3.12:13` gives no implicit widening, so an `f32`/`f64` mix has no derivation, and `3.12:14` relates no float operand to an integer one — the only bridges are the intrinsics. `BinOp.floatAdmits` is §5.8's "rejected by the absence of a rule" for `%` (`3.12:25`) and for the bitwise and shift operators, written as a side condition because one constructor stands for the three rule groups.
+**`Typed.floatBinop`** — (Float-Arith), (Float-Ord) and (Total-Cmp) §5.8, in one rule for the same reason `binop` fuses (Arith) and (Ord): they differ only in the type they conclude at (`BinOp.resultTy` — `float(w)`, `bool`, `int(32,signed)`). Both operands share **one** `float(w)`: `3.12:13` gives no implicit widening, so an `f32`/`f64` mix has no derivation, and `3.12:14` relates no float operand to an integer one — the only bridges are the intrinsics. `BinOp.floatAdmits` is §5.8:15's "rejected by the absence of a rule" for `%` (`3.12:25`) and for the bitwise and shift operators, written as a side condition because one constructor stands for the three rule groups.
 
 ```lean
 RueCore.Typed.floatBinop {P : Program} {R : Ty} {Γ Γ₁ : Ctx} {Ω₂ : Out}
@@ -40865,7 +40865,7 @@ RueCore.Typed.mkEnum {P : Program} {R : Ty} {Γ : Ctx} {Ω : Out} {e k : Nat}
         Typed P R Γ (Expr.mkEnum e k args) (Ty.enum e) Ω
 ```
 
-**`Typed.match`** — (Match) §5.5, the elimination form for enums. The scrutinee is typed first, at the enum type, and its Σ effect is whatever typing it did: at a place that is (Use-Copy)/(Use-Move) §5.1 by `qual(E)` — a non-`Copy` enum is *consumed* by the match, because a scrutinee is a value context and a use of a move-type place there moves it (`3.8:7`, `3.8:76`; `6.3:17` for the payload the arm binds out of it, and not `3.8:33`'s declared-`linear` destructure, which is a rule this fragment does not mechanize), and a second `match` on it is then the use of a moved-out place the compiler reports as E0205 (`3.8:5`). Exhaustiveness is the arm list's **shape**: `arms.length = ed.variants.length`, with arm `j` the arm for variant `j`, so §5.5's "exactly the variants K1..Kn" needs no coverage search and no ordering side condition (`4.7:9`, `4.7:10`'s enum clause; the wildcard, the repeated pattern and the first-match order are elaboration obligations §5.5 states). Progress rests on it: `exhaustive_arm_exists` (`Soundness.lean`) is that a well-typed tag has an arm. Each arm is typed from the **same** post-scrutinee state `Σ0` under its payload locals (`extendArm`), all arms at one type `T` — the premise a diverging arm satisfies through (Sub-Never), which the `⊥` rules fold in, exactly as an `ite` arm does. An arm that can complete normally leaves its payload locals' scope under §5.6: `TypedArms` carries the same residual-linear check `Typed.letIn` carries for its one binder, over the `ai` entries the arm pops. §5.5 joins the output contexts of the arms that **can complete normally** n-way (`Ctx.joinOpts`, the fold `Ctx.joinAll` over them), and a diverging arm is "excluded from the state join" and contributes only its abrupt-completion contexts. The set of abrupt-completion contexts is the scrutinee's `Δ_0` with every arm's, whether or not it can complete normally.
+**`Typed.match`** — (Match) §5.5, the elimination form for enums. The scrutinee is typed first, at the enum type, and its Σ effect is whatever typing it did: at a place that is (Use-Copy)/(Use-Move) §5.1 by `qual(E)` — a non-`Copy` enum is *consumed* by the match, because a scrutinee is a value context and a use of a move-type place there moves it (`3.8:7`, `3.8:76`; `6.3:17` for the payload the arm binds out of it, and not `3.8:33`'s declared-`linear` destructure, which is a rule this fragment does not mechanize), and a second `match` on it is then the use of a moved-out place the compiler reports as E0205 (`3.8:5`). Exhaustiveness is the arm list's **shape**: `arms.length = ed.variants.length`, with arm `j` the arm for variant `j`, so §5.5:4's "exactly the variants K1..Kn" needs no coverage search and no ordering side condition (`4.7:9`, `4.7:10`'s enum clause; the wildcard, the repeated pattern and the first-match order are elaboration obligations §5.5 states). Progress rests on it: `exhaustive_arm_exists` (`Soundness.lean`) is that a well-typed tag has an arm. Each arm is typed from the **same** post-scrutinee state `Σ0` under its payload locals (`extendArm`), all arms at one type `T` — the premise a diverging arm satisfies through (Sub-Never), which the `⊥` rules fold in, exactly as an `ite` arm does. An arm that can complete normally leaves its payload locals' scope under §5.6: `TypedArms` carries the same residual-linear check `Typed.letIn` carries for its one binder, over the `ai` entries the arm pops. §5.5 joins the output contexts of the arms that **can complete normally** n-way (`Ctx.joinOpts`, the fold `Ctx.joinAll` over them), and a diverging arm is "excluded from the state join" and contributes only its abrupt-completion contexts. The set of abrupt-completion contexts is the scrutinee's `Δ_0` with every arm's, whether or not it can complete normally.
 
 ```lean
 RueCore.Typed.match {P : Program} {R : Ty} {Γ Γ₀ : Ctx} {Δ₀ : List Ctx}
@@ -41108,7 +41108,7 @@ RueCore.Typed.letBot {P : Program} {R : Ty} {Γ : Ctx} {Δ₁ : List Ctx}
     Typed P R Γ (Expr.letIn m e₁ e₂) T { norm := none, brk := Δ₁ }
 ```
 
-**`Typed.assign`** — (Assign) §5.2, at a place: the root must be a `μ = mut` binding (§5 preamble), the RHS runs first, the overwrite of live linear content is ill-formed (`3.8:77`, checked on the **post-RHS** state — the RUE-387 premise, and the `Σ1` reading that makes `p = f(p)` legal), and the subtree at `p` becomes `Owned` afterward (reinitialization, `3.8:55`). The `get` premises are `Owned-Base` (`3.8:53`) at both states: a path under a moved prefix is not a path to assign to, which the compiler reports as E0205. The `3.8:77` premise is §5.2's disjunction **as written** — `Σ1(p) = MovedOut ∨ ¬carries_linear(T)`, on the destination's declared type — and not §5.6's residual reading. `overwriteOk`'s docstring says why: an overwrite discharges nothing, so the argument that made §5.5 and §5.6 state-keyed (RUE-526, RUE-1591) does not transfer, and the compiler rejects the shape the residual reading would accept (E0493 on `@drop(v.linearField); v = …`; corpus case `overwrite_past_partial_linear`). `assignArrayOk` is §5.2's own array side condition (`3.8:72`, E0480), read on the post-RHS state like the `3.8:77` premise beside it: a destination that steps into an array demands the whole array, so an element is never reinitialized and the whole-array reassignment is the only recovery (`7.1:46`). Its docstring records the deviation from §5.2's disjunction as written. One **deviation** (N3): `Owned-Base` is demanded on the *input context* as well as the post-RHS one, so this rule is one premise stricter than §5.2, which states neither (U4 reads §5.1's "in any context" side condition for the post-RHS lookup). Nothing a program can observe turns on it: only an RHS that reinitialises the target's own moved-out prefix could make the input lookup fail where the post-RHS one succeeds.
+**`Typed.assign`** — (Assign) §5.2, at a place: the root must be a `μ = mut` binding (§5 preamble), the RHS runs first, the overwrite of live linear content is ill-formed (`3.8:77`, checked on the **post-RHS** state — the RUE-387 premise, and the `Σ1` reading that makes `p = f(p)` legal), and the subtree at `p` becomes `Owned` afterward (reinitialization, `3.8:55`). The `get` premises are `Owned-Base` (`3.8:53`) at both states: a path under a moved prefix is not a path to assign to, which the compiler reports as E0205. The `3.8:77` premise is §5.2's disjunction **as written** — `Σ1(p) = MovedOut ∨ ¬carries_linear(T)`, on the destination's declared type — and not §5.6's residual reading. `overwriteOk`'s docstring says why: an overwrite discharges nothing, so the argument that made §5.5 and §5.6 state-keyed (RUE-526, RUE-1591) does not transfer, and the compiler rejects the shape the residual reading would accept (E0493 on `@drop(v.linearField); v = …`; corpus case `overwrite_past_partial_linear`). `assignArrayOk` is §5.2's own array side condition (`3.8:72`, E0480), read on the post-RHS state like the `3.8:77` premise beside it: a destination that steps into an array demands the whole array, so an element is never reinitialized and the whole-array reassignment is the only recovery (`7.1:46`). Its docstring records the deviation from §5.2's disjunction as written. One **deviation** (N3): `Owned-Base` is demanded on the *input context* as well as the post-RHS one, so this rule is one premise stricter than §5.2, which states neither (U4 reads §5.1:6's "in any context" side condition for the post-RHS lookup). Nothing a program can observe turns on it: only an RHS that reinitialises the target's own moved-out prefix could make the input lookup fail where the post-RHS one succeeds.
 
 ```lean
 RueCore.Typed.assign {P : Program} {R : Ty} {Γ Γ₁ : Ctx} {Δ : List Ctx}
@@ -41569,7 +41569,7 @@ part of an infectious carrier and letting the rest drop is legal.
 **The array clause and §5.6's second disjunct.** An array's node carries no
 obligation of its own — it declares no attribute, and `3.8:74` makes a
 zero-length one vacuous — so the obligation is the disjunction over its `n`
-elements, each at the element type (`3.8:71`, §5.3's "the element type for an
+elements, each at the element type (`3.8:71`, §5.3:7's "the element type for an
 array of nonzero length"). §5.6 writes that clause with a second disjunct,
 "(untracked residue carries linear)", for the elements the tracked list does
 not reach. It is not absent here: `residualLinearFields`' `[], Ts` base case

@@ -32,7 +32,7 @@ inductive HasTy (D : Decls) : Val → Ty → Prop where
   | int {w s n} : InBounds w s n → HasTy D (.int w s n) (.int w s)
   /-- §6.1's `f_T` at `T = float(w)`: the datum lies in `𝔽_w`, which is the
   float counterpart of `n_T`'s `min_T ≤ n ≤ max_T` side condition. Keeping it
-  is what gives §7's "totality of the float operations" lemma something to
+  is what gives §7:16's "totality of the float operations" lemma something to
   preserve: the model's closure laws (`FloatLaws`, `Float.lean`) are exactly
   what re-establishes it after a rounded operation. -/
   | float {w f} : f.Wf w → HasTy D (.float w f) (.float w)
@@ -122,7 +122,7 @@ end
 
 mutual
 /-- Per-node agreement between Σ's state for a path and the contents stored
-there, at the path's declared type (§7's "Σ faithfully tracks the store's
+there, at the path's declared type (§7:4's "Σ faithfully tracks the store's
 initialization", section docstring): `owned` holds a value, `movedOut` holds
 contents with no live linear sub-value — the §5.5 join's asymmetry, whose
 residue the machine drops path-specifically (`3.8:60`) — and `fields` holds the
@@ -159,7 +159,7 @@ inductive ContentsOwnTypingList (D : Decls) : List Contents → List OwnSt → L
       ContentsOwnTypingList D (c :: cs) ts (T :: Ts)
 end
 
-/-- Per-cell agreement between the static entry and the dynamic cell: §7's
+/-- Per-cell agreement between the static entry and the dynamic cell: §7:4's
 "Σ faithfully tracks the store's initialization", with the §5.5 join's
 asymmetry built into `ContentsOwnTyping`. A tombstoned (`†`) cell matches no entry
 at all, which is what keeps the unwind off one. -/

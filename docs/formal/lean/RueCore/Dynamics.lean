@@ -984,8 +984,8 @@ def Contents.splitResidue (D : Decls) :
 
 /-- `split`'s step over one node's stored members — a declaration's fields, or
 an array's elements: retain the members before the selected slot, recurse into
-it, and retain the members after — which is §6.3's "visit fields in declaration
-order" (and §5.1's ascending-index order at an array) written as a structural
+it, and retain the members after — which is §5.1:3's "visit fields in declaration
+order" (and its ascending-index order at an array) written as a structural
 recursion rather than as a `take`/`drop` (helper). -/
 def Contents.splitFields (D : Decls) :
     List Contents → Nat → List Nat → Except Refusal (Contents × List Contents)

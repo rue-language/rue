@@ -50,7 +50,7 @@ datum built from `Nat`/`Int` costs nothing.
   `𝔽_w`, which is §2's second model parameter: the four arithmetic operators,
   `@sqrt`, `@int_to_float`, a literal's own conversion (`3.12:9`), and the
   narrowing half of `@float_cast`. Those are the fields of `FloatSig`, and
-  `FloatLaws` is a `FloatSig` together with the laws §7's "totality of the
+  `FloatLaws` is a `FloatSig` together with the laws §7:16's "totality of the
   float operations" lemma names. The machine (`Dynamics.lean`) takes a
   `FloatSig`; every theorem quantifies over a `FloatLaws`, so it holds for
   every model satisfying the laws.
@@ -456,7 +456,7 @@ theorem widen_wf {f : FloatDatum} (h : f.Wf .w32) : f.widen.Wf .w64 := by
 
 /-- **The four exact rounding intrinsics preserve `𝔽_w`** (`3.12:36`: "each
 result is exact — an integral value near `x` is always representable"). With
-`negate_wf` and `widen_wf` this discharges §7's "each `⊙_w` of §6.4 is total
+`negate_wf` and `widen_wf` this discharges §7:16's "each `⊙_w` of §6.4 is total
 on `𝔽_w`" for every float operation this module defines; `@sqrt`, the one that
 rounds, is `FloatLaws.sqrt_wf`. -/
 theorem roundOp_wf {w : FloatWidth} {op : FloatRoundOp} {f : FloatDatum} (h : f.Wf w) :
@@ -615,7 +615,7 @@ def FloatSig.roundIntrin (M : FloatSig) (w : FloatWidth) :
   | .sqrt, f => M.sqrt w f
   | .round op, f => f.roundOp op
 
-/-! ## The laws — §7's "totality of the float operations", named
+/-! ## The laws — §7:16's "totality of the float operations", named
 
 §7 owes one lemma for floats: *"For each `w ∈ {32, 64}`: `⊕_w` is a total
 function `𝔽_w × 𝔽_w → 𝔽_w`, `rnd_w` is total into `𝔽_w`, `≺_w` is a total
@@ -653,7 +653,7 @@ propagates the first NaN operand's sign, as both targets do) and checked
 against the compiler case by case, never a theorem here. §9 item 5 (RUE-2283)
 is where the target-defined part is tracked. -/
 
-/-- **§7's "totality of the float operations", as an algebraic specification.** A
+/-- **§7:16's "totality of the float operations", as an algebraic specification.** A
 `FloatSig` together with the laws §7 owes for floats and §6.4 quotes from
 `3.12:9`, `3.12:22` and `3.12:44`. Every field is a statement that is true of
 IEEE 754 *and* of the compiler — which is why the NaN laws below say only that
@@ -664,13 +664,13 @@ carried as interfaces"). §7 says the lemma is "discharged against the standard
 rather than against Rue"; this is that sentence, mechanized. -/
 structure FloatLaws extends FloatSig where
   /-- **Closure of `⊕_w`** (§7): the four arithmetic operators map `𝔽_w × 𝔽_w`
-  into `𝔽_w`. With Lean totality this is §7's "`⊕_w` is a total function
+  into `𝔽_w`. With Lean totality this is §7:16's "`⊕_w` is a total function
   `𝔽_w × 𝔽_w → 𝔽_w`". -/
   arith_wf : ∀ w op a b, a.Wf w → b.Wf w → (toFloatSig.arith w op a b).Wf w
-  /-- **Closure of `@sqrt`** (§7's "each `⊙_w` is total on `𝔽_w`"; the other
+  /-- **Closure of `@sqrt`** (§7:16's "each `⊙_w` is total on `𝔽_w`"; the other
   four `⊙_w` are exact and proved closed here). -/
   sqrt_wf : ∀ w f, f.Wf w → (toFloatSig.sqrt w f).Wf w
-  /-- **Closure of `rnd_w` on a literal** (`3.12:9`, and §7's "`rnd_w` is
+  /-- **Closure of `rnd_w` on a literal** (`3.12:9`, and §7:16's "`rnd_w` is
   total into `𝔽_w`"). -/
   ofLit_wf : ∀ w m ne e, (toFloatSig.ofLit w m ne e).Wf w
   /-- **Closure of `rnd_w` on an integer** (`(D-Int-To-Float)`, `3.12:16`). -/

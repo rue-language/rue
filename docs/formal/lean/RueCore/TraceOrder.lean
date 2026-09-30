@@ -1195,7 +1195,7 @@ theorem step_blocks (M : FloatLaws) {P : Program} (h : ProgramTyped P) :
   ⟨fun H φ v tr hs => ((drop_glue_order M h).1 H φ v tr hs).toBlocks,
     fun κ tr hs => ((drop_glue_order M h).2 κ tr hs).toBlocks⟩
 
-/-- **Drop order** (§3.9, §6.7, §6.9, §6.10, §6.11; §7's "no use-after-drop /
+/-- **Drop order** (§3.9, §6.7, §6.9, §6.10, §6.11; §7:6's "no use-after-drop /
 no leak of drops" bullet, its *when*), over §6's relation, for a program the
 checker accepts:
 
