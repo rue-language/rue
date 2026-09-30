@@ -600,13 +600,7 @@ theorem Exact.prefix {D : Decls} {H H₁ : Store} {X Y : List Nat} {tr : List Ev
       = (storeOwn D H).count a + X.count a)
     (hr : Exact D H₁ Y r) : Exact D H X (r.withTrace tr) := by
   cases r with
-  | ok H₂ v tr₂ =>
-      obtain ⟨h1, h2, h3, h4⟩ := hr
-      refine ⟨Nat.le_trans hle h1, h2, h3, fun a ha => ?_⟩
-      have := hI a ha; have := h4 a (by omega)
-      rw [freedIds_append, List.count_append]
-      omega
-  | returned H₂ v tr₂ =>
+  | ok H₂ v tr₂ | returned H₂ v tr₂ =>
       obtain ⟨h1, h2, h3, h4⟩ := hr
       refine ⟨Nat.le_trans hle h1, h2, h3, fun a ha => ?_⟩
       have := hI a ha; have := h4 a (by omega)
