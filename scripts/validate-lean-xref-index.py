@@ -857,7 +857,7 @@ def render_index(modules: List[Module], calculus: Calculus) -> str:
         "every alternative of the calculus's §2 grammar, every labeled rule and every "
         "section of its §5 and §6, with the declarations that mechanize them. A row "
         "reading *not yet mechanized* is the fragment boundary, stated rather than "
-        "inferred. Sections, rules, paragraphs written `§5.3:4`, and syntactic forms are those of "
+        "inferred. Sections, rules, paragraphs cited as `§X.Y:Z`, and syntactic forms are those of "
         "`../01-core-calculus.md`; paragraphs are `docs/spec` paragraph IDs. "
         "Regenerate with `scripts/validate-lean-xref-index.py --write`; the gate "
         "fails when this file is stale or a declaration lacks its citation "
