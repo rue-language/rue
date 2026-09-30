@@ -15,7 +15,7 @@ statements are.
 - Toolchain: Lean 4.33.1 (the pin in `lean-toolchain` and in
   `toolchains/lean/defs.bzl`, held equal by
   `scripts/validate-lean-toolchain-pin.py`).
-- Theorems checked: 1535.
+- Theorems checked: 1534.
 - Proofs depending on `sorryAx`: 0.
 - Axioms declared by this package: 0.
 - Distinct axioms used: `Quot.sound`, `propext`.
@@ -304,7 +304,9 @@ and diffs them against the committed copies.
 | `Contents.ofVals_append` | `RueCore.Dynamics.Lemmas` | `propext` |
 | `ArgsRes.bind_evalArgs_cons` | `RueCore.Dynamics.Lemmas` | `propext` |
 | `EvalInv.bind` | `RueCore.Dynamics.Lemmas` | `propext` |
+| `EvalInv.bind₀` | `RueCore.Dynamics.Lemmas` | `propext` |
 | `EvalInv.args` | `RueCore.Dynamics.Lemmas` | `propext` |
+| `EvalInv.args₀` | `RueCore.Dynamics.Lemmas` | `propext` |
 | `Activation.unwindScope_push` | `RueCore.Step.Lemmas` | `propext` |
 | `Activation.unwindScope_let` | `RueCore.Step.Lemmas` | `propext` |
 | `Step.step_eq` | `RueCore.Step.Lemmas` | `propext` |
@@ -837,7 +839,6 @@ and diffs them against the committed copies.
 | `Tidy.opRes` | `RueCore.TraceExact` | `propext` |
 | `Tidy.intro` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
 | `Tidy.prefix` | `RueCore.TraceExact` | `propext` |
-| `Tidy.bind` | `RueCore.TraceExact` | `propext` |
 | `dropRetire_shape` | `RueCore.TraceExact` | `propext` |
 | `unwindLocs_shape` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
 | `unwind_kills` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
@@ -850,7 +851,6 @@ and diffs them against the committed copies.
 | `freshParams_mem` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
 | `freshParams_pre` | `RueCore.TraceExact` | `propext` |
 | `dynPlace_env` | `RueCore.TraceExact` | `propext` |
-| `evalArgs_tidy` | `RueCore.TraceExact` | `propext` |
 | `Tidy.call` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
 | `eval_tidy` | `RueCore.TraceExact` | `Quot.sound`, `propext` |
 | `ActivationTyping.activationIn` | `RueCore.TraceExact` | `propext` |
@@ -893,7 +893,6 @@ and diffs them against the committed copies.
 | `DropGlueBlocks.opRes` | `RueCore.TraceOrder` | `propext` |
 | `DropGlueBlocks.intro` | `RueCore.TraceOrder` | `propext` |
 | `eval_ok_cc` | `RueCore.TraceOrder` | `Quot.sound`, `propext` |
-| `evalArgs_blocks` | `RueCore.TraceOrder` | `propext` |
 | `eval_glue_blocks` | `RueCore.TraceOrder` | `Quot.sound`, `propext` |
 | `run_glue_blocks` | `RueCore.TraceOrder` | `Quot.sound`, `propext` |
 | `run_blocks` | `RueCore.TraceOrder` | `Quot.sound`, `propext` |
