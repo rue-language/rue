@@ -850,3 +850,61 @@ Per module, lines (code lines) and theorems: `Trace` 2187 (1758), 106 to
 (1240), 55; `Equivalence` 2004 (1437), 104 to 1998 (1433), 103;
 `Step.Lemmas` 481 (367), 32 to 490 (371), 33; `TracePrefix` 762 to 768
 lines, code unchanged (the cross-check's doc-comment).
+
+### RUE-2522: the `TraceOrder` pass
+
+From trunk `c5054c73a`, measured by `python3 bin/simplify-metrics.py`
+before and after. No Spec statement moves (`spine-fingerprints.txt` is
+unchanged), Comparator re-certifies, and every changed theorem keeps
+`propext` or `propext` and `Quot.sound`, as before; none gained
+`Classical.choice`.
+
+| Measure | Before | After | Change |
+| --- | ---: | ---: | ---: |
+| Lines | 1429 | 1317 | −112 (7.8%) |
+| Code lines | 1055 | 955 | −100 (9.5%) |
+| Theorems | 73 | 66 | −7 |
+| Build wall s (median of 3) | 1.14 | 1.05 | noise |
+| Build CPU s | 3.86 | 3.10 | −0.76 (20%) |
+| `lake env lean`, three runs, wall s | 1.13, 1.11, 1.11 | 1.05, 1.05, 1.03 | noise |
+| Heartbeat floor (`-DmaxHeartbeats`) | builds at 6000, fails at 5000 (in `step_ordered`) | builds at 5000, fails at 4000 (in `eval_glue_blocks`) | −1000 |
+| `set_option`, warnings | 0, 0 | 0, 0 | |
+| `drop_order` helpers: all, their lines, own, MAP | 479, 7777, 145, 21 | 471, 7663, 35, 20 | −8, −114, −110, −1 |
+| `step_no_double_free` helpers: all, own, MAP | 454, 213, 167 | 452, 211, 166 | −2, −2, −1 |
+
+`drop_order`'s own helper count falls from 145 to 35 because its
+within-value half now stops at `drop_glue_order`, a spine theorem, instead of
+re-walking the same `eval` closure through `run_blocks` (detour 2).
+
+What was done:
+
+- Structural 4, the rest of it: `Config.Nested` implies `Config.Ordered`
+  (`Nest.ordered`, 26 lines, and `Config.Nested.ordered`, 5): every
+  pending marker's cells and every loop boundary's record are parts of the
+  activation record they sit on, and every suspended caller's record is part
+  of the stack, so each is a part of the registration stack in its order.
+  So `reachable_ordered` is `reachable_nested` read through it, and
+  `step_ordered` (62 lines) goes, with the helpers only it used:
+  `Kont.Ordered.mono`, `Config.Ordered.keep`, `.same`, `.push`, `.pop`,
+  `Kont.toCall_mem` and `Kont.toLoop_mem`. `Config.Ordered` stays: it is the
+  hypothesis of `step_drop_order` and what `Witnesses.lean`'s
+  `swappedMarkers_rejected` and `unorderedRecord_rejected` read. The
+  skeleton group `steps_live`/`step_nested`/`step_ordered` is now a pair.
+- Detour 2: `step_blocks` is `drop_glue_order` read through
+  `DropGlueBlocks.toBlocks` (17 lines to 7), so `drop_order`'s within-value
+  half has one route. `run_blocks` stays, as `eval`'s statement of the
+  grammar and a MAP milestone, though no proof uses it now.
+- One `dropCell_locs`: the strong form (names nothing, or its own cell
+  once); `step_drop_order` reads the weak form off it inline.
+- Local 2: RUE-2455's accepted golf edits, re-applied by hand one at a time,
+  each followed by `#print axioms` on the changed theorems. Seven apply
+  (`dropEvents_allCopy`'s `Bool` case and merged `match` arms,
+  `dropLocs_dropEvents`'s term arm, `step_drop_order`'s `Or.elim` and two
+  merged `case` pairs, `StackDiscipline.newer`'s inlined `have`); the four on
+  `Config.Ordered.keep`, `.push` and `step_ordered` went with those
+  declarations. `range'_increasing` keeps its own proof: core's
+  `List.pairwise_lt_range'` still adds `Classical.choice`.
+
+Not done: `StrictStackOrder.teardown` takes a `Rec` but reads only its
+`Pairwise` half; weakening its hypothesis is a header change left for the
+module's next pass.
