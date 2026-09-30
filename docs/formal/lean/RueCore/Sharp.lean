@@ -102,12 +102,6 @@ theorem not_exact_cc {D : Decls} {H H' : Store} {v : Val} {tr : List Event} {Y :
     (h : ¬ StoreCC D H') : ¬ Exact D H Y (.ok H' v tr) :=
   fun he => h he.2.1
 
-/-- A one-cell store is copy-contained when its cell is (helper). -/
-theorem storeCC_one {D : Decls} {c : Contents} (h : c.copyContained D = true) : StoreCC D [.full c] := by
-  intro ℓ c' h'
-  match ℓ, h' with
-  | 0, h' => cases h'; exact h
-
 /-- In a run with a longer one beside it from the same start, the shorter
 one's end steps (`Step.det`) (helper). -/
 theorem StepsN.steps_of_longer {M : FloatSig} {P : Program} :
@@ -664,7 +658,7 @@ theorem pending_program :
   have hr' : eval Float.exactOps 201 P [.full (.struct 0 0 [.int .w64 .signed 5])] { env := [0], scope := [0] } e = .ok [.full .movedOut, .dead] (.int .w64 .signed 7) [] := by
     subst he hP; rfl
   refine ⟨hPT, by subst hP; rfl, by subst he; rfl, by subst hP; exact ⟨.cons rfl ⟨_, rfl, .owned (.struct rfl (.cons (.int (by decide)) .nil)) rfl⟩ (by simp) .nil, rfl⟩,
-    by subst hP; exact storeCC_one rfl,
+    by subst hP; exact StoreCC.single rfl,
     by subst he hP; exact ⟨_, _, by rfl, by rfl, check_sound _ (by rfl) _ (by rfl)⟩,
     by subst he hP; rfl, (Nonvacuous.withTrace_nil _).symm, ?_, ?_⟩
   · rw [hr]; exact not_exact_ok 0 (by decide) (by subst hP; decide)
@@ -701,7 +695,7 @@ theorem pending_expr :
   have hr' : eval Float.exactOps 201 P [.full (.struct 0 0 [.int .w64 .signed 5])] { env := [0], scope := [0] } e = .returned [.dead] (.int .w64 .signed 7) [] := by
     subst he hB hP; rfl
   refine ⟨hPT, by subst hB hP; rfl, by subst he; rfl, by subst hP; exact ⟨.cons rfl ⟨_, rfl, .owned (.struct rfl (.cons (.int (by decide)) .nil)) rfl⟩ (by simp) .nil, rfl⟩,
-    by subst hP; exact storeCC_one rfl,
+    by subst hP; exact StoreCC.single rfl,
     by subst he hB hP; exact ⟨_, _, by rfl, by rfl, check_sound _ (by rfl) _ (by rfl)⟩,
     by subst he; exact ⟨_, rfl, by rfl⟩, (Nonvacuous.withTrace_nil _).symm, ?_, ?_⟩
   · rw [hr]; exact not_exact_returned 0 (by decide) (by subst hB hP; decide)
