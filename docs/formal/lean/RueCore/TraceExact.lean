@@ -1773,6 +1773,45 @@ theorem dropRetire_kills {D : Decls} {H : Store} {v : Val} {ℓ : Nat} :
     · have : ℓ ≠ ℓ' := fun e => hn (by simp [e])
       rw [List.getElem?_set_ne this]
 
+/-- A scope of fresh cells `ls`, the cells from `H` up to `Hm`: a step local
+to an activation record that names nothing below `H` but `φ`'s environment is
+local to `φ` from `H` (helper). -/
+theorem Local.lift {φ φ' : Activation} {H Hm H₂ : Store} {ls : List Nat}
+    (hls : ∀ ℓ, ℓ ∈ ls ↔ H.length ≤ ℓ ∧ ℓ < Hm.length) (hlen : H.length ≤ Hm.length)
+    (hpre : ∀ ℓ, ℓ < H.length → Hm[ℓ]? = H[ℓ]?) (henv : ∀ ℓ ∈ φ'.env, ℓ ∈ ls ∨ ℓ ∈ φ.env)
+    (l : Local φ' Hm H₂) : Local φ H H₂ := by
+  refine ⟨Nat.le_trans hlen l.1, fun ℓ hl hn => ?_⟩
+  have hnl : ℓ ∉ ls := fun h => absurd ((hls ℓ).mp h).1 (Nat.not_le.mpr hl)
+  rw [← hpre ℓ hl]
+  exact l.2 ℓ (Nat.lt_of_lt_of_le hl hlen) (fun h => (henv ℓ h).elim hnl hn)
+
+/-- The same scope, tombstoned: everything allocated since `Hm` is, and so is
+every cell of `ls` not kept, so everything allocated since `H` is (helper). -/
+theorem Tombstoned.lift {H Hm H₂ : Store} {ls keep : List Nat}
+    (hls : ∀ ℓ, ℓ ∈ ls ↔ H.length ≤ ℓ ∧ ℓ < Hm.length)
+    (hd : ∀ ℓ ∈ ls, ℓ ∉ keep → H₂[ℓ]? = some .dead) (r₂ : Tombstoned Hm keep H₂) :
+    Tombstoned H keep H₂ := by
+  intro ℓ h₁ h₂ hk
+  by_cases hm : ℓ ∈ ls
+  · exact hd ℓ hm hk
+  · exact r₂ ℓ (Nat.not_lt.mp fun hc => hm ((hls ℓ).mpr ⟨h₁, hc⟩)) h₂ hk
+
+/-- The scope's teardown after a value, which tombstones exactly `ls`, closes
+it (helper). -/
+theorem Tidy.teardown {φ : Activation} {H Hm H₂ : Store} {ls : List Nat} {v : Val} {R : EvalRes}
+    {tr : List Event} (hls : ∀ ℓ, ℓ ∈ ls ↔ H.length ≤ ℓ ∧ ℓ < Hm.length)
+    (l₂ : Local φ H H₂) (r₂ : Tombstoned Hm [] H₂) (hk : KillsOnly ls H₂ v R) :
+    Tidy φ H (R.withTrace tr) := by
+  rcases hk with ⟨w, rfl⟩ | ⟨H₃, evs, rfl, hlen₃, hd, hu⟩
+  · trivial
+  have hlt : ∀ ℓ, ℓ < H.length → ℓ ∉ ls := fun ℓ hl h => absurd ((hls ℓ).mp h).1 (Nat.not_le.mpr hl)
+  refine ⟨⟨by have := l₂.1; omega, fun ℓ hl hn => ?_⟩,
+    Tombstoned.lift hls (fun ℓ hm _ => hd ℓ hm) fun ℓ h₁ h₂ _ => ?_⟩
+  · rw [hu ℓ (hlt ℓ hl)]; exact l₂.2 ℓ hl hn
+  · have hm : ℓ ∉ ls := fun h => absurd ((hls ℓ).mp h).2 (Nat.not_lt.mpr h₁)
+    rw [hu ℓ hm]
+    exact r₂ ℓ h₁ (by omega) (by simp)
+
 /-- **A scope opened above the activation record and closed at its end** (§6.7's `let`,
 §6.6's `match` arm): an evaluation in the activation record extended by fresh cells `ls`,
 followed on a value by a teardown that tombstones exactly `ls`, keeps the
@@ -1786,53 +1825,21 @@ theorem Tidy.scoped {φ : Activation} {H Hm : Store} {ls : List Nat} {r : EvalRe
     (hr : Tidy { env := ls.reverse ++ φ.env, scope := φ.scope ++ ls } Hm r)
     (hk : ∀ H₂ v tr, r = .ok H₂ v tr → KillsOnly ls H₂ v (k H₂ v)) :
     Tidy φ H (r.bind k) := by
-  have loc : ∀ H₂, Local { env := ls.reverse ++ φ.env, scope := φ.scope ++ ls } Hm H₂ →
-      Local φ H H₂ := by
-    intro H₂ l
-    refine ⟨Nat.le_trans hlen l.1, fun ℓ hl hn => ?_⟩
-    have hnl : ℓ ∉ ls := fun h => absurd ((hls ℓ).mp h).1 (Nat.not_le.mpr hl)
-    have hn' : ℓ ∉ ls.reverse ++ φ.env := by simp [hnl, hn]
-    rw [← hpre ℓ hl]
-    exact l.2 ℓ (Nat.lt_of_lt_of_le hl hlen) hn'
-  have ret : ∀ H₂ keep, (∀ ℓ ∈ ls, ℓ ∉ keep → H₂[ℓ]? = some .dead) → Tombstoned Hm keep H₂ →
-      Tombstoned H keep H₂ := by
-    intro H₂ keep hd r₂ ℓ h₁ h₂ hk'
-    by_cases hm : ℓ ∈ ls
-    · exact hd ℓ hm hk'
-    · have : Hm.length ≤ ℓ := by
-        exact Nat.not_lt.mp (fun hc => hm ((hls ℓ).mpr ⟨h₁, hc⟩))
-      exact r₂ ℓ this h₂ hk'
+  have loc := fun {H₂} => Local.lift (φ := φ) (φ' := { env := ls.reverse ++ φ.env, scope := φ.scope ++ ls })
+    (H₂ := H₂) hls hlen hpre (fun ℓ h => (List.mem_append.mp h).imp_left List.mem_reverse.mp)
   cases r with
-  | ok H₂ v tr =>
-      obtain ⟨l₂, r₂⟩ := hr
-      simp only [EvalRes.bind]
-      rcases hk H₂ v tr rfl with ⟨w, hw⟩ | ⟨H₃, evs, hw, hlen₃, hd, hu⟩
-      · rw [hw]; trivial
-      · rw [hw]
-        have l₃ : Local φ H H₃ := by
-          have := loc H₂ l₂
-          refine ⟨by have := this.1; omega, fun ℓ hl hn => ?_⟩
-          have hnl : ℓ ∉ ls := fun h => absurd ((hls ℓ).mp h).1 (Nat.not_le.mpr hl)
-          rw [hu ℓ hnl]; exact this.2 ℓ hl hn
-        refine ⟨l₃, fun ℓ h₁ h₂ _ => ?_⟩
-        by_cases hm : ℓ ∈ ls
-        · exact hd ℓ hm
-        · rw [hu ℓ hm]
-          have : Hm.length ≤ ℓ := by
-            exact Nat.not_lt.mp (fun hc => hm ((hls ℓ).mpr ⟨h₁, hc⟩))
-          exact r₂ ℓ this (by omega) (by simp)
+  | ok H₂ v tr => exact Tidy.teardown hls (loc hr.1) hr.2 (hk H₂ v tr rfl)
   | returned H₂ v tr =>
       obtain ⟨l₂, r₂, s₂⟩ := hr
-      refine ⟨loc H₂ l₂, ret H₂ [] (fun ℓ hm _ => s₂ ℓ (by simp [hm])) r₂,
+      exact ⟨loc l₂, Tombstoned.lift hls (fun ℓ hm _ => s₂ ℓ (by simp [hm])) r₂,
         fun ℓ hm => s₂ ℓ (by simp [hm])⟩
   | broke H₂ sc tr =>
       obtain ⟨l₂, r₂, locs, hsc, hfr⟩ := hr
-      have hsc : sc = (φ.scope ++ ls) ++ locs ∧ ∀ ℓ ∈ locs, Hm.length ≤ ℓ := ⟨hsc, hfr⟩
-      refine ⟨loc H₂ l₂, ret H₂ sc (fun ℓ hm hk' => absurd (by rw [hsc.1]; simp [hm]) hk') r₂,
-        ls ++ locs, by rw [hsc.1]; simp, fun ℓ hm => ?_⟩
+      refine ⟨loc l₂, Tombstoned.lift hls (fun ℓ hm hk' => absurd (by rw [hsc]; simp [hm]) hk') r₂,
+        ls ++ locs, by rw [hsc]; simp, fun ℓ hm => ?_⟩
       rcases List.mem_append.mp hm with h | h
       · exact ((hls ℓ).mp h).1
-      · exact Nat.le_trans hlen (hsc.2 ℓ h)
+      · exact Nat.le_trans hlen (hfr ℓ h)
   | _ => trivial
 
 /-- Minted cells are the next indices, in order (helper). -/
@@ -1918,43 +1925,14 @@ theorem Tidy.call {D : Decls} {φ : Activation} {H Hm : Store} {ls : List Nat} {
     Tidy φ H (r.bindCall fun H₃ v => match runAllScopeDrops D H₃ { env := ls.reverse, scope := ls } with
       | .error w => .refused w
       | .ok (H₄, evs) => .ok H₄ v evs) := by
-  have loc : ∀ H₂, Local { env := ls.reverse, scope := ls } Hm H₂ → Local φ H H₂ := by
-    intro H₂ l
-    refine ⟨Nat.le_trans hlen l.1, fun ℓ hl _ => ?_⟩
-    have hnl : ℓ ∉ ls := fun h => absurd ((hls ℓ).mp h).1 (Nat.not_le.mpr hl)
-    rw [← hpre ℓ hl]
-    exact l.2 ℓ (Nat.lt_of_lt_of_le hl hlen) (fun h => hnl (List.mem_reverse.mp h))
-  have ret : ∀ H₂, (∀ ℓ ∈ ls, H₂[ℓ]? = some .dead) → Tombstoned Hm [] H₂ → Tombstoned H [] H₂ := by
-    intro H₂ hd r₂ ℓ h₁ h₂ hk'
-    by_cases hm : ℓ ∈ ls
-    · exact hd ℓ hm
-    · have : Hm.length ≤ ℓ := by
-        exact Nat.not_lt.mp (fun hc => hm ((hls ℓ).mpr ⟨h₁, hc⟩))
-      exact r₂ ℓ this h₂ hk'
+  have loc := fun {H₂} => Local.lift (φ := φ) (φ' := { env := ls.reverse, scope := ls }) (H₂ := H₂)
+    hls hlen hpre (fun ℓ h => .inl (List.mem_reverse.mp h))
   cases r with
   | ok H₂ v tr =>
-      obtain ⟨l₂, r₂⟩ := hr
-      simp only [EvalRes.bindCall, runAllScopeDrops]
-      split
-      · trivial
-      · rename_i H₃ evs hu
-        obtain ⟨hl₃, d, u⟩ := unwindLocs_shape hu
-        have l₃ : Local φ H H₃ := by
-          have := loc H₂ l₂
-          refine ⟨by have := this.1; omega, fun ℓ hl hn => ?_⟩
-          have hnl : ℓ ∉ ls.reverse := fun h =>
-            absurd ((hls ℓ).mp (List.mem_reverse.mp h)).1 (Nat.not_le.mpr hl)
-          rw [u ℓ hnl]; exact this.2 ℓ hl hn
-        refine ⟨l₃, fun ℓ h₁ h₂ _ => ?_⟩
-        by_cases hm : ℓ ∈ ls
-        · exact d ℓ (List.mem_reverse.mpr hm)
-        · rw [u ℓ (fun h => hm (List.mem_reverse.mp h))]
-          have : Hm.length ≤ ℓ := by
-            exact Nat.not_lt.mp (fun hc => hm ((hls ℓ).mpr ⟨h₁, hc⟩))
-          exact r₂ ℓ this (by omega) (by simp)
+      exact Tidy.teardown hls (loc hr.1) hr.2 (unwind_kills fun ℓ => List.mem_reverse)
   | returned H₂ v tr =>
       obtain ⟨l₂, r₂, s₂⟩ := hr
-      exact ⟨loc H₂ l₂, ret H₂ (fun ℓ hm => s₂ ℓ hm) r₂⟩
+      exact ⟨loc l₂, Tombstoned.lift hls (fun ℓ hm _ => s₂ ℓ hm) r₂⟩
   | _ => trivial
 
 /-- **Every allocation is tombstoned** (§6.7, §6.9, §6.10): every evaluation, of
