@@ -908,3 +908,78 @@ What was done:
 Not done: `StrictStackOrder.teardown` takes a `Rec` but reads only its
 `Pairwise` half; asking only for that half is a header change left for
 the module's next pass.
+
+### RUE-2517 part 1: one simulation, parametrized, with `Equivalence` as its first instance
+
+From trunk `77d3051d7`, measured by `python3 bin/simplify-metrics.py` before
+and after. No Spec statement moves (`spine-fingerprints.txt` is unchanged),
+Comparator re-certifies, and every new or changed theorem uses at most
+`propext` and `Quot.sound`. Part 1 stops after `Equivalence`, as planned;
+`TraceWhole`'s `MSim` and `TracePrefix`'s `LongC` are parts 2 and 3.
+
+The shape the copies share: a relation between an `eval` result and a run of
+`Step` from a configuration family `C K tr`, with one clause per result
+(a value reaches `E[v]`, a panic `↯κ`, a `return` the nearest caller, a
+`break` the nearest loop), and a long run of at least `fuel` steps for
+exhausted fuel. What differs is carried by three parameters:
+
+| Relation | Per-step invariant | Unwind guard | Panic simulated | End of a long run |
+| --- | --- | --- | --- | --- |
+| `Sim`, `Long` (`Equivalence`) | `True` | `True` | yes | `True` |
+| `MSim` (`TraceWhole`) | the ledger does not shrink (`IdLe`) | the discarded frames hold nothing (`IdLe` of `stackOwn`) | no | — |
+| `LongC` (`TracePrefix`) | `True` | — | — | the appended trace owns what `Cons`'s `panic` clause allows |
+
+What was done:
+
+- `Step/Lemmas.lean` (the lowest module the three import that has
+  `Step.det`; it now imports `Equivalence/Defs` for `StepsN`) holds `ISteps`
+  (a run whose every step keeps an invariant `I`), `SimBy I G pan` and
+  `LongBy Q`, and their combinators, proved once: `SimBy.pre`, `.withTrace`,
+  `.bind`, `.lift`, `.absorb`, `.peel`, `simBy_brk`, `ISteps.trans`,
+  `.single`, `.one`, `.toSteps`, `.peel`, `LongBy.mono`, `.pre`, `.pre1`
+  (with `Steps.toN` and `StepsN.trans`, moved from `Equivalence`). `evalConf`,
+  `Config.evalFocus` and `Kont.Transparent` moved with them.
+- `Sim` is `SimBy` with all three parameters `True`, and `Long` is `LongBy`
+  with nothing asked of the end, so a long run is now at least `n` steps
+  (`Long.exact` recovers one of exactly `n`). Their users in `Equivalence`
+  and `TracePrefix` read runs through `ISteps.toSteps`.
+- Retired, the `Equivalence` side of the skeleton pairs: `Sim.pre`,
+  `Sim.withTrace`, `Sim.absorb`, `Sim.peel`, `sim_brk` and `Steps.peel`
+  (with `Sim.bind`, `Sim.lift` and `Long.mono`). `Steps.trans` and
+  `Steps.single` stay: they are about the Spec's `Steps`, which the rest of
+  the package uses; their pairs go when `MSteps` is `ISteps` (part 2).
+
+| Measure | Before | After | Change |
+| --- | ---: | ---: | ---: |
+| `Equivalence`: lines, code lines, theorems | 1992, 1429, 102 | 1821, 1297, 92 | −171, −132, −10 |
+| `Step.Lemmas`: lines, code lines, theorems | 506, 382, 35 | 763, 557, 52 | +257, +175, +17 |
+| All modules: lines, code lines, theorems | 57054, 37121, 1532 | 57140, 37164, 1539 | +86, +43, +7 |
+| `lake env lean`, three runs, wall s (CPU s): `Equivalence` | 0.89–0.93 (3.39–3.42) | 0.86–0.88 (3.22–3.31) | noise |
+| The same, `Step.Lemmas` | 1.09–1.11 (4.35–4.41) | 1.21–1.24 (4.78–5.04) | +0.12 (+0.5) |
+| Heartbeat floor: `Equivalence`, `Step.Lemmas` | 1500, 7000 | 1500, 7000 | unchanged |
+| `set_option`, warnings | 0, 0 | 0, 0 | |
+| Skeleton groups | 17 | 11 | −6 |
+| `whole_program_exactly_once` helpers: all, their lines, own | 562, 9846, 241 | 567, 9867, 241 | +5, +21, 0 |
+| `step_no_double_free` helpers: all, their lines, own | 451, 7394, 210 | 455, 7414, 214 | +4, +20, +4 |
+
+The timings are one checkout of each commit timed back to back; the full
+metrics run before was on a loaded machine and its times are not comparable.
+`simBy_brk` reads `eval`'s `break` by definition: unfolding `eval` with `simp`
+there cost half a second of `Step.Lemmas`'s wall time.
+
+It does not pay for itself on `Equivalence` alone: the generic combinators
+replace `Sim`'s one for one, and the parameters, `ISteps` and the `Long`
+wrappers add 86 lines (43 code lines) and 7 theorems. The six skeleton groups
+are gone only because `MSim`'s side now has no same-shaped partner; the
+duplication stays until `MSim` is an instance. That is part 2's payoff:
+`MSteps` becomes `ISteps` with the ledger invariant and `MSim` becomes
+`SimBy` with the ledger, the stack guard and no panic, retiring the `MSteps`
+inductive and its four lemmas, `MSim`'s definition, its six combinators and
+`msim_brk`, about 180 lines. Part 3 makes `LongC` a `LongBy`, about 20 lines.
+So the whole of structural 1, done this way, is about 110 lines fewer, not
+the 800 to 1,200 the plan estimated: that estimate assumed the per-form
+lemmas (`msim_*`, `longc_*`) would share their proofs with `sim_*` and
+`long_*`, and a parametrized relation does not do that. They differ in each
+step's side condition (a ledger count, `pendingSafe`, `Cons`), not in the
+simulation's plumbing; sharing them needs `eval_sim` itself parametrized by
+per-rule obligations, structural 2's evaluation-context lemma.
