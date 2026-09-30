@@ -14289,28 +14289,6 @@ theorem RueCore.Expr.pendingSafeList_mem {es : List Expr} {e : Expr} :
   Expr.pendingSafeList es = true → e ∈ es → e.pendingSafe = true
 ```
 
-### `Expr.returnsList_mem`
-
-*theorem* · module `RueCore.TraceExact`
-
-A member of a list with no `return` has none (helper).
-
-```lean
-theorem RueCore.Expr.returnsList_mem {es : List Expr} {e : Expr} :
-  Expr.returnsList es = false → e ∈ es → e.returns = false
-```
-
-### `Expr.breaksList_mem`
-
-*theorem* · module `RueCore.TraceExact`
-
-A member of a list with no free `break` has none (helper).
-
-```lean
-theorem RueCore.Expr.breaksList_mem {es : List Expr} {e : Expr} :
-  Expr.breaksList es = false → e ∈ es → e.breaks = false
-```
-
 ### `Expr.quietList_mem`
 
 *theorem* · module `RueCore.TraceExact`
@@ -14321,36 +14299,6 @@ A member of a quiet list does not complete abruptly (helper).
 theorem RueCore.Expr.quietList_mem {es : List Expr} {e : Expr}
   (h : Expr.quietList es = true) (hm : e ∈ es) :
   e.returns = false ∧ e.breaks = false
-```
-
-### `EvalRes.bind_noRet`
-
-*theorem* · module `RueCore.TraceExact`
-
-`bind` completes abruptly only where its operand or its context does (helper).
-
-```lean
-theorem RueCore.EvalRes.bind_noRet {r : EvalRes} {k : Store → Val → EvalRes}
-  (hr : r.NoRet)
-  (hk :
-    ∀ (H : Store) (v : Val) (tr : List Event),
-      r = EvalRes.ok H v tr → (k H v).NoRet) :
-  (r.bind k).NoRet
-```
-
-### `EvalRes.bind_noBrk`
-
-*theorem* · module `RueCore.TraceExact`
-
-The same for `break` (helper).
-
-```lean
-theorem RueCore.EvalRes.bind_noBrk {r : EvalRes} {k : Store → Val → EvalRes}
-  (hr : r.NoBrk)
-  (hk :
-    ∀ (H : Store) (v : Val) (tr : List Event),
-      r = EvalRes.ok H v tr → (k H v).NoBrk) :
-  (r.bind k).NoBrk
 ```
 
 ### `EvalRes.withTrace_noRet`
@@ -14375,31 +14323,38 @@ theorem RueCore.EvalRes.withTrace_noBrk {r : EvalRes} {tr : List Event}
   (h : r.NoBrk) : (EvalRes.withTrace tr r).NoBrk
 ```
 
-### `evalArgs_noRet`
+### `EvalRes.bind_of`
 
 *theorem* · module `RueCore.TraceExact`
 
-An argument list whose members do not return aborts with no `return`
-(helper).
+`bind` completes abruptly only where its operand or its context does: a
+property of results that a prefixed trace keeps — `NoRet` or `NoBrk`, whichever
+abrupt result is excluded — holds of `bind` where it holds of the operand and
+of the context (helper).
 
 ```lean
-theorem RueCore.evalArgs_noRet {ev : Store → Expr → EvalRes} {es : List Expr}
-  (H : Store) :
-  (∀ (H : Store) (e : Expr), e ∈ es → (ev H e).NoRet) →
-    ∀ (r : EvalRes), evalArgs ev H es = ArgsRes.abort r → r.NoRet
+theorem RueCore.EvalRes.bind_of {Q : EvalRes → Prop}
+  (hQ : ∀ {r : EvalRes} {tr : List Event}, Q r → Q (EvalRes.withTrace tr r))
+  {r : EvalRes} {k : Store → Val → EvalRes} (hr : Q r)
+  (hk :
+    ∀ (H : Store) (v : Val) (tr : List Event),
+      r = EvalRes.ok H v tr → Q (k H v)) :
+  Q (r.bind k)
 ```
 
-### `evalArgs_noBrk`
+### `evalArgs_abort_of`
 
 *theorem* · module `RueCore.TraceExact`
 
-The same for `break` (helper).
+An argument list whose members keep such a property aborts only with a
+result that keeps it (helper).
 
 ```lean
-theorem RueCore.evalArgs_noBrk {ev : Store → Expr → EvalRes} {es : List Expr}
-  (H : Store) :
-  (∀ (H : Store) (e : Expr), e ∈ es → (ev H e).NoBrk) →
-    ∀ (r : EvalRes), evalArgs ev H es = ArgsRes.abort r → r.NoBrk
+theorem RueCore.evalArgs_abort_of {Q : EvalRes → Prop}
+  (hQ : ∀ {r : EvalRes} {tr : List Event}, Q r → Q (EvalRes.withTrace tr r))
+  {ev : Store → Expr → EvalRes} {es : List Expr} (H : Store) :
+  (∀ (H : Store) (e : Expr), e ∈ es → Q (ev H e)) →
+    ∀ (r : EvalRes), evalArgs ev H es = ArgsRes.abort r → Q r
 ```
 
 ### `introVal_quiet`
@@ -14848,41 +14803,22 @@ theorem RueCore.Exact.of_quiet {D : Decls} {H : Store} {X : List Nat} {r : EvalR
   Exact D H X (EvalRes.withTrace tr r)
 ```
 
-### `evalArgs_exactQuiet`
-
-*theorem* · module `RueCore.TraceExact`
-
-**A quiet argument list keeps the exact ledger** (§6.2's left-to-right
-search), and aborts only with a trap, a refusal or exhausted fuel: no member
-completes abruptly, so no built value is ever abandoned (helper).
-
-```lean
-theorem RueCore.evalArgs_exactQuiet {D : Decls} {ev : Store → Expr → EvalRes}
-  {es : List Expr} :
-  (∀ (H : Store) (e : Expr), e ∈ es → StoreCC D H → Exact D H [] (ev H e)) →
-    (∀ (H : Store) (e : Expr), e ∈ es → (ev H e).NoRet ∧ (ev H e).NoBrk) →
-      ∀ (H : Store),
-        StoreCC D H →
-          ArgsExact D H (evalArgs ev H es) ∧
-            ∀ (r : EvalRes),
-              evalArgs ev H es = ArgsRes.abort r → r.NoRet ∧ r.NoBrk
-```
-
 ### `evalArgs_exact`
 
 *theorem* · module `RueCore.TraceExact`
 
-**An argument list keeps the exact ledger** where only its first member
-may complete abruptly: nothing is pending when the first does (helper).
+**An argument list keeps the exact ledger** (§6.2's left-to-right search)
+where only its first member may complete abruptly: nothing is pending when the
+first does, and a later member aborts only with a trap, a refusal or exhausted
+fuel, so no built value is ever abandoned (helper).
 
 ```lean
 theorem RueCore.evalArgs_exact {D : Decls} {ev : Store → Expr → EvalRes}
-  {es : List Expr}
-  (hev :
-    ∀ (H : Store) (e : Expr), e ∈ es → StoreCC D H → Exact D H [] (ev H e))
-  (hq :
-    ∀ (H : Store) (e : Expr), e ∈ es.tail → (ev H e).NoRet ∧ (ev H e).NoBrk)
-  (H : Store) : StoreCC D H → ArgsExact D H (evalArgs ev H es)
+  {es : List Expr} :
+  (∀ (H : Store) (e : Expr), e ∈ es → StoreCC D H → Exact D H [] (ev H e)) →
+    (∀ (H : Store) (e : Expr),
+        e ∈ es.tail → (ev H e).NoRet ∧ (ev H e).NoBrk) →
+      ∀ (H : Store), StoreCC D H → ArgsExact D H (evalArgs ev H es)
 ```
 
 ### `Exact.move`
@@ -14956,28 +14892,12 @@ theorem RueCore.Exact.dropDeclared {D : Decls} {H : Store} {ℓ : Nat}
 
 *theorem* · module `RueCore.TraceExact`
 
-**(D-Assign) §6.8, exactly**: the old contents at the place is freed and
-the held value takes its position (helper).
+**(D-Assign) §6.8, exactly**, at a place below a dynamic index (`ρ`, empty
+for a static place): the old contents at the place is freed and the held value
+takes its position (helper).
 
 ```lean
-theorem RueCore.Exact.assign {D : Decls} {H : Store} {ℓ : Nat} {c c' old : Contents}
-  {π : List Nat} {v : Val} {evs : List Event} (hcc : StoreCC D H)
-  (hc : H[ℓ]? = some (Cell.full c)) (hr : c.getAt π = Except.ok old)
-  (hd : dropCell D ℓ old = Except.ok evs)
-  (hw : c.setAt π (Contents.ofVal v) = some c')
-  (hc' : Contents.copyContained D c' = true) :
-  Exact D H (Val.own D v)
-    (EvalRes.ok (List.set H ℓ (Cell.full c')) Val.unit evs)
-```
-
-### `Exact.assignDyn`
-
-*theorem* · module `RueCore.TraceExact`
-
-**(D-Assign) below a dynamic index, exactly** (helper).
-
-```lean
-theorem RueCore.Exact.assignDyn {D : Decls} {H : Store} {ℓ : Nat}
+theorem RueCore.Exact.assign {D : Decls} {H : Store} {ℓ : Nat}
   {c c' sub sub' old : Contents} {π ρ : List Nat} {v : Val} {evs : List Event}
   (hcc : StoreCC D H) (hc : H[ℓ]? = some (Cell.full c))
   (hr : c.getAt π = Except.ok sub) (hr' : sub.getAt ρ = Except.ok old)
@@ -15268,24 +15188,12 @@ theorem RueCore.Tidy.bind {φ : Activation} {H : Store} {r : EvalRes}
 
 *theorem* · module `RueCore.TraceExact`
 
-`drop-retire` tombstones exactly its cell (helper).
+`drop-retire` tombstones exactly its cell, which existed (helper).
 
 ```lean
 theorem RueCore.dropRetire_shape {D : Decls} {H H' : Store} {ℓ : Nat}
   {evs : List Event} (h : dropRetire D H ℓ = Except.ok (H', evs)) :
-  H' = List.set H ℓ Cell.dead
-```
-
-### `dropRetire_live`
-
-*theorem* · module `RueCore.TraceExact`
-
-The same at a tombstoned cell: `drop-retire` refuses (helper).
-
-```lean
-theorem RueCore.dropRetire_live {D : Decls} {H H' : Store} {ℓ : Nat}
-  {evs : List Event} (h : dropRetire D H ℓ = Except.ok (H', evs)) :
-  ℓ < List.length H
+  ℓ < List.length H ∧ H' = List.set H ℓ Cell.dead
 ```
 
 ### `unwindLocs_shape`
@@ -15331,6 +15239,52 @@ theorem RueCore.dropRetire_kills {D : Decls} {H : Store} {v : Val} {ℓ : Nat} :
     (match dropRetire D H ℓ with
     | Except.error w => EvalRes.refused w
     | Except.ok (H', evs) => EvalRes.ok H' v evs)
+```
+
+### `Local.lift`
+
+*theorem* · module `RueCore.TraceExact`
+
+A scope of fresh cells `ls`, the cells from `H` up to `Hm`: a step local
+to an activation record that names nothing below `H` but `φ`'s environment is
+local to `φ` from `H` (helper).
+
+```lean
+theorem RueCore.Local.lift {φ φ' : Activation} {H Hm H₂ : Store} {ls : List Nat}
+  (hls : ∀ (ℓ : Nat), ℓ ∈ ls ↔ List.length H ≤ ℓ ∧ ℓ < List.length Hm)
+  (hlen : List.length H ≤ List.length Hm)
+  (hpre : ∀ (ℓ : Nat), ℓ < List.length H → Hm[ℓ]? = H[ℓ]?)
+  (henv : ∀ (ℓ : Nat), ℓ ∈ φ'.env → ℓ ∈ ls ∨ ℓ ∈ φ.env) (l : Local φ' Hm H₂) :
+  Local φ H H₂
+```
+
+### `Tombstoned.lift`
+
+*theorem* · module `RueCore.TraceExact`
+
+The same scope, tombstoned: everything allocated since `Hm` is, and so is
+every cell of `ls` not kept, so everything allocated since `H` is (helper).
+
+```lean
+theorem RueCore.Tombstoned.lift {H Hm H₂ : Store} {ls keep : List Nat}
+  (hls : ∀ (ℓ : Nat), ℓ ∈ ls ↔ List.length H ≤ ℓ ∧ ℓ < List.length Hm)
+  (hd : ∀ (ℓ : Nat), ℓ ∈ ls → ¬ℓ ∈ keep → H₂[ℓ]? = some Cell.dead)
+  (r₂ : Tombstoned Hm keep H₂) : Tombstoned H keep H₂
+```
+
+### `Tidy.teardown`
+
+*theorem* · module `RueCore.TraceExact`
+
+The scope's teardown after a value, which tombstones exactly `ls`, closes
+it (helper).
+
+```lean
+theorem RueCore.Tidy.teardown {φ : Activation} {H Hm H₂ : Store} {ls : List Nat}
+  {v : Val} {R : EvalRes} {tr : List Event}
+  (hls : ∀ (ℓ : Nat), ℓ ∈ ls ↔ List.length H ≤ ℓ ∧ ℓ < List.length Hm)
+  (l₂ : Local φ H H₂) (r₂ : Tombstoned Hm [] H₂) (hk : KillsOnly ls H₂ v R) :
+  Tidy φ H (EvalRes.withTrace tr R)
 ```
 
 ### `Tidy.scoped`
@@ -15502,18 +15456,6 @@ The checker accepts the program (helper).
 theorem RueCore.lostProgram_typed : ProgramTyped lostProgram
 ```
 
-### `typed_of_check`
-
-*theorem* · module `RueCore.TraceExact`
-
-A checker verdict at a type is a typing derivation (helper).
-
-```lean
-theorem RueCore.typed_of_check {P : Program} {R : Ty} {Γ : Ctx} {e : Expr} (T : Ty)
-  (h : Option.any (fun p => p.fst.fits T) (check P R Γ e) = true) :
-  ∃ Ω, Typed P R Γ e T Ω
-```
-
 ### `lostActivation_typing`
 
 *theorem* · module `RueCore.TraceExact`
@@ -15533,6 +15475,18 @@ theorem RueCore.lostActivation_typing :
 
 ```lean
 theorem RueCore.lostStore_cc : StoreCC lostDecls lostStore
+```
+
+### `typed_of_check`
+
+*theorem* · module `RueCore.TraceExact`
+
+A checker verdict at a type is a typing derivation (helper).
+
+```lean
+theorem RueCore.typed_of_check {P : Program} {R : Ty} {Γ : Ctx} {e : Expr} (T : Ty)
+  (h : Option.any (fun p => p.fst.fits T) (check P R Γ e) = true) :
+  ∃ Ω, Typed P R Γ e T Ω
 ```
 
 ### `emptyStore_cc`
