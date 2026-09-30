@@ -478,4 +478,14 @@ theorem stepN_steps {M : FloatSig} {P : Program} : ∀ {n : Nat} {C : Config},
       · exact .refl C
       · exact .refl C
 
+/-- **A property every step keeps holds along `→*`** (§6.12): the one induction
+over `Steps` that the step-invariant theorems share (helper). -/
+theorem Steps.invariant {M : FloatSig} {P : Program} {I : Config → Prop}
+    (hstep : ∀ {C C'}, Step M P C C' → I C → I C') :
+    ∀ {C C'}, Steps M P C C' → I C → I C' := by
+  intro C C' hs
+  induction hs with
+  | refl => exact id
+  | step h₁ _ ih => exact fun hC => ih (hstep h₁ hC)
+
 end RueCore
