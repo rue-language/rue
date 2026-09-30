@@ -906,5 +906,5 @@ What was done:
   `List.pairwise_lt_range'` still adds `Classical.choice`.
 
 Not done: `StrictStackOrder.teardown` takes a `Rec` but reads only its
-`Pairwise` half; weakening its hypothesis is a header change left for the
-module's next pass.
+`Pairwise` half; asking only for that half is a header change left for
+the module's next pass.
