@@ -9540,6 +9540,19 @@ theorem RueCore.stepN_steps {M : FloatSig} {P : Program} {n : Nat} {C : Config} 
   Steps M P C (stepN M P n C)
 ```
 
+### `Steps.invariant`
+
+*theorem* · module `RueCore.Step.Lemmas`
+
+**A property every step keeps holds along `→*`** (§6.12): the one induction
+over `Steps` that the step-invariant theorems share (helper).
+
+```lean
+theorem RueCore.Steps.invariant {M : FloatSig} {P : Program} {I : Config → Prop}
+  (hstep : ∀ {C C' : Config}, Step M P C C' → I C → I C') {C C' : Config} :
+  Steps M P C C' → I C → I C'
+```
+
 ### `HasTys.length_eq`
 
 *theorem* · module `RueCore.Soundness`
