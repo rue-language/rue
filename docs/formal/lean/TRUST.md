@@ -15,7 +15,7 @@ statements are.
 - Toolchain: Lean 4.33.1 (the pin in `lean-toolchain` and in
   `toolchains/lean/defs.bzl`, held equal by
   `scripts/validate-lean-toolchain-pin.py`).
-- Theorems checked: 1544.
+- Theorems checked: 1539.
 - Proofs depending on `sorryAx`: 0.
 - Axioms declared by this package: 0.
 - Distinct axioms used: `Quot.sound`, `propext`.
@@ -300,6 +300,8 @@ and diffs them against the committed copies.
 | `Contents.qual_toVal` | `RueCore.Dynamics.Lemmas` | `Quot.sound`, `propext` |
 | `inBoundsIdx_eq_true` | `RueCore.Dynamics.Lemmas` | `propext` |
 | `dropEventsList_eq_flatten` | `RueCore.Dynamics.Lemmas` | `propext` |
+| `Activation.unwindScope_push` | `RueCore.Step.Lemmas` | `propext` |
+| `Activation.unwindScope_let` | `RueCore.Step.Lemmas` | `propext` |
 | `Step.step_eq` | `RueCore.Step.Lemmas` | `propext` |
 | `Step.det` | `RueCore.Step.Lemmas` | `propext` |
 | `Step.terminal` | `RueCore.Step.Lemmas` | `propext` |
@@ -634,7 +636,6 @@ and diffs them against the committed copies.
 | `Cons.dropPlace` | `RueCore.Trace` | `Quot.sound`, `propext` |
 | `Cons.dropDeclared` | `RueCore.Trace` | `Quot.sound`, `propext` |
 | `Cons.assign` | `RueCore.Trace` | `Quot.sound`, `propext` |
-| `Cons.assignDyn` | `RueCore.Trace` | `Quot.sound`, `propext` |
 | `Cons.unwind` | `RueCore.Trace` | `Quot.sound`, `propext` |
 | `eval_conserves` | `RueCore.Trace` | `Quot.sound`, `propext` |
 | `range'_count` | `RueCore.Trace` | `Quot.sound`, `propext` |
@@ -658,8 +659,6 @@ and diffs them against the committed copies.
 | `evalArgs_abort_ne_ok` | `RueCore.Equivalence` | `propext` |
 | `EvalRes.withTrace_bind` | `RueCore.Equivalence` | `propext` |
 | `rootCell_of` | `RueCore.Equivalence` | `propext` |
-| `Activation.unwindScope_push` | `RueCore.Equivalence` | `propext` |
-| `Activation.unwindScope_let` | `RueCore.Equivalence` | `propext` |
 | `plainUnwind_single` | `RueCore.Equivalence` | `propext` |
 | `sim_use` | `RueCore.Equivalence` | `propext` |
 | `sim_drop` | `RueCore.Equivalence` | `propext` |
@@ -985,7 +984,6 @@ and diffs them against the committed copies.
 | `Tombstone.unwind_keeps` | `RueCore.Tombstone` | `Quot.sound`, `propext` |
 | `Tombstone.unwind_err` | `RueCore.Tombstone` | `Quot.sound`, `propext` |
 | `Tombstone.extend_keeps` | `RueCore.Tombstone` | `Quot.sound`, `propext` |
-| `Tombstone.Activation.unwindScope_ext` | `RueCore.Tombstone` | `propext` |
 | `Tombstone.OpRes.toStep_live` | `RueCore.Tombstone` | `propext` |
 | `Tombstone.stepEval_live` | `RueCore.Tombstone` | `Quot.sound`, `propext` |
 | `Tombstone.stepArgs_live` | `RueCore.Tombstone` | `Quot.sound`, `propext` |
@@ -1051,7 +1049,6 @@ and diffs them against the committed copies.
 | `dropPlace_count` | `RueCore.TraceWhole` | `Quot.sound`, `propext` |
 | `dropDeclared_count` | `RueCore.TraceWhole` | `Quot.sound`, `propext` |
 | `assign_count` | `RueCore.TraceWhole` | `Quot.sound`, `propext` |
-| `assignDyn_count` | `RueCore.TraceWhole` | `Quot.sound`, `propext` |
 | `Contents.own_struct_ge` | `RueCore.TraceWhole` | `Quot.sound`, `propext` |
 | `Contents.own_array_ge` | `RueCore.TraceWhole` | `Quot.sound`, `propext` |
 | `evalArgs_cc` | `RueCore.TraceWhole` | `Quot.sound`, `propext` |
@@ -1092,7 +1089,6 @@ and diffs them against the committed copies.
 | `run_final_le` | `RueCore.TraceWhole` | `Quot.sound`, `propext` |
 | `whole_program_exactly_once` | `RueCore.TraceWhole` | `Quot.sound`, `propext` |
 | `Sharp.exact_ops` | `RueCore.Sharp` | `Quot.sound`, `propext` |
-| `Sharp.withTrace_nil` | `RueCore.Sharp` | `propext` |
 | `Sharp.noStep_of_stuck` | `RueCore.Sharp` | `Quot.sound`, `propext` |
 | `Sharp.not_terminal_of_stuck` | `RueCore.Sharp` | `Quot.sound`, `propext` |
 | `Sharp.noStep_of_terminal` | `RueCore.Sharp` | `propext` |
@@ -1103,7 +1099,6 @@ and diffs them against the committed copies.
 | `Sharp.not_exact_ok` | `RueCore.Sharp` | `propext` |
 | `Sharp.not_exact_returned` | `RueCore.Sharp` | `propext` |
 | `Sharp.not_exact_cc` | `RueCore.Sharp` | `propext` |
-| `Sharp.storeCC_one` | `RueCore.Sharp` | `propext` |
 | `Sharp.StepsN.steps_of_longer` | `RueCore.Sharp` | `propext` |
 | `Sharp.steps_of_forever` | `RueCore.Sharp` | `propext` |
 | `Sharp.loopTurn_step` | `RueCore.Sharp` | `Quot.sound`, `propext` |
