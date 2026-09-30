@@ -2373,13 +2373,13 @@ theorem pendingSafe_needed (M : FloatSig) :
       lostBody.pendingSafe = false ∧
       ¬ Exact lostProgram.decls lostStore [] (eval M 100 lostProgram lostStore lostActivation lostBody) := by
   refine ⟨check_sound _ (by rfl) _ (by rfl), lostActivation_typing, lostStore_cc, by rfl, ?_⟩
-  · have hev : eval M 100 lostProgram lostStore lostActivation lostBody
-        = .returned [.dead, .dead] (.int .w64 .signed 0) [] := by rfl
-    rw [hev]
-    intro ⟨_, _, _, h4⟩
-    have := h4 0 (by decide)
-    simp [storeOwn, lostStore, Cell.own, Contents.own, Contents.ownList, lostProgram, lostDecls,
-      Decls.classOf, Decls.ofStructs, freedIds, Val.own, Contents.ofVal] at this
+  have hev : eval M 100 lostProgram lostStore lostActivation lostBody
+      = .returned [.dead, .dead] (.int .w64 .signed 0) [] := by rfl
+  rw [hev]
+  intro ⟨_, _, _, h4⟩
+  have := h4 0 (by decide)
+  simp [storeOwn, lostStore, Cell.own, Contents.own, Contents.ownList, lostProgram, lostDecls,
+    Decls.classOf, Decls.ofStructs, freedIds, Val.own, Contents.ofVal] at this
 
 /-! ## What the statements reject, at typed configurations
 
