@@ -1185,6 +1185,20 @@ theorem Cons.absorb {D : Decls} {F : Event → List Nat} {H : Store} {X : List N
   | refused w => trivial
   | outOfFuel => trivial
 
+/-- §6.2's search keeps the law with the operands' values held: the
+conservation law is an evaluation invariant (`EvalInv`) (helper). -/
+def Cons.inv (D : Decls) (F : Event → List Nat) : EvalInv where
+  Pre H vs := StoreCC D H ∧ Contents.copyContainedList D (Contents.ofVals vs) = true
+  Post H vs := Cons D F H (Contents.ownList D (Contents.ofVals vs))
+  pre hp hr := ⟨hr.2.1, by
+    simp [Contents.ofVals_append, Contents.copyContainedList_append, Contents.ofVals,
+      Contents.copyContainedList, hp.2, hr.2.2.1]⟩
+  seq hp hr h := Cons.prefix hr.1 (fun a => by
+    have := hr.2.2.2 a
+    simp only [Contents.ofVals_append, Contents.ownList_append, List.count_append] at *
+    simp [Contents.ofVals, Contents.ownList, Val.own] at *; omega) h
+  hold _ h := h.weaken (by simp [Contents.ofVals, Contents.ownList])
+
 /-- A value produced where the store is, owning nothing held (helper). -/
 theorem Cons.pure {D : Decls} {F : Event → List Nat} {H : Store} {X : List Nat} {v : Val}
     (hcc : StoreCC D H) (hv : (Contents.ofVal v).copyContained D = true)
@@ -1606,8 +1620,8 @@ theorem eval_conserves (M : FloatSig) {P : Program} {F : Event → List Nat}
   | zero => intro H φ e _; simp only [eval]; trivial
   | succ n ih =>
     intro H φ e hcc
-    have hargs := fun (H' : Store) (es : List Expr) (hc : StoreCC P.decls H') =>
-      evalArgs_cons (fun H'' e' hc' => ih H'' φ e' hc') H' es hc
+    have hev := fun (H' : Store) (vs : List Val) (e' : Expr) (hp : (Cons.inv P.decls F).Pre H' vs) =>
+      ih H' φ e' hp.1
     cases e with
     | intLit w sg m => exact Cons.scalar hcc trivial
     | floatLit w l => exact Cons.scalar hcc trivial
@@ -1652,62 +1666,43 @@ theorem eval_conserves (M : FloatSig) {P : Program} {F : Event → List Nat}
                     · rename_i c' hw
                       exact Cons.move hcc hc hr hw hv
     | binop op e₁ e₂ =>
-        simp only [eval]
-        refine Cons.bind (ih H φ e₁ hcc) (fun H₁ v₁ _ _ hc₁ _ => ?_)
-        refine Cons.bind ((ih H₁ φ e₂ hc₁).weaken (by simp)) (fun H₂ v₂ _ _ hc₂ _ => ?_)
-        exact Cons.opRes hc₂ (fun v h => evalBinOp_scalar h)
+        exact (Cons.inv P.decls F).bind (vs := []) ⟨hcc, rfl⟩ (ih H φ e₁ hcc) fun H₁ _ _ _ hp₁ =>
+          (Cons.inv P.decls F).bind hp₁ (ih H₁ φ e₂ hp₁.1) fun _ _ _ _ hp₂ =>
+            Cons.opRes hp₂.1 fun _ h => evalBinOp_scalar h
     | unop op e₁ =>
-        simp only [eval]
-        refine Cons.bind (ih H φ e₁ hcc) (fun H₁ v₁ _ _ hc₁ _ => ?_)
-        exact Cons.opRes hc₁ (fun v h => evalUnOp_scalar h)
+        exact (Cons.inv P.decls F).bind (vs := []) ⟨hcc, rfl⟩ (ih H φ e₁ hcc) fun _ _ _ _ hp =>
+          Cons.opRes hp.1 fun _ h => evalUnOp_scalar h
     | intCast w sg e₁ =>
-        simp only [eval]
-        refine Cons.bind (ih H φ e₁ hcc) (fun H₁ v₁ _ _ hc₁ _ => ?_)
-        exact Cons.opRes hc₁ (fun v h => evalIntCast_scalar h)
+        exact (Cons.inv P.decls F).bind (vs := []) ⟨hcc, rfl⟩ (ih H φ e₁ hcc) fun _ _ _ _ hp =>
+          Cons.opRes hp.1 fun _ h => evalIntCast_scalar h
     | fintrin k e₁ =>
-        simp only [eval]
-        refine Cons.bind (ih H φ e₁ hcc) (fun H₁ v₁ _ _ hc₁ _ => ?_)
-        exact Cons.opRes hc₁ (fun v h => evalFintrin_scalar h)
+        exact (Cons.inv P.decls F).bind (vs := []) ⟨hcc, rfl⟩ (ih H φ e₁ hcc) fun _ _ _ _ hp =>
+          Cons.opRes hp.1 fun _ h => evalFintrin_scalar h
     | panic msg => simp only [eval]; exact ⟨0, fun a => by simp⟩
     | dbg e₁ =>
-        simp only [eval]
-        refine Cons.bind (ih H φ e₁ hcc) (fun H₁ v₁ _ _ hc₁ _ => ?_)
+        refine (Cons.inv P.decls F).bind (vs := []) ⟨hcc, rfl⟩ (ih H φ e₁ hcc) fun H₁ _ _ _ hp => ?_
         split
-        · refine ⟨Nat.le_refl _, hc₁, rfl, fun a => ?_⟩
+        · refine ⟨Nat.le_refl _, hp.1, rfl, fun a => ?_⟩
           simp [hF.dbg]
         · trivial
     | mkStruct s args =>
         simp only [eval]
-        have ka := hargs H args hcc
+        refine (Cons.inv P.decls F).args hev args (vs := []) ⟨hcc, rfl⟩ fun H₁ vs hp => ?_
         split
-        · rename_i r hra; rw [hra] at ka; exact ka
-        · rename_i H₁ vs tr hra
-          rw [hra] at ka
-          obtain ⟨l₁, c₁, _, i₁⟩ := ka
-          refine Cons.prefix (Y := Contents.ownList P.decls (Contents.ofVals vs)) l₁
-            (fun a => by have := i₁ a; simp only [List.count_nil] at *; omega) ?_
-          split
+        · trivial
+        · split
+          · exact Cons.intro hp.1 (fun a => Contents.own_struct_le P.decls s _ _ a)
           · trivial
-          · split
-            · exact Cons.intro c₁ (fun a => Contents.own_struct_le P.decls s _ _ a)
-            · trivial
     | mkEnum e k args =>
         simp only [eval]
-        have ka := hargs H args hcc
+        refine (Cons.inv P.decls F).args hev args (vs := []) ⟨hcc, rfl⟩ fun H₁ vs hp => ?_
         split
-        · rename_i r hra; rw [hra] at ka; exact ka
-        · rename_i H₁ vs tr hra
-          rw [hra] at ka
-          obtain ⟨l₁, c₁, _, i₁⟩ := ka
-          refine Cons.prefix (Y := Contents.ownList P.decls (Contents.ofVals vs)) l₁
-            (fun a => by have := i₁ a; simp only [List.count_nil] at *; omega) ?_
-          split
+        · trivial
+        · split
           · trivial
           · split
+            · exact Cons.intro hp.1 (fun a => Contents.own_enum_le P.decls e k _ _ a)
             · trivial
-            · split
-              · exact Cons.intro c₁ (fun a => Contents.own_enum_le P.decls e k _ _ a)
-              · trivial
     | «match» scrut arms =>
         simp only [eval]
         refine Cons.bind (ih H φ scrut hcc) (fun H₀ v _ _ hc₀ hv => ?_)
@@ -1731,15 +1726,8 @@ theorem eval_conserves (M : FloatSig) {P : Program} {F : Event → List Nat}
         | _ => trivial
     | mkArray T args =>
         simp only [eval]
-        have ka := hargs H args hcc
-        split
-        · rename_i r hra; rw [hra] at ka; exact ka
-        · rename_i H₁ vs tr hra
-          rw [hra] at ka
-          obtain ⟨l₁, c₁, _, i₁⟩ := ka
-          refine Cons.prefix (Y := Contents.ownList P.decls (Contents.ofVals vs)) l₁
-            (fun a => by have := i₁ a; simp only [List.count_nil] at *; omega) ?_
-          exact Cons.intro c₁ (fun a => Contents.own_array_le P.decls T _ _ a)
+        exact (Cons.inv P.decls F).args hev args (vs := []) ⟨hcc, rfl⟩ fun _ _ hp =>
+          Cons.intro hp.1 (fun a => Contents.own_array_le P.decls T _ _ a)
     | repeatArray T e₁ m =>
         simp only [eval]
         refine Cons.bind (ih H φ e₁ hcc) (fun H₁ v₁ _ _ hc₁ _ => ?_)
@@ -1756,71 +1744,54 @@ theorem eval_conserves (M : FloatSig) {P : Program} {F : Event → List Nat}
         · trivial
     | indexRead p idx πs =>
         simp only [eval]
-        have ka := hargs H idx hcc
+        refine (Cons.inv P.decls F).args hev idx (vs := []) ⟨hcc, rfl⟩ fun H₁ vs hp => ?_
         split
-        · rename_i r hra; rw [hra] at ka; exact ka
-        · rename_i H₁ vs tr hra
-          rw [hra] at ka
-          obtain ⟨l₁, c₁, _, i₁⟩ := ka
-          refine Cons.prefix (Y := Contents.ownList P.decls (Contents.ofVals vs)) l₁
-            (fun a => by have := i₁ a; simp only [List.count_nil] at *; omega) ?_
+        · trivial
+        · exact ⟨0, fun a => by simp⟩
+        · rename_i ℓ c sub ρ hdp
+          obtain ⟨hc, hr⟩ := dynPlace_at hdp
           split
           · trivial
-          · exact ⟨0, fun a => by simp⟩
-          · rename_i ℓ c sub ρ hdp
-            obtain ⟨hc, hr⟩ := dynPlace_at hdp
+          · rename_i leaf hr'
             split
             · trivial
-            · rename_i leaf hr'
+            · rename_i v hv
               split
+              · rename_i hm
+                refine Cons.pure hp.1 ?_ (fun a => by simp [Val.own_of_copy hm])
+                rw [Contents.ofVal_toVal hv]
+                exact Contents.getAt_copyContained ρ
+                  (Contents.getAt_copyContained _ (hp.1 ℓ c hc) hr) hr'
               · trivial
-              · rename_i v hv
-                split
-                · rename_i hm
-                  refine Cons.pure c₁ ?_ (fun a => by simp [Val.own_of_copy hm])
-                  rw [Contents.ofVal_toVal hv]
-                  exact Contents.getAt_copyContained ρ
-                    (Contents.getAt_copyContained _ (c₁ ℓ c hc) hr) hr'
-                · trivial
     | indexWrite p idx πs e₁ =>
-        simp only [eval]
-        refine Cons.bind (ih H φ e₁ hcc) (fun H₁ v _ _ hc₁ hv => ?_)
-        have ka := hargs H₁ idx hc₁
+        refine (Cons.inv P.decls F).bind (vs := []) ⟨hcc, rfl⟩ (ih H φ e₁ hcc) fun H₁ v _ _ hp₁ => ?_
+        refine (Cons.inv P.decls F).args hev idx hp₁ fun H₂ vs hp₂ => ?_
         split
-        · rename_i r hra; rw [hra] at ka; exact ka.weaken (by simp)
-        · rename_i H₂ vs tr hra
-          rw [hra] at ka
-          obtain ⟨l₂, c₂, _, i₂⟩ := ka
-          refine Cons.prefix
-            (Y := v.own P.decls ++ Contents.ownList P.decls (Contents.ofVals vs)) l₂
-            (fun a => by have := i₂ a; simp only [List.count_append] at *; omega) ?_
+        · trivial
+        · exact ⟨0, fun a => by simp⟩
+        · rename_i ℓ c sub ρ hdp
+          obtain ⟨hc, hr⟩ := dynPlace_at hdp
           split
           · trivial
-          · exact ⟨0, fun a => by simp⟩
-          · rename_i ℓ c sub ρ hdp
-            obtain ⟨hc, hr⟩ := dynPlace_at hdp
+          · rename_i old hr'
             split
             · trivial
-            · rename_i old hr'
-              split
+            · split
               · trivial
-              · split
+              · rename_i evs hd
+                split
                 · trivial
-                · rename_i evs hd
+                · rename_i sub' hw'
                   split
                   · trivial
-                  · rename_i sub' hw'
+                  · rename_i c' hw
                     split
+                    · rename_i hc'
+                      exact Cons.assign hF hp₂.1 hc hr hr' hd hw' hw hc'
                     · trivial
-                    · rename_i c' hw
-                      split
-                      · rename_i hc'
-                        exact Cons.assign hF c₂ hc hr hr' hd hw' hw hc'
-                      · trivial
     | indexDrop p idx πs =>
-        simp only [eval]
-        refine Cons.bind (ih H φ _ hcc) (fun H₁ v₁ _ _ hc₁ _ => ?_)
-        exact Cons.pure hc₁ rfl (fun a => by simp)
+        exact (Cons.inv P.decls F).bind (vs := []) ⟨hcc, rfl⟩ (ih H φ _ hcc) fun _ _ _ _ hp =>
+          Cons.pure hp.1 rfl (fun a => by simp)
     | drop p =>
         simp only [eval]
         split
@@ -1921,29 +1892,24 @@ theorem eval_conserves (M : FloatSig) {P : Program} {F : Event → List Nat}
         · trivial
     | call f args =>
         simp only [eval]
-        have ka := hargs H args hcc
+        refine (Cons.inv P.decls F).args hev args (vs := []) ⟨hcc, rfl⟩ fun H₁ vs hp => ?_
+        obtain ⟨c₁, cv₁⟩ := hp
+        show Cons _ _ _ (Contents.ownList P.decls (Contents.ofVals vs)) _
         split
-        · rename_i r hra; rw [hra] at ka; exact ka
-        · rename_i H₁ vs tr hra
-          rw [hra] at ka
-          obtain ⟨l₁, c₁, cv₁, i₁⟩ := ka
-          refine Cons.prefix (Y := Contents.ownList P.decls (Contents.ofVals vs)) l₁
-            (fun a => by have := i₁ a; simp only [List.count_nil] at *; omega) ?_
+        · trivial
+        · rename_i fd hfd
           split
+          · refine Cons.shift (H₁ := (freshParams H₁ vs).1) (Y := []) ?_ ?_ ?_
+            · rw [freshParams_length]; omega
+            · intro a
+              rw [storeOwn_freshParams]
+              simp only [List.count_append, List.count_nil]
+              omega
+            · refine Cons.absorb (ih _ _ fd.body (c₁.freshParams cv₁))
+                (fun H₃ v _ _ hc₃ hv₃ => ?_)
+              simp only [runAllScopeDrops]
+              exact Cons.unwind hF hc₃ hv₃
           · trivial
-          · rename_i fd hfd
-            split
-            · refine Cons.shift (H₁ := (freshParams H₁ vs).1) (Y := []) ?_ ?_ ?_
-              · rw [freshParams_length]; omega
-              · intro a
-                rw [storeOwn_freshParams]
-                simp only [List.count_append, List.count_nil]
-                omega
-              · refine Cons.absorb (ih _ _ fd.body (c₁.freshParams cv₁))
-                  (fun H₃ v _ _ hc₃ hv₃ => ?_)
-                simp only [runAllScopeDrops]
-                exact Cons.unwind hF hc₃ hv₃
-            · trivial
     | ret e₁ =>
         simp only [eval]
         refine Cons.bind (ih H φ e₁ hcc) (fun H₁ v _ _ hc₁ hv => ?_)
