@@ -17,6 +17,7 @@ ladder that grows this fragment) live in
 evidence, and `DIGEST.md` is every statement it is evidence for). ADR-0097
 fixes the theorem shape, the authority rule, and the non-blocking posture the
 project "Formal core mechanization" grows this fragment under.
+A change to this package is reviewed from the angles in [`review/`](review/README.md).
 
 ## Building
 
