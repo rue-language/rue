@@ -789,7 +789,7 @@ end
 
 /-- A binding's drop names its own cell once, or nothing for `Copy` contents
 (helper). -/
-theorem dropCell_locs' {D : Decls} {ℓ : Nat} {c : Contents} {evs : List Event}
+theorem dropCell_locs {D : Decls} {ℓ : Nat} {c : Contents} {evs : List Event}
     (h : dropCell D ℓ c = .ok evs) : dropLocs evs = [] ∨ dropLocs evs = [ℓ] := by
   unfold dropCell at h
   split at h
@@ -803,12 +803,6 @@ theorem dropCell_locs' {D : Decls} {ℓ : Nat} {c : Contents} {evs : List Event}
         show (Event.drop ℓ c :: dropEvents D c) = [.drop ℓ c] ++ dropEvents D c from rfl,
         dropLocs_append, dropLocs_dropEvents]
       rfl
-
-/-- A binding's drop names at most its own cell (helper). -/
-theorem dropCell_locs {D : Decls} {ℓ : Nat} {c : Contents} {evs : List Event}
-    (h : dropCell D ℓ c = .ok evs) : ∀ x ∈ dropLocs evs, x = ℓ := by
-  intro x hx
-  rcases dropCell_locs' h with h' | h' <;> rw [h'] at hx <;> simp_all
 
 /-- A destructure's residue drops name only the destructured cell (helper). -/
 theorem plainResidue_locs {D : Decls} {ℓ : Nat} : ∀ {rs : List Contents} {evs : List Event},
@@ -875,7 +869,7 @@ theorem plainUnwind_locs {D : Decls} : ∀ {H H' : Store} {ls : List Nat} {evs :
               · cases h₁
               · rename_i hd
                 cases h₁
-                exact dropCell_locs' hd
+                exact dropCell_locs hd
           rw [dropLocs_append]
           rcases hd with hd | hd <;> rw [hd]
           · exact ih.cons ℓ
@@ -899,6 +893,8 @@ theorem step_drop_order {M : FloatSig} {P : Program} {C C' : Config} (h : Step M
       StrictStackOrder (dropLocs evs) := fun ℓ h => .inl ⟨ℓ, h⟩
   have none : ∀ {evs : List Event}, dropLocs evs = [] → StrictStackOrder (dropLocs evs) :=
     fun h => .inl ⟨0, by simp [h]⟩
+  have cell : ∀ {evs : List Event} {ℓ : Nat}, (dropLocs evs = [] ∨ dropLocs evs = [ℓ]) →
+      ∀ x ∈ dropLocs evs, x = ℓ := fun h x hx => by rcases h with h | h <;> simp_all
   cases h
   case useDeclared H φ K tr p ℓ c πd πs cd leaf evs v c' _ _ _ hd _ _ =>
     exact ⟨_, rfl, one ℓ (plainDestructure_locs hd)⟩
@@ -912,13 +908,13 @@ theorem step_drop_order {M : FloatSig} {P : Program} {C C' : Config} (h : Step M
     refine ⟨_, rfl, none ?_⟩
     rw [show ∀ v evs, (Event.dropTemp v :: evs) = [.dropTemp v] ++ evs from fun _ _ => rfl,
       dropLocs_append, dropContents_eq hd, dropLocs_dropEvents]; rfl
-  case assign H φ K tr p v ℓ c old evs c' _ _ hd _ => exact ⟨_, rfl, one ℓ (dropCell_locs hd)⟩
-  case indexWrite H φ K tr p πs v vs ℓ c sub ρ old evs sub' c' _ _ hd _ _ => exact ⟨_, rfl, one ℓ (dropCell_locs hd)⟩
+  case assign H φ K tr p v ℓ c old evs c' _ _ hd _ => exact ⟨_, rfl, one ℓ (cell (dropCell_locs hd))⟩
+  case indexWrite H φ K tr p πs v vs ℓ c sub ρ old evs sub' c' _ _ hd _ _ => exact ⟨_, rfl, one ℓ (cell (dropCell_locs hd))⟩
   case dropDeclared H φ K tr p ℓ c πd πs cd leaf evs levs c' _ _ _ hd hl _ =>
     refine ⟨_, rfl, one ℓ (fun x hx => ?_)⟩
     rw [dropLocs_append, List.mem_append] at hx
-    exact hx.elim (plainDestructure_locs hd x) (dropCell_locs hl x)
-  case dropMove H φ K tr p ℓ c sub evs c' _ _ _ _ hd _ => exact ⟨_, rfl, one ℓ (dropCell_locs hd)⟩
+    exact hx.elim (plainDestructure_locs hd x) (cell (dropCell_locs hl) x)
+  case dropMove H φ K tr p ℓ c sub evs c' _ _ _ _ hd _ => exact ⟨_, rfl, one ℓ (cell (dropCell_locs hd))⟩
   case callReturn hu | ret hu => exact ⟨_, rfl, StrictStackOrder.teardown hC.1 (plainUnwind_locs hu)⟩
   case loopIter hu | brk hu =>
     exact ⟨_, rfl, StrictStackOrder.teardown (hC.1.sublist (List.drop_sublist _ _))
