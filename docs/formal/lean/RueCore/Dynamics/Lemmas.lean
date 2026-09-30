@@ -102,16 +102,21 @@ theorem ArgsRes.bind_evalArgs_cons (ev : Store → Expr → EvalRes) (H : Store)
 /-- **An invariant of evaluation, closed under §6.2's search** (helper).
 `Pre H vs` is what a start holds of its store `H`, with the values `vs` of the
 operands already run held; `Post H vs r` is the promise about the result `r`
-of a run from there. `pre` and `seq` are the search's step: an operand run
-from `H`, holding nothing, that produced a value, leaves a start holding that
-value too, and a result from that start keeps the promise from `H` once the
-operand's trace is prefixed. `hold` is the rest of the search: an operand's
-result that the form passes on unchanged keeps the promise with the held
-values abandoned. -/
+of a run from there. `Keep H r` is what an operand's run from `H` is known to
+keep besides the promise, by a theorem outside the induction (the conservation
+law, say), which only an operand, never the form's own computation, has to
+supply; it is `True` unless an instance says otherwise. `pre` and `seq` are
+the search's step: an operand run from `H`, holding nothing, that produced a
+value, leaves a start holding that value too, and a result from that start
+keeps the promise from `H` once the operand's trace is prefixed. `hold` is the
+rest of the search: an operand's result that the form passes on unchanged
+keeps the promise with the held values abandoned. -/
 structure EvalInv where
   Pre : Store → List Val → Prop
   Post : Store → List Val → EvalRes → Prop
-  pre : ∀ {H vs H₁ v tr}, Pre H vs → Post H [] (.ok H₁ v tr) → Pre H₁ (vs ++ [v])
+  Keep : Store → EvalRes → Prop := fun _ _ => True
+  pre : ∀ {H vs H₁ v tr}, Pre H vs → Post H [] (.ok H₁ v tr) → Keep H (.ok H₁ v tr) →
+    Pre H₁ (vs ++ [v])
   seq : ∀ {H vs H₁ v tr r}, Pre H vs → Post H [] (.ok H₁ v tr) → Post H₁ (vs ++ [v]) r →
     Post H vs (r.withTrace tr)
   hold : ∀ {H vs r}, Pre H vs → Post H [] r → Post H vs r
@@ -121,17 +126,25 @@ operand's promise, and the context's from the store its value left, holding
 that value. -/
 theorem EvalInv.bind (I : EvalInv) {H : Store} {vs : List Val} {r : EvalRes}
     {k : Store → Val → EvalRes} (hp : I.Pre H vs) (hr : I.Post H [] r)
-    (hk : ∀ H₁ v tr, r = .ok H₁ v tr → I.Pre H₁ (vs ++ [v]) → I.Post H₁ (vs ++ [v]) (k H₁ v)) :
+    (hk : ∀ H₁ v tr, r = .ok H₁ v tr → I.Pre H₁ (vs ++ [v]) → I.Post H₁ (vs ++ [v]) (k H₁ v))
+    (hkp : I.Keep H r := by trivial) :
     I.Post H vs (r.bind k) := by
   cases r with
-  | ok H₁ v tr => exact I.seq hp hr (hk H₁ v tr rfl (I.pre hp hr))
+  | ok H₁ v tr => exact I.seq hp hr (hk H₁ v tr rfl (I.pre hp hr hkp))
   | _ => exact I.hold hp hr
+
+/-- `EvalInv.bind` for a form's first operand, nothing held yet (helper). -/
+theorem EvalInv.bind₀ (I : EvalInv) {H : Store} {r : EvalRes} {k : Store → Val → EvalRes}
+    (hp : I.Pre H []) (hr : I.Post H [] r)
+    (hk : ∀ H₁ v tr, r = .ok H₁ v tr → I.Pre H₁ [v] → I.Post H₁ [v] (k H₁ v))
+    (hkp : I.Keep H r := by trivial) : I.Post H [] (r.bind k) :=
+  I.bind hp hr hk hkp
 
 /-- **§6.2's search through an argument list keeps any `EvalInv`** (helper):
 operands in order, then compute. Each argument keeps the promise from wherever
 it starts, and the computation keeps it holding every value. -/
 theorem EvalInv.args (I : EvalInv) {ev : Store → Expr → EvalRes}
-    (hev : ∀ H vs e, I.Pre H vs → I.Post H [] (ev H e)) :
+    (hev : ∀ H vs e, I.Pre H vs → I.Post H [] (ev H e) ∧ I.Keep H (ev H e)) :
     ∀ (es : List Expr) {H : Store} {vs : List Val} {c : Store → List Val → EvalRes},
       I.Pre H vs → (∀ H₁ vs', I.Pre H₁ (vs ++ vs') → I.Post H₁ (vs ++ vs') (c H₁ vs')) →
       I.Post H vs ((evalArgs ev H es).bind c)
@@ -142,8 +155,16 @@ theorem EvalInv.args (I : EvalInv) {ev : Store → Expr → EvalRes}
       cases hr : c H [] <;> rw [hr] at h <;> simpa [EvalRes.withTrace] using h
   | e :: es, H, vs, c, hp, hc => by
       rw [ArgsRes.bind_evalArgs_cons]
-      exact I.bind hp (hev H vs e hp) fun H₁ v _ _ hp₁ =>
+      exact I.bind hp (hev H vs e hp).1 (hkp := (hev H vs e hp).2) fun H₁ v _ _ hp₁ =>
         EvalInv.args I hev es hp₁ fun H₂ vs' hp₂ => by
           simpa using hc H₂ (v :: vs') (by simpa using hp₂)
+
+/-- `EvalInv.args` for a form whose operands are its argument list (helper). -/
+theorem EvalInv.args₀ (I : EvalInv) {ev : Store → Expr → EvalRes}
+    (hev : ∀ H vs e, I.Pre H vs → I.Post H [] (ev H e) ∧ I.Keep H (ev H e))
+    (es : List Expr) {H : Store} {c : Store → List Val → EvalRes} (hp : I.Pre H [])
+    (hc : ∀ H₁ vs, I.Pre H₁ vs → I.Post H₁ vs (c H₁ vs)) :
+    I.Post H [] ((evalArgs ev H es).bind c) :=
+  I.args hev es hp hc
 
 end RueCore

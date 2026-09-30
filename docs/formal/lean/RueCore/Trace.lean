@@ -1190,7 +1190,7 @@ conservation law is an evaluation invariant (`EvalInv`) (helper). -/
 def Cons.inv (D : Decls) (F : Event → List Nat) : EvalInv where
   Pre H vs := StoreCC D H ∧ Contents.copyContainedList D (Contents.ofVals vs) = true
   Post H vs := Cons D F H (Contents.ownList D (Contents.ofVals vs))
-  pre hp hr := ⟨hr.2.1, by
+  pre hp hr _ := ⟨hr.2.1, by
     simp [Contents.ofVals_append, Contents.copyContainedList_append, Contents.ofVals,
       Contents.copyContainedList, hp.2, hr.2.2.1]⟩
   seq hp hr h := Cons.prefix hr.1 (fun a => by
@@ -1621,7 +1621,7 @@ theorem eval_conserves (M : FloatSig) {P : Program} {F : Event → List Nat}
   | succ n ih =>
     intro H φ e hcc
     have hev := fun (H' : Store) (vs : List Val) (e' : Expr) (hp : (Cons.inv P.decls F).Pre H' vs) =>
-      ih H' φ e' hp.1
+      (⟨ih H' φ e' hp.1, trivial⟩ : Cons _ _ _ [] _ ∧ True)
     cases e with
     | intLit w sg m => exact Cons.scalar hcc trivial
     | floatLit w l => exact Cons.scalar hcc trivial
@@ -1666,28 +1666,28 @@ theorem eval_conserves (M : FloatSig) {P : Program} {F : Event → List Nat}
                     · rename_i c' hw
                       exact Cons.move hcc hc hr hw hv
     | binop op e₁ e₂ =>
-        exact (Cons.inv P.decls F).bind (vs := []) ⟨hcc, rfl⟩ (ih H φ e₁ hcc) fun H₁ _ _ _ hp₁ =>
+        exact (Cons.inv P.decls F).bind₀ ⟨hcc, rfl⟩ (ih H φ e₁ hcc) fun H₁ _ _ _ hp₁ =>
           (Cons.inv P.decls F).bind hp₁ (ih H₁ φ e₂ hp₁.1) fun _ _ _ _ hp₂ =>
             Cons.opRes hp₂.1 fun _ h => evalBinOp_scalar h
     | unop op e₁ =>
-        exact (Cons.inv P.decls F).bind (vs := []) ⟨hcc, rfl⟩ (ih H φ e₁ hcc) fun _ _ _ _ hp =>
+        exact (Cons.inv P.decls F).bind₀ ⟨hcc, rfl⟩ (ih H φ e₁ hcc) fun _ _ _ _ hp =>
           Cons.opRes hp.1 fun _ h => evalUnOp_scalar h
     | intCast w sg e₁ =>
-        exact (Cons.inv P.decls F).bind (vs := []) ⟨hcc, rfl⟩ (ih H φ e₁ hcc) fun _ _ _ _ hp =>
+        exact (Cons.inv P.decls F).bind₀ ⟨hcc, rfl⟩ (ih H φ e₁ hcc) fun _ _ _ _ hp =>
           Cons.opRes hp.1 fun _ h => evalIntCast_scalar h
     | fintrin k e₁ =>
-        exact (Cons.inv P.decls F).bind (vs := []) ⟨hcc, rfl⟩ (ih H φ e₁ hcc) fun _ _ _ _ hp =>
+        exact (Cons.inv P.decls F).bind₀ ⟨hcc, rfl⟩ (ih H φ e₁ hcc) fun _ _ _ _ hp =>
           Cons.opRes hp.1 fun _ h => evalFintrin_scalar h
     | panic msg => simp only [eval]; exact ⟨0, fun a => by simp⟩
     | dbg e₁ =>
-        refine (Cons.inv P.decls F).bind (vs := []) ⟨hcc, rfl⟩ (ih H φ e₁ hcc) fun H₁ _ _ _ hp => ?_
+        refine (Cons.inv P.decls F).bind₀ ⟨hcc, rfl⟩ (ih H φ e₁ hcc) fun H₁ _ _ _ hp => ?_
         split
         · refine ⟨Nat.le_refl _, hp.1, rfl, fun a => ?_⟩
           simp [hF.dbg]
         · trivial
     | mkStruct s args =>
         simp only [eval]
-        refine (Cons.inv P.decls F).args hev args (vs := []) ⟨hcc, rfl⟩ fun H₁ vs hp => ?_
+        refine (Cons.inv P.decls F).args₀ hev args ⟨hcc, rfl⟩ fun H₁ vs hp => ?_
         split
         · trivial
         · split
@@ -1695,7 +1695,7 @@ theorem eval_conserves (M : FloatSig) {P : Program} {F : Event → List Nat}
           · trivial
     | mkEnum e k args =>
         simp only [eval]
-        refine (Cons.inv P.decls F).args hev args (vs := []) ⟨hcc, rfl⟩ fun H₁ vs hp => ?_
+        refine (Cons.inv P.decls F).args₀ hev args ⟨hcc, rfl⟩ fun H₁ vs hp => ?_
         split
         · trivial
         · split
@@ -1726,7 +1726,7 @@ theorem eval_conserves (M : FloatSig) {P : Program} {F : Event → List Nat}
         | _ => trivial
     | mkArray T args =>
         simp only [eval]
-        exact (Cons.inv P.decls F).args hev args (vs := []) ⟨hcc, rfl⟩ fun _ _ hp =>
+        exact (Cons.inv P.decls F).args₀ hev args ⟨hcc, rfl⟩ fun _ _ hp =>
           Cons.intro hp.1 (fun a => Contents.own_array_le P.decls T _ _ a)
     | repeatArray T e₁ m =>
         simp only [eval]
@@ -1744,7 +1744,7 @@ theorem eval_conserves (M : FloatSig) {P : Program} {F : Event → List Nat}
         · trivial
     | indexRead p idx πs =>
         simp only [eval]
-        refine (Cons.inv P.decls F).args hev idx (vs := []) ⟨hcc, rfl⟩ fun H₁ vs hp => ?_
+        refine (Cons.inv P.decls F).args₀ hev idx ⟨hcc, rfl⟩ fun H₁ vs hp => ?_
         split
         · trivial
         · exact ⟨0, fun a => by simp⟩
@@ -1764,7 +1764,7 @@ theorem eval_conserves (M : FloatSig) {P : Program} {F : Event → List Nat}
                   (Contents.getAt_copyContained _ (hp.1 ℓ c hc) hr) hr'
               · trivial
     | indexWrite p idx πs e₁ =>
-        refine (Cons.inv P.decls F).bind (vs := []) ⟨hcc, rfl⟩ (ih H φ e₁ hcc) fun H₁ v _ _ hp₁ => ?_
+        refine (Cons.inv P.decls F).bind₀ ⟨hcc, rfl⟩ (ih H φ e₁ hcc) fun H₁ v _ _ hp₁ => ?_
         refine (Cons.inv P.decls F).args hev idx hp₁ fun H₂ vs hp₂ => ?_
         split
         · trivial
@@ -1790,7 +1790,7 @@ theorem eval_conserves (M : FloatSig) {P : Program} {F : Event → List Nat}
                       exact Cons.assign hF hp₂.1 hc hr hr' hd hw' hw hc'
                     · trivial
     | indexDrop p idx πs =>
-        exact (Cons.inv P.decls F).bind (vs := []) ⟨hcc, rfl⟩ (ih H φ _ hcc) fun _ _ _ _ hp =>
+        exact (Cons.inv P.decls F).bind₀ ⟨hcc, rfl⟩ (ih H φ _ hcc) fun _ _ _ _ hp =>
           Cons.pure hp.1 rfl (fun a => by simp)
     | drop p =>
         simp only [eval]
@@ -1892,7 +1892,7 @@ theorem eval_conserves (M : FloatSig) {P : Program} {F : Event → List Nat}
         · trivial
     | call f args =>
         simp only [eval]
-        refine (Cons.inv P.decls F).args hev args (vs := []) ⟨hcc, rfl⟩ fun H₁ vs hp => ?_
+        refine (Cons.inv P.decls F).args₀ hev args ⟨hcc, rfl⟩ fun H₁ vs hp => ?_
         obtain ⟨c₁, cv₁⟩ := hp
         show Cons _ _ _ (Contents.ownList P.decls (Contents.ofVals vs)) _
         split
