@@ -738,8 +738,8 @@ theorem Exact.of_quiet {D : Decls} {H : Store} {X : List Nat} {r : EvalRes} {tr 
 
 /-- **An argument list keeps the exact ledger** (§6.2's left-to-right search)
 where only its first member may complete abruptly: nothing is pending when the
-first does, and a later member aborts only with a trap, a refusal or exhausted
-fuel, so no built value is ever abandoned (helper). -/
+first does, and, given that a later member aborts only with a trap, a refusal or
+exhausted fuel, no built value is ever abandoned (helper). -/
 theorem evalArgs_exact {D : Decls} {ev : Store → Expr → EvalRes} :
     ∀ {es : List Expr}, (∀ H e, e ∈ es → StoreCC D H → Exact D H [] (ev H e)) →
       (∀ H e, e ∈ es.tail → (ev H e).NoRet ∧ (ev H e).NoBrk) →
