@@ -39,7 +39,9 @@ The two pins are held equal by `scripts/validate-lean-toolchain-pin.py`. The
 Buck target is build-only and carries no test tier: nothing in CI runs the
 Lean build until ADR-0097's gate is met (RUE-2241). CI does read these
 sources: the premerge cross-reference gate below fails on an uncited
-declaration or a stale `INDEX.md`.
+declaration or a stale `INDEX.md`. The premerge `scripts/validate-lean-trust-list.py`
+fails when the Buck target's trust list names a theorem the package does not
+declare, or leaves out a spine theorem (RUE-2526).
 
 Agents writing or reviewing proofs here may use the lean4-skills plugin's
 review, golf and triage workflows; [TOOLING.md](TOOLING.md) (RUE-2455) records

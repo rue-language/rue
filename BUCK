@@ -974,6 +974,28 @@ rue_tool_test(
     gatelib = False,
 )
 
+# `:lean-ruecore`'s hand-kept trust list names only theorems the package
+# declares (TRUST.md), and every spine theorem (RueCore/Spec.lean). The target
+# itself is built by no CI lane (RUE-2241), so a renamed theorem once left it
+# broken on trunk unnoticed (RUE-2525); this gate is where CI sees the list.
+rue_sh_test(
+    name = "lean-trust-list-validation",
+    test = "scripts/validate-lean-trust-list.py",
+    args = [
+        "--buck",
+        "$(location :root-buck-file)/BUCK",
+        "--lean-dir",
+        "$(location //docs:formal-lean)",
+    ],
+)
+
+rue_tool_test(
+    name = "lean-trust-list-tool-tests",
+    test = "scripts/test-validate-lean-trust-list.py",
+    resources = ["scripts/validate-lean-trust-list.py"],
+    gatelib = False,
+)
+
 # RUE-2245: the mechanization's doc-comments cite the calculus, and
 # docs/formal/lean/INDEX.md is generated from them. The gate fails when a
 # rule-bearing declaration is uncited, cites a rule label the calculus does

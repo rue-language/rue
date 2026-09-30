@@ -112,7 +112,9 @@ def _lean_package_impl(ctx: AnalysisContext) -> list[Provider]:
             'cp "$trust" "$work/Trust.lean"',
             'cd "$work"',
             'lake build "$module" > "$out/build.log" 2>&1',
-            'lake env lean Trust.lean > "$out/axioms.txt" 2>&1',
+            # A name in the trust list that is not a constant fails here; say
+            # why, since the action's own output is redirected (RUE-2526).
+            'lake env lean Trust.lean > "$out/axioms.txt" 2>&1 || { cat "$out/axioms.txt" >&2; exit 1; }',
             # The bridge corpus (RUE-2227), when the package declares an
             # exporter: built and run here so `corpus.json` is a Buck
             # artifact the rue-oracle-diff consumer can take by $(location).
