@@ -1035,3 +1035,101 @@ over per-rule obligations, which is structural 2's evaluation-context lemma
 (RUE-2518). So structural 1 is deferred until RUE-2518 part 2 shows whether
 `EvalInv` can carry those obligations; RUE-2517 is back in the backlog with
 this measurement.
+
+### RUE-2518 part 2: `Keep`, and two more users
+
+From trunk `eb6b295a0`, measured by `python3 bin/simplify-metrics.py` before
+and after. Spec and `spine-fingerprints.txt` are unchanged, Comparator
+re-certifies, and every changed or new theorem uses at most `propext` and
+`Quot.sound` (`eval_tidy` and `eval_glue_blocks` both, as before).
+
+Where the store precondition's preservation lives. Part 1 above said
+`eval_glue_blocks` needs `Post` strengthened with `StoreCC` preservation.
+That does not work, and neither does a field that derives it from `Post`:
+`Post` is also what the form's own computation owes, so a `Post` that says
+"a value's store is copy-contained" would make `eval_glue_blocks` prove, for
+every form, what `eval_conserves` already proves. The fact is known of an
+operand's run from outside the induction, not proved by it. So `EvalInv` has
+a third predicate, `Keep H r`: what an operand's run from `H` is known to keep
+besides the promise, which `pre` may use and which only an operand supplies
+(`EvalInv.bind`'s last argument, and the second half of `EvalInv.args`'
+`hev`). It defaults to `True`, and `bind`'s argument to `by trivial`, so the
+invariants that need nothing from outside (`LivePost.inv`, `Cons.inv`,
+`Tidy.inv`) are written as before.
+
+- Unfolding: `EvalInv.bind₀` and `EvalInv.args₀` are `bind` and `args` with
+  nothing held, so no call writes `(vs := [])`; `LivePost.inv` is `@[simp]`,
+  so its proof's refusal and trap arms read `simp [LivePost]`. `Cons.inv`
+  needs no such attribute (its proof never unfolds it by `simp`). Applied to
+  part 1's two users; neither changes length.
+- `eval_tidy` (`TraceExact`) runs through `Tidy.inv` (`φ.In H` the
+  precondition, `Tidy.prefix` the step). `Tidy.bind`, `ArgsTidy` and
+  `evalArgs_tidy` go, and so does each case's re-derivation of `φ.In` for
+  the store an operand left. Where a continuation closes a goal with
+  `Tidy.same` or `Tidy.write`, it first states the goal as a `Tidy` (`show`
+  or a type ascription, five places): unfolding `Tidy.inv`'s promise on an
+  `.ok` loses the value and trace those lemmas are stated with, and
+  elaboration cannot recover them.
+- `eval_glue_blocks` (`TraceOrder`) runs its argument lists through
+  `DropGlueBlocks.inv`: `Cons.inv`'s precondition (the store and the held
+  values copy-contained), the grammar as the promise, and `eval_conserves`'
+  ledger as `Keep`. `ArgsDropGlueBlocks` and `evalArgs_blocks` (with its
+  separate `hcc` plumbing) go, and `call` reads its arguments' copy
+  containment off the precondition instead of a second argument-list
+  lemma (`evalArgs_cons`, which `TracePrefix` still uses). Its one-operand
+  forms keep `DropGlueBlocks.bind` and `eval_ok_cc`: through the invariant
+  each would add the start's precondition and the operand's `Keep` and save
+  nothing.
+
+| Measure | Before | After | Change |
+| --- | ---: | ---: | ---: |
+| Lines, all modules | 57040 | 56947 | −93 |
+| Code lines | 37063 | 36965 | −98 |
+| Theorems | 1535 | 1534 | −1 |
+| `eval_tidy`, lines | 226 | 182 | −44 |
+| `eval_glue_blocks`, lines | 242 | 217 | −25 |
+| `Dynamics.Lemmas`: lines (code), theorems | 149 (78), 9 | 170 (92), 11 | +21 (+14), +2 |
+| `TraceExact`: lines (code), theorems | 2540 (1960), 95 | 2463 (1886), 93 | −77 (−74), −2 |
+| `TraceOrder`: lines (code), theorems | 1318 (955), 66 | 1281 (917), 65 | −37 (−38), −1 |
+| `Tombstone`, `Trace` | 1410, 2135 lines | unchanged | 0 |
+| Build CPU s: `TraceExact`, `TraceOrder` | 6.97, 3.13 | 7.01, 3.09 | noise |
+| Heartbeat floor, `eval_tidy` alone | builds at 10000, fails at 9000 | builds at 12000, fails at 11000 | +2000 |
+| Heartbeat floor, files: `TraceExact` (`eval_quiet`), `TraceOrder` (`eval_glue_blocks`), `Tombstone`, `Trace` | 13000, 5000, 10000, 10000 | unchanged | |
+| `drop_exactly_once` helpers: all, their lines, own | 365, 6065, 131 | 369, 6042, 135 | +4, −23, +4 |
+| `drop_glue_order` helpers: all, their lines | 442, 7193 | 442, 7127 | 0, −66 |
+| `whole_program_exactly_once` helpers: all, their lines | 565, 9803 | 565, 9738 | 0, −65 |
+| `set_option`, warnings | unchanged | unchanged | |
+
+Proof lines are counted from the `theorem` line to the next declaration's
+doc-comment. The section's second use pays for it: with part 1, the four
+inductions are 168 lines shorter, and the package is 108 lines (156 code
+lines) smaller net of `Dynamics.Lemmas`' growth of 113. As in part 1, the cost is
+elaboration: `eval_tidy`'s heartbeat floor rises by 2000, below
+`eval_quiet`'s, which sets `TraceExact`'s. The removed names cited above
+(`Tidy.bind` in structural 2, `evalArgs_blocks` in the clean-room
+comparison) are records of those measurements and stay.
+
+`eval_exact` (part 3): fits, but pays little. Three changes to the
+interface first: `hold` needs a guard, since `Exact` may abandon a held
+value only on a result that is neither a `return` nor a `break`; that guard
+is per operand and known from outside the induction (`eval_quiet`), so it
+is a `Keep` that also sees the held values (vacuous when nothing is held,
+which covers the lead); and `EvalInv.args`' `hev` needs the operand's
+membership in the list, since quietness comes from `Expr.quietList` over
+the arguments. What it would replace is `ArgsExact` and `evalArgs_exact`
+(about 50 lines) and the argument-list case's prefix (about 8), and not
+`rest_step`, which takes the lead's run as a `Lead` rather than as a
+continuation. Against about 15 lines of interface change and a touch to
+every instance, the net is perhaps 30 to 40 lines. Worth doing only
+together with a `Tidy` rest lemma (the scaffolding `eval_exact` and
+`eval_tidy` share, "What was not done" above).
+
+For structural 1 (RUE-2517, deferred): its parametrized simulation carries a
+per-step invariant (true for `Sim`, the lossless ledger for `MSim`, the
+conservation ledger for `LongC`), and the ledgers are facts `eval_conserves`
+and its kin prove on their own. `Keep` is the same move for `EvalInv`: a
+fact about a sub-run supplied by a separate theorem rather than re-proved in
+the induction. If the simulation takes its invariant that way, as a
+hypothesis about each sub-run, the ledger-carrying copies (`MSim`, `LongC`)
+could share both the one simulation and, for their `bind` steps, this
+section's `EvalInv`, instead of one simulation proving the ledger alongside.
