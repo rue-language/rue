@@ -104,6 +104,7 @@ pub(crate) use fact_mode::StructuredTypeSyntax;
 pub(crate) use inference_ctx::HostInferenceFacts;
 pub use inference_ctx::InferenceContext;
 pub(crate) use info::FunctionCallInfo;
+pub use typeck::shadowed_const_array_length_reason;
 pub use info::{AnonMethodSig, AnonMethodType, ConstInfo, FunctionInfo, MethodInfo};
 pub use known_symbols::KnownSymbols;
 pub(crate) use ordinary_engine::{OrdinaryBodyAnalysisHost, OrdinaryBodyEngine, validate_body_air};

@@ -1917,7 +1917,25 @@ impl rue_air::SemanticTypeSyntaxProvider<ModuleId, ModuleId, StableDefinitionKey
                         ),
                     );
                 }
-                let Some(candidate) = self.candidate(scope, name, DefinitionKind::Const)? else {
+                let candidate = self.candidate(scope, name, DefinitionKind::Const)?;
+                // A comptime type parameter is in scope across its signature
+                // (`a: N` resolves to it), so it shadows a same-named `const`
+                // there as it does in the body, and a type is not an integer
+                // constant (spec 5.1:10, 7.1:32, 7.1:33; RUE-2446, RUE-2541).
+                // The reason names the shadowing only when the `const` exists.
+                if self.substitutions.contains_key(name) {
+                    if candidate.is_none() {
+                        return Self::provider_failure(format!("unknown array length `{name}`"));
+                    }
+                    return Self::provider_domain_failure(
+                        crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
+                            rue_error::ErrorKind::InvalidArrayLength {
+                                reason: rue_air::shadowed_const_array_length_reason(name),
+                            },
+                        ),
+                    );
+                }
+                let Some(candidate) = candidate else {
                     return Self::provider_failure(format!("unknown array length `{name}`"));
                 };
                 let resolution = self.const_resolution(candidate)?;
