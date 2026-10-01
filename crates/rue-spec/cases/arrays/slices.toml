@@ -222,6 +222,26 @@ fn f(e: E(1)) -> i32 { 0 }
 fn main() -> i32 { 0 }
 """
 
+[[case]]
+name = "slice_body_anonymous_struct_field_rejected"
+spec = ["7.2:5"]
+description = "An anonymous struct written in a function body cannot have a slice field either (RUE-2553)"
+compile_fail = true
+error_contains = ["E0488"]
+source = """
+fn main() -> i32 { let T = struct { b: [i64] }; 0 }
+"""
+
+[[case]]
+name = "slice_body_anonymous_enum_payload_rejected"
+spec = ["7.2:5"]
+description = "An anonymous enum written in a function body cannot have a slice payload either (RUE-2553)"
+compile_fail = true
+error_contains = ["E0488"]
+source = """
+fn main() -> i32 { let T = enum { A([i64]), B }; 0 }
+"""
+
 # `let` binding (E0489).
 [[case]]
 name = "slice_let_binding_rejected"

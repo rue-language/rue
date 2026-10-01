@@ -501,6 +501,15 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                             inst.span,
                         ));
                     }
+                    // A slice is a view, so no field can store one (7.2:5),
+                    // as for a named struct or a constructor-built one
+                    // (RUE-2553).
+                    if self.type_contains_slice(field_ty) {
+                        return Err(CompileError::new(
+                            ErrorKind::SliceInAggregateField,
+                            inst.span,
+                        ));
+                    }
                     struct_fields.push(StructField {
                         name: name_str,
                         ty: field_ty,
@@ -693,6 +702,14 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                                 ErrorKind::FnTypeOutsideParameter {
                                     position: "an enum payload".to_owned(),
                                 },
+                                inst.span,
+                            ));
+                        }
+                        // No payload can store a slice either (7.2:5,
+                        // RUE-2553).
+                        if self.type_contains_slice(field_ty) {
+                            return Err(CompileError::new(
+                                ErrorKind::SliceInAggregateField,
                                 inst.span,
                             ));
                         }
