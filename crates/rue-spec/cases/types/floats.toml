@@ -553,6 +553,30 @@ expected_stdout = """
 exit_code = 0
 
 [[case]]
+name = "integer_literal_is_accepted_in_a_float_accessor_place"
+spec = ["3.12:11"]
+description = "An integer literal assigned through an `inout f64` accessor place denotes a float, as for the field it yields (RUE-2560)"
+source = """
+struct P {
+    f: f64,
+
+    fn fr(inout self) -> inout f64 {
+        yield self.f;
+    }
+}
+fn main() -> i32 {
+    let mut p = P { f: 1.5 };
+    p.fr() = 2;
+    @dbg(p.f + 0.5);
+    0
+}
+"""
+expected_stdout = """
+2.5
+"""
+exit_code = 0
+
+[[case]]
 name = "float_literal_is_never_given_an_integer_type"
 spec = ["3.12:11"]
 description = "The converse coercion does not exist, even for an integral value"
