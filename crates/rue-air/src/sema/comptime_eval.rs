@@ -2443,11 +2443,17 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     // will resolve it again; an annotation that does not
                     // resolve here is left for that pass to report.
                     let span = self.body_rir_ref().get(inst_ref).span;
+                    // A runtime binding in scope shadows a same-named
+                    // `const` in a length, as semantic analysis will hold
+                    // it (RUE-2446); such an annotation gives no hint.
+                    let shadowing = self
+                        .names_in_type_syntax(annotation, |name| runtime_bindings.contains(&name));
                     if let Some(resolved) = self
-                        .resolve_rir_type_for_comptime_with_subst_and_values_at_span(
+                        .resolve_rir_type_under_runtime_bindings(
                             annotation,
                             eval_types,
                             eval_values,
+                            shadowing.as_ref(),
                             span,
                         )
                         // A callback cannot annotate a local. Leave it to the
@@ -2914,14 +2920,37 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeTypeAlgebra for OrdinaryBodyEngine
         name: &Spur,
         site: &ComptimeDiagnosticSite<Self::ProgramKey>,
         values: Option<&AHashMap<Spur, ConstValue>>,
-        _binding: ComptimeArrayLengthBinding<ConstValue>,
+        binding: ComptimeArrayLengthBinding<ConstValue>,
     ) -> ComptimeOutcome<u64, Self::Failure> {
+        // The engine has classified the name by the lexical scope; only an
+        // unbound name may reach the substitutions and the module-level
+        // `const`s (spec 7.1:32, RUE-2446). A lexical value is converted by
+        // the same resolver, as the one substitution in scope.
+        let symbol = *name;
+        let local;
+        let (values, runtime_bindings) = match binding {
+            ComptimeArrayLengthBinding::Unbound => (values, None),
+            ComptimeArrayLengthBinding::LocalValue(value) => {
+                local = AHashMap::from_iter([(symbol, value)]);
+                (Some(&local), None)
+            }
+            ComptimeArrayLengthBinding::RuntimeDependent => {
+                return ComptimeOutcome::RuntimeDependent;
+            }
+            ComptimeArrayLengthBinding::Shadowed => (None, Some(AHashSet::from_iter([symbol]))),
+        };
         let name = self.body_interner().resolve(name).to_owned();
-        OrdinaryBodyEngine::resolve_array_length(self, &ArrayLen::Named(name), site.span(), values)
-            .map_or_else(
-                |error| ComptimeOutcome::HostFailure(error),
-                ComptimeOutcome::Known,
-            )
+        OrdinaryBodyEngine::resolve_array_length(
+            self,
+            &ArrayLen::Named(name),
+            site.span(),
+            values,
+            runtime_bindings.as_ref(),
+        )
+        .map_or_else(
+            |error| ComptimeOutcome::HostFailure(error),
+            ComptimeOutcome::Known,
+        )
     }
     fn rir_type_named_symbol(
         &self,

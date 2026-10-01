@@ -256,6 +256,10 @@ mod type_syntax_provider_trace_tests {
             panic!("the no-substitution path must not intern a symbol")
         }
 
+        fn type_syntax_symbol_text(&self, _symbol: Spur) -> String {
+            panic!("unused test host hook")
+        }
+
         fn type_syntax_module_binding(
             &mut self,
             _authority: TypeRootAuthority,
@@ -4312,6 +4316,10 @@ where
         self.state.symbol_space().try_intern(name).expect(
             "type-syntax symbol interning must succeed before this infallible legacy boundary",
         )
+    }
+
+    fn type_syntax_symbol_text(&self, symbol: Spur) -> String {
+        self.interner.resolve(&symbol).to_owned()
     }
 
     fn type_syntax_module_binding(

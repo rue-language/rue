@@ -50,6 +50,8 @@ pub(crate) fn is_builtin_type_constructor(name: &str) -> bool {
 /// analysis state: callers provide the host that owns the current facts.
 pub(super) trait TypeSyntaxHost {
     fn type_syntax_symbol(&mut self, name: &str) -> Spur;
+    /// The source spelling of a type-syntax symbol, for a diagnostic.
+    fn type_syntax_symbol_text(&self, symbol: Spur) -> String;
     fn type_syntax_module_binding(
         &mut self,
         authority: TypeRootAuthority,
@@ -146,11 +148,13 @@ pub(super) struct TypeSyntaxProviderState {
     resolution_context: SemaTypeResolutionContext,
     type_substitutions: Option<AHashMap<Spur, Type>>,
     value_substitutions: Option<AHashMap<Spur, ConstValue>>,
-    /// Names bound at the resolution site to a runtime value: a body local or
-    /// a runtime parameter. Such a binding shadows every same-named `const`
-    /// and outer comptime value (spec 5.1:10), so a value position naming it
-    /// (an array length, a type-constructor value argument) is not a
-    /// compile-time constant (7.1:37, RUE-2446). Empty outside a body.
+    /// Names bound at the resolution site to something that is not a
+    /// compile-time integer: a body local or a runtime parameter, or a
+    /// binding the comptime engine has classified as shadowing. Such a
+    /// binding shadows every same-named `const` and outer comptime value
+    /// (spec 5.1:10, 7.1:32), so a value position naming it (an array length,
+    /// a type-constructor value argument) is not a compile-time constant
+    /// (7.1:33, RUE-2446). Empty outside a body.
     runtime_bindings: AHashSet<Spur>,
     // Preserve observation order for the host while using a lazy membership
     // index once a resolution grows beyond the allocation-free small case.
@@ -618,14 +622,34 @@ impl<H: TypeSyntaxHost>
         &mut self,
         scope: &FileId,
         constructor: &str,
-        _head: &crate::SemanticTypeConstructorHead<Spur, Spur, FileId>,
-        _parameter_index: usize,
+        head: &crate::SemanticTypeConstructorHead<Spur, Spur, FileId>,
+        parameter_index: usize,
         _type_arguments: &[(Spur, Type)],
         _value_arguments: &[(Spur, ConstValue)],
         syntax: crate::SemanticValueSyntax<'_>,
     ) -> SemaProviderResult<ConstValue> {
         if let crate::SemanticValueSyntax::Integer(value) = syntax {
             return Ok(ConstValue::Integer(value));
+        }
+        // A runtime binding in scope shadows a same-named `const` and is not
+        // compile-time known: the argument of a comptime parameter, the same
+        // E1201 the expression form `Buf(n) { .. }` reports (spec 4.14:22,
+        // 4.14:26, RUE-2446). In an array length it is the length's own
+        // diagnostic, below.
+        if let crate::SemanticValueSyntax::Name(text) = syntax
+            && self.state.resolution_context != SemaTypeResolutionContext::ArrayLength
+        {
+            let symbol = self.host.type_syntax_symbol(text);
+            if self.state.runtime_bindings.contains(&symbol) {
+                let param_name = head.parameters.get(parameter_index).map_or_else(
+                    || text.to_owned(),
+                    |parameter| self.host.type_syntax_symbol_text(parameter.name),
+                );
+                return provider_failure(Err(CompileError::new(
+                    ErrorKind::ComptimeArgNotConst { param_name },
+                    self.state.span,
+                )));
+            }
         }
         match self.resolve_value_argument_fact(*scope, constructor, syntax) {
             Ok(value) => Ok(value),
@@ -766,22 +790,18 @@ impl<'s, 'c, H: TypeSyntaxHost> TypeSyntaxProvider<'s, 'c, H> {
         let symbol = self.host.type_syntax_symbol(name);
         let root_file = self.state.root_authority.file();
         // The name binds lexically before it binds to a module-level `const`
-        // (spec 5.1:10): a runtime local or parameter, a comptime type
-        // parameter or a type alias in scope shadows the `const`, and none of
-        // them is an integer constant (7.1:37, RUE-2446).
-        if self.state.runtime_bindings.contains(&symbol) {
-            return Err(self.invalid_array_length(format!(
-                "'{name}' is a runtime value, not a compile-time constant; array lengths must be an integer literal, a `const`, or a `comptime` value parameter"
-            )));
-        }
-        if self
-            .state
-            .type_substitutions
-            .as_ref()
-            .is_some_and(|substitutions| substitutions.contains_key(&symbol))
+        // (spec 5.1:10, 7.1:32): a runtime local or parameter, a comptime
+        // type parameter or a type alias in scope shadows the `const`, and
+        // none of them is an integer constant (7.1:33, RUE-2446).
+        if self.state.runtime_bindings.contains(&symbol)
+            || self
+                .state
+                .type_substitutions
+                .as_ref()
+                .is_some_and(|substitutions| substitutions.contains_key(&symbol))
         {
             return Err(self.invalid_array_length(format!(
-                "'{name}' names a type, not a compile-time integer constant; array lengths must be an integer literal, a `const`, or a `comptime` value parameter"
+                "'{name}' is not a compile-time integer constant here: a binding of that name in scope shadows any `const`; array lengths must be an integer literal, a `const`, or a `comptime` value parameter"
             )));
         }
         let value = if let Some(value) = self
@@ -867,14 +887,9 @@ impl<'s, 'c, H: TypeSyntaxHost> TypeSyntaxProvider<'s, 'c, H> {
         }
         let symbol = self.host.type_syntax_symbol(text);
         if self.state.runtime_bindings.contains(&symbol) {
-            return Err(CompileError::new(
-                ErrorKind::ComptimeEvaluationFailed {
-                    reason: format!(
-                        "argument '{text}' of type constructor '{constructor}' is a runtime value; it must be a compile-time known value (an integer or bool literal, a comptime parameter, or a constant)"
-                    ),
-                },
-                self.state.span,
-            ));
+            return Err(self.invalid_array_length(format!(
+                "'{text}' is not a compile-time integer constant here: a binding of that name in scope shadows any `const`"
+            )));
         }
         if let Some(value_substitutions) = &self.state.value_substitutions
             && let Some(value) = value_substitutions.get(&symbol)

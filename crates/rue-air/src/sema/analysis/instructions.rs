@@ -485,19 +485,12 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         std::borrow::Cow::Borrowed(field_type_subst.as_ref()),
                         ctx,
                     );
-                    let field_ty = self
-                        .resolve_rir_type_for_comptime_with_subst_and_values_at_span(
-                            type_sym,
-                            field_subst.as_ref(),
-                            &ctx.comptime_value_vars,
-                            inst.span,
-                        )
-                        .ok_or_else(|| {
-                            CompileError::new(
-                                ErrorKind::UnknownType(self.render_rir_type(type_sym)),
-                                inst.span,
-                            )
-                        })?;
+                    let field_ty = self.resolve_body_declaration_type(
+                        type_sym,
+                        field_subst.as_ref(),
+                        inst.span,
+                        ctx,
+                    )?;
                     // A callback is second-class (ADR-0096, 6.1:47): no
                     // field can hold one.
                     if field_ty.is_function() {
@@ -676,19 +669,12 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                             std::borrow::Cow::Borrowed(&ctx.comptime_type_vars),
                             ctx,
                         );
-                        let field_ty = self
-                            .resolve_rir_type_for_comptime_with_subst_and_values_at_span(
-                                ty_sym,
-                                payload_subst.as_ref(),
-                                &ctx.comptime_value_vars,
-                                inst.span,
-                            )
-                            .ok_or_else(|| {
-                                CompileError::new(
-                                    ErrorKind::UnknownType(self.render_rir_type(ty_sym)),
-                                    inst.span,
-                                )
-                            })?;
+                        let field_ty = self.resolve_body_declaration_type(
+                            ty_sym,
+                            payload_subst.as_ref(),
+                            inst.span,
+                            ctx,
+                        )?;
                         // A payload of type `type` cannot exist at runtime
                         // (spec 4.14:6); reject it like struct fields / enum
                         // declarations do.
