@@ -3549,7 +3549,9 @@ pub(in crate::revisioned_query_database) fn resolve_parsed_semantic_signature(
                 })
                 .collect::<Result<Vec<_>, ResolveSemanticSignatureError>>()?;
             if fields.iter().any(|(_, ty)| contains_slice(ty)) {
-                return Err(diagnostic(rue_error::ErrorKind::SliceInAggregateField));
+                return Err(diagnostic(rue_error::ErrorKind::SliceInAggregateField {
+                    position: "a struct field".to_owned(),
+                }));
             }
             for (_, ty) in &fields {
                 fn_type_position(ty, "a struct field")?;
@@ -3805,7 +3807,9 @@ pub(in crate::revisioned_query_database) fn resolve_parsed_semantic_signature(
                 .flat_map(|(_, payload)| payload.iter())
                 .any(contains_slice)
             {
-                return Err(diagnostic(rue_error::ErrorKind::SliceInAggregateField));
+                return Err(diagnostic(rue_error::ErrorKind::SliceInAggregateField {
+                    position: "an enum payload".to_owned(),
+                }));
             }
             for ty in variants.iter().flat_map(|(_, payload)| payload.iter()) {
                 fn_type_position(ty, "an enum payload")?;

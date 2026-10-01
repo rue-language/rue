@@ -1616,9 +1616,10 @@ fn main() {}", outcome: ErrorCodeExampleOutcome::EmitsThisCode, preview: ["inter
         ],
         references: [ErrorCodeReference { title: "Slices cannot be returned", path: "docs/spec/src/07-arrays/02-slices.md", rule: Some("7.2:4") }],
     };
-    /// A slice type `[T]` was written as a struct field type. A slice is
-    /// second-class (ADR-0037, ADR-0043, RUE-322) and cannot be stored in an
-    /// aggregate — storing it would let the view escape its borrow's scope.
+    /// A slice type `[T]` was written as a struct field or enum payload type.
+    /// A slice is second-class (ADR-0037, ADR-0043, RUE-322) and cannot be
+    /// stored in an aggregate — storing it would let the view escape its
+    /// borrow's scope.
     SLICE_IN_AGGREGATE_FIELD = 488 => {
         explanation: "A slice `[T]` is a second-class view whose lifetime is limited to a function call. Storing one in a struct field or enum payload would turn that temporary view into aggregate state and could let it escape the storage it borrows.",
         likely_cause: "A struct field or enum payload was declared with slice type `[T]`. Store an owning fixed array `[T; N]` or another owning container, and accept a slice only at the function boundary where it is used.",
@@ -4345,13 +4346,15 @@ pub enum ErrorKind {
     )]
     SliceReturnNotAllowed,
 
-    /// A slice type `[T]` appeared as a struct field type — forbidden because
-    /// a slice is second-class (ADR-0037, ADR-0043, RUE-322).
+    /// A slice type `[T]` appeared as a struct field or enum payload type —
+    /// forbidden because a slice is second-class (ADR-0037, ADR-0043,
+    /// RUE-322). `position` names the member, "a struct field" or "an enum
+    /// payload", as [`Self::FnTypeOutsideParameter`] does.
     #[error(
-        "a slice type `[T]` cannot be stored in a struct field: slices are \
+        "a slice type `[T]` cannot be stored in {position}: slices are \
          second-class views valid only in argument position (ADR-0043)"
     )]
-    SliceInAggregateField,
+    SliceInAggregateField { position: String },
 
     /// A slice type `[T]` appeared in a `let` or `const` binding — forbidden
     /// because a slice is second-class (ADR-0037, ADR-0043, RUE-322).
@@ -4708,7 +4711,7 @@ impl ErrorKind {
             }
             ErrorKind::ReprCStructIneligible(_) => ErrorCode::REPR_C_STRUCT_INELIGIBLE,
             ErrorKind::SliceReturnNotAllowed => ErrorCode::SLICE_RETURN_NOT_ALLOWED,
-            ErrorKind::SliceInAggregateField => ErrorCode::SLICE_IN_AGGREGATE_FIELD,
+            ErrorKind::SliceInAggregateField { .. } => ErrorCode::SLICE_IN_AGGREGATE_FIELD,
             ErrorKind::SliceEscapesScope => ErrorCode::SLICE_ESCAPES_SCOPE,
             ErrorKind::FnTypeOutsideParameter { .. } => ErrorCode::FN_TYPE_OUTSIDE_PARAMETER,
             ErrorKind::CallbackSignatureMismatch(_) => ErrorCode::CALLBACK_SIGNATURE_MISMATCH,
@@ -6654,7 +6657,10 @@ mod tests {
             ErrorCode::SLICE_RETURN_NOT_ALLOWED
         );
         assert_eq!(
-            ErrorKind::SliceInAggregateField.code(),
+            ErrorKind::SliceInAggregateField {
+                position: "a struct field".to_owned()
+            }
+            .code(),
             ErrorCode::SLICE_IN_AGGREGATE_FIELD
         );
         assert_eq!(

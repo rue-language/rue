@@ -1796,9 +1796,10 @@ impl RetainedCharge for rue_error::ErrorKind {
             | E::ExternVariadicUnsupported
             | E::ForeignEntryPointDeclaration
             | E::SliceReturnNotAllowed
-            | E::SliceInAggregateField
             | E::SliceEscapesScope => 0,
-            E::FnTypeOutsideParameter { position } => position.retained_charge(),
+            E::SliceInAggregateField { position } | E::FnTypeOutsideParameter { position } => {
+                position.retained_charge()
+            }
             E::CallbackSignatureMismatch(value) => (std::mem::size_of_val(value.as_ref()) as u64)
                 .saturating_add(value.function.retained_charge())
                 .saturating_add(value.expected.retained_charge())

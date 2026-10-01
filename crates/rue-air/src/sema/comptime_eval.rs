@@ -4171,7 +4171,13 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeRejections for OrdinaryBodyEngine<
         site: &ComptimeDiagnosticSite<Self::ProgramKey>,
     ) -> ComptimeHostResult<(), Self::Failure> {
         if self.type_contains_slice(*ty) {
-            return Err(CompileError::new(ErrorKind::SliceInAggregateField, site.span()).into());
+            return Err(CompileError::new(
+                ErrorKind::SliceInAggregateField {
+                    position: position.to_owned(),
+                },
+                site.span(),
+            )
+            .into());
         }
         if ty.is_function() {
             return Err(CompileError::new(

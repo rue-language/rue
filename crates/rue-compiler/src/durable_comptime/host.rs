@@ -2815,7 +2815,9 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeRejections
             return Err(rue_air::ComptimeHostError::HostFailure(
                 durable_diagnostic_failure(
                     &self.diagnostic_site(site),
-                    rue_error::ErrorKind::SliceInAggregateField,
+                    rue_error::ErrorKind::SliceInAggregateField {
+                        position: position.to_owned(),
+                    },
                 ),
             ));
         }
