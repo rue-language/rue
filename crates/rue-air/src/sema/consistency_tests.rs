@@ -649,6 +649,7 @@ mod tests {
         let layout_methods = [
             "require_layout_slots",
             "reserve_frame_slots",
+            "reserve_local_frame_slots",
             "require_frame_slots_fit",
             "checked_abi_slot_count",
             "abi_slot_count",
@@ -704,9 +705,15 @@ mod tests {
         let reserve = method_item(engine_owner, "reserve_frame_slots");
         assert!(reserve.contains("crate::layout::checked_function_frame_slots(start, additional)"));
 
+        // RUE-2453: a local or temporary region is at least one slot wide, so
+        // no zero-width declaration shares its slot number with the next one
+        // or with a CFG temporary numbered from `num_locals`.
+        let local = method_item(engine_owner, "reserve_local_frame_slots");
+        assert!(local.contains("self.reserve_frame_slots(current, layout_slots.max(1), span)"));
+
         let probe = method_item(engine_owner, "require_frame_slots_fit");
         assert!(
-            probe.contains("self.reserve_frame_slots(&mut probe, additional, span)"),
+            probe.contains("self.reserve_local_frame_slots(&mut probe, additional, span)"),
             "the non-consuming frame probe asks the reserving path, not a second budget rule"
         );
 
@@ -770,7 +777,10 @@ mod tests {
             (
                 "ownership.rs",
                 OWNERSHIP_SOURCE,
-                &["self.require_layout_slots(", "self.reserve_frame_slots("][..],
+                &[
+                    "self.require_layout_slots(",
+                    "self.reserve_local_frame_slots(",
+                ][..],
             ),
         ] {
             for anchor in anchors {

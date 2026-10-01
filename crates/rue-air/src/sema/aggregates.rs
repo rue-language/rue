@@ -2264,7 +2264,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // The single-object limit above admits layouts the *function frame*
         // cannot hold — either on their own (it is one slot looser) or once
         // earlier locals have spent part of the budget. Such a repeat is
-        // rejected by the binding's or temporary's `reserve_frame_slots`, but
+        // rejected by the binding's or temporary's `reserve_local_frame_slots`, but
         // only after the whole initializer has been analyzed, and the answer
         // depends on nothing but the layout (RUE-2059). Ask the frame budget
         // here so an unrepresentable repeat is diagnosed at the literal

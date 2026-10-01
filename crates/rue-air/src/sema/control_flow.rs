@@ -4556,7 +4556,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             _ => None,
         };
         if let Some((name, is_mut)) = failed_binding {
-            let slot = self.reserve_frame_slots(&mut ctx.next_slot, 1, span)?;
+            let slot = self.reserve_local_frame_slots(&mut ctx.next_slot, 1, span)?;
             ctx.poison_failed_binding(name, slot, is_mut, span);
         }
         let air_ref = air.add_inst(AirInst {

@@ -1160,8 +1160,30 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         Ok(start)
     }
 
-    /// Ask the frame budget the same question [`Self::reserve_frame_slots`]
-    /// answers, without consuming any of it.
+    /// Reserve the frame region of one local binding or temporary, of a type
+    /// whose layout is `layout_slots` wide.
+    ///
+    /// A zero-width value (`()`, an empty struct, `[T; 0]`) still takes one
+    /// slot. A slot number is the identity every later stage gives a local:
+    /// AIR's moves and drops, the CFG builder's moved-state and drop flags,
+    /// the verifier's owner roots, and the CFG's own temporaries, which it
+    /// numbers from `num_locals`. A zero-width region that did not advance
+    /// the watermark shared its number with the next declaration or flag,
+    /// and the destructor of one was then guarded, skipped, or proved by the
+    /// other's state (RUE-2453). Parameters do not come through here: their
+    /// slots are the calling convention's.
+    pub(crate) fn reserve_local_frame_slots(
+        &self,
+        current: &mut u32,
+        layout_slots: u32,
+        span: Span,
+    ) -> CompileResult<u32> {
+        self.reserve_frame_slots(current, layout_slots.max(1), span)
+    }
+
+    /// Ask the frame budget the same question
+    /// [`Self::reserve_local_frame_slots`] answers, without consuming any of
+    /// it.
     ///
     /// A value whose per-element representation is expensive to build — an
     /// array-repeat literal expands one element reference per element — must
@@ -1178,7 +1200,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         span: Span,
     ) -> CompileResult<()> {
         let mut probe = current;
-        self.reserve_frame_slots(&mut probe, additional, span)?;
+        self.reserve_local_frame_slots(&mut probe, additional, span)?;
         Ok(())
     }
 
