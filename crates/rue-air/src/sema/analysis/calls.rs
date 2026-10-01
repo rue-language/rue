@@ -1539,7 +1539,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         {
             match receiver_mode {
                 AirArgMode::Inout => self.record_completed_exclusive_use(root, span, ctx)?,
-                AirArgMode::Borrow => self.record_completed_shared_use(root, span, ctx)?,
+                AirArgMode::Borrow => self.record_completed_shared_use(root, span, ctx),
                 AirArgMode::Normal => {}
             }
         }
