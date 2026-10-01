@@ -106,7 +106,7 @@ pub use inference_ctx::InferenceContext;
 pub(crate) use info::FunctionCallInfo;
 pub use info::{AnonMethodSig, AnonMethodType, ConstInfo, FunctionInfo, MethodInfo};
 pub use known_symbols::KnownSymbols;
-pub(crate) use ordinary_engine::{OrdinaryBodyAnalysisHost, OrdinaryBodyEngine};
+pub(crate) use ordinary_engine::{OrdinaryBodyAnalysisHost, OrdinaryBodyEngine, validate_body_air};
 pub use output::{
     AnalyzedBodyOwnerEvent, AnalyzedCallableKind, AnalyzedFunction, BodyAnalysisWork,
     BodyNamedDependencyEvent, BodyOwnerEndpoint, BodyOwnerKind, BodyOwnerToken,
