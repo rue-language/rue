@@ -228,21 +228,31 @@ impl<'a, A: DurableComptimeHostAuthority + ?Sized> DurableComptimeHost<'a, A> {
         // An untyped literal that cannot take the slot's type at all is the
         // found side, as the body path's inference and the scalar
         // `const X: bool = 1;` report it: `S { s: 1 }` at an `S` field is
-        // "expected S, found {integer}", and a float literal there
-        // "expected S, found comptime_float".
+        // "expected S, found {integer}", a float literal there
+        // "expected S, found comptime_float", and a string literal at a
+        // scalar slot (`[true, "x"]` at `[bool; 2]`) "expected bool, found
+        // str", the literal's own type (3.7:44).
         if let EvaluatedSemanticConst::Value(typed) = value {
+            let float_slot = matches!(slot, DurableType::F32 | DurableType::F64);
             let literal = match (&typed.value, typed.ty.as_ref()) {
-                (DurableConstValue::Integer(_), None) if durable_int_width(slot).is_none() => {
+                (DurableConstValue::Integer(_), None)
+                    if durable_int_width(slot).is_none() && !float_slot =>
+                {
                     Some("{integer}")
                 }
-                (DurableConstValue::Float(_), Some(DurableType::ComptimeFloat)) => {
+                (DurableConstValue::Float(_), Some(DurableType::ComptimeFloat)) if !float_slot => {
                     Some("comptime_float")
+                }
+                (DurableConstValue::String(_), None)
+                    if float_slot
+                        || durable_int_width(slot).is_some()
+                        || matches!(slot, DurableType::Bool | DurableType::Unit) =>
+                {
+                    Some("str")
                 }
                 _ => None,
             };
-            if let Some(literal) = literal
-                && !matches!(slot, DurableType::F32 | DurableType::F64)
-            {
+            if let Some(literal) = literal {
                 return Err(reject(rue_error::ErrorKind::TypeMismatch {
                     expected: durable_type_diagnostic_name(slot),
                     found: literal.to_owned(),
