@@ -2013,9 +2013,9 @@ const REGISTRATION_LEAF_ONE_SHOT_IDENTITIES: [(usize, u64); 45] = [
 // identity even when constructor, caller, and macro token counts do not.
 const CONSTRUCTION_TOKEN_STRUCT_IDENTITY: (usize, u64) = (80, 5_227_448_979_315_228_973);
 const CONSTRUCTION_TOKEN_IMPL_IDENTITY: (usize, u64) = (108, 2_765_439_612_714_245_239);
-const COMPILER_CRATE_ROOT_IDENTITY: (usize, u64) = (10_084, 400_969_205_809_575_846);
+const COMPILER_CRATE_ROOT_IDENTITY: (usize, u64) = (10_125, 17_967_700_840_834_237_860);
 const COMPILER_CRATE_ROOT_NAMESPACE_IDENTITY: (usize, u64, usize, u64) =
-    (121, 234_921_069_437_035_552, 242, 9_104_952_074_227_694_464);
+    (122, 9_184_131_412_289_304_411, 243, 470_314_738_603_344_811);
 const COMPILER_SESSION_ROOT_IDENTITY: (usize, u64) = (4_144, 8_851_562_517_716_222_536);
 const COMPILER_SESSION_CONSTRUCTOR_IDENTITY: (usize, u64) = (102, 5_219_454_448_646_406_172);
 const CONFIGURED_SESSION_CONSTRUCTOR_IDENTITY: (usize, u64) = (1_539, 17_319_142_551_454_732_417);
@@ -4507,7 +4507,7 @@ pub(super) use register_parse_import_parse;"#;
     ));
     let nested_module_owners = module_owner_inventory(&compiler_module_sources);
     let nested_module_fingerprint = source_inventory_fingerprint(&nested_module_owners);
-    let expected_nested_module_identity = (167, 14_364_698_622_758_807_323);
+    let expected_nested_module_identity = (168, 11_653_790_772_386_785_780);
     assert_eq!(
         (nested_module_owners.len(), nested_module_fingerprint),
         expected_nested_module_identity,
@@ -7149,6 +7149,7 @@ fn facade_stays_small_and_session_centered() {
             "assert_comparison_tests",
             "drop_flag_guard_mutation_tests",
             "integration_tests",
+            "operand_backstop_tests",
             "pipeline_tests",
             "producer_nominal_acceptance_tests",
             "retained_charge",

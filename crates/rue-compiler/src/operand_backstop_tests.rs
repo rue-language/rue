@@ -23,11 +23,39 @@
 //! control that compiles with the fact withheld, so the tests cannot pass by
 //! rejecting everything.
 
-use crate::revisioned_query_database::with_inline_import_head_fact_withheld;
 use crate::*;
+use std::cell::Cell;
 use std::sync::Arc;
 
 use ahash::{AHashMap, AHashSet};
+
+thread_local! {
+    static INLINE_IMPORT_HEAD_FACT_WITHHELD: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Whether body analysis on this thread withholds the inline-`@import`
+/// constructor-head fact. The compiler's durable body source answers
+/// `DurableBodyLookupSource::withholds_inline_import_head_fact` from this,
+/// and only under `#[cfg(test)]`; every other build keeps the `false`
+/// default, so nothing outside this test binary can set it.
+pub(crate) fn inline_import_head_fact_withheld() -> bool {
+    INLINE_IMPORT_HEAD_FACT_WITHHELD.with(Cell::get)
+}
+
+/// Run `action` with the fact withheld on this thread, restoring the previous
+/// setting however `action` ends. Body analysis runs on the requesting
+/// thread, so the setting reaches it and no other test.
+fn with_inline_import_head_fact_withheld<R>(action: impl FnOnce() -> R) -> R {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            INLINE_IMPORT_HEAD_FACT_WITHHELD.with(|withheld| withheld.set(self.0));
+        }
+    }
+    let _restore =
+        Restore(INLINE_IMPORT_HEAD_FACT_WITHHELD.with(|withheld| withheld.replace(true)));
+    action()
+}
 
 const ROOT_FILE: FileId = FileId::new(1);
 const LIB_FILE: FileId = FileId::new(2);
