@@ -4505,9 +4505,7 @@ impl ErrorKind {
             ErrorKind::UndefinedFunction(_) => ErrorCode::UNDEFINED_FUNCTION,
             ErrorKind::AssignToImmutable(_)
             | ErrorKind::InoutArgOfImmutable { .. }
-            | ErrorKind::InoutSelfOfImmutable { .. } => {
-                ErrorCode::ASSIGN_TO_IMMUTABLE
-            }
+            | ErrorKind::InoutSelfOfImmutable { .. } => ErrorCode::ASSIGN_TO_IMMUTABLE,
             ErrorKind::UnknownType(_) => ErrorCode::UNKNOWN_TYPE,
             ErrorKind::InvalidArrayLength { .. } => ErrorCode::INVALID_ARRAY_LENGTH,
             ErrorKind::UseAfterMove(_) => ErrorCode::USE_AFTER_MOVE,
