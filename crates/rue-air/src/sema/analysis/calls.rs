@@ -1530,11 +1530,18 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             receiver_continues && args_result.continues,
             return_type,
         );
+        // A by-ref receiver on a plain root is a completed use of that root
+        // for the rest of the full expression (spec 6.6:10): exclusive for
+        // `inout self`, shared for `borrow self`. A receiver reached through
+        // an accessor result has no plain root and uses that result's loan.
         if call.continues
-            && receiver_mode == AirArgMode::Inout
             && let Some(root) = self.extract_root_variable(receiver)
         {
-            self.record_completed_exclusive_use(root, span, ctx)?;
+            match receiver_mode {
+                AirArgMode::Inout => self.record_completed_exclusive_use(root, span, ctx)?,
+                AirArgMode::Borrow => self.record_completed_shared_use(root, span, ctx)?,
+                AirArgMode::Normal => {}
+            }
         }
         if !call.continues {
             ctx.ownership
