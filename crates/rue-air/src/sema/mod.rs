@@ -104,7 +104,6 @@ pub(crate) use fact_mode::StructuredTypeSyntax;
 pub(crate) use inference_ctx::HostInferenceFacts;
 pub use inference_ctx::InferenceContext;
 pub(crate) use info::FunctionCallInfo;
-pub use typeck::shadowed_const_array_length_reason;
 pub use info::{AnonMethodSig, AnonMethodType, ConstInfo, FunctionInfo, MethodInfo};
 pub use known_symbols::KnownSymbols;
 pub(crate) use ordinary_engine::{OrdinaryBodyAnalysisHost, OrdinaryBodyEngine, validate_body_air};
@@ -125,6 +124,7 @@ pub use provider::{
     ProviderDefinitionKind, ProviderNamespace,
 };
 pub(crate) use semantic_body_export::SemanticBodyExportHost;
+pub use typeck::shadowed_const_array_length_reason;
 // The spec 3.12:10 float-literal rule, shared with the durable host.
 pub use analyze_ops::finite_float_literal;
 // RUE-1091 slice r4b-1 provider surface: the durable source vocabulary the
