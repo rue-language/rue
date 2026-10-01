@@ -1816,6 +1816,68 @@ mod tests {
         );
     }
 
+    /// An integer-literal class joined with a float-literal class is judged
+    /// after solving: left unresolved it is reported at the joining
+    /// constraint, in its direction; resolved by a float context it is
+    /// accepted (RUE-2573).
+    #[test]
+    fn unresolved_integer_float_literal_join_is_reported_in_constraint_direction() {
+        let int = TypeVarId::new(0);
+        let float = TypeVarId::new(1);
+        let join = |found: TypeVarId, expected: TypeVarId| {
+            let mut unifier = Unifier::new();
+            unifier.mark_int_literal_vars(&[int]);
+            unifier.mark_float_literal_vars(&[float]);
+            let errors = unifier.solve_constraints(&[Constraint::equal(
+                InferType::Var(found),
+                InferType::Var(expected),
+                Span::new(3, 4),
+            )]);
+            assert!(errors.is_empty());
+            unifier.unresolved_literal_joins()
+        };
+
+        let float_found = join(float, int);
+        assert_eq!(float_found.len(), 1);
+        assert_eq!(float_found[0].span, Span::new(3, 4));
+        assert_eq!(
+            float_found[0].kind,
+            UnifyResult::IntLiteralNonInteger {
+                found: InferType::Concrete(Type::COMPTIME_FLOAT),
+            }
+        );
+
+        let int_found = join(int, float);
+        assert_eq!(int_found.len(), 1);
+        assert_eq!(
+            int_found[0].kind,
+            UnifyResult::TypeMismatch {
+                expected: InferType::Concrete(Type::COMPTIME_FLOAT),
+                found: InferType::IntLiteral,
+            }
+        );
+    }
+
+    #[test]
+    fn integer_float_literal_join_resolved_by_a_float_context_is_accepted() {
+        let int = TypeVarId::new(0);
+        let float = TypeVarId::new(1);
+        let mut unifier = Unifier::new();
+        unifier.mark_int_literal_vars(&[int]);
+        unifier.mark_float_literal_vars(&[float]);
+        let errors = unifier.solve_constraints(&[
+            Constraint::equal(InferType::Var(float), InferType::Var(int), Span::new(0, 1)),
+            Constraint::contextual(
+                InferType::Var(int),
+                InferType::Concrete(Type::F64),
+                Span::new(1, 2),
+            ),
+        ]);
+        assert!(errors.is_empty());
+        assert!(unifier.unresolved_literal_joins().is_empty());
+        assert_eq!(unifier.resolve(&InferType::Var(float)), Some(Type::F64));
+    }
+
     fn float_array(element: InferType, length: u64) -> InferType {
         InferType::Array {
             element: Box::new(element),
