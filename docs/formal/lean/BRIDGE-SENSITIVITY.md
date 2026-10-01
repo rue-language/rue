@@ -493,15 +493,17 @@ not fixed:
   and then writes `v0.x1 = v0.x1` (a struct **field** self-assignment, not
   RUE-2346's array-element one) on the arm that does not drop. A genuinely
   new finding, different in shape (field, not element) and in symptom (an
-  ICE, not an unsound accept) from RUE-2346. Filed as RUE-2504; fixed by
-  RUE-2453, which gives each zero-width local and temporary its own frame
-  slot (the program binds zero-width `[E1; 0]` values beside `v0`; the
-  compiler just before RUE-2453, fccea605d, still reports the E9000). The program is now the spec case
-  `field_self_assignment_after_conditional_drop_beside_zero_width_locals`
+  ICE, not an unsound accept) from RUE-2346. Filed as RUE-2504. It no
+  longer reproduces since RUE-2453, which gives each zero-width local and
+  temporary its own frame slot: the program binds zero-width `[E1; 0]`
+  values beside `v0`, the shape that change addresses, and the compiler just
+  before it (fccea605d) still reports the E9000. The program is now the spec
+  case `field_self_assignment_after_conditional_drop_beside_zero_width_locals`
   (`types/destructors.toml`, at -O0, -O2 and -O3).
 
 Both are set aside next to `array_elem_self_assign` when reproducing this
-section's real-fault mutation runs (below).
+section's real-fault mutation runs (below). `gen_23_343` has since been fixed
+(RUE-2504).
 
 ## Distinct identities and two more drawn shapes (RUE-2505)
 
