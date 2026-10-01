@@ -680,7 +680,7 @@ where
                     identity: stable_identity.clone(),
                 },
             ),
-            air: OrdinaryBodyEngine::new(host).validate_body_air(air, &referenced_methods)?,
+            air: crate::sema::validate_body_air(&*host, air, &referenced_methods)?,
             local_atoms,
             num_locals,
             num_param_slots,
