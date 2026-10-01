@@ -408,6 +408,44 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         }
     }
 
+    /// Whether an operand of type `found` is accepted at a slot of type
+    /// `expected`: [`Self::types_compatible`], or a diverging array literal.
+    ///
+    /// An array literal whose elements all diverge (`[return 5; 3]`,
+    /// `[[return 9; 2]]`) is analyzed with element type `!`, the type of its
+    /// element expressions. The core types such a literal at the element type
+    /// its context expects, by (Sub-Never) on each element (formal core §5.8,
+    /// (Array-Intro)), so it is accepted at any array of the same length at
+    /// every nesting level (RUE-2538). This is not a coercion of the type
+    /// `[!; N]`: it applies only when the operand does not continue
+    /// (`continues` is its analysis result's flag). A continuing value of a
+    /// user-written `[!; N]` type, such as a field or a `checked`
+    /// `@ptr_read`, gets the exact-type check.
+    pub(crate) fn operand_fits_slot(&self, expected: Type, found: Type, continues: bool) -> bool {
+        expected.is_error()
+            || self.types_compatible(found, expected)
+            || (!continues
+                && found.diverging_array_fits(expected, &|id| self.body_type_pool().array_def(id)))
+    }
+
+    /// [`Self::require_slot_type`] for an operand whose analysis result says
+    /// whether it continues; see [`Self::operand_fits_slot`]. Every value
+    /// slot uses it: a binding, call argument, field, payload, return value,
+    /// assignment, array element and pointer write.
+    pub(crate) fn require_operand_slot_type(
+        &self,
+        expected: Type,
+        found: Type,
+        continues: bool,
+        span: Span,
+    ) -> CompileResult<()> {
+        if self.operand_fits_slot(expected, found, continues) {
+            Ok(())
+        } else {
+            Err(self.type_mismatch_error(expected, found, span))
+        }
+    }
+
     /// Require an operator operand's analyzed AIR type to be the type the
     /// operator demands of it: `bool` for an `if` or `while` condition, a `!`
     /// operand or a `&&`/`||` operand, the negated type for a unary `-`, and

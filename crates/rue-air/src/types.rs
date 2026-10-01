@@ -1329,20 +1329,20 @@ impl Type {
     /// through nested arrays) and `slot` is an array of the same length at
     /// every level down to that `!`.
     ///
-    /// This is the array form of the never coercion (spec 3.4:3-4). An array
-    /// literal whose elements all diverge (`[return 5; 3]`,
-    /// `[[return 9; 2]]`) is inferred with element type `!`, the type of
-    /// its element expressions. The core types such a literal at any
-    /// element type `T` by (Sub-Never) on each element (formal core §5.8,
-    /// (Array-Intro)), so the inferred `[!; N]` stands for `[T; N]` and is
-    /// accepted wherever an array of length `N` is expected. A different
-    /// length, or a slot that is not an array, is not.
+    /// An array literal whose elements all diverge (`[return 5; 3]`,
+    /// `[[return 9; 2]]`) is analyzed with element type `!`, the type of its
+    /// element expressions. The core types such a literal at the element
+    /// type its context expects, by (Sub-Never) on each element (formal core
+    /// §5.8, (Array-Intro)), so it fits any array of the same length; a
+    /// different length, or a slot that is not an array, does not.
     ///
-    /// Inference (`Unifier::unify_with`), semantic analysis
-    /// (`types_compatible`) and AIR validation (`slot_accepts`) all admit
-    /// exactly this shape, so the three cannot disagree about which slots a
-    /// diverging array literal reaches (RUE-2538). `array_def` reads an
-    /// array type's element type and length from the caller's type pool.
+    /// This is a shape test, not a coercion of the type `[!; N]`. Semantic
+    /// analysis applies it only to an operand that does not continue
+    /// (`operand_fits_slot`), so a continuing value of a written `[!; N]`
+    /// type keeps the exact-type check; AIR validation (`slot_accepts`) has
+    /// no continuation fact and admits the same shape behind sema
+    /// (RUE-2538). `array_def` reads an array type's element type and length
+    /// from the caller's type pool.
     pub fn diverging_array_fits(
         self,
         slot: Type,

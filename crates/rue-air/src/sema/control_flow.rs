@@ -4499,7 +4499,12 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             )?;
 
             // Type check: returned value must match function's return type.
-            self.require_slot_type(ctx.return_type, inner_ty, span)?;
+            self.require_operand_slot_type(
+                ctx.return_type,
+                inner_ty,
+                inner_result.continues,
+                span,
+            )?;
             (Some(inner_result.air_ref), inner_result.continues)
         } else {
             // `return;` without expression - only valid for unit-returning functions

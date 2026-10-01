@@ -128,6 +128,11 @@ pub(crate) struct CallOperands {
     /// `StorageLive` instructions to prefix onto the call, in operand order.
     pub(crate) temp_scope: Vec<AirRef>,
     pub(crate) continues: bool,
+    /// Whether each operand's own evaluation continues, in operand order
+    /// (`false` for an operand that diverges, such as `[return 5; 3]`). A
+    /// slot check admits a diverging array literal only when its operand
+    /// does not continue (RUE-2538).
+    pub(crate) operand_continues: Vec<bool>,
 }
 
 // Place Building
@@ -2079,11 +2084,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // Inference may defer an annotation or allow contextual
         // materialization. Validate the actual value before registering the
         // binding, including a wildcard or a comptime type-valued binding.
-        // An initializer whose array elements all diverge is `[!; N]`, which
-        // `types_compatible` admits at the annotation as every other slot
-        // does (RUE-2538).
+        // A diverging array literal is accepted at the annotation as at every
+        // other slot, and only when it does not continue (RUE-2538).
         if let Some(annotation) = annotation_type
-            && !self.types_compatible(var_type, annotation)
+            && !self.operand_fits_slot(annotation, var_type, init_result.continues)
         {
             return Err(self.type_mismatch_error(annotation, var_type, span));
         }
@@ -3044,9 +3048,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 // identity before emitting it so equal source/target layout is
                 // a proved invariant, not an assumption. Never/Error retain
                 // their usual recovery coercions and cannot execute a store.
-                self.require_slot_type(
+                self.require_operand_slot_type(
                     param_ty,
                     value_result.ty,
+                    value_result.continues,
                     self.body_rir_ref().get(value).span,
                 )?;
 
@@ -3144,9 +3149,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // constructor head it could not reduce, which let another instance's
         // layout overwrite the local (RUE-2438). Checked after the `str`
         // escape diagnostics above have had their say.
-        if value_result.continues {
-            self.require_slot_type(local_ty, value_result.ty, span)?;
-        }
+        self.require_operand_slot_type(local_ty, value_result.ty, value_result.continues, span)?;
 
         // Assignment to a mutable variable resets its move state.
         ctx.ownership.moved_vars.remove(&name);
@@ -5521,9 +5524,12 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // A place write copies the value with no conversion step, so the
             // value must already have the field's type; inference has no
             // fact for an unreduced constructor head (RUE-2438).
-            if value_result.continues {
-                self.require_slot_type(field_type, value_result.ty, span)?;
-            }
+            self.require_operand_slot_type(
+                field_type,
+                value_result.ty,
+                value_result.continues,
+                span,
+            )?;
             // Emit PlaceWrite instruction
             let place_ref = Self::build_place_ref(air, &trace)?;
             let air_ref = air.add_inst(AirInst {
@@ -5796,9 +5802,12 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // A place write copies the value with no conversion step, so the
             // value must already have the element's type; inference has no
             // fact for an unreduced constructor head (RUE-2438).
-            if value_result.continues {
-                self.require_slot_type(elem_type, value_result.ty, span)?;
-            }
+            self.require_operand_slot_type(
+                elem_type,
+                value_result.ty,
+                value_result.continues,
+                span,
+            )?;
             // Emit PlaceWrite instruction
             let place_ref = Self::build_place_ref(air, &trace)?;
             let air_ref = air.add_inst(AirInst {
@@ -8394,6 +8403,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let mut air_args = Vec::with_capacity(args.len());
         let mut temp_scope: Vec<AirRef> = Vec::new();
         let mut continues = true;
+        let mut operand_continues = vec![true; args.len()];
         for (i, arg) in args.enumerate() {
             let reachable_edges_before_arg = ctx.ownership.loop_break_stack.clone();
             let divergence_before_arg = ctx.divergence_kinds;
@@ -8465,6 +8475,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     ctx.divergence_kinds = divergence_before_arg;
                 }
                 continues &= arg_result.continues;
+                operand_continues[i] = arg_result.continues;
                 // `Str(N)` is a nominal fixed-capacity value, not a bare
                 // string view. Contextual literals materialize directly as
                 // the expected capacity above; every other value must retain
@@ -8627,6 +8638,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 ctx.divergence_kinds = divergence_before_arg;
             }
             continues &= arg_result.continues;
+            operand_continues[i] = arg_result.continues;
             if elaborates_borrow {
                 let span = self.body_rir_ref().get(arg.value).span;
                 let elaborated = self.elaborate_borrow_operand(
@@ -8722,6 +8734,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             args: air_args,
             temp_scope,
             continues,
+            operand_continues,
         })
     }
 

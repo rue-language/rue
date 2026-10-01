@@ -142,7 +142,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 ctx.divergence_kinds = divergence_before_arg;
             }
             continues &= arg_result.continues;
-            if !self.types_compatible(actual, expected) && actual != Type::ERROR {
+            if !self.operand_fits_slot(expected, actual, arg_result.continues)
+                && actual != Type::ERROR
+            {
                 return Err(self.type_mismatch_error(
                     expected,
                     actual,
@@ -1384,7 +1386,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             }
 
             // Type check the field value against the expected type
-            if !self.types_compatible(field_result.ty, expected_field_type) {
+            if !self.operand_fits_slot(expected_field_type, field_result.ty, field_result.continues)
+            {
                 return Err(CompileError::new(
                     ErrorKind::TypeMismatch {
                         expected: self.format_type_name(expected_field_type),
@@ -2123,9 +2126,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             )?;
             // Every element must have the inferred element type as analyzed,
             // not only as inferred (RUE-2438).
-            self.require_slot_type(
+            self.require_operand_slot_type(
                 elem_type,
                 elem_result.ty,
+                elem_result.continues,
                 self.body_rir_ref().get(elem_ref).span,
             )?;
             air_elems.push(elem_result.air_ref);
@@ -2248,9 +2252,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             span,
             ctx,
         )?;
-        self.require_slot_type(
+        self.require_operand_slot_type(
             elem_type,
             value_result.ty,
+            value_result.continues,
             self.body_rir_ref().get(value_ref).span,
         )?;
 
