@@ -3938,7 +3938,7 @@ exit_code = 0
 
 [[case]]
 name = "zero_width_by_value_parameters_on_borrow_and_inout_accessors"
-spec = ["6.6:8", "6.6:12", "3.9:18"]
+spec = ["6.6:8", "6.6:12", "3.8:62"]
 description = "A `()` or destructor-bearing zero-width by-value accessor parameter, alone or before or after a sized one, on a `borrow self` or `inout self` accessor, is spliced with the accessor body and dropped exactly once (RUE-2539)"
 source = """
 struct Z {}
@@ -3979,7 +3979,7 @@ exit_code = 0
 
 [[case]]
 name = "zero_width_by_value_parameters_on_borrow_and_inout_accessors_o2"
-spec = ["6.6:8", "6.6:12", "3.9:18"]
+spec = ["6.6:8", "6.6:12", "3.8:62"]
 description = "At -O2, a `()` or destructor-bearing zero-width by-value accessor parameter, alone or before or after a sized one, on a `borrow self` or `inout self` accessor, is spliced with the accessor body and dropped exactly once (RUE-2539)"
 source = """
 struct Z {}
@@ -4021,7 +4021,7 @@ opt_level = 2
 
 [[case]]
 name = "zero_width_by_value_parameters_on_borrow_and_inout_accessors_o3"
-spec = ["6.6:8", "6.6:12", "3.9:18"]
+spec = ["6.6:8", "6.6:12", "3.8:62"]
 description = "At -O3, a `()` or destructor-bearing zero-width by-value accessor parameter, alone or before or after a sized one, on a `borrow self` or `inout self` accessor, is spliced with the accessor body and dropped exactly once (RUE-2539)"
 source = """
 struct Z {}
