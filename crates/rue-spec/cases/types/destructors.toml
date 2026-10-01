@@ -5733,6 +5733,89 @@ expected_stdout = "1\n10\n2\n20\n99\n3\n4\n40\n99\n5\n50\n6\n99\n99\n"
 opt_level = 3
 
 [[case]]
+name = "zero_width_mut_self_passed_by_reference"
+spec = ["3.8:62", "3.9:18"]
+description = "A zero-width `mut self` receiver, alone or before a sized parameter, can be passed `inout` and `borrow` and reassigned; each value is dropped exactly once (RUE-2534)"
+source = """
+struct M {
+    fn only(mut self) { reset(inout self); look(borrow self); @dbg(3); }
+    fn first(mut self, x: i64) {
+        reset(inout self);
+        look(borrow self);
+        self = M {};
+        @dbg(x);
+    }
+}
+drop fn M(self) { @dbg(98); }
+fn reset(inout m: M) { m = M {}; @dbg(1); }   // the caller's old value, 1
+fn look(borrow m: M) { @dbg(2); }
+
+fn main() -> i32 {
+    M {}.only();       // 98 1, 2, 3, then self
+    M {}.first(4);     // 98 1, 2, the reassigned-over value, 4, then self
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "98\n1\n2\n3\n98\n98\n1\n2\n98\n4\n98\n"
+
+[[case]]
+name = "zero_width_mut_self_passed_by_reference_o2"
+spec = ["3.8:62", "3.9:18"]
+description = "At -O2, a zero-width `mut self` receiver, alone or before a sized parameter, can be passed `inout` and `borrow` and reassigned; each value is dropped exactly once (RUE-2534)"
+source = """
+struct M {
+    fn only(mut self) { reset(inout self); look(borrow self); @dbg(3); }
+    fn first(mut self, x: i64) {
+        reset(inout self);
+        look(borrow self);
+        self = M {};
+        @dbg(x);
+    }
+}
+drop fn M(self) { @dbg(98); }
+fn reset(inout m: M) { m = M {}; @dbg(1); }   // the caller's old value, 1
+fn look(borrow m: M) { @dbg(2); }
+
+fn main() -> i32 {
+    M {}.only();       // 98 1, 2, 3, then self
+    M {}.first(4);     // 98 1, 2, the reassigned-over value, 4, then self
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "98\n1\n2\n3\n98\n98\n1\n2\n98\n4\n98\n"
+opt_level = 2
+
+[[case]]
+name = "zero_width_mut_self_passed_by_reference_o3"
+spec = ["3.8:62", "3.9:18"]
+description = "At -O3, a zero-width `mut self` receiver, alone or before a sized parameter, can be passed `inout` and `borrow` and reassigned; each value is dropped exactly once (RUE-2534)"
+source = """
+struct M {
+    fn only(mut self) { reset(inout self); look(borrow self); @dbg(3); }
+    fn first(mut self, x: i64) {
+        reset(inout self);
+        look(borrow self);
+        self = M {};
+        @dbg(x);
+    }
+}
+drop fn M(self) { @dbg(98); }
+fn reset(inout m: M) { m = M {}; @dbg(1); }   // the caller's old value, 1
+fn look(borrow m: M) { @dbg(2); }
+
+fn main() -> i32 {
+    M {}.only();       // 98 1, 2, 3, then self
+    M {}.first(4);     // 98 1, 2, the reassigned-over value, 4, then self
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "98\n1\n2\n3\n98\n98\n1\n2\n98\n4\n98\n"
+opt_level = 3
+
+[[case]]
 name = "zero_width_locals_for_loop_element_binding"
 spec = ["3.9:38"]
 description = "A for loop over zero-width elements with a conditionally dropped sized local in the body drops each value once and reports no false move out of the borrowed element (RUE-2453)"
