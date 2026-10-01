@@ -2555,6 +2555,12 @@ impl<'a> Verifier<'a> {
         } else {
             self.abi_slot_count(ty, block, value, role)?
         };
+        // A zero-width by-value parameter has no storage, so its access names
+        // no slot range: its index is the parameter's key past the end of the
+        // ABI range (RUE-2534), which only drop elaboration reads.
+        if width == 0 {
+            return Ok(());
+        }
         let end = slot.checked_add(width);
         if end.is_none_or(|end| end > self.cfg.num_params()) {
             return Err(self.error(format_args!(
