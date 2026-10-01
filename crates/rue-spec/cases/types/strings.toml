@@ -918,7 +918,8 @@ fn main() -> i32 {
     0
 }
 """
-runtime_error = "index out of bounds"
+exit_code = 101
+stderr_contains = "panic: index out of bounds"
 
 [[case]]
 name = "strbuf_negative_i32_index_traps"
@@ -935,7 +936,8 @@ fn main() -> i32 {
     0
 }
 """
-runtime_error = "index out of bounds"
+exit_code = 101
+stderr_contains = "panic: index out of bounds"
 
 [[case]]
 name = "strbuf_negative_i64_index_traps"
@@ -952,7 +954,8 @@ fn main() -> i32 {
     0
 }
 """
-runtime_error = "index out of bounds"
+exit_code = 101
+stderr_contains = "panic: index out of bounds"
 
 [[case]]
 name = "strbuf_large_u32_index_traps"
@@ -969,7 +972,8 @@ fn main() -> i32 {
     0
 }
 """
-runtime_error = "index out of bounds"
+exit_code = 101
+stderr_contains = "panic: index out of bounds"
 
 [[case]]
 name = "string_substring_empty"
