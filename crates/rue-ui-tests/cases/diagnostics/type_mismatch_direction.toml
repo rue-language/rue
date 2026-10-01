@@ -162,3 +162,29 @@ fn main() -> i32 {
 """
 compile_fail = true
 error_contains = ["E0206", "expected i32, found bool", "test.rue:4:9"]
+
+# An array operand of an arithmetic operator is named, not shown as `<error>`
+# (RUE-2562).
+[[case]]
+name = "array_operand_of_arithmetic_is_named"
+source = """
+fn main() -> i32 {
+    let a: [i32; 2] = [1, 2];
+    let b = a + [return 5; 2];
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0206", "expected integer type, found [i32; 2]", "test.rue:3:13"]
+
+[[case]]
+name = "array_operand_of_compound_assignment_is_named"
+source = """
+fn main() -> i32 {
+    let mut a: [i32; 2] = [1, 2];
+    a += [return 5; 2];
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0206", "expected integer type, found [i32; 2]"]
