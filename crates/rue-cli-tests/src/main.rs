@@ -3028,13 +3028,75 @@ fn write_watch_edit(dir: &Path, edit: &WatchEdit) -> Result<(), String> {
         _ => {}
     }
     if let Some(source) = edit.source.as_deref() {
-        return std::fs::write(&path, source).map_err(failed);
+        return replace_watch_fixture(&path, source.as_bytes()).map_err(failed);
     }
     let source = edit
         .undecodable_source
         .as_deref()
         .expect("exactly one edit action was requested");
-    std::fs::write(&path, undecodable_bytes(source)).map_err(failed)
+    replace_watch_fixture(&path, &undecodable_bytes(source)).map_err(failed)
+}
+
+/// Give a watched fixture its new bytes in one step, so a watch case's edit is
+/// exactly one source revision (RUE-2448).
+///
+/// `fs::write` truncates and then writes, and the watcher polls the disk. A
+/// harness thread descheduled between those two syscalls for longer than the
+/// watcher's quiet period leaves an EMPTY file on disk long enough to be
+/// debounced, re-observed, compiled and reported — a real revision the case
+/// never wrote. The executable watcher then said `E0707 ... has no member
+/// answer` plus one more "keeping the last successful executable" than the
+/// case's revisions account for, which is how
+/// `an_unchanged_reobserve_failure_is_reported_once_not_per_retry` flaked on a
+/// loaded runner. The watcher was right to report that file; the case was
+/// wrong to produce it.
+///
+/// Staging the bytes beside the target and renaming over it makes the old and
+/// new contents the only two states a poll can see. A symlinked fixture is
+/// written through to its target, as `fs::write` did. A fixture with several
+/// hard links is still written in place, because a rename would split the
+/// names a case linked on purpose.
+fn replace_watch_fixture(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+    use std::io::Write as _;
+
+    let target = match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => match std::fs::canonicalize(path) {
+            Ok(target) => target,
+            // A dangling link: `fs::write` creates its target, so keep that.
+            Err(_) => return std::fs::write(path, contents),
+        },
+        _ => path.to_path_buf(),
+    };
+    let existing = std::fs::metadata(&target).ok();
+    if existing
+        .as_ref()
+        .is_some_and(watch_fixture_is_multiply_linked)
+    {
+        return std::fs::write(&target, contents);
+    }
+    let parent = target
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let mut staged = tempfile::NamedTempFile::new_in(parent)?;
+    staged.write_all(contents)?;
+    if let Some(existing) = existing {
+        staged.as_file().set_permissions(existing.permissions())?;
+    }
+    staged.persist(&target).map_err(|error| error.error)?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn watch_fixture_is_multiply_linked(metadata: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+
+    metadata.nlink() > 1
+}
+
+#[cfg(not(unix))]
+fn watch_fixture_is_multiply_linked(_: &std::fs::Metadata) -> bool {
+    false
 }
 
 /// The bytes a `binary_files` entry spells as hex digits, two per byte, with
