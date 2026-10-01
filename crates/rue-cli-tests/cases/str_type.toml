@@ -208,7 +208,7 @@ pub struct StrBuf { value: i32 }
 ]
 args = ["main.rue", "-o", "prog"]
 compile_fail = true
-error_contains = ["E0206", "expected string type"]
+error_contains = ["E0206", "expected StrBuf, found str"]
 
 # ============================================================================
 # RUE-386 two-types model: reject buffer/view -> first-class `str` escapes.

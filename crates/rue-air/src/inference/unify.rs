@@ -28,8 +28,13 @@ pub enum UnifyResult {
     /// Integer literal cannot unify with non-integer type.
     IntLiteralNonInteger { found: InferType },
 
-    /// String literal cannot unify with a non-string type.
+    /// String literal cannot unify with a non-string type; the literal set
+    /// the expectation and `found` is the other side.
     StringLiteralNonString { found: InferType },
+
+    /// String literal cannot take the non-string type its context expects;
+    /// the literal is the found side.
+    StringLiteralMismatch { expected: InferType },
 
     /// Occurs check failed (would create infinite type).
     OccursCheck { var: TypeVarId, ty: InferType },
@@ -91,6 +96,12 @@ impl UnificationError {
             }
             UnifyResult::StringLiteralNonString { found } => {
                 format!("string literal cannot be used as {found}")
+            }
+            UnifyResult::StringLiteralMismatch { expected } if expected.is_int_literal() => {
+                "type mismatch: expected integer type, found str".to_string()
+            }
+            UnifyResult::StringLiteralMismatch { expected } => {
+                format!("type mismatch: expected {expected}, found str")
             }
             UnifyResult::OccursCheck { var, ty } => {
                 format!("infinite type: {var} cannot unify with {ty}")
@@ -413,6 +424,19 @@ impl Unifier {
         }
     }
 
+    /// The mismatch for a string literal that meets a type it cannot take,
+    /// in the same direction as [`Unifier::int_literal_mismatch`]: found
+    /// (`let b: bool = "x";`) reads "expected bool, found str", the literal's
+    /// own type (3.7:44); setting the expectation (the first arm of
+    /// `if c { "x" } else { false }`) reads "expected string type, found
+    /// bool".
+    fn string_literal_mismatch(other: InferType, literal_side: VarSide) -> UnifyResult {
+        match literal_side {
+            VarSide::Found => UnifyResult::StringLiteralMismatch { expected: other },
+            VarSide::Expected => UnifyResult::StringLiteralNonString { found: other },
+        }
+    }
+
     /// Bind a type variable to a type.
     ///
     /// Performs the occurs check to prevent infinite types. `side` says which
@@ -502,9 +526,7 @@ impl Unifier {
             match ty {
                 InferType::Var(other) => {
                     if self.int_literal_vars.contains(other) {
-                        return UnifyResult::StringLiteralNonString {
-                            found: InferType::IntLiteral,
-                        };
+                        return Self::string_literal_mismatch(InferType::IntLiteral, side);
                     }
                     self.string_literal_vars.insert(*other);
                 }
@@ -513,27 +535,27 @@ impl Unifier {
                         return UnifyResult::Ok;
                     }
                     if !t.is_never() && !self.string_literal_types.contains(t) {
-                        return UnifyResult::StringLiteralNonString {
-                            found: InferType::Concrete(*t),
-                        };
+                        return Self::string_literal_mismatch(InferType::Concrete(*t), side);
                     }
                 }
                 InferType::IntLiteral => {
-                    return UnifyResult::StringLiteralNonString {
-                        found: InferType::IntLiteral,
-                    };
+                    return Self::string_literal_mismatch(InferType::IntLiteral, side);
                 }
                 InferType::Array { .. } => {
-                    return UnifyResult::StringLiteralNonString { found: ty.clone() };
+                    return Self::string_literal_mismatch(self.render_for_error(ty), side);
                 }
             }
         } else if let InferType::Var(other) = ty
             && self.string_literal_vars.contains(other)
         {
             if self.int_literal_vars.contains(&var) {
-                return UnifyResult::StringLiteralNonString {
-                    found: InferType::IntLiteral,
+                // `var` is the integer literal and the string literal is on
+                // the opposite side of the constraint.
+                let string_side = match side {
+                    VarSide::Found => VarSide::Expected,
+                    VarSide::Expected => VarSide::Found,
                 };
+                return Self::string_literal_mismatch(InferType::IntLiteral, string_side);
             }
             self.string_literal_vars.insert(var);
         }
@@ -1156,6 +1178,51 @@ mod tests {
             UnifyResult::TypeMismatch {
                 expected: InferType::Concrete(Type::COMPTIME_FLOAT),
                 found: InferType::Concrete(Type::I64),
+            }
+        );
+    }
+
+    #[test]
+    fn string_literal_mismatch_follows_the_constraint_direction() {
+        let lit = TypeVarId::new(0);
+        let int = TypeVarId::new(1);
+        // `let b: bool = "x";` constrains (literal, bool): expected bool.
+        let mut unifier = Unifier::new();
+        unifier.mark_string_literal_vars(&[lit], &[]);
+        assert_eq!(
+            unifier.unify(&InferType::Var(lit), &InferType::Concrete(Type::BOOL)),
+            UnifyResult::StringLiteralMismatch {
+                expected: InferType::Concrete(Type::BOOL),
+            }
+        );
+        // `if c { "x" } else { false }`: the literal arm sets the expectation.
+        let mut unifier = Unifier::new();
+        unifier.mark_string_literal_vars(&[lit], &[]);
+        assert_eq!(
+            unifier.unify(&InferType::Concrete(Type::BOOL), &InferType::Var(lit)),
+            UnifyResult::StringLiteralNonString {
+                found: InferType::Concrete(Type::BOOL)
+            }
+        );
+        // `if c { 5 } else { "x" }`: the integer literal sets the
+        // expectation and the string literal is found.
+        let mut unifier = Unifier::new();
+        unifier.mark_int_literal_vars(&[int]);
+        unifier.mark_string_literal_vars(&[lit], &[]);
+        assert_eq!(
+            unifier.unify(&InferType::Var(lit), &InferType::Var(int)),
+            UnifyResult::StringLiteralMismatch {
+                expected: InferType::IntLiteral,
+            }
+        );
+        // `if c { "x" } else { 5 }`: the string literal sets the expectation.
+        let mut unifier = Unifier::new();
+        unifier.mark_int_literal_vars(&[int]);
+        unifier.mark_string_literal_vars(&[lit], &[]);
+        assert_eq!(
+            unifier.unify(&InferType::Var(int), &InferType::Var(lit)),
+            UnifyResult::StringLiteralNonString {
+                found: InferType::IntLiteral,
             }
         );
     }
