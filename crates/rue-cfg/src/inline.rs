@@ -1752,6 +1752,29 @@ mod tests {
         (Program::new(type_pool.freeze(), interner), ty)
     }
 
+    /// A program whose pool holds a zero-width resource struct with a
+    /// destructor (`Tok {}`), which takes no ABI slot. Returns its value type.
+    fn zero_width_droppable_program() -> (Program, Type) {
+        let interner = ThreadedRodeo::new();
+        let type_pool = TypeInternPool::new();
+        let (id, _) = type_pool.register_struct(
+            interner.get_or_intern("Tok"),
+            StructDef {
+                name: "Tok".into(),
+                fields: Vec::new(),
+                is_copy: false,
+                is_linear: false,
+                declared_linear: false,
+                destructor: Some("Tok.__drop".into()),
+                is_builtin: false,
+                is_pub: false,
+                file_id: FileId::DEFAULT,
+            },
+        );
+        let ty = Type::new_struct(id);
+        (Program::new(type_pool.freeze(), interner), ty)
+    }
+
     /// A program whose pool holds a two-slot `Pair { a: i64, b: i64 }`
     /// aggregate. Returns its struct id and value type.
     fn pair_program() -> (Program, StructId, Type) {
@@ -2091,6 +2114,153 @@ mod tests {
         // call is untouched.
         assert_eq!(count_calls(&inlined), count_calls(caller) - 1);
         assert_all_blocks_terminated(&inlined);
+    }
+
+    #[test]
+    fn zero_width_by_value_params_map_to_their_keys_and_drop_once() {
+        // `fn callee(t: Tok, n: i64, u: ()) -> i64 { n }`, drop-elaborated:
+        // `n` is the only parameter with an ABI slot; `t` and `u` are keyed
+        // past it, at 1 and 2 (RUE-2534), and `t` is dropped at exit. The
+        // call still passes all three arguments in declaration order.
+        let (mut program, tok_ty) = zero_width_droppable_program();
+        program.add("callee", |_| {
+            let mut cfg = Cfg::new(Type::I64, 0, 1, "callee".to_string(), vec![false]);
+            cfg.set_source_param_abi(vec![SourceParamAbi {
+                start_slot: 0,
+                slot_count: 1,
+                ty: Some(Type::I64),
+            }]);
+            let entry = cfg.new_block();
+            cfg.entry = entry;
+            let n = cfg.append_inst(entry, inst(CfgInstData::Param { index: 0 }, Type::I64));
+            cfg.append_inst(entry, inst(CfgInstData::Param { index: 2 }, Type::UNIT));
+            let tok = cfg.append_inst(entry, inst(CfgInstData::Param { index: 1 }, tok_ty));
+            cfg.append_inst(entry, inst(CfgInstData::Drop { value: tok }, Type::UNIT));
+            cfg.set_return(entry, Some(n));
+            cfg
+        });
+        program.add("caller", |interner| {
+            let mut cfg = Cfg::new(Type::I64, 0, 0, "caller".to_string(), Vec::<bool>::new());
+            let entry = cfg.new_block();
+            cfg.entry = entry;
+            let tok = cfg
+                .append_struct_init(
+                    entry,
+                    tok_ty.as_struct().unwrap(),
+                    [],
+                    tok_ty,
+                    Span::new(0, 0),
+                )
+                .unwrap();
+            let five = cfg.append_inst(entry, inst(CfgInstData::Const(5), Type::I64));
+            let unit = cfg.append_inst(entry, inst(CfgInstData::Const(0), Type::UNIT));
+            let call = cfg
+                .append_call(
+                    entry,
+                    None,
+                    interner.get_or_intern("callee"),
+                    [tok, five, unit].map(|value| CfgCallArg {
+                        value,
+                        mode: CfgArgMode::Normal,
+                    }),
+                    Type::I64,
+                    Span::new(0, 0),
+                )
+                .unwrap();
+            cfg.set_return(entry, Some(call));
+            cfg
+        });
+        let caller_locals = program.cfg("caller").num_locals();
+        let inlined = program.inline("caller", "callee");
+
+        // No parameter read survives: each key, occupied or zero-width, was
+        // redirected to its materialized slot.
+        assert_eq!(
+            count_matching(&inlined, |data| matches!(data, CfgInstData::Param { .. })),
+            0
+        );
+        // The zero-width resource is dropped once, by the callee's own copied
+        // exit drop, from the slot its argument was moved into.
+        assert_eq!(count_drops(&inlined), 1);
+        let drop_operand = attached_values(&inlined)
+            .find_map(|value| match inlined.get_inst(value).data {
+                CfgInstData::Drop { value } => Some(value),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(inlined.get_inst(drop_operand).ty, tok_ty);
+        let CfgInstData::Load { slot } = inlined.get_inst(drop_operand).data else {
+            panic!("the copied exit drop must load the materialized slot");
+        };
+        assert!(slot >= caller_locals);
+        assert!(inlined.is_ownership_boundary(slot));
+        // That slot holds the `Tok` argument, not the `i64` that follows it.
+        assert_eq!(
+            count_matching(&inlined, |data| matches!(
+                data,
+                CfgInstData::StorageLive { slot: s, local_ty } if *s == slot && *local_ty == tok_ty
+            )),
+            1
+        );
+        assert_eq!(count_calls(&inlined), 0);
+        assert_all_blocks_terminated(&inlined);
+    }
+
+    #[test]
+    fn a_missing_occupying_argument_is_an_arity_mismatch() {
+        // `fn callee(n: i64, t: Tok) -> i64` called with only the `Tok`: the
+        // zero-width argument maps to its key, and the occupying parameter
+        // has no argument.
+        let (mut program, tok_ty) = zero_width_droppable_program();
+        program.add("callee", |_| {
+            let mut cfg = Cfg::new(Type::I64, 0, 1, "callee".to_string(), vec![false]);
+            cfg.set_source_param_abi(vec![SourceParamAbi {
+                start_slot: 0,
+                slot_count: 1,
+                ty: Some(Type::I64),
+            }]);
+            let entry = cfg.new_block();
+            cfg.entry = entry;
+            let n = cfg.append_inst(entry, inst(CfgInstData::Param { index: 0 }, Type::I64));
+            cfg.set_return(entry, Some(n));
+            cfg
+        });
+        program.add("caller", |interner| {
+            let mut cfg = Cfg::new(Type::I64, 0, 0, "caller".to_string(), Vec::<bool>::new());
+            let entry = cfg.new_block();
+            cfg.entry = entry;
+            let tok = cfg
+                .append_struct_init(
+                    entry,
+                    tok_ty.as_struct().unwrap(),
+                    [],
+                    tok_ty,
+                    Span::new(0, 0),
+                )
+                .unwrap();
+            let call = cfg
+                .append_call(
+                    entry,
+                    None,
+                    interner.get_or_intern("callee"),
+                    [CfgCallArg {
+                        value: tok,
+                        mode: CfgArgMode::Normal,
+                    }],
+                    Type::I64,
+                    Span::new(0, 0),
+                )
+                .unwrap();
+            cfg.set_return(entry, Some(call));
+            cfg
+        });
+        assert!(matches!(
+            program.try_inline("caller", "callee"),
+            Err(CfgInlineError::ArityMismatch {
+                call_args: 1,
+                callee_params: 2,
+            })
+        ));
     }
 
     #[test]
