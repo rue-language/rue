@@ -7546,7 +7546,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 .map(|(_, loan_span, _)| *loan_span)
         });
         Err(match loan_span {
-            Some(loan_span) => error.with_label("accessor result borrows the value here", loan_span),
+            Some(loan_span) => {
+                error.with_label("accessor result borrows the value here", loan_span)
+            }
             None => error,
         })
     }
