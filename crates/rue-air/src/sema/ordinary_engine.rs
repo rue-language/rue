@@ -2101,6 +2101,28 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         }
         Ok(Type::new_struct(id))
     }
+    /// The E0483 an anonymous struct whose fields are `fields` would earn by
+    /// containing `self_ty`, the declared shell `Self` named while they
+    /// resolved, by value (spec 3.0:5), as a named struct that contains
+    /// itself does. The shell has no edges yet, so the pool graph is still
+    /// acyclic and the walk asks whether completing it would close a cycle;
+    /// asking before [`Self::find_or_create_anon_struct`] keeps the cycle out
+    /// of the pool. The caller anchors the span at the struct expression.
+    pub(crate) fn recursive_anonymous_struct_error(
+        &self,
+        self_ty: Type,
+        fields: &[Type],
+    ) -> Option<CompileError> {
+        let path = self.body_type_pool().containment_path_to(fields, self_ty)?;
+        let name = self.format_type_name(self_ty);
+        let cycle = std::iter::once(name.clone())
+            .chain(path.into_iter().map(|ty| self.format_type_name(ty)))
+            .collect::<Vec<_>>()
+            .join(" -> ");
+        Some(CompileError::without_span(
+            rue_error::ErrorKind::RecursiveTypeInfiniteSize { name, cycle },
+        ))
+    }
     pub(crate) fn find_or_create_anon_struct(
         &mut self,
         identity: super::anon_structs::IssuedAnonymousNominalKey,

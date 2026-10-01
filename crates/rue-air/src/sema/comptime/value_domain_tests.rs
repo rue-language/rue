@@ -2344,6 +2344,14 @@ impl ComptimeRejections for FakeHost {
     ) -> ComptimeHostResult<(), Self::Failure> {
         Ok(())
     }
+    fn reject_recursive_anonymous_struct(
+        &self,
+        _self_ty: &Self::Type,
+        _fields: &[ComptimeField<Self::Name, Self::Type>],
+        _site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> ComptimeHostResult<(), Self::Failure> {
+        Ok(())
+    }
     fn depth_exceeded(
         &self,
         _name: &Self::Name,

@@ -2847,6 +2847,88 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeRejections
         Ok(())
     }
 
+    fn reject_recursive_anonymous_struct(
+        &self,
+        self_ty: &Self::Type,
+        fields: &[rue_air::ComptimeField<Self::Name, Self::Type>],
+        site: &rue_air::ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> rue_air::ComptimeHostResult<(), Self::Failure> {
+        use crate::durable_semantics::{DurableAnonymousNominalShape as S, DurableType as T};
+        let T::AnonymousNominal(target) = self_ty.as_ref() else {
+            return Ok(());
+        };
+        let target = target.with_canonical_producer();
+        // `Self` can only be reached through nominals minted after it was
+        // issued, all inside this evaluation, so the shapes this root has
+        // observed are exactly the ones a cycle can run through. A cycle
+        // through a named declaration is the named struct's own
+        // well-formedness check, so the walk stops at named nominals.
+        let session = self.services.durable_session();
+        let mut nodes = Vec::<(T, Option<usize>)>::new();
+        let mut pending = fields
+            .iter()
+            .map(|field| (field.ty.as_ref().clone(), None))
+            .collect::<Vec<_>>();
+        let mut seen = std::collections::BTreeSet::new();
+        let mut closing = None;
+        while let Some((ty, parent)) = pending.pop() {
+            match ty {
+                // Arrays are inline containment edges even at length zero.
+                T::Array { element, .. } => pending.push((element.as_ref().clone(), parent)),
+                T::AnonymousNominal(key) => {
+                    let canonical = key.with_canonical_producer().into_owned();
+                    if canonical == *target {
+                        closing = Some(parent);
+                        break;
+                    }
+                    let Some(nominal) = session
+                        .observed_anonymous_nominals()
+                        .find(|nominal| *nominal.identity.with_canonical_producer() == canonical)
+                    else {
+                        continue;
+                    };
+                    if !seen.insert(canonical) {
+                        continue;
+                    }
+                    let index = nodes.len();
+                    nodes.push((T::AnonymousNominal(key), parent));
+                    match &nominal.shape {
+                        S::Struct { fields, .. } => {
+                            pending.extend(fields.iter().map(|(_, ty)| (ty.clone(), Some(index))))
+                        }
+                        S::Enum { variants } => pending.extend(
+                            variants
+                                .iter()
+                                .flat_map(|(_, payload)| payload.iter())
+                                .map(|ty| (ty.clone(), Some(index))),
+                        ),
+                    }
+                }
+                _ => {}
+            }
+        }
+        let Some(mut cursor) = closing else {
+            return Ok(());
+        };
+        let name = DurableComptimeScalarPolicy::type_name(self_ty.as_ref());
+        let mut inner = Vec::new();
+        while let Some(index) = cursor {
+            inner.push(DurableComptimeScalarPolicy::type_name(&nodes[index].0));
+            cursor = nodes[index].1;
+        }
+        let cycle = std::iter::once(name.clone())
+            .chain(inner.into_iter().rev())
+            .chain(std::iter::once(name.clone()))
+            .collect::<Vec<_>>()
+            .join(" -> ");
+        Err(rue_air::ComptimeHostError::HostFailure(
+            durable_diagnostic_failure(
+                &self.diagnostic_site(site),
+                rue_error::ErrorKind::RecursiveTypeInfiniteSize { name, cycle },
+            ),
+        ))
+    }
+
     fn depth_exceeded(
         &self,
         name: &Self::Name,

@@ -4190,6 +4190,18 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeRejections for OrdinaryBodyEngine<
         }
         Ok(())
     }
+    fn reject_recursive_anonymous_struct(
+        &self,
+        self_ty: &Type,
+        fields: &[super::comptime::ComptimeField<Spur, Type>],
+        site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> ComptimeHostResult<(), Self::Failure> {
+        let fields: Vec<Type> = fields.iter().map(|field| field.ty).collect();
+        match OrdinaryBodyEngine::recursive_anonymous_struct_error(self, *self_ty, &fields) {
+            Some(error) => Err(error.with_primary_span(site.span()).into()),
+            None => Ok(()),
+        }
+    }
     fn depth_exceeded(
         &self,
         name: &Spur,
