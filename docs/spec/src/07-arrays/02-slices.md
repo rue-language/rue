@@ -56,12 +56,7 @@ compile-time error whether or not the function body could produce a view.
 A slice type **MUST NOT** be the type of an aggregate field: neither a struct
 field nor an enum tuple-variant payload. Storing a view in an aggregate would
 let it escape wherever the aggregate goes, so either declaration is a
-compile-time error at the item, independently of any use. The rule is the same
-for an anonymous struct or enum a type constructor builds (4.14:7): each field
-or payload type is checked once the constructor's comptime arguments are
-substituted, so `struct { b: [i64] }` in a constructor body, and
-`struct { b: T }` instantiated at `T = [i64]`, are both errors wherever the
-constructor's type is evaluated, whether it is constructed or only named.
+compile-time error at the item, independently of any use.
 
 {{ rule(id="7.2:6", cat="legality-rule") }}
 
