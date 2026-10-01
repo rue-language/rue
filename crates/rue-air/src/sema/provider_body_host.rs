@@ -6336,7 +6336,8 @@ where
                 // export must too, or one anonymous method signature projects
                 // to two different facts (RUE-2567).
                 crate::NominalInstanceKey::Builtin { name, .. }
-                    if crate::types::is_slice_struct_name(&name) =>
+                    if self.type_pool.text_view_kind(id)
+                        == Some(crate::types::TextViewKind::Slice) =>
                 {
                     let def = self.type_pool.struct_def(id);
                     let Some(TypeKind::PtrConst(pointer)) =

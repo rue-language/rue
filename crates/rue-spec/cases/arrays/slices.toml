@@ -1225,3 +1225,21 @@ fn main() -> i32 {
     0
 }
 """
+
+[[case]]
+name = "anonymous_method_slice_parameter_on_a_const_bound_struct"
+spec = ["7.2:7"]
+description = "A method of an anonymous struct bound to a module-level const takes a slice parameter (RUE-2567)"
+source = """
+const S = struct {
+    k: i64,
+
+    fn f(self, borrow s: [i64]) -> i64 { s[0] + self.k }
+};
+fn main() -> i32 {
+    let a: [i64; 2] = [40, 1];
+    let v = S { k: 2 };
+    @intCast(v.f(borrow a))
+}
+"""
+exit_code = 42
