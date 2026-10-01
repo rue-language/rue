@@ -3515,6 +3515,18 @@ impl<'a> ConstraintGenerator<'a> {
                         .and_then(|v| u64::try_from(v).ok()),
                 };
                 match resolved {
+                    // A repeat over a type value is the array TYPE `[T; N]`
+                    // (RUE-565, RUE-2574), itself a type value, so a nested
+                    // `[[i32; 2]; 3]` and a method's `comptime T: type`
+                    // argument see a type. Sema reduces it to a type
+                    // constant or rejects it. A specialization's type
+                    // parameter (`[T; 3]`) is a type value too, though its
+                    // reference infers no type of its own.
+                    _ if value_info.ty == InferType::Concrete(Type::COMPTIME_TYPE)
+                        || self.names_enclosing_type_parameter(*value, ctx) =>
+                    {
+                        InferType::Concrete(Type::COMPTIME_TYPE)
+                    }
                     Some(length) => InferType::Array {
                         element: Box::new(value_info.ty),
                         length,
@@ -5096,6 +5108,19 @@ impl<'a> ConstraintGenerator<'a> {
         } else {
             func.return_type.clone()
         }
+    }
+
+    /// Whether `inst` is a reference to a type parameter of the enclosing
+    /// specialization (`T` in `[T; 3]`) that no local shadows. Such a
+    /// reference has no inferred type of its own; its value is a type.
+    fn names_enclosing_type_parameter(&self, inst: InstRef, ctx: &ConstraintContext) -> bool {
+        let InstData::VarRef { name, .. } = self.rir.get(inst).data else {
+            return false;
+        };
+        !ctx.locals.contains_key(&name)
+            && self
+                .type_subst
+                .is_some_and(|subst| subst.contains_key(&name))
     }
 
     /// Bootstrap only an enclosing type substitution during the speculative

@@ -2141,6 +2141,39 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         ))
     }
 
+    /// The array type a `comptime T: type` argument written as `[T; N]`
+    /// denotes (spec 4.14:5a, RUE-2574).
+    ///
+    /// In expression position `[i32; 2]` parses as an array-repeat literal
+    /// over the type value `i32`; the comptime evaluator reduces such a
+    /// repeat to the array TYPE (RUE-565), which is how `Opt([i32; 2])` and
+    /// `const A = [i32; 2]` already bind it. A call argument bound to a
+    /// `comptime T: type` parameter is reduced through that same evaluator
+    /// to a type constant. `None` leaves any other operand, and a repeat
+    /// that does not reduce to a type, to ordinary analysis.
+    pub(crate) fn comptime_type_argument(
+        &mut self,
+        air: &mut Air,
+        arg: InstRef,
+        ctx: &AnalysisContext,
+    ) -> CompileResult<Option<AirRef>> {
+        let inst = self.body_rir_ref().get(arg);
+        let span = inst.span;
+        if !matches!(inst.data, InstData::ArrayRepeat { .. })
+            || ctx.resolved_type_of(arg) != Some(Type::COMPTIME_TYPE)
+        {
+            return Ok(None);
+        }
+        let Some(ConstValue::Type(ty)) = self.evaluate_const_in_fn(arg, ctx)? else {
+            return Ok(None);
+        };
+        Ok(Some(air.add_inst(AirInst {
+            data: AirInstData::TypeConst(ty),
+            ty: Type::COMPTIME_TYPE,
+            span,
+        })))
+    }
+
     /// Analyze an array-repeat literal `[value; count]` (RUE-235).
     ///
     /// HM infers the result type `[ElemType; count]` when it can read the
@@ -2179,6 +2212,20 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             RepeatCount::Literal(length) => length,
             RepeatCount::Named(name) => self.resolve_array_length_in_body(name, span, ctx)?,
         };
+
+        // A repeat over a type value, which inference types as a type value
+        // (`[i32; 2]`, `[T; 3]`), reaches here only outside a `comptime T:
+        // type` argument position (`comptime_type_argument` reduces it
+        // there): as a value it is still the runtime repeat of a `type`
+        // value (spec 4.14:6, RUE-770).
+        if ctx.resolved_type_of(inst_ref) == Some(Type::COMPTIME_TYPE) {
+            return Err(CompileError::new(
+                ErrorKind::ComptimeEvaluationFailed {
+                    reason: "type values cannot exist at runtime".to_string(),
+                },
+                span,
+            ));
+        }
 
         // A repeat literal of a non-runtime value — a `type` value (`[i32; 2]`,
         // spec 4.14:6) or a module (`[@import("m"); 2]`, spec 10.4:145) — has no
