@@ -391,7 +391,7 @@ structure StructDecl where
   dtor : Bool
   /-- `qual(S)` (§3), the field join lifted by `attr`; `WfStructs`
   (`Statics.lean`) is the equation that pins it. -/
-  cls : Qual
+  qual : Qual
 deriving DecidableEq, Repr
 
 /-- A monomorphic enum declaration: §2's `enum E { K1(T̄1), …, Kn(T̄n) }`, one
@@ -410,7 +410,7 @@ structure EnumDecl where
   /-- `qual(E)` (§3, `6.3:19`), the join over **every** payload component of
   **every** variant; `WfEnums` (`Statics.lean`) is the equation that pins it,
   and `enum_carriesLinear_iff` is `6.3:19` read as a biconditional. -/
-  cls : Qual
+  qual : Qual
 deriving DecidableEq, Repr
 
 /-- The program's declaration environment: §2's type-declaration production
@@ -436,7 +436,7 @@ attribute and no linear field — the conservative reading of a program
 `WfStructs` rejects anyway (helper). -/
 def Decls.qualOf (D : Decls) (s : Nat) : Qual :=
   match D.structs[s]? with
-  | some sd => sd.cls
+  | some sd => sd.qual
   | none => .affine
 
 /-- `qual(E)` for a declared enum type (§3, `6.3:19`), read off the
@@ -445,7 +445,7 @@ conservative reading of a program `WfEnums` rejects anyway — `Copy` would let
 such a type be duplicated (helper). -/
 def Decls.enumQualOf (D : Decls) (e : Nat) : Qual :=
   match D.enums[e]? with
-  | some ed => ed.cls
+  | some ed => ed.qual
   | none => .affine
 
 /-- `qual(T)` (§3), against the program's declaration environment. Scalars are

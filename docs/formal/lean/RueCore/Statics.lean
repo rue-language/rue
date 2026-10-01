@@ -113,7 +113,7 @@ contains itself by value, directly or through a cycle (`3.0:5`, E0483) — is
 enum and a payload may name a struct. -/
 structure StructDecl.Wf (D : Decls) (sd : StructDecl) : Prop where
   /-- §3's assignment: `qual(S) = attr(S) lifted over ⊔ { qual(Ti) }`. -/
-  qualIsJoin : sd.cls = sd.attr.lift (sd.baseOf D)
+  qualIsJoin : sd.qual = sd.attr.lift (sd.baseOf D)
   /-- `3.8:18` and `3.9:31`: `@copy` is well-formed only when every field is
   `Copy` and the struct declares no destructor. -/
   copyWf : sd.attr = .copy → sd.baseOf D = .copy ∧ sd.dtor = false
@@ -166,7 +166,7 @@ lift, and the compiler rejects `drop fn E(self)` where it is declared (E0417),
 which is why `EnumDecl` records no `dtor` field for §6.11 to read. -/
 structure EnumDecl.Wf (D : Decls) (ed : EnumDecl) : Prop where
   /-- §3's assignment: `qual(E) = ⊔ { qual(Tij) }` (`6.3:19`). -/
-  qualIsJoin : ed.cls = ed.payloadJoin D
+  qualIsJoin : ed.qual = ed.payloadJoin D
 
 /-- A well-formed enum environment: §3's qualifier assignment holds of every enum
 declaration (`EnumDecl.Wf`). Together with `WfStructs` this is the premise that

@@ -603,7 +603,7 @@ Acyclicity is deliberately **not** here. `3.0:5` is one rule over both layers,
 so `checkNoCycle` decides it for the whole environment at once and no
 per-declaration clause can stand in for it. -/
 def checkStructDecl (D : Decls) (sd : StructDecl) : Bool :=
-  decide (sd.cls = sd.attr.lift (sd.baseOf D)) &&
+  decide (sd.qual = sd.attr.lift (sd.baseOf D)) &&
     (match sd.attr with
      | .copy => decide (sd.baseOf D = .copy) && !sd.dtor
      | _ => true) &&
@@ -619,7 +619,7 @@ the recorded qualifier is the payload join over every variant. There is no attri
 clause, no destructor clause and no acyclicity clause — §3 gives an enum neither
 of the first two, and the third is `checkNoCycle`'s. -/
 def checkEnumDecl (D : Decls) (ed : EnumDecl) : Bool :=
-  decide (ed.cls = ed.payloadJoin D)
+  decide (ed.qual = ed.payloadJoin D)
 
 /-- §3's qualifier assignment for a whole enum environment, as an algorithm.
 `WfEnums` is what it decides, and that is the premise `Ty.qual`'s lookup needs to

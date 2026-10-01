@@ -71,14 +71,14 @@ is not `Linear`, no field's qualifier is — which is why the machine's leak mon
 (§6.7's `endscope`, §6.9's activation record teardown) needs to look only at the value's
 own qualifier and never inside it. This is §3's infectiousness, used. -/
 theorem StructDecl.Wf.field_not_linear {D : Decls} {sd : StructDecl}
-    (h : sd.Wf D) (hcls : sd.cls ≠ .linear) : ∀ T ∈ sd.fields, T.qual D ≠ .linear := by
+    (h : sd.Wf D) (hqual : sd.qual ≠ .linear) : ∀ T ∈ sd.fields, T.qual D ≠ .linear := by
   intro T hmem hlin
   have hbase : sd.baseOf D = .linear := by
     refine Qual.eq_linear_of_rank ?_
     have := rank_le_joinFold_of_mem D sd.fields .copy T hmem
     rw [hlin] at this
     exact this
-  refine hcls ?_
+  refine hqual ?_
   rw [h.qualIsJoin, hbase]
   cases hattr : sd.attr with
   | none => rfl
@@ -96,7 +96,7 @@ theorem struct_carriesLinear_iff {D : Decls} {s : Nat} {sd : StructDecl}
     (hd : D.structs[s]? = some sd) (h : sd.Wf D) :
     (Ty.struct s).qual D = .linear ↔
       (sd.attr = .linear ∨ ∃ T ∈ sd.fields, T.qual D = .linear) := by
-  have hlookup : (Ty.struct s).qual D = sd.cls := by
+  have hlookup : (Ty.struct s).qual D = sd.qual := by
     simp [Ty.qual, Decls.qualOf, hd]
   constructor
   · intro hlin
@@ -202,10 +202,10 @@ not `Linear`, no payload component of any variant is — which is why the
 machine's leak monitor need only read the payload it finds under the active tag
 (§6.11) and never the declaration. This is `6.3:19`'s join, used. -/
 theorem EnumDecl.Wf.payload_not_linear {D : Decls} {ed : EnumDecl}
-    (h : ed.Wf D) (hcls : ed.cls ≠ .linear) :
+    (h : ed.Wf D) (hqual : ed.qual ≠ .linear) :
     ∀ Ts ∈ ed.variants, ∀ T ∈ Ts, T.qual D ≠ .linear := by
   intro Ts hTs T hT hlin
-  refine hcls ?_
+  refine hqual ?_
   rw [h.qualIsJoin]
   refine Qual.eq_linear_of_rank ?_
   have := rank_le_payloadFold_of_mem D ed.variants .copy Ts T hTs hT
@@ -221,7 +221,7 @@ value even though the value it holds carries nothing (probe e11, E0406). -/
 theorem enum_carriesLinear_iff {D : Decls} {e : Nat} {ed : EnumDecl}
     (hd : D.enums[e]? = some ed) (h : ed.Wf D) :
     (Ty.enum e).qual D = .linear ↔ ∃ Ts ∈ ed.variants, ∃ T ∈ Ts, T.qual D = .linear := by
-  have hlookup : (Ty.enum e).qual D = ed.cls := by
+  have hlookup : (Ty.enum e).qual D = ed.qual := by
     simp [Ty.qual, Decls.enumQualOf, hd]
   constructor
   · intro hlin

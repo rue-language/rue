@@ -494,11 +494,11 @@ theorem StoreCC.set_dead {D : Decls} {H : Store} {ℓ : Nat} (h : StoreCC D H) :
 declaration declares no destructor (`3.8:18`, `3.9:31`) (helper). -/
 theorem WfDecls.dtorNotCopy {D : Decls} (h : WfDecls D) : DtorNotCopy D := by
   intro s sd hd hdt hc
-  have hcls : sd.cls = .copy := by simpa only [Decls.qualOf, hd] using hc
+  have hqual : sd.qual = .copy := by simpa only [Decls.qualOf, hd] using hc
   have hw := h.structs s sd hd
   have hattr : sd.attr = .copy := by
     have hj := hw.qualIsJoin
-    rw [hcls] at hj
+    rw [hqual] at hj
     cases ha : sd.attr with
     | copy => rfl
     | linear => rw [ha] at hj; cases hj
@@ -2089,8 +2089,8 @@ free. -/
 destructor (helper). -/
 def dupDecls : Decls :=
   Decls.ofStructs
-    [{ attr := .copy, fields := [.int .w64 .signed], dtor := false, cls := .copy },
-     { attr := .none, fields := [.int .w64 .signed], dtor := true, cls := .affine }]
+    [{ attr := .copy, fields := [.int .w64 .signed], dtor := false, qual := .copy },
+     { attr := .none, fields := [.int .w64 .signed], dtor := true, qual := .affine }]
 
 /-- The program above (helper). -/
 def dupProgram : Program :=

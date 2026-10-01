@@ -1060,8 +1060,8 @@ theorem checkStructDecl_sound {D : Decls} {sd : StructDecl}
     (h : checkStructDecl D sd = true) : sd.Wf D := by
   unfold checkStructDecl at h
   simp only [Bool.and_eq_true, decide_eq_true_eq] at h
-  obtain ⟨⟨hcls, hcopy⟩, hdtor⟩ := h
-  refine ⟨hcls, ?_, ?_⟩
+  obtain ⟨⟨hqual, hcopy⟩, hdtor⟩ := h
+  refine ⟨hqual, ?_, ?_⟩
   · intro hattr
     rw [hattr] at hcopy
     simp only [Bool.and_eq_true, decide_eq_true_eq, Bool.not_eq_eq_eq_not,

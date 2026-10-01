@@ -748,13 +748,13 @@ example : observeValue (Decls.ofStructs []) (.array (.int .w64 .signed) 2) = "" 
 
 /-- A `[L; n]` result is `Linear` (`3.8:74`), so `main` discharges it. -/
 example :
-    observeValue (Decls.ofStructs [{ attr := .linear, fields := [], dtor := false, cls := .linear }])
+    observeValue (Decls.ofStructs [{ attr := .linear, fields := [], dtor := false, qual := .linear }])
       (.array (.struct 0) 2) = "    @drop(result);\n" := by rfl
 
 /-- `[L; 0]` is `Affine`, not `Linear` (`3.8:74`, RUE-526), so it takes the
 implicit drop like any other affine value. -/
 example :
-    observeValue (Decls.ofStructs [{ attr := .linear, fields := [], dtor := false, cls := .linear }])
+    observeValue (Decls.ofStructs [{ attr := .linear, fields := [], dtor := false, qual := .linear }])
       (.array (.struct 0) 0) = "" := by rfl
 
 /-- One parameter per line of a signature, named the way the body's de Bruijn

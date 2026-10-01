@@ -2173,7 +2173,7 @@ conclusion fails there, which is why it carries `pendingSafe`. -/
 
 /-- `S0`, affine, with a destructor (helper). -/
 def lostDecls : Decls :=
-  Decls.ofStructs [{ attr := .none, fields := [.int .w64 .signed], dtor := true, cls := .affine }]
+  Decls.ofStructs [{ attr := .none, fields := [.int .w64 .signed], dtor := true, qual := .affine }]
 
 /-- The program above (helper). -/
 def lostProgram : Program :=

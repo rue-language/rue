@@ -76,9 +76,9 @@ theorem empty_activation :
 theorem open_activation :
     ∀ D : Decls, D =
       { structs :=
-              [{ attr := .none, fields := [.int .w64 .signed], dtor := true, cls := .affine },
-                { attr := .linear, fields := [.int .w64 .signed], dtor := false, cls := .linear }],
-            enums := [{ variants := [[.struct 0], []], cls := .affine }] } →
+              [{ attr := .none, fields := [.int .w64 .signed], dtor := true, qual := .affine },
+                { attr := .linear, fields := [.int .w64 .signed], dtor := false, qual := .linear }],
+            enums := [{ variants := [[.struct 0], []], qual := .affine }] } →
     ∀ e : Expr, e = .seq (.drop (.var 0)) (.intLit .w64 .signed 1) →
     ∀ P : Program, P =
       { decls := D, fns := [{ params := [], ret := .int .w64 .signed, body := .intLit .w64 .signed 0 }] } →
@@ -114,9 +114,9 @@ theorem dtor :
     ∀ P : Program, P =
       { decls :=
           { structs :=
-              [{ attr := .none, fields := [.int .w64 .signed], dtor := true, cls := .affine },
-                { attr := .linear, fields := [.int .w64 .signed], dtor := false, cls := .linear }],
-            enums := [{ variants := [[.struct 0], []], cls := .affine }] },
+              [{ attr := .none, fields := [.int .w64 .signed], dtor := true, qual := .affine },
+                { attr := .linear, fields := [.int .w64 .signed], dtor := false, qual := .linear }],
+            enums := [{ variants := [[.struct 0], []], qual := .affine }] },
         fns := [{ params := [], ret := .int .w64 .signed, body := B }] } →
       checkProgram P = true ∧ ProgramTyped P ∧ P.pendingSafe = true ∧
       (∃ c Ω, check P (.int .w64 .signed) [] B = some (c, Ω) ∧
@@ -149,9 +149,9 @@ theorem linear :
     ∀ P : Program, P =
       { decls :=
           { structs :=
-              [{ attr := .none, fields := [.int .w64 .signed], dtor := true, cls := .affine },
-                { attr := .linear, fields := [.int .w64 .signed], dtor := false, cls := .linear }],
-            enums := [{ variants := [[.struct 0], []], cls := .affine }] },
+              [{ attr := .none, fields := [.int .w64 .signed], dtor := true, qual := .affine },
+                { attr := .linear, fields := [.int .w64 .signed], dtor := false, qual := .linear }],
+            enums := [{ variants := [[.struct 0], []], qual := .affine }] },
         fns := [{ params := [], ret := .int .w64 .signed, body := B }] } →
       checkProgram P = true ∧ ProgramTyped P ∧ P.pendingSafe = true ∧
       (∃ c Ω, check P (.int .w64 .signed) [] B = some (c, Ω) ∧
@@ -180,9 +180,9 @@ theorem loop :
     ∀ P : Program, P =
       { decls :=
           { structs :=
-              [{ attr := .none, fields := [.int .w64 .signed], dtor := true, cls := .affine },
-                { attr := .linear, fields := [.int .w64 .signed], dtor := false, cls := .linear }],
-            enums := [{ variants := [[.struct 0], []], cls := .affine }] },
+              [{ attr := .none, fields := [.int .w64 .signed], dtor := true, qual := .affine },
+                { attr := .linear, fields := [.int .w64 .signed], dtor := false, qual := .linear }],
+            enums := [{ variants := [[.struct 0], []], qual := .affine }] },
         fns := [{ params := [], ret := .int .w64 .signed, body := B }] } →
       checkProgram P = true ∧ ProgramTyped P ∧ P.pendingSafe = true ∧
       (∃ c Ω, check P (.int .w64 .signed) [] B = some (c, Ω) ∧
@@ -208,9 +208,9 @@ theorem array :
     ∀ P : Program, P =
       { decls :=
           { structs :=
-              [{ attr := .none, fields := [.int .w64 .signed], dtor := true, cls := .affine },
-                { attr := .linear, fields := [.int .w64 .signed], dtor := false, cls := .linear }],
-            enums := [{ variants := [[.struct 0], []], cls := .affine }] },
+              [{ attr := .none, fields := [.int .w64 .signed], dtor := true, qual := .affine },
+                { attr := .linear, fields := [.int .w64 .signed], dtor := false, qual := .linear }],
+            enums := [{ variants := [[.struct 0], []], qual := .affine }] },
         fns := [{ params := [], ret := .int .w64 .signed, body := B }] } →
       checkProgram P = true ∧ ProgramTyped P ∧ P.pendingSafe = true ∧
       (∃ c Ω, check P (.int .w64 .signed) [] B = some (c, Ω) ∧
@@ -234,9 +234,9 @@ theorem enum_match :
     ∀ P : Program, P =
       { decls :=
           { structs :=
-              [{ attr := .none, fields := [.int .w64 .signed], dtor := true, cls := .affine },
-                { attr := .linear, fields := [.int .w64 .signed], dtor := false, cls := .linear }],
-            enums := [{ variants := [[.struct 0], []], cls := .affine }] },
+              [{ attr := .none, fields := [.int .w64 .signed], dtor := true, qual := .affine },
+                { attr := .linear, fields := [.int .w64 .signed], dtor := false, qual := .linear }],
+            enums := [{ variants := [[.struct 0], []], qual := .affine }] },
         fns := [{ params := [], ret := .int .w64 .signed, body := B }] } →
       checkProgram P = true ∧ ProgramTyped P ∧ P.pendingSafe = true ∧
       (∃ c Ω, check P (.int .w64 .signed) [] B = some (c, Ω) ∧
@@ -261,9 +261,9 @@ theorem early_return :
     ∀ P : Program, P =
       { decls :=
           { structs :=
-              [{ attr := .none, fields := [.int .w64 .signed], dtor := true, cls := .affine },
-                { attr := .linear, fields := [.int .w64 .signed], dtor := false, cls := .linear }],
-            enums := [{ variants := [[.struct 0], []], cls := .affine }] },
+              [{ attr := .none, fields := [.int .w64 .signed], dtor := true, qual := .affine },
+                { attr := .linear, fields := [.int .w64 .signed], dtor := false, qual := .linear }],
+            enums := [{ variants := [[.struct 0], []], qual := .affine }] },
         fns := [{ params := [], ret := .int .w64 .signed, body := B }] } →
       checkProgram P = true ∧ ProgramTyped P ∧ P.pendingSafe = true ∧
       (∃ c Ω, check P (.int .w64 .signed) [] B = some (c, Ω) ∧
@@ -287,9 +287,9 @@ theorem panic :
     ∀ P : Program, P =
       { decls :=
           { structs :=
-              [{ attr := .none, fields := [.int .w64 .signed], dtor := true, cls := .affine },
-                { attr := .linear, fields := [.int .w64 .signed], dtor := false, cls := .linear }],
-            enums := [{ variants := [[.struct 0], []], cls := .affine }] },
+              [{ attr := .none, fields := [.int .w64 .signed], dtor := true, qual := .affine },
+                { attr := .linear, fields := [.int .w64 .signed], dtor := false, qual := .linear }],
+            enums := [{ variants := [[.struct 0], []], qual := .affine }] },
         fns := [{ params := [], ret := .int .w64 .signed, body := B }] } →
       checkProgram P = true ∧ ProgramTyped P ∧ P.pendingSafe = true ∧
       (∃ c Ω, check P (.int .w64 .signed) [] B = some (c, Ω) ∧
@@ -314,9 +314,9 @@ theorem float :
     ∀ P : Program, P =
       { decls :=
           { structs :=
-              [{ attr := .none, fields := [.int .w64 .signed], dtor := true, cls := .affine },
-                { attr := .linear, fields := [.int .w64 .signed], dtor := false, cls := .linear }],
-            enums := [{ variants := [[.struct 0], []], cls := .affine }] },
+              [{ attr := .none, fields := [.int .w64 .signed], dtor := true, qual := .affine },
+                { attr := .linear, fields := [.int .w64 .signed], dtor := false, qual := .linear }],
+            enums := [{ variants := [[.struct 0], []], qual := .affine }] },
         fns := [{ params := [], ret := .float .w64, body := B }] } →
       checkProgram P = true ∧ ProgramTyped P ∧ P.pendingSafe = true ∧
       (∃ c Ω, check P (.float .w64) [] B = some (c, Ω) ∧
@@ -356,9 +356,9 @@ theorem dropTurn_eval (M : FloatSig) (fns : List FnDef) : ∀ m H φ, ∃ H' tr,
     eval M (m + 3)
       { decls :=
           { structs :=
-              [{ attr := .none, fields := [.int .w64 .signed], dtor := true, cls := .affine },
-                { attr := .linear, fields := [.int .w64 .signed], dtor := false, cls := .linear }],
-            enums := [{ variants := [[.struct 0], []], cls := .affine }] },
+              [{ attr := .none, fields := [.int .w64 .signed], dtor := true, qual := .affine },
+                { attr := .linear, fields := [.int .w64 .signed], dtor := false, qual := .linear }],
+            enums := [{ variants := [[.struct 0], []], qual := .affine }] },
         fns := fns } H φ
       (.letIn false (.mkStruct 0 [.intLit .w64 .signed 1]) .unitLit) = .ok H' .unit tr := by
   intro m H φ
@@ -372,9 +372,9 @@ theorem dropLoop_eval (M : FloatSig) (fns : List FnDef) : ∀ n H φ,
     eval M n
       { decls :=
           { structs :=
-              [{ attr := .none, fields := [.int .w64 .signed], dtor := true, cls := .affine },
-                { attr := .linear, fields := [.int .w64 .signed], dtor := false, cls := .linear }],
-            enums := [{ variants := [[.struct 0], []], cls := .affine }] },
+              [{ attr := .none, fields := [.int .w64 .signed], dtor := true, qual := .affine },
+                { attr := .linear, fields := [.int .w64 .signed], dtor := false, qual := .linear }],
+            enums := [{ variants := [[.struct 0], []], qual := .affine }] },
         fns := fns } H φ
       (.loop (.letIn false (.mkStruct 0 [.intLit .w64 .signed 1]) .unitLit)) = .outOfFuel
   | 0, _, _ => rfl
@@ -393,9 +393,9 @@ theorem diverges_drop :
     ∀ P : Program, P =
       { decls :=
           { structs :=
-              [{ attr := .none, fields := [.int .w64 .signed], dtor := true, cls := .affine },
-                { attr := .linear, fields := [.int .w64 .signed], dtor := false, cls := .linear }],
-            enums := [{ variants := [[.struct 0], []], cls := .affine }] },
+              [{ attr := .none, fields := [.int .w64 .signed], dtor := true, qual := .affine },
+                { attr := .linear, fields := [.int .w64 .signed], dtor := false, qual := .linear }],
+            enums := [{ variants := [[.struct 0], []], qual := .affine }] },
         fns := [{ params := [], ret := .unit, body := B }] } →
       checkProgram P = true ∧ ProgramTyped P ∧ (∀ fuel, run Float.exactOps P fuel = .outOfFuel) ∧
       ∃ C, Steps Float.exactOps P Config.init C ∧ dtorIds C.trace = [0, 2] ∧
@@ -421,9 +421,9 @@ theorem refused_stuck :
     ∀ P : Program, P =
       { decls :=
           { structs :=
-              [{ attr := .none, fields := [.int .w64 .signed], dtor := true, cls := .affine },
-                { attr := .linear, fields := [.int .w64 .signed], dtor := false, cls := .linear }],
-            enums := [{ variants := [[.struct 0], []], cls := .affine }] },
+              [{ attr := .none, fields := [.int .w64 .signed], dtor := true, qual := .affine },
+                { attr := .linear, fields := [.int .w64 .signed], dtor := false, qual := .linear }],
+            enums := [{ variants := [[.struct 0], []], qual := .affine }] },
         fns := [{ params := [], ret := .int .w64 .signed, body := B }] } →
       checkProgram P = false ∧ run Float.exactOps P 200 = .refused .useAfterMove ∧
         ∃ C, Steps Float.exactOps P Config.init C ∧ C.Stuck Float.exactOps P .useAfterMove := by
@@ -440,9 +440,9 @@ theorem whole_drops :
     ∀ P : Program, P =
       { decls :=
           { structs :=
-              [{ attr := .none, fields := [.int .w64 .signed], dtor := true, cls := .affine },
-                { attr := .linear, fields := [.int .w64 .signed], dtor := false, cls := .linear }],
-            enums := [{ variants := [[.struct 0], []], cls := .affine }] },
+              [{ attr := .none, fields := [.int .w64 .signed], dtor := true, qual := .affine },
+                { attr := .linear, fields := [.int .w64 .signed], dtor := false, qual := .linear }],
+            enums := [{ variants := [[.struct 0], []], qual := .affine }] },
         fns := [{ params := [], ret := .int .w64 .signed, body := B }] } →
       checkProgram P = true ∧ ProgramTyped P ∧ P.pendingSafe = true ∧
       ∃ C, Steps Float.exactOps P Config.init C ∧ 0 ∈ C.held P.decls ∧ 2 ∈ C.held P.decls ∧
@@ -461,9 +461,9 @@ theorem whole_result :
   ∀ P : Program, P =
       { decls :=
           { structs :=
-              [{ attr := .none, fields := [.int .w64 .signed], dtor := true, cls := .affine },
-                { attr := .linear, fields := [.int .w64 .signed], dtor := false, cls := .linear }],
-            enums := [{ variants := [[.struct 0], []], cls := .affine }] },
+              [{ attr := .none, fields := [.int .w64 .signed], dtor := true, qual := .affine },
+                { attr := .linear, fields := [.int .w64 .signed], dtor := false, qual := .linear }],
+            enums := [{ variants := [[.struct 0], []], qual := .affine }] },
         fns := [{ params := [], ret := .struct 0, body := .mkStruct 0 [.intLit .w64 .signed 7] }] } →
     checkProgram P = true ∧ ProgramTyped P ∧ P.pendingSafe = true ∧
     ∃ C, Steps Float.exactOps P Config.init C ∧ 0 ∈ C.held P.decls ∧

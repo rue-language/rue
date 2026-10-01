@@ -416,11 +416,11 @@ theorem Qual.eq_copy_of_rank {m : Qual} (h : m.rank = 0) : m = .copy := by
 attribute's lift of the field join, only `@copy` lifts to `Copy`, and a
 well-formed `@copy` declaration's join is already `Copy` (helper). -/
 theorem StructDecl.Wf.field_copy {D : Decls} {sd : StructDecl} (h : sd.Wf D)
-    (hcls : sd.cls = .copy) : ∀ T ∈ sd.fields, T.qual D = .copy := by
+    (hqual : sd.qual = .copy) : ∀ T ∈ sd.fields, T.qual D = .copy := by
   intro T hmem
   have hattr : sd.attr = .copy := by
     have hc := h.qualIsJoin
-    rw [hcls] at hc
+    rw [hqual] at hc
     cases ha : sd.attr with
     | copy => rfl
     | linear => rw [ha] at hc; cases hc
@@ -436,10 +436,10 @@ theorem StructDecl.Wf.field_copy {D : Decls} {sd : StructDecl} (h : sd.Wf D)
 /-- **A `Copy` enum's payloads are `Copy`** (`6.3:19`): the qualifier is the join
 over every payload component of every variant (helper). -/
 theorem EnumDecl.Wf.payload_copy {D : Decls} {ed : EnumDecl} (h : ed.Wf D)
-    (hcls : ed.cls = .copy) : ∀ Ts ∈ ed.variants, ∀ T ∈ Ts, T.qual D = .copy := by
+    (hqual : ed.qual = .copy) : ∀ Ts ∈ ed.variants, ∀ T ∈ Ts, T.qual D = .copy := by
   intro Ts hTs T hT
   have hle := rank_le_payloadFold_of_mem D ed.variants .copy Ts T hTs hT
-  have : (ed.payloadJoin D).rank = 0 := by rw [← h.qualIsJoin, hcls]; rfl
+  have : (ed.payloadJoin D).rank = 0 := by rw [← h.qualIsJoin, hqual]; rfl
   exact Qual.eq_copy_of_rank (by unfold EnumDecl.payloadJoin at this; omega)
 
 /-- **A `Copy` array's element type is `Copy`** (§3's array lift) (helper). -/
@@ -461,16 +461,16 @@ theorem ContentsTy.allCopy {D : Decls} {c : Contents} {T : Ty} (hwf : WfDecls D)
   | bool => rfl
   | unit => rfl
   | @struct s sd i cs hd hcs =>
-      have hcls : sd.cls = .copy := by simpa only [Ty.qual, Decls.qualOf, hd] using hc
-      have hc' : D.qualOf s = .copy := by simp only [Decls.qualOf, hd]; exact hcls
+      have hqual : sd.qual = .copy := by simpa only [Ty.qual, Decls.qualOf, hd] using hc
+      have hc' : D.qualOf s = .copy := by simp only [Decls.qualOf, hd]; exact hqual
       simp only [Contents.allCopy, hc', decide_true, Bool.true_and]
-      exact ContentsTys.allCopyList hwf hcs ((hwf.structs s sd hd).field_copy hcls)
+      exact ContentsTys.allCopyList hwf hcs ((hwf.structs s sd hd).field_copy hqual)
   | @enum e k ed Ts i cs hd hv hcs =>
-      have hcls : ed.cls = .copy := by simpa only [Ty.qual, Decls.enumQualOf, hd] using hc
-      have hc' : D.enumQualOf e = .copy := by simp only [Decls.enumQualOf, hd]; exact hcls
+      have hqual : ed.qual = .copy := by simpa only [Ty.qual, Decls.enumQualOf, hd] using hc
+      have hc' : D.enumQualOf e = .copy := by simp only [Decls.enumQualOf, hd]; exact hqual
       simp only [Contents.allCopy, hc', decide_true, Bool.true_and]
       exact ContentsTys.allCopyList hwf hcs
-        ((hwf.enums e ed hd).payload_copy hcls Ts (List.mem_of_getElem? hv))
+        ((hwf.enums e ed hd).payload_copy hqual Ts (List.mem_of_getElem? hv))
   | @array T n i cs hcs =>
       have hlen : cs.length = n := by simpa using hcs.length_eq
       simp only [Contents.allCopy, hlen, hc, decide_true, Bool.true_and]
@@ -507,16 +507,16 @@ theorem ContentsTy.copyContained {D : Decls} {c : Contents} {T : Ty} (hwf : WfDe
       simp only [Contents.copyContained]
       split
       · rename_i hc'
-        have hcls : sd.cls = .copy := by simpa only [Decls.qualOf, hd] using hc'
-        exact ContentsTys.allCopyList hwf hcs ((hwf.structs s sd hd).field_copy hcls)
+        have hqual : sd.qual = .copy := by simpa only [Decls.qualOf, hd] using hc'
+        exact ContentsTys.allCopyList hwf hcs ((hwf.structs s sd hd).field_copy hqual)
       · exact ContentsTys.copyContainedList hwf hcs
   | @enum e k ed Ts i cs hd hv hcs =>
       simp only [Contents.copyContained]
       split
       · rename_i hc'
-        have hcls : ed.cls = .copy := by simpa only [Decls.enumQualOf, hd] using hc'
+        have hqual : ed.qual = .copy := by simpa only [Decls.enumQualOf, hd] using hc'
         exact ContentsTys.allCopyList hwf hcs
-          ((hwf.enums e ed hd).payload_copy hcls Ts (List.mem_of_getElem? hv))
+          ((hwf.enums e ed hd).payload_copy hqual Ts (List.mem_of_getElem? hv))
       · exact ContentsTys.copyContainedList hwf hcs
   | @array T n i cs hcs =>
       have hlen : cs.length = n := by simpa using hcs.length_eq
@@ -683,24 +683,24 @@ theorem ContentsTy.residualLinear_false {D : Decls} {c : Contents} {T : Ty}
   | bool => rfl
   | unit => rfl
   | @struct s sd i cs hd hcs =>
-      have hcls : sd.cls ≠ .linear := by
+      have hqual : sd.qual ≠ .linear := by
         simpa only [Ty.qual, Decls.qualOf, hd] using hnl
       have hw := hwf.structs s sd hd
       have hattr : ¬ (sd.attr = .linear) := by
         intro ha
-        exact hcls (by rw [hw.qualIsJoin, ha]; rfl)
+        exact hqual (by rw [hw.qualIsJoin, ha]; rfl)
       simp only [Contents.residualLinear, hd, hattr, Bool.false_or, decide_false]
-      exact ContentsTys.residualLinearList_false hwf hcs (hw.field_not_linear hcls)
+      exact ContentsTys.residualLinearList_false hwf hcs (hw.field_not_linear hqual)
   | @enum e k ed Ts i cs hd hv hcs =>
       -- §6.11's enum case reads the **active** payload, and §3's join
       -- (`6.3:19`) makes a non-`Linear` enum one with no linear payload in any
       -- variant, the active one included.
-      have hcls : ed.cls ≠ .linear := by
+      have hqual : ed.qual ≠ .linear := by
         simpa only [Ty.qual, Decls.enumQualOf, hd] using hnl
       have hw := hwf.enums e ed hd
       simp only [Contents.residualLinear]
       exact ContentsTys.residualLinearList_false hwf hcs
-        (hw.payload_not_linear hcls Ts (List.mem_of_getElem? hv))
+        (hw.payload_not_linear hqual Ts (List.mem_of_getElem? hv))
   | @array T n i cs hcs =>
       -- An array carries no obligation of its own, so the question is whether
       -- an **element** does. It cannot: `qual([T; n])` reaches `Linear`
