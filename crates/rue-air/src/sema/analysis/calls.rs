@@ -453,17 +453,6 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         Ok(Some(AnalysisResult::new(air_ref, Type::COMPTIME_TYPE)))
     }
 
-    /// Analyze a call after the source-level callee has already been resolved
-    /// to an internal function key.
-    ///
-    /// Unqualified source calls enter through [`Self::analyze_call`], which
-    /// performs local alias resolution, module-local name canonicalization, and
-    /// builtin interception before reaching this helper. Module-member calls
-    /// such as `std.option.Option(i64)` resolve and validate their member in
-    /// `analyze_module_member_call_impl`; generic members use this helper
-    /// directly so module-qualified type constructors do not re-enter
-    /// unqualified source-name lookup.
-    #[allow(clippy::too_many_arguments)]
     /// Give each runtime parameter whose declared type depends on a comptime
     /// argument (`borrow s: T`, `s: Wrap([i64], N)`) its type at this call.
     ///
@@ -590,6 +579,17 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         ))
     }
 
+    /// Analyze a call after the source-level callee has already been resolved
+    /// to an internal function key.
+    ///
+    /// Unqualified source calls enter through [`Self::analyze_call`], which
+    /// performs local alias resolution, module-local name canonicalization, and
+    /// builtin interception before reaching this helper. Module-member calls
+    /// such as `std.option.Option(i64)` resolve and validate their member in
+    /// `analyze_module_member_call_impl`; generic members use this helper
+    /// directly so module-qualified type constructors do not re-enter
+    /// unqualified source-name lookup.
+    #[allow(clippy::too_many_arguments)]
     fn analyze_resolved_function_call(
         &mut self,
         air: &mut Air,
