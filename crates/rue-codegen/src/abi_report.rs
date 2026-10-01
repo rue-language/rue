@@ -442,13 +442,9 @@ fn native_side(
     // instruction, a by-reference one only through the pointee type on the
     // places that read it. The second also names a by-value parameter read
     // only through places, which the report treats exactly as the first.
-    // A comptime value parameter the body never reads has neither — its value
-    // was substituted away, though the caller still passes it — so its type
-    // comes from the body's comptime parameter record.
-    let mut value_types = rue_air::body_parameter_types(air);
-    for &(slot, ty) in air.comptime_param_types() {
-        value_types.entry(slot).or_insert(ty);
-    }
+    // The first also names a comptime value parameter the body never reads
+    // (RUE-2551, RUE-2563).
+    let value_types = rue_air::body_parameter_types(air);
     let pointee_types = rue_air::parameter_place_base_types(air);
 
     let descriptors = parameter_descriptors(cfg);
