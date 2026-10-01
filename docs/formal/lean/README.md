@@ -703,8 +703,10 @@ a slice author writes:
     (RUE-2511), written with a leading `core:` so that it never reads as a
     prose-specification paragraph (RUE-2524). It also counts as citing its
     section, and the gate fails on an id the calculus does not declare, or one
-    written malformed (a section with no paragraph number, or a `.`-numbered
-    tail after the paragraph number, which no id has), anywhere in a text file
+    written malformed (a section with no paragraph number, a `.`-numbered
+    tail after the paragraph number, which no id has, or a range with no last
+    paragraph), or a paragraph id written with a `§` (the spelling before
+    RUE-2524, wrong here for either document), anywhere in a text file
     under `docs/formal`: Lean strings and `--` comments, `explain/*.txt` and
     the Markdown documents included, and at both ends of a range such as
     `core:6.4:3–9`;
