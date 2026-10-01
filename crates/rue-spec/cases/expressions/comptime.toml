@@ -1243,6 +1243,54 @@ fn main() -> i32 {
 compile_fail = true
 error_contains = ["E1201", "comptime parameter requires a compile-time known value"]
 
+# A runtime binding in scope shadows a same-named `const`, so it is not a
+# compile-time known argument of a type constructor's comptime parameter:
+# E1201 whether the application is a type annotation or a construction
+# expression (RUE-2446).
+[[case]]
+name = "type_constructor_runtime_local_argument_in_annotation"
+spec = ["4.14:6", "4.14:22", "4.14:26", "4.14:29"]
+source = """
+const n: i32 = 2;
+fn Buf(comptime N: i32) -> type { struct { data: [i32; N] } }
+fn main() -> i32 {
+    let n = 5;
+    let b: Buf(n) = Buf(2) { data: [1, 2] };
+    b.data[1] + n
+}
+"""
+compile_fail = true
+error_contains = ["E1201", "comptime parameter requires a compile-time known value"]
+
+[[case]]
+name = "type_constructor_runtime_local_argument_in_expression"
+spec = ["4.14:6", "4.14:22", "4.14:26", "4.14:29"]
+source = """
+const n: i32 = 2;
+fn Buf(comptime N: i32) -> type { struct { data: [i32; N] } }
+fn main() -> i32 {
+    let n = 5;
+    let b = Buf(n) { data: [1, 2] };
+    b.data[1]
+}
+"""
+compile_fail = true
+error_contains = ["E1201", "comptime parameter requires a compile-time known value"]
+
+[[case]]
+name = "type_constructor_const_argument_with_unrelated_local"
+spec = ["4.14:22", "4.14:26"]
+source = """
+const n: i32 = 2;
+fn Buf(comptime N: i32) -> type { struct { data: [i32; N] } }
+fn main() -> i32 {
+    let m = 5;
+    let b: Buf(n) = Buf(n) { data: [1, 2] };
+    b.data[1] + m
+}
+"""
+exit_code = 7
+
 [[case]]
 name = "type_call_runtime_param_in_comptime_block"
 spec = ["4.14:6", "4.14:28"]

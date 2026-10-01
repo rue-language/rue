@@ -1852,7 +1852,7 @@ compile_fail = true
 [[case]]
 name = "array_length_runtime_param_shadows_const"
 error_contains = "[E0481]"
-spec = ["3.5:2"]
+spec = ["3.5:2", "7.1:32", "7.1:33"]
 source = """
 const n: i32 = 2;
 fn f(n: i32) -> i32 {
@@ -1868,7 +1868,7 @@ compile_fail = true
 [[case]]
 name = "array_repeat_runtime_param_count_shadows_const"
 error_contains = "[E0481]"
-spec = ["7.1:37"]
+spec = ["7.1:32", "7.1:33", "7.1:37"]
 source = """
 const n: i32 = 2;
 fn f(n: i32) -> i32 {
@@ -1884,7 +1884,7 @@ compile_fail = true
 [[case]]
 name = "array_length_local_shadows_const"
 error_contains = "[E0481]"
-spec = ["3.5:2"]
+spec = ["3.5:2", "7.1:32", "7.1:33"]
 source = """
 const N: i32 = 2;
 fn main() -> i32 {
@@ -1898,7 +1898,7 @@ compile_fail = true
 [[case]]
 name = "array_repeat_local_count_shadows_const"
 error_contains = "[E0481]"
-spec = ["7.1:37"]
+spec = ["7.1:32", "7.1:33", "7.1:37"]
 source = """
 const N: i32 = 2;
 fn main() -> i32 {
@@ -1912,7 +1912,7 @@ compile_fail = true
 [[case]]
 name = "array_repeat_unannotated_local_count_shadows_const"
 error_contains = "[E0481]"
-spec = ["7.1:37"]
+spec = ["7.1:32", "7.1:33", "7.1:37"]
 description = "A loop binder shadows the `const` too, with no annotation to take a length from"
 source = """
 const i: i32 = 2;
@@ -1930,7 +1930,7 @@ compile_fail = true
 [[case]]
 name = "array_length_comptime_type_param_shadows_const"
 error_contains = "[E0481]"
-spec = ["3.5:2"]
+spec = ["3.5:2", "7.1:32", "7.1:33"]
 source = """
 const N: i32 = 2;
 fn f(comptime N: type) -> i32 {
@@ -1946,7 +1946,7 @@ compile_fail = true
 [[case]]
 name = "array_repeat_comptime_type_param_count_shadows_const"
 error_contains = "[E0481]"
-spec = ["7.1:37"]
+spec = ["7.1:32", "7.1:33", "7.1:37"]
 source = """
 const N: i32 = 2;
 fn f(comptime N: type) -> i32 {
@@ -1962,7 +1962,7 @@ compile_fail = true
 [[case]]
 name = "array_repeat_type_alias_count_shadows_const"
 error_contains = "[E0481]"
-spec = ["7.1:37"]
+spec = ["7.1:32", "7.1:33", "7.1:37"]
 source = """
 const N: i32 = 2;
 fn main() -> i32 {
@@ -1976,7 +1976,7 @@ compile_fail = true
 [[case]]
 name = "array_length_local_shadows_comptime_value_param"
 error_contains = "[E0481]"
-spec = ["3.5:2"]
+spec = ["3.5:2", "7.1:32", "7.1:33"]
 description = "A local shadows an enclosing `comptime` value parameter of the same name as it shadows a `const`"
 source = """
 fn f(comptime n: i32) -> i32 {
@@ -1993,7 +1993,7 @@ compile_fail = true
 [[case]]
 name = "array_repeat_local_count_shadows_comptime_value_param"
 error_contains = "[E0481]"
-spec = ["7.1:37"]
+spec = ["7.1:32", "7.1:33", "7.1:37"]
 source = """
 fn f(comptime n: i32) -> i32 {
     let n = 5;
@@ -2008,7 +2008,7 @@ compile_fail = true
 
 [[case]]
 name = "array_length_comptime_value_param_shadows_const"
-spec = ["3.5:2", "7.1:37"]
+spec = ["3.5:2", "7.1:32", "7.1:37"]
 description = "A `comptime` value parameter shadows a same-named `const` and is itself a compile-time constant"
 source = """
 const n: i32 = 9;
@@ -2025,7 +2025,7 @@ exit_code = 11
 
 [[case]]
 name = "array_length_captured_comptime_param_shadows_const"
-spec = ["3.5:2", "7.1:37"]
+spec = ["3.5:2", "7.1:32", "7.1:37"]
 description = "A method of a generic type reads the captured `comptime` parameter, not the shadowed `const`"
 source = """
 const N: i32 = 9;
@@ -2047,7 +2047,7 @@ exit_code = 6
 
 [[case]]
 name = "array_length_const_before_a_later_shadow"
-spec = ["3.5:2", "7.1:37"]
+spec = ["3.5:2", "7.1:32", "7.1:37"]
 description = "A binding declared after the array does not shadow the `const` yet (5.1:12)"
 source = """
 const N: i32 = 2;
@@ -2061,7 +2061,7 @@ exit_code = 12
 
 [[case]]
 name = "array_length_const_after_a_shadow_goes_out_of_scope"
-spec = ["3.5:2", "7.1:37"]
+spec = ["3.5:2", "7.1:32", "7.1:37"]
 description = "A shadow in an inner block ends with the block, and the `const` is the length again"
 source = """
 const N: i32 = 2;
@@ -2079,7 +2079,7 @@ exit_code = 12
 
 [[case]]
 name = "array_length_const_not_shadowed_by_another_functions_param"
-spec = ["3.5:2", "7.1:37"]
+spec = ["3.5:2", "7.1:32", "7.1:37"]
 description = "A parameter of one function does not shadow the `const` in another function"
 source = """
 const n: i32 = 2;
@@ -2095,7 +2095,7 @@ exit_code = 8
 
 [[case]]
 name = "array_length_imported_const_unaffected_by_caller_shadow"
-spec = ["3.5:2", "7.1:37"]
+spec = ["3.5:2", "7.1:32", "7.1:37"]
 description = "A module's own `const` length is not shadowed by a same-named local of the caller, and a parameter named like the import does not shadow a `const` defined from it"
 source = """
 const m = @import("lib.rue");
@@ -2117,6 +2117,180 @@ pub fn mk() -> i32 {
 }
 """ }
 exit_code = 7
+
+# The same lexical scoping holds where a length is read by the compile-time
+# evaluator rather than by a `let` annotation: inside a `comptime` block, in
+# an anonymous struct or enum declared in a body, and in a type function's
+# body. A runtime binding of the outer body inside a `comptime` block is not
+# compile-time known, so the block is E1200, as `comptime { n }` and the
+# repeat count `[2; n]` there are; a local of the block itself is a
+# compile-time value and is the length. Each case used the shadowed `const`
+# (RUE-2446).
+[[case]]
+name = "array_length_in_comptime_block_names_runtime_param"
+error_contains = "[E1200]"
+spec = ["7.1:32", "7.1:33", "4.14:26"]
+source = """
+const n: i32 = 2;
+fn f(n: i32) -> i32 {
+    let x = comptime {
+        let a: [i32; n] = [4, 4];
+        a[1]
+    };
+    x + n
+}
+fn main() -> i32 {
+    f(1)
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "array_length_in_comptime_block_names_outer_runtime_local"
+error_contains = "[E1200]"
+spec = ["7.1:32", "7.1:33", "4.14:26"]
+source = """
+const n: i32 = 2;
+fn main() -> i32 {
+    let n = 7;
+    let x = comptime {
+        let a: [i32; n] = [2, 2];
+        a[1]
+    };
+    x + n
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "array_length_in_comptime_block_names_block_local"
+spec = ["7.1:32", "4.14:26", "4.14:27"]
+description = "A local of the `comptime` block shadows the `const` and is itself the compile-time length"
+source = """
+const n: i32 = 2;
+fn main() -> i32 {
+    let x = comptime {
+        let n = 3;
+        let a: [i32; n] = [2, 2, 5];
+        a[2]
+    };
+    x
+}
+"""
+exit_code = 5
+
+[[case]]
+name = "array_length_in_comptime_block_names_unshadowed_const"
+spec = ["7.1:32", "4.14:26"]
+source = """
+const n: i32 = 2;
+fn main() -> i32 {
+    let m = 9;
+    let x = comptime {
+        let a: [i32; n] = [4, 6];
+        a[1]
+    };
+    x + m
+}
+"""
+exit_code = 15
+
+[[case]]
+name = "array_length_in_body_anonymous_struct_field_names_local"
+error_contains = "[E0481]"
+spec = ["7.1:32", "7.1:33"]
+source = """
+const n: i32 = 2;
+fn main() -> i32 {
+    let n = 5;
+    let T = struct { a: [i32; n] };
+    let t = T { a: [7, 7] };
+    t.a[1] + n
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "array_length_in_body_anonymous_enum_payload_names_local"
+error_contains = "[E0481]"
+spec = ["7.1:32", "7.1:33"]
+source = """
+const n: i32 = 2;
+fn main() -> i32 {
+    let n = 5;
+    let E = enum { A([i32; n]), B };
+    let e = E.A([7, 7]);
+    match e {
+        E.A(a) => a[1] + n,
+        E.B => 0,
+    }
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "array_length_in_body_anonymous_struct_field_names_const"
+spec = ["7.1:32"]
+description = "An unrelated local leaves the `const` the length of a body's anonymous struct field"
+source = """
+const n: i32 = 2;
+fn main() -> i32 {
+    let m = 5;
+    let T = struct { a: [i32; n] };
+    let t = T { a: [7, 7] };
+    t.a[1] + m
+}
+"""
+exit_code = 12
+
+[[case]]
+name = "array_length_in_type_function_names_comptime_type_param"
+error_contains = "[E0481]"
+spec = ["7.1:32", "7.1:33"]
+source = """
+const n: i32 = 2;
+fn Mk(comptime n: type) -> type {
+    struct { a: [i32; n] }
+}
+fn main() -> i32 {
+    let m = Mk(u8) { a: [3, 4] };
+    m.a[1]
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "array_length_in_type_function_names_type_alias"
+error_contains = "[E0481]"
+spec = ["7.1:32", "7.1:33"]
+source = """
+const n: i32 = 2;
+fn Mk(comptime T: type) -> type {
+    let n = T;
+    struct { a: [i32; n] }
+}
+fn main() -> i32 {
+    let m = Mk(u8) { a: [3, 4] };
+    m.a[1]
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "array_length_in_type_function_names_const"
+spec = ["7.1:32"]
+description = "A type function's own type parameter of another name leaves the `const` the length"
+source = """
+const n: i32 = 2;
+fn Mk(comptime T: type) -> type {
+    struct { a: [T; n] }
+}
+fn main() -> i32 {
+    let m = Mk(i32) { a: [3, 4] };
+    m.a[1]
+}
+"""
+exit_code = 4
 
 [[case]]
 name = "array_repeat_valid_const_count_against_wrong_annotation"
