@@ -3022,6 +3022,12 @@ pub(crate) fn apply_general_inlining(
                     // kept rather than failing the batch.
                     continue;
                 }
+                Err(rue_cfg::CfgInlineError::ByRefArgumentViewAccess { .. }) => {
+                    // The callee writes or projects through an `inout str`
+                    // view of a `Str(N)` argument place, which has no CFG
+                    // form over that storage. Keep the call.
+                    continue;
+                }
                 Err(error) => {
                     failed = Some(format!("general inline growth preflight failed: {error}"));
                     break;
