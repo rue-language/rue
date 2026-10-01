@@ -5329,6 +5329,409 @@ exit_code = 0
 expected_stdout = "7\n3\n3\n8\n12\n4\n4\n13\n1\n2\n2\n1\n10\n5\n11\n6\n11\n5\n6\n21\n20\n99\n"
 opt_level = 3
 
+# -----------------------------------------------------------------------------
+# Zero-width by-value parameters are parameters of their own (RUE-2534). A
+# zero-width parameter takes no ABI slot, so it used to be named by the next
+# parameter's slot: a destructor-bearing one was never dropped at exit, and
+# its moved state stood in for the next parameter's. Every destructor below
+# runs exactly once, and the parameters still drop in reverse declaration
+# order.
+# -----------------------------------------------------------------------------
+
+[[case]]
+name = "zero_width_params_keep_their_own_drop_state"
+spec = ["3.8:62", "3.9:38"]
+description = "A destructor-bearing zero-width by-value parameter in any position (only, first, middle, last; beside `()` and `[T; 0]` parameters; a generic `T = Z`; a by-value `self`; a zero-width wrapper) is dropped exactly once on every path: at exit, by an unconditional or conditional `@drop`, by a move into a callee or out of the function, or on an early return; moving it never moves the next parameter (RUE-2534)"
+source = """
+struct S { v: i64 }
+drop fn S(self) { @dbg(self.v); }
+struct Z {
+    fn take(self, x: S) { @dbg(15); }
+    fn take_if(self, c: bool, x: S) {
+        if c { @drop(self); } else { () };
+        @dbg(16);
+    }
+    fn reset(mut self, x: S) { self = Z {}; @dbg(17); }
+}
+drop fn Z(self) { @dbg(99); }
+struct Y {}
+drop fn Y(self) { @dbg(98); }
+struct W { z: Z }
+
+fn only(z: Z) { @dbg(1); }                        // 1, z
+fn first(z: Z, x: S) { @dbg(2); }                 // 2, x, z
+fn middle(x: S, z: Z, y: S) { @dbg(3); }          // 3, y, z, x
+fn last(x: S, z: Z) { @dbg(4); }                  // 4, z, x
+
+fn drop_zero_width(z: Z, x: S) { @drop(z); @dbg(5); }   // z, 5, x
+fn drop_sized(z: Z, x: S) { @drop(x); @dbg(6); }        // x, 6, z
+
+fn conditional(c: bool, z: Z, x: S) {
+    if c { @drop(z); } else { () };
+    if !c { @drop(x); } else { () };
+    @dbg(7);
+}
+
+fn two_zero_width(c: bool, a: Z, b: Y, x: S) {
+    if c { @drop(a); } else { @drop(b); };
+    @dbg(8);
+}
+
+fn same_type(c: bool, a: Z, b: Z) {
+    if c { @drop(a); } else { () };
+    @dbg(9);
+}
+
+fn sink(z: Z) { @dbg(10); }
+fn forward(z: Z, x: S) { sink(z); @dbg(11); }     // 10, z, 11, x
+fn pass(z: Z, x: S) -> Z { z }                    // x, then the caller's z
+
+fn early(c: bool, z: Z, x: S) -> i64 {
+    if c { return 12; }
+    @drop(z);
+    13
+}
+
+fn generic(comptime T: type, c: bool, t: T, x: S) {
+    if c { @drop(t); } else { () };
+    @dbg(14);
+}
+
+fn units(u: (), e: [S; 0], z: Z, f: [Z; 0], x: S) { @dbg(18); }   // 18, x, z
+
+fn wrapper(c: bool, w: W, x: S) {
+    if c { @drop(w.z); } else { () };
+    @dbg(19);
+}
+
+fn main() -> i32 {
+    only(Z {});
+    first(Z {}, S { v: 20 });
+    middle(S { v: 30 }, Z {}, S { v: 31 });
+    last(S { v: 40 }, Z {});
+    drop_zero_width(Z {}, S { v: 50 });
+    drop_sized(Z {}, S { v: 60 });
+    conditional(true, Z {}, S { v: 70 });
+    conditional(false, Z {}, S { v: 71 });
+    two_zero_width(true, Z {}, Y {}, S { v: 80 });
+    two_zero_width(false, Z {}, Y {}, S { v: 81 });
+    same_type(true, Z {}, Z {});
+    same_type(false, Z {}, Z {});
+    forward(Z {}, S { v: 110 });
+    @drop(pass(Z {}, S { v: 111 }));
+    @dbg(early(true, Z {}, S { v: 120 }));
+    @dbg(early(false, Z {}, S { v: 121 }));
+    generic(Z, true, Z {}, S { v: 140 });
+    generic(Z, false, Z {}, S { v: 141 });
+    Z {}.take(S { v: 150 });
+    Z {}.take_if(true, S { v: 160 });
+    Z {}.take_if(false, S { v: 161 });
+    Z {}.reset(S { v: 170 });
+    units((), [], Z {}, [], S { v: 180 });
+    wrapper(true, W { z: Z {} }, S { v: 190 });
+    wrapper(false, W { z: Z {} }, S { v: 191 });
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "1\n99\n2\n20\n99\n3\n31\n99\n30\n4\n99\n40\n99\n5\n50\n60\n6\n99\n99\n7\n70\n71\n7\n99\n99\n8\n80\n98\n98\n8\n81\n99\n99\n9\n99\n9\n99\n99\n10\n99\n11\n110\n111\n99\n120\n99\n12\n99\n121\n13\n99\n14\n140\n14\n141\n99\n15\n150\n99\n99\n16\n160\n16\n161\n99\n99\n17\n170\n99\n18\n180\n99\n99\n19\n190\n19\n191\n99\n"
+
+[[case]]
+name = "zero_width_params_keep_their_own_drop_state_o2"
+spec = ["3.8:62", "3.9:38"]
+description = "At -O2, a destructor-bearing zero-width by-value parameter in any position (only, first, middle, last; beside `()` and `[T; 0]` parameters; a generic `T = Z`; a by-value `self`; a zero-width wrapper) is dropped exactly once on every path: at exit, by an unconditional or conditional `@drop`, by a move into a callee or out of the function, or on an early return; moving it never moves the next parameter (RUE-2534)"
+source = """
+struct S { v: i64 }
+drop fn S(self) { @dbg(self.v); }
+struct Z {
+    fn take(self, x: S) { @dbg(15); }
+    fn take_if(self, c: bool, x: S) {
+        if c { @drop(self); } else { () };
+        @dbg(16);
+    }
+    fn reset(mut self, x: S) { self = Z {}; @dbg(17); }
+}
+drop fn Z(self) { @dbg(99); }
+struct Y {}
+drop fn Y(self) { @dbg(98); }
+struct W { z: Z }
+
+fn only(z: Z) { @dbg(1); }                        // 1, z
+fn first(z: Z, x: S) { @dbg(2); }                 // 2, x, z
+fn middle(x: S, z: Z, y: S) { @dbg(3); }          // 3, y, z, x
+fn last(x: S, z: Z) { @dbg(4); }                  // 4, z, x
+
+fn drop_zero_width(z: Z, x: S) { @drop(z); @dbg(5); }   // z, 5, x
+fn drop_sized(z: Z, x: S) { @drop(x); @dbg(6); }        // x, 6, z
+
+fn conditional(c: bool, z: Z, x: S) {
+    if c { @drop(z); } else { () };
+    if !c { @drop(x); } else { () };
+    @dbg(7);
+}
+
+fn two_zero_width(c: bool, a: Z, b: Y, x: S) {
+    if c { @drop(a); } else { @drop(b); };
+    @dbg(8);
+}
+
+fn same_type(c: bool, a: Z, b: Z) {
+    if c { @drop(a); } else { () };
+    @dbg(9);
+}
+
+fn sink(z: Z) { @dbg(10); }
+fn forward(z: Z, x: S) { sink(z); @dbg(11); }     // 10, z, 11, x
+fn pass(z: Z, x: S) -> Z { z }                    // x, then the caller's z
+
+fn early(c: bool, z: Z, x: S) -> i64 {
+    if c { return 12; }
+    @drop(z);
+    13
+}
+
+fn generic(comptime T: type, c: bool, t: T, x: S) {
+    if c { @drop(t); } else { () };
+    @dbg(14);
+}
+
+fn units(u: (), e: [S; 0], z: Z, f: [Z; 0], x: S) { @dbg(18); }   // 18, x, z
+
+fn wrapper(c: bool, w: W, x: S) {
+    if c { @drop(w.z); } else { () };
+    @dbg(19);
+}
+
+fn main() -> i32 {
+    only(Z {});
+    first(Z {}, S { v: 20 });
+    middle(S { v: 30 }, Z {}, S { v: 31 });
+    last(S { v: 40 }, Z {});
+    drop_zero_width(Z {}, S { v: 50 });
+    drop_sized(Z {}, S { v: 60 });
+    conditional(true, Z {}, S { v: 70 });
+    conditional(false, Z {}, S { v: 71 });
+    two_zero_width(true, Z {}, Y {}, S { v: 80 });
+    two_zero_width(false, Z {}, Y {}, S { v: 81 });
+    same_type(true, Z {}, Z {});
+    same_type(false, Z {}, Z {});
+    forward(Z {}, S { v: 110 });
+    @drop(pass(Z {}, S { v: 111 }));
+    @dbg(early(true, Z {}, S { v: 120 }));
+    @dbg(early(false, Z {}, S { v: 121 }));
+    generic(Z, true, Z {}, S { v: 140 });
+    generic(Z, false, Z {}, S { v: 141 });
+    Z {}.take(S { v: 150 });
+    Z {}.take_if(true, S { v: 160 });
+    Z {}.take_if(false, S { v: 161 });
+    Z {}.reset(S { v: 170 });
+    units((), [], Z {}, [], S { v: 180 });
+    wrapper(true, W { z: Z {} }, S { v: 190 });
+    wrapper(false, W { z: Z {} }, S { v: 191 });
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "1\n99\n2\n20\n99\n3\n31\n99\n30\n4\n99\n40\n99\n5\n50\n60\n6\n99\n99\n7\n70\n71\n7\n99\n99\n8\n80\n98\n98\n8\n81\n99\n99\n9\n99\n9\n99\n99\n10\n99\n11\n110\n111\n99\n120\n99\n12\n99\n121\n13\n99\n14\n140\n14\n141\n99\n15\n150\n99\n99\n16\n160\n16\n161\n99\n99\n17\n170\n99\n18\n180\n99\n99\n19\n190\n19\n191\n99\n"
+opt_level = 2
+
+[[case]]
+name = "zero_width_params_keep_their_own_drop_state_o3"
+spec = ["3.8:62", "3.9:38"]
+description = "At -O3, a destructor-bearing zero-width by-value parameter in any position (only, first, middle, last; beside `()` and `[T; 0]` parameters; a generic `T = Z`; a by-value `self`; a zero-width wrapper) is dropped exactly once on every path: at exit, by an unconditional or conditional `@drop`, by a move into a callee or out of the function, or on an early return; moving it never moves the next parameter (RUE-2534)"
+source = """
+struct S { v: i64 }
+drop fn S(self) { @dbg(self.v); }
+struct Z {
+    fn take(self, x: S) { @dbg(15); }
+    fn take_if(self, c: bool, x: S) {
+        if c { @drop(self); } else { () };
+        @dbg(16);
+    }
+    fn reset(mut self, x: S) { self = Z {}; @dbg(17); }
+}
+drop fn Z(self) { @dbg(99); }
+struct Y {}
+drop fn Y(self) { @dbg(98); }
+struct W { z: Z }
+
+fn only(z: Z) { @dbg(1); }                        // 1, z
+fn first(z: Z, x: S) { @dbg(2); }                 // 2, x, z
+fn middle(x: S, z: Z, y: S) { @dbg(3); }          // 3, y, z, x
+fn last(x: S, z: Z) { @dbg(4); }                  // 4, z, x
+
+fn drop_zero_width(z: Z, x: S) { @drop(z); @dbg(5); }   // z, 5, x
+fn drop_sized(z: Z, x: S) { @drop(x); @dbg(6); }        // x, 6, z
+
+fn conditional(c: bool, z: Z, x: S) {
+    if c { @drop(z); } else { () };
+    if !c { @drop(x); } else { () };
+    @dbg(7);
+}
+
+fn two_zero_width(c: bool, a: Z, b: Y, x: S) {
+    if c { @drop(a); } else { @drop(b); };
+    @dbg(8);
+}
+
+fn same_type(c: bool, a: Z, b: Z) {
+    if c { @drop(a); } else { () };
+    @dbg(9);
+}
+
+fn sink(z: Z) { @dbg(10); }
+fn forward(z: Z, x: S) { sink(z); @dbg(11); }     // 10, z, 11, x
+fn pass(z: Z, x: S) -> Z { z }                    // x, then the caller's z
+
+fn early(c: bool, z: Z, x: S) -> i64 {
+    if c { return 12; }
+    @drop(z);
+    13
+}
+
+fn generic(comptime T: type, c: bool, t: T, x: S) {
+    if c { @drop(t); } else { () };
+    @dbg(14);
+}
+
+fn units(u: (), e: [S; 0], z: Z, f: [Z; 0], x: S) { @dbg(18); }   // 18, x, z
+
+fn wrapper(c: bool, w: W, x: S) {
+    if c { @drop(w.z); } else { () };
+    @dbg(19);
+}
+
+fn main() -> i32 {
+    only(Z {});
+    first(Z {}, S { v: 20 });
+    middle(S { v: 30 }, Z {}, S { v: 31 });
+    last(S { v: 40 }, Z {});
+    drop_zero_width(Z {}, S { v: 50 });
+    drop_sized(Z {}, S { v: 60 });
+    conditional(true, Z {}, S { v: 70 });
+    conditional(false, Z {}, S { v: 71 });
+    two_zero_width(true, Z {}, Y {}, S { v: 80 });
+    two_zero_width(false, Z {}, Y {}, S { v: 81 });
+    same_type(true, Z {}, Z {});
+    same_type(false, Z {}, Z {});
+    forward(Z {}, S { v: 110 });
+    @drop(pass(Z {}, S { v: 111 }));
+    @dbg(early(true, Z {}, S { v: 120 }));
+    @dbg(early(false, Z {}, S { v: 121 }));
+    generic(Z, true, Z {}, S { v: 140 });
+    generic(Z, false, Z {}, S { v: 141 });
+    Z {}.take(S { v: 150 });
+    Z {}.take_if(true, S { v: 160 });
+    Z {}.take_if(false, S { v: 161 });
+    Z {}.reset(S { v: 170 });
+    units((), [], Z {}, [], S { v: 180 });
+    wrapper(true, W { z: Z {} }, S { v: 190 });
+    wrapper(false, W { z: Z {} }, S { v: 191 });
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "1\n99\n2\n20\n99\n3\n31\n99\n30\n4\n99\n40\n99\n5\n50\n60\n6\n99\n99\n7\n70\n71\n7\n99\n99\n8\n80\n98\n98\n8\n81\n99\n99\n9\n99\n9\n99\n99\n10\n99\n11\n110\n111\n99\n120\n99\n12\n99\n121\n13\n99\n14\n140\n14\n141\n99\n15\n150\n99\n99\n16\n160\n16\n161\n99\n99\n17\n170\n99\n18\n180\n99\n99\n19\n190\n19\n191\n99\n"
+opt_level = 3
+
+[[case]]
+name = "zero_width_params_keep_their_own_drop_state_near_misses"
+spec = ["3.8:62", "3.9:38"]
+description = "A zero-width `borrow` or `inout` parameter, or a `borrow self` receiver, stays the caller's: the callee drops only its by-value parameters, and an `inout` reassignment drops the caller's old value once (RUE-2534)"
+source = """
+struct S { v: i64 }
+drop fn S(self) { @dbg(self.v); }
+struct Z {
+    fn look(borrow self, x: S) { @dbg(5); }
+}
+drop fn Z(self) { @dbg(99); }
+
+fn by_borrow(borrow z: Z, x: S) { @dbg(1); }      // 1, x: z stays the caller's
+fn by_inout(inout z: Z, x: S) { @dbg(2); }        // 2, x: z stays the caller's
+fn inout_reset(inout z: Z) { z = Z {}; @dbg(3); } // the caller's old z, 3
+fn mixed(borrow a: Z, b: Z, x: S) { @dbg(4); }    // 4, x, b: never a
+
+fn main() -> i32 {
+    let z = Z {};
+    by_borrow(borrow z, S { v: 10 });
+    let mut w = Z {};
+    by_inout(inout w, S { v: 20 });
+    inout_reset(inout w);
+    mixed(borrow z, Z {}, S { v: 40 });
+    z.look(S { v: 50 });
+    @dbg(6);
+    0
+}   // w, then z
+"""
+exit_code = 0
+expected_stdout = "1\n10\n2\n20\n99\n3\n4\n40\n99\n5\n50\n6\n99\n99\n"
+
+[[case]]
+name = "zero_width_params_keep_their_own_drop_state_near_misses_o2"
+spec = ["3.8:62", "3.9:38"]
+description = "At -O2, a zero-width `borrow` or `inout` parameter, or a `borrow self` receiver, stays the caller's: the callee drops only its by-value parameters, and an `inout` reassignment drops the caller's old value once (RUE-2534)"
+source = """
+struct S { v: i64 }
+drop fn S(self) { @dbg(self.v); }
+struct Z {
+    fn look(borrow self, x: S) { @dbg(5); }
+}
+drop fn Z(self) { @dbg(99); }
+
+fn by_borrow(borrow z: Z, x: S) { @dbg(1); }      // 1, x: z stays the caller's
+fn by_inout(inout z: Z, x: S) { @dbg(2); }        // 2, x: z stays the caller's
+fn inout_reset(inout z: Z) { z = Z {}; @dbg(3); } // the caller's old z, 3
+fn mixed(borrow a: Z, b: Z, x: S) { @dbg(4); }    // 4, x, b: never a
+
+fn main() -> i32 {
+    let z = Z {};
+    by_borrow(borrow z, S { v: 10 });
+    let mut w = Z {};
+    by_inout(inout w, S { v: 20 });
+    inout_reset(inout w);
+    mixed(borrow z, Z {}, S { v: 40 });
+    z.look(S { v: 50 });
+    @dbg(6);
+    0
+}   // w, then z
+"""
+exit_code = 0
+expected_stdout = "1\n10\n2\n20\n99\n3\n4\n40\n99\n5\n50\n6\n99\n99\n"
+opt_level = 2
+
+[[case]]
+name = "zero_width_params_keep_their_own_drop_state_near_misses_o3"
+spec = ["3.8:62", "3.9:38"]
+description = "At -O3, a zero-width `borrow` or `inout` parameter, or a `borrow self` receiver, stays the caller's: the callee drops only its by-value parameters, and an `inout` reassignment drops the caller's old value once (RUE-2534)"
+source = """
+struct S { v: i64 }
+drop fn S(self) { @dbg(self.v); }
+struct Z {
+    fn look(borrow self, x: S) { @dbg(5); }
+}
+drop fn Z(self) { @dbg(99); }
+
+fn by_borrow(borrow z: Z, x: S) { @dbg(1); }      // 1, x: z stays the caller's
+fn by_inout(inout z: Z, x: S) { @dbg(2); }        // 2, x: z stays the caller's
+fn inout_reset(inout z: Z) { z = Z {}; @dbg(3); } // the caller's old z, 3
+fn mixed(borrow a: Z, b: Z, x: S) { @dbg(4); }    // 4, x, b: never a
+
+fn main() -> i32 {
+    let z = Z {};
+    by_borrow(borrow z, S { v: 10 });
+    let mut w = Z {};
+    by_inout(inout w, S { v: 20 });
+    inout_reset(inout w);
+    mixed(borrow z, Z {}, S { v: 40 });
+    z.look(S { v: 50 });
+    @dbg(6);
+    0
+}   // w, then z
+"""
+exit_code = 0
+expected_stdout = "1\n10\n2\n20\n99\n3\n4\n40\n99\n5\n50\n6\n99\n99\n"
+opt_level = 3
+
 [[case]]
 name = "zero_width_locals_for_loop_element_binding"
 spec = ["3.9:38"]
