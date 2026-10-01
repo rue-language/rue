@@ -408,7 +408,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         ctx: &mut AnalysisContext,
     ) -> CompileResult<(u32, AirRef, AirRef)> {
         let slots = self.require_layout_slots(ty, span)?;
-        let slot = self.reserve_frame_slots(&mut ctx.next_slot, slots, span)?;
+        let slot = self.reserve_local_frame_slots(&mut ctx.next_slot, slots, span)?;
         let live = air.add_inst(AirInst {
             data: AirInstData::StorageLive { slot },
             ty,
@@ -677,7 +677,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         ctx: &mut AnalysisContext,
     ) -> CompileResult<MaterializedTemporary> {
         let slots = self.require_layout_slots(ty, span)?;
-        let slot = self.reserve_frame_slots(&mut ctx.next_slot, slots, span)?;
+        let slot = self.reserve_local_frame_slots(&mut ctx.next_slot, slots, span)?;
         if ownership == TemporaryOwnership::NonOwning {
             air.add_borrow_slot(slot);
         }
@@ -1179,7 +1179,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             return Ok(air.add_block(&stmts, value, result_type, span)?);
         }
         let slots = self.require_layout_slots(base_type, span)?;
-        let temp_slot = self.reserve_frame_slots(&mut ctx.next_slot, slots, span)?;
+        let temp_slot = self.reserve_local_frame_slots(&mut ctx.next_slot, slots, span)?;
 
         let storage_live = air.add_inst(AirInst {
             data: AirInstData::StorageLive { slot: temp_slot },
@@ -2185,7 +2185,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
         // Allocate slots
         let num_slots = self.require_layout_slots(var_type, span)?;
-        let slot = self.reserve_frame_slots(&mut ctx.next_slot, num_slots, span)?;
+        let slot = self.reserve_local_frame_slots(&mut ctx.next_slot, num_slots, span)?;
 
         // A `for`-loop element binder over a NON-Copy collection aliases an
         // element the collection still owns and drops (spec 4.8:26): mark its
@@ -3515,7 +3515,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             return Ok(value);
         }
         let slots = self.require_layout_slots(ty, span)?;
-        let slot = self.reserve_frame_slots(&mut ctx.next_slot, slots, span)?;
+        let slot = self.reserve_local_frame_slots(&mut ctx.next_slot, slots, span)?;
         let storage_live = air.add_inst(AirInst {
             data: AirInstData::StorageLive { slot },
             ty,
@@ -4143,7 +4143,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
         // Allocate a temporary slot for the computed struct value
         let num_slots = self.require_layout_slots(base_type, span)?;
-        let temp_slot = self.reserve_frame_slots(&mut ctx.next_slot, num_slots, span)?;
+        let temp_slot = self.reserve_local_frame_slots(&mut ctx.next_slot, num_slots, span)?;
 
         // Emit StorageLive for the temporary
         let storage_live_ref = air.add_inst(AirInst {
@@ -4686,7 +4686,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
         // Allocate a temporary slot for the computed array value
         let num_slots = self.require_layout_slots(base_type, span)?;
-        let temp_slot = self.reserve_frame_slots(&mut ctx.next_slot, num_slots, span)?;
+        let temp_slot = self.reserve_local_frame_slots(&mut ctx.next_slot, num_slots, span)?;
 
         // Emit StorageLive for the temporary
         let storage_live_ref = air.add_inst(AirInst {
