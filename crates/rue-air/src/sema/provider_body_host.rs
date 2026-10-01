@@ -4849,9 +4849,10 @@ where
             T::Array { element, len } => {
                 crate::types::array_type_name(&self.friendly_durable_type_display(element)?, *len)
             }
-            T::Slice { element, name } => {
-                let _ = element;
-                name.to_string()
+            // A view's name is an identity spelling (RUE-2571); present the
+            // view from its element.
+            T::Slice { element, .. } => {
+                crate::types::slice_struct_name(&self.friendly_durable_type_display(element)?)
             }
             T::PtrConst(element) => {
                 format!("ptr const {}", self.friendly_durable_type_display(element)?)
@@ -4970,6 +4971,16 @@ where
                         .iter()
                         .map(|param| (param.mode, self.friendly_type_display(param.ty))),
                     (def.result != Type::UNIT).then(|| self.friendly_type_display(def.result)),
+                )
+            }
+            // A view's name is an identity spelling (RUE-2571); present the
+            // view from its element.
+            Some(TypeKind::Struct(id))
+                if self.type_pool.text_view_kind(id) == Some(crate::types::TextViewKind::Slice) =>
+            {
+                self.type_pool.index_element_type(ty).map_or_else(
+                    || ty.safe_name_with_pool(Some(&self.type_pool)),
+                    |element| crate::types::slice_struct_name(&self.friendly_type_display(element)),
                 )
             }
             _ => ty.safe_name_with_pool(Some(&self.type_pool)),
