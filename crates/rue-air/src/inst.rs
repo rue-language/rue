@@ -288,12 +288,33 @@ impl AirValidationContext<'_> {
     ///   operand that does not continue, and gives every continuing value,
     ///   including one of a written `[!; N]` type, the exact-type check.
     fn slot_accepts(&self, slot: Type, value: Type) -> bool {
-        value.can_coerce_to(&slot)
-            || slot.is_error()
-            || value.diverging_array_fits(slot, &|id| match self {
-                Self::Semantic(pool) | Self::SemanticWithSymbols(pool, _) => pool.array_def(id),
-                Self::Canonical(pool) | Self::CanonicalWithSymbols(pool, _) => pool.array_def(id),
-            })
+        value.can_coerce_to(&slot) || slot.is_error() || self.diverging_array_fits(value, slot)
+    }
+
+    /// Whether two operands of one operator agree: either coerces to the
+    /// other (`!` and `<error>` are the escapes), or one is the `[!; N]` of
+    /// an array literal whose elements all diverge and the other an array of
+    /// the same shape ([`Type::diverging_array_fits`]).
+    ///
+    /// The second escape is [`Self::slot_accepts`]'s, in either direction:
+    /// `a == [return 5; 2]` compares a `[i32; 2]` with a `[!; 2]` operand
+    /// that never completes, so the comparison never runs (RUE-2554). As at
+    /// a slot, sema admits the shape only for an operand that does not
+    /// continue and gives a continuing one the exact-type check.
+    fn operands_agree(&self, a: Type, b: Type) -> bool {
+        a.can_coerce_to(&b)
+            || b.can_coerce_to(&a)
+            || self.diverging_array_fits(a, b)
+            || self.diverging_array_fits(b, a)
+    }
+
+    /// [`Type::diverging_array_fits`] reading array definitions from this
+    /// context's type pool.
+    fn diverging_array_fits(&self, value: Type, slot: Type) -> bool {
+        value.diverging_array_fits(slot, &|id| match self {
+            Self::Semantic(pool) | Self::SemanticWithSymbols(pool, _) => pool.array_def(id),
+            Self::Canonical(pool) | Self::CanonicalWithSymbols(pool, _) => pool.array_def(id),
+        })
     }
 
     /// Whether `ty` is a string an `inout str` parameter may view in place:
@@ -2377,7 +2398,11 @@ impl Air {
             // never produces a value, and an erroneous one has already been
             // reported, so neither carries a width the operator must respect.
             // That is exactly what `Type::can_coerce_to` already means, so
-            // reuse it rather than restating the exemption.
+            // reuse it rather than restating the exemption. Two operands of
+            // one operator also agree when one is the `[!; N]` of a diverging
+            // array literal beside an array of its shape
+            // (`AirValidationContext::operands_agree`); a result type is
+            // never such an array.
             let agree = |a: Type, b: Type| a.can_coerce_to(&b) || b.can_coerce_to(&a);
             // Every operand refers backward and every place is well formed.
             // This is the canonical operand walk, so the checks below may
@@ -2395,7 +2420,7 @@ impl Air {
             let operand_ty = |value: AirRef| self.instructions[value.as_u32() as usize].ty;
             let operands_agree = |a: AirRef, b: AirRef| -> Result<(), AirValidationError> {
                 let (a_ty, b_ty) = (operand_ty(a), operand_ty(b));
-                if agree(a_ty, b_ty) {
+                if context.operands_agree(a_ty, b_ty) {
                     Ok(())
                 } else {
                     Err(fail(
