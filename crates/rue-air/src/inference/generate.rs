@@ -3423,6 +3423,14 @@ impl<'a> ConstraintGenerator<'a> {
             // (`fn make(comptime n: u64) -> i32 { [0; n][0] }`, spec 7.1:37),
             // or a file-level `const`. A count that still doesn't resolve
             // yields a fresh variable and is resolved/diagnosed by sema.
+            //
+            // The name binds lexically first, by the precedence a `VarRef`
+            // uses: a local (a runtime binding, a type alias or a module)
+            // shadows everything; a comptime value parameter comes next; any
+            // other parameter (runtime, or a comptime type parameter) and a
+            // type substitution shadow the `const`. None of those shadowing
+            // bindings is an integer constant, so the count stays a fresh
+            // variable and sema reports it as E0481 (RUE-2446).
             InstData::ArrayRepeat { value, count } => {
                 let value_info = self.generate(*value, ctx);
                 continues &= value_info.continues;
@@ -3435,9 +3443,23 @@ impl<'a> ConstraintGenerator<'a> {
                     // type stayed an unconstrained variable that decayed to
                     // `<error>`, and sema reported the array-repeat literal as
                     // an un-annotatable empty array (E0903, RUE-1681).
+                    RepeatCount::Named(sym) if ctx.locals.contains_key(sym) => None,
+                    RepeatCount::Named(sym)
+                        if self
+                            .comptime_values
+                            .is_some_and(|values| values.contains_key(sym)) =>
+                    {
+                        self.comptime_value_int(*sym)
+                            .and_then(|v| u64::try_from(v).ok())
+                    }
+                    RepeatCount::Named(sym)
+                        if ctx.contains_param(*sym)
+                            || self.type_subst.is_some_and(|types| types.contains_key(sym)) =>
+                    {
+                        None
+                    }
                     RepeatCount::Named(sym) => self
-                        .comptime_value_int(*sym)
-                        .or_else(|| self.const_value((span.file_id, *sym)))
+                        .const_value((span.file_id, *sym))
                         .and_then(|v| u64::try_from(v).ok()),
                 };
                 match resolved {

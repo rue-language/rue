@@ -215,6 +215,7 @@ pub(crate) trait TypeResolutionHost {
         span: Span,
         type_substitutions: Option<&AHashMap<Spur, Type>>,
         value_substitutions: Option<&AHashMap<Spur, ConstValue>>,
+        runtime_bindings: Option<&AHashSet<Spur>>,
     ) -> CompileResult<Type>;
 
     fn well_known_option(&self, payload: Type) -> Option<Type>;
@@ -1161,12 +1162,44 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             std::borrow::Cow::Borrowed(&ctx.comptime_type_vars),
             ctx,
         );
+        let runtime_bindings = self.runtime_bindings_named_in(syntax, ctx);
         self.storage.resolve_body_type_with_substitutions(
             syntax,
             span,
             Some(&type_substitutions),
             Some(&ctx.comptime_value_vars),
+            runtime_bindings.as_ref(),
         )
+    }
+
+    /// The names a body-position type mentions that bind, at this point, to
+    /// a runtime local or parameter. Resolution consults them in a value
+    /// position — an array length, a type-constructor value argument — before
+    /// any comptime value or module-level `const`, so a runtime binding
+    /// shadows a same-named `const` there exactly as it does in an expression
+    /// (spec 5.1:10, 7.1:37, RUE-2446). Only names the syntax mentions are
+    /// classified, so the common annotation costs one walk of its own syntax.
+    pub(crate) fn runtime_bindings_named_in(
+        &self,
+        syntax: RirTypeSyntaxRef,
+        ctx: &AnalysisContext,
+    ) -> Option<AHashSet<Spur>> {
+        let arena = self.body_rir_ref().type_syntax();
+        let mut runtime_bindings = None::<AHashSet<Spur>>;
+        let mut pending = vec![syntax];
+        while let Some(reference) = pending.pop() {
+            let symbol = match arena.node(reference) {
+                Some(rue_rir::RirTypeSyntaxNode::Named(symbol)) => arena.symbol(*symbol).copied(),
+                _ => None,
+            };
+            if let Some(name) = symbol
+                && ctx.is_runtime_binding(name)
+            {
+                runtime_bindings.get_or_insert_default().insert(name);
+            }
+            arena.visit_child_references(reference, |child| pending.push(child));
+        }
+        runtime_bindings
     }
 
     /// `type_substitutions` plus each `let`-bound module a body-position type
@@ -1216,7 +1249,13 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         span: Span,
     ) -> Option<Type> {
         self.storage
-            .resolve_body_type_with_substitutions(syntax, span, Some(type_subst), Some(value_subst))
+            .resolve_body_type_with_substitutions(
+                syntax,
+                span,
+                Some(type_subst),
+                Some(value_subst),
+                None,
+            )
             .ok()
     }
     /// Register the executable bodies of a freshly minted anonymous struct's
@@ -1401,6 +1440,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
                 span,
                 type_substitutions,
                 value_substitutions,
+                runtime_bindings: None,
             })
             .map_err(|failure| {
                 super::typeck::semantic_type_syntax_compile_error(
@@ -1504,6 +1544,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
                     span,
                     type_substitutions: Some(type_subst),
                     value_substitutions: Some(value_subst),
+                    runtime_bindings: None,
                 })
                 .map_err(|failure| {
                     super::typeck::semantic_type_syntax_compile_error(
@@ -1543,6 +1584,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
                     span,
                     type_substitutions: Some(type_subst),
                     value_substitutions: Some(value_subst),
+                    runtime_bindings: None,
                 })
                 .map_err(|failure| {
                     super::typeck::semantic_type_syntax_compile_error(
@@ -1570,7 +1612,35 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             super::fact_mode::ArrayLengthRequest {
                 length,
                 span,
+                type_substitutions: None,
                 value_substitutions: values,
+                runtime_bindings: None,
+            },
+        )
+    }
+
+    /// Resolve an array length written in a body, under the body's lexical
+    /// scope at this point: a runtime local or parameter, a comptime type
+    /// parameter or a type alias of that name shadows a same-named `const`
+    /// and is not a compile-time integer (spec 5.1:10, 7.1:37, RUE-2446).
+    pub(crate) fn resolve_array_length_in_body(
+        &mut self,
+        name: Spur,
+        span: Span,
+        ctx: &AnalysisContext,
+    ) -> CompileResult<u64> {
+        let runtime_bindings = ctx
+            .is_runtime_binding(name)
+            .then(|| AHashSet::from_iter([name]));
+        let length = crate::types::ArrayLen::Named(self.body_interner().resolve(&name).to_owned());
+        TypeResolutionHost::resolve_array_length(
+            self.storage,
+            super::fact_mode::ArrayLengthRequest {
+                length: &length,
+                span,
+                type_substitutions: Some(&ctx.comptime_type_vars),
+                value_substitutions: Some(&ctx.comptime_value_vars),
+                runtime_bindings: runtime_bindings.as_ref(),
             },
         )
     }
@@ -1641,6 +1711,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
                 span,
                 type_substitutions,
                 value_substitutions: None,
+                runtime_bindings: None,
             })
             .map_err(|failure| {
                 super::typeck::semantic_type_syntax_compile_error(
@@ -1708,6 +1779,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
                 span,
                 type_substitutions: None,
                 value_substitutions: None,
+                runtime_bindings: None,
             })
             .map(Some)
             .map_err(|failure| {

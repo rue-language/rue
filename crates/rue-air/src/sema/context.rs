@@ -665,6 +665,15 @@ impl<'a> AnalysisContext<'a> {
         self.param(name).is_some()
     }
 
+    /// Whether `name` binds here to a runtime local or a runtime parameter,
+    /// by the precedence a value read uses (`analyze_var_ref`): a local
+    /// shadows a parameter, and either shadows a comptime value and a
+    /// module-level `const` (spec 5.1:10). A `comptime` parameter is no
+    /// runtime binding; its value or type comes from the specialization.
+    pub(crate) fn is_runtime_binding(&self, name: Spur) -> bool {
+        self.locals.contains_key(&name) || self.param(name).is_some_and(|param| !param.is_comptime)
+    }
+
     /// Run one nested analysis with an explicit expected-type context, then
     /// restore the caller's context before returning its result.
     ///

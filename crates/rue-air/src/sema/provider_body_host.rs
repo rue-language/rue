@@ -5192,7 +5192,8 @@ where
             SemaTypeResolutionContext::Type,
             request.type_substitutions,
             request.value_substitutions,
-        );
+        )
+        .with_runtime_bindings(request.runtime_bindings);
         let result = {
             let mut provider = TypeSyntaxProvider::new(self, &mut state);
             crate::resolve_structured_semantic_type_syntax_with(
@@ -5272,9 +5273,10 @@ where
             request.span,
             TypeRootAuthority::in_file(request.span.file_id),
             SemaTypeResolutionContext::Type,
-            None,
+            request.type_substitutions,
             request.value_substitutions,
-        );
+        )
+        .with_runtime_bindings(request.runtime_bindings);
         let result = {
             let mut provider = TypeSyntaxProvider::new(self, &mut state);
             provider.resolve_array_length_fact(request.span.file_id, request.length)
@@ -5305,7 +5307,7 @@ where
     }
 
     fn resolve_body_type(&mut self, syntax: RirTypeSyntaxRef, span: Span) -> CompileResult<Type> {
-        self.resolve_body_type_with_substitutions(syntax, span, None, None)
+        self.resolve_body_type_with_substitutions(syntax, span, None, None, None)
     }
 
     fn resolve_body_type_with_substitutions(
@@ -5314,6 +5316,7 @@ where
         span: Span,
         type_substitutions: Option<&AHashMap<Spur, Type>>,
         value_substitutions: Option<&AHashMap<Spur, ConstValue>>,
+        runtime_bindings: Option<&AHashSet<Spur>>,
     ) -> CompileResult<Type> {
         let syntax = super::fact_mode::StructuredTypeSyntax {
             arena: self.rir.rir().type_syntax().clone(),
@@ -5328,6 +5331,7 @@ where
                 span,
                 type_substitutions,
                 value_substitutions,
+                runtime_bindings,
             },
         )
         .map_err(|failure| semantic_type_syntax_compile_error(&interner, failure, span))
@@ -5929,6 +5933,7 @@ where
                 span,
                 type_substitutions: Some(&substitutions),
                 value_substitutions: None,
+                runtime_bindings: None,
             })
             .map_err(|failure| semantic_type_syntax_compile_error(&interner, failure, span))
         };
