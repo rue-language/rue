@@ -3330,6 +3330,105 @@ compile_fail = true
 error_contains = "expected array of 2 elements, found 3 elements"
 
 [[case]]
+name = "diverging_array_equality_right_operand"
+spec = ["3.4:3", "7.1:2", "4.3:1"]
+description = "RUE-2554: `[return 5; 2]` is a `[i32; 2]` right operand of `==` that never completes"
+source = """
+fn main() -> i32 {
+    let a: [i32; 2] = [1, 2];
+    if a == [return 5; 2] { 1 } else { 0 }
+}
+"""
+exit_code = 5
+
+[[case]]
+name = "diverging_array_inequality_left_operand"
+spec = ["3.4:3", "7.1:2", "4.3:1"]
+description = "RUE-2554: `[return 5; 2]` is a `[i32; 2]` left operand of `!=` that never completes"
+source = """
+fn main() -> i32 {
+    let a: [i32; 2] = [1, 2];
+    if [return 5; 2] != a { 1 } else { 0 }
+}
+"""
+exit_code = 5
+
+[[case]]
+name = "diverging_array_nested_and_mixed_comparison_operands"
+spec = ["3.4:3", "7.1:2", "4.3:1"]
+description = "RUE-2554: a nested `[[!; 2]; 1]` operand and a mixed `[1, return 5]` operand of a comparison"
+source = """
+fn nested() -> i32 {
+    let a: [[i32; 2]; 1] = [[1, 2]];
+    if a != [[return 5; 2]] { 1 } else { 0 }
+}
+fn mixed() -> i32 {
+    let a: [i32; 2] = [1, 2];
+    if a == [1, return 6] { 1 } else { 0 }
+}
+fn main() -> i32 { nested() + mixed() }
+"""
+exit_code = 11
+
+[[case]]
+name = "diverging_array_continuing_ptr_read_comparison_rejected"
+spec = ["3.4:3", "7.1:2", "4.3:1"]
+description = "RUE-2554: a continuing `[!; 2]` value from a `checked` read is not a `[i32; 2]` comparison operand"
+source = """
+fn main() -> i32 {
+    let raw: ptr mut u8 = checked { @alloc(64, 8) };
+    let addr: u64 = checked { @ptr_to_int(raw) };
+    let pi: ptr mut [i32; 2] = checked { @int_to_ptr(addr) };
+    checked { @ptr_write(pi, [7, 8]) };
+    let p2: ptr mut [!; 2] = checked { @int_to_ptr(addr) };
+    let a: [i32; 2] = [7, 8];
+    if a == checked { @ptr_read(p2) } { 1 } else { 0 }
+}
+"""
+compile_fail = true
+error_contains = ["[E0206]", "expected [i32; 2], found [!; 2]"]
+
+[[case]]
+name = "diverging_array_accessor_place_assignment"
+spec = ["3.4:3", "7.1:2", "5.2:2"]
+description = "RUE-2554: an exclusive accessor place accepts `[return 5; 2]` at its `[i32; 2]` type"
+source = """
+struct P {
+    x: [i32; 2],
+    fn xr(inout self) -> inout [i32; 2] { yield self.x; }
+}
+fn main() -> i32 {
+    let mut p = P { x: [1, 2] };
+    p.xr() = [return 5; 2];
+    p.x[0]
+}
+"""
+exit_code = 5
+
+[[case]]
+name = "diverging_array_continuing_ptr_read_accessor_place_rejected"
+spec = ["3.4:3", "7.1:2", "5.2:2"]
+description = "RUE-2554: an exclusive accessor place rejects a continuing `[!; 2]` value, as a local, field or element place does"
+source = """
+struct P {
+    x: [i32; 2],
+    fn xr(inout self) -> inout [i32; 2] { yield self.x; }
+}
+fn main() -> i32 {
+    let raw: ptr mut u8 = checked { @alloc(64, 8) };
+    let addr: u64 = checked { @ptr_to_int(raw) };
+    let pi: ptr mut [i32; 2] = checked { @int_to_ptr(addr) };
+    checked { @ptr_write(pi, [7, 8]) };
+    let p2: ptr mut [!; 2] = checked { @int_to_ptr(addr) };
+    let mut p = P { x: [1, 2] };
+    p.xr() = checked { @ptr_read(p2) };
+    p.x[0]
+}
+"""
+compile_fail = true
+error_contains = ["[E0206]", "expected [i32; 2], found [!; 2]"]
+
+[[case]]
 name = "array_repeat_non_copy_element_error"
 spec = ["7.1:38"]
 source = """
