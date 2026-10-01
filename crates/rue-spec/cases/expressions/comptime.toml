@@ -6503,3 +6503,43 @@ fn main() -> i32 {
 }
 """
 exit_code = 4
+
+[[case]]
+name = "value_param_dependent_type_on_associated_function_rejected"
+spec = ["4.14:5"]
+description = "An associated function whose parameter type `W(str, N)` reads its own comptime value parameter is rejected at the declaration: struct-scoped functions are not specialized (RUE-2435, RUE-2092)"
+source = """
+fn W(comptime T: type, comptime N: i32) -> type { T }
+struct S {
+    fn gv(comptime N: i32, borrow s: W(str, N)) -> i64 { let r: i64 = @intCast(s.len()); r }
+}
+
+fn main() -> i32 {
+    let x = "abcd";
+    let b = S.gv(1, borrow x);
+    @dbg(b);
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E1200", "a parameter type that depends on a comptime value parameter is not supported on a method or associated function"]
+
+[[case]]
+name = "value_param_dependent_type_on_method_rejected"
+spec = ["4.14:5"]
+description = "A method whose parameter type `W(i64, N)` reads its own comptime value parameter is rejected at the declaration, with no cascading mismatch (RUE-2435, RUE-2092)"
+source = """
+fn W(comptime T: type, comptime N: i32) -> type { T }
+struct S {
+    k: i64,
+    fn gb(borrow self, comptime N: i32, b: W(i64, N)) -> i64 { b + self.k }
+}
+
+fn main() -> i32 {
+    let o = S { k: 10 };
+    @dbg(o.gb(1, 5));
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E1200", "a parameter type that depends on a comptime value parameter is not supported on a method or associated function"]
