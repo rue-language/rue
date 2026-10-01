@@ -1730,6 +1730,19 @@ impl TypeInternPoolInner {
         self.try_struct_def_arc(id).map(Arc::as_ref)
     }
 
+    /// The element type of a generated slice view, or `None` for any other
+    /// struct.
+    fn slice_view_element(&self, id: StructId) -> Option<Type> {
+        let def = self.try_struct_def(id)?;
+        if crate::types::text_view_struct_kind(def) != Some(crate::types::TextViewKind::Slice) {
+            return None;
+        }
+        match self.try_entry(def.fields.first()?.ty.as_ptr_const()?.pool_index() as usize)? {
+            TypeData::PtrConst { pointee } => Some(*pointee),
+            _ => None,
+        }
+    }
+
     /// The shared handle behind a completed struct definition.
     ///
     /// Callers that cannot hold a borrow — the mutable pool's accessors, which
@@ -2579,10 +2592,15 @@ impl TypeInternPoolInner {
 
     fn safe_type_name(&self, ty: Type) -> String {
         match ty.try_kind() {
-            Some(TypeKind::Struct(id)) => self
-                .struct_metadata(id)
-                .map(|metadata| metadata.name.to_string())
-                .unwrap_or_else(|| format!("<struct#{}>", id.0)),
+            // A slice view's name is an identity spelling, not a display
+            // (RUE-2571): render the view from its element.
+            Some(TypeKind::Struct(id)) => match self.slice_view_element(id) {
+                Some(element) => crate::types::slice_struct_name(&self.safe_type_name(element)),
+                None => self
+                    .struct_metadata(id)
+                    .map(|metadata| metadata.name.to_string())
+                    .unwrap_or_else(|| format!("<struct#{}>", id.0)),
+            },
             Some(TypeKind::Enum(id)) => self
                 .enum_metadata(id)
                 .map(|metadata| metadata.name.to_string())
