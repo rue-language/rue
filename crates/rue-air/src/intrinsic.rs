@@ -111,6 +111,7 @@ pub trait RuntimeAirTypePool {
     fn runtime_air_result_type(&self, ty: Type) -> Option<RuntimeAirType>;
     fn ptr_const_def(&self, id: crate::PtrConstTypeId) -> Type;
     fn ptr_mut_def(&self, id: crate::PtrMutTypeId) -> Type;
+    fn array_def(&self, id: crate::ArrayTypeId) -> (Type, u64);
 }
 
 /// Whether a pool text-view classification is one of the two-word string
@@ -276,6 +277,10 @@ impl RuntimeAirTypePool for TypeInternPool {
     fn ptr_mut_def(&self, id: crate::PtrMutTypeId) -> Type {
         self.ptr_mut_def(id)
     }
+
+    fn array_def(&self, id: crate::ArrayTypeId) -> (Type, u64) {
+        self.array_def(id)
+    }
 }
 
 impl RuntimeAirTypePool for FrozenTypeInternPool {
@@ -372,6 +377,10 @@ impl RuntimeAirTypePool for FrozenTypeInternPool {
 
     fn ptr_mut_def(&self, id: crate::PtrMutTypeId) -> Type {
         self.ptr_mut_def(id)
+    }
+
+    fn array_def(&self, id: crate::ArrayTypeId) -> (Type, u64) {
+        self.array_def(id)
     }
 }
 
@@ -810,7 +819,15 @@ impl IntrinsicOperation {
                     && match first.ty.kind() {
                         TypeKind::PtrMut(id) => {
                             let pointee = pool.ptr_mut_def(id);
-                            args[1].ty == pointee || args[1].ty == Type::NEVER
+                            // A diverging array literal (`[return 5; 2]`)
+                            // reaches the pointee slot as sema admits it at
+                            // every value slot (RUE-2538); it never completes,
+                            // so the write never runs.
+                            args[1].ty == pointee
+                                || args[1].ty == Type::NEVER
+                                || args[1]
+                                    .ty
+                                    .diverging_array_fits(pointee, &|id| pool.array_def(id))
                         }
                         _ => false,
                     }
