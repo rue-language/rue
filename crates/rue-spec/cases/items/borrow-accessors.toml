@@ -1822,6 +1822,208 @@ expected_stdout = "68\n63\n70\n10\n"
 exit_code = 0
 
 [[case]]
+name = "inout_argument_through_function_value_from_shared_accessor_result_rejected"
+spec = ["6.6:8", "6.6:10"]
+description = "A second-class function-value call passing a shared accessor result `inout` is rejected like a direct call (E0259, RUE-2371)."
+source = """
+struct S {
+    c: i64,
+
+    fn get(borrow self) -> borrow i64 { yield self.c; }
+}
+fn seti(inout x: i64) { x = 77; }
+fn apply(f: fn(inout i64), inout s: S) { f(inout s.get()); }
+fn main() -> i32 {
+    let mut s = S { c: 1 };
+    apply(seti, inout s);
+    @intCast(s.c)
+}
+"""
+compile_fail = true
+error_contains = ["E0259", "cannot use 's' as an `inout` argument while an accessor result borrows it"]
+
+[[case]]
+name = "inout_argument_in_generic_body_shared_instantiation_rejected"
+spec = ["6.6:8", "6.6:10"]
+description = "A comptime-generic body is checked per instantiation: the instantiation whose accessor is `-> borrow` is rejected even after an instantiation with an `-> inout` accessor was accepted (E0259, RUE-2371)."
+source = """
+struct M {
+    c: i64,
+
+    fn get(inout self) -> inout i64 { yield self.c; }
+}
+struct S {
+    c: i64,
+
+    fn get(borrow self) -> borrow i64 { yield self.c; }
+}
+fn seti(inout x: i64) { x = 77; }
+fn g(comptime T: type, inout t: T) { seti(inout t.get()); }
+fn main() -> i32 {
+    let mut m = M { c: 1 };
+    g(M, inout m);
+    let mut s = S { c: 1 };
+    g(S, inout s);
+    @intCast(s.c)
+}
+"""
+compile_fail = true
+error_contains = ["E0259", "cannot use 't' as an `inout` argument while an accessor result borrows it"]
+
+[[case]]
+name = "inout_argument_in_generic_body_shared_then_exclusive_instantiation_rejected"
+spec = ["6.6:8", "6.6:10"]
+description = "The generic-body check does not depend on instantiation order: a rejected `-> borrow` instantiation is not masked by a later `-> inout` one (E0259, RUE-2371)."
+source = """
+struct S {
+    c: i64,
+
+    fn get(borrow self) -> borrow i64 { yield self.c; }
+}
+struct M {
+    c: i64,
+
+    fn get(inout self) -> inout i64 { yield self.c; }
+}
+fn seti(inout x: i64) { x = 77; }
+fn g(comptime T: type, inout t: T) { seti(inout t.get()); }
+fn main() -> i32 {
+    let mut s = S { c: 1 };
+    g(S, inout s);
+    let mut m = M { c: 1 };
+    g(M, inout m);
+    @intCast(m.c)
+}
+"""
+compile_fail = true
+error_contains = ["E0259", "cannot use 't' as an `inout` argument while an accessor result borrows it"]
+
+[[case]]
+name = "inout_argument_in_generic_body_exclusive_instantiation_accepted"
+spec = ["6.6:8", "6.6:10"]
+description = "The same generic body with only an `-> inout` accessor instantiation passes the exclusive result `inout` and runs (RUE-2371)."
+source = """
+struct M {
+    c: i64,
+
+    fn get(inout self) -> inout i64 { yield self.c; }
+}
+fn seti(inout x: i64) { x = 77; }
+fn g(comptime T: type, inout t: T) { seti(inout t.get()); }
+fn main() -> i32 {
+    let mut m = M { c: 1 };
+    g(M, inout m);
+    @dbg(m.c);
+    0
+}
+"""
+expected_stdout = "77\n"
+exit_code = 0
+
+[[case]]
+name = "inout_associated_function_argument_from_shared_accessor_result_rejected"
+spec = ["6.6:8", "6.6:10"]
+description = "An associated-function call is checked like a free function: a shared accessor result passed `inout` is rejected (E0259, RUE-2371)."
+source = """
+struct P {
+    c: i64,
+
+    fn reset(inout p: P) { p.c = 66; }
+}
+struct Acc {
+    p: P,
+
+    fn pref(borrow self) -> borrow P { yield self.p; }
+}
+fn main() -> i32 {
+    let mut a = Acc { p: P { c: 1 } };
+    P.reset(inout a.pref());
+    @intCast(a.p.c)
+}
+"""
+compile_fail = true
+error_contains = ["E0259", "cannot use 'a' as an `inout` argument while an accessor result borrows it"]
+
+[[case]]
+name = "inout_argument_from_dynamic_index_of_shared_array_accessor_result_rejected"
+spec = ["6.6:8", "6.6:10"]
+description = "A run-time index into a whole-array shared accessor result is still reached through the shared loan, so passing it `inout` is rejected (E0259, RUE-2371)."
+source = """
+struct P { c: i64 }
+struct Acc {
+    ps: [P; 2],
+
+    fn all(borrow self) -> borrow [P; 2] { yield self.ps; }
+}
+fn setp(inout p: P) { p.c = 66; }
+fn main() -> i32 {
+    let mut a = Acc { ps: [P { c: 3 }, P { c: 5 }] };
+    let i: u64 = 1;
+    setp(inout a.all()[i]);
+    @intCast(a.ps[1].c)
+}
+"""
+compile_fail = true
+error_contains = ["E0259", "cannot use 'a' as an `inout` argument while an accessor result borrows it"]
+
+[[case]]
+name = "inout_argument_from_shared_to_shared_accessor_chain_rejected"
+spec = ["6.6:8", "6.6:10"]
+description = "A shared accessor result of a shared accessor result is a shared place; passing it `inout` is rejected (E0259, RUE-2371)."
+source = """
+struct Q { c: i64 }
+struct P {
+    q: Q,
+
+    fn qr(borrow self) -> borrow Q { yield self.q; }
+}
+struct Acc {
+    p: P,
+
+    fn pref(borrow self) -> borrow P { yield self.p; }
+}
+fn setq(inout q: Q) { q.c = 55; }
+fn main() -> i32 {
+    let mut a = Acc { p: P { q: Q { c: 2 } } };
+    setq(inout a.pref().qr());
+    @intCast(a.p.q.c)
+}
+"""
+compile_fail = true
+error_contains = ["E0259", "cannot use 'a' as an `inout` argument while an accessor result borrows it"]
+
+[[case]]
+name = "join_inout_argument_from_shared_accessor_result_rejected"
+spec = ["6.6:8", "6.6:10", "6.9:2"]
+description = "`std.parallel.join_inout` takes its contexts `inout`, so a shared accessor result there is rejected (E0259, RUE-2371)."
+preview = "concurrency"
+preview_should_pass = true
+real_std = true
+source = """
+const std = @import("std");
+struct Left { value: i64 }
+struct Right { value: i64 }
+struct H {
+    l: Left,
+
+    fn lref(borrow self) -> borrow Left { yield self.l; }
+}
+fn add_left(inout value: Left) { value.value += 3; }
+fn add_right(inout value: Right) { value.value += 5; }
+fn main() -> i32 {
+    let mut h = H { l: Left { value: 10 } };
+    let mut right = Right { value: 20 };
+    let R = std.result.Result((), std.parallel.SpawnError);
+    match std.parallel.join_inout(Left, Right, inout h.lref(), inout right, add_left, add_right) {
+        R.Ok(_) => 0,
+        R.Err(_) => 2,
+    }
+}
+"""
+compile_fail = true
+error_contains = ["E0259", "cannot use 'h' as an `inout` argument while an accessor result borrows it"]
+
+[[case]]
 name = "compare_operand_conflicts_with_later_exclusive_accessor_method"
 spec = ["6.6:10", "6.6:16"]
 description = "An `==` operand borrows its place, so the root's shared read conflicts with a later exclusive accessor result whose `inout self` method mutates it (E0259, RUE-2358)."
