@@ -1,0 +1,792 @@
+# CFG cleanup convergence (RUE-2545).
+#
+# The optimizer's cleanup fixpoint sites (`run_cleanup_to_fixpoint` in
+# rue-cfg's opt module) are bounded at 64 rounds as a safety net against a
+# non-converging pass. Each case below is a chain of 100 or more links in which
+# every link becomes constant (or provably equal to a value it already has)
+# only after the link before it folds. Before RUE-2545 each link cost one
+# cleanup round, so these valid programs exhausted the bound: a panic in a
+# debug compiler, an under-optimized graph in a release one. The sparse
+# constant driver now carries the chain through branches, join parameters,
+# dead writes, dead loops, and identities in one run, so each site settles in a
+# fixed number of rounds whatever the chain's length.
+#
+# Every case is `differential_opt`: it must compile and give the pinned output
+# at -O0, -O1, -O2, and -O3.
+
+[section]
+id = "cli.cfg_cleanup_convergence"
+name = "CFG cleanup convergence"
+description = "Chains longer than the cleanup round bound compile and agree at every optimization level."
+
+# The `performance/workloads` scale_functions shape: at -O2 every call is
+# inlined, and each callee's result reaches the next call through the
+# continuation join of a branch that folds only once the previous result is
+# constant. 128 copies; 64 already exceeded the old bound.
+[[case]]
+name = "inlined_branching_callee_chain"
+differential_opt = true
+files = [{ path = "main.rue", source = """
+fn f_0(a: i64, b: i64) -> i64 { let t = a * 3 + b - 0; if t > a { return t - b; } return t + b + 0; }
+fn f_1(a: i64, b: i64) -> i64 { let t = a * 3 + b - 1; if t > a { return t - b; } return t + b + 1; }
+fn f_2(a: i64, b: i64) -> i64 { let t = a * 3 + b - 2; if t > a { return t - b; } return t + b + 2; }
+fn f_3(a: i64, b: i64) -> i64 { let t = a * 3 + b - 3; if t > a { return t - b; } return t + b + 3; }
+fn f_4(a: i64, b: i64) -> i64 { let t = a * 3 + b - 4; if t > a { return t - b; } return t + b + 4; }
+fn f_5(a: i64, b: i64) -> i64 { let t = a * 3 + b - 5; if t > a { return t - b; } return t + b + 5; }
+fn f_6(a: i64, b: i64) -> i64 { let t = a * 3 + b - 6; if t > a { return t - b; } return t + b + 6; }
+fn f_7(a: i64, b: i64) -> i64 { let t = a * 3 + b - 7; if t > a { return t - b; } return t + b + 7; }
+fn f_8(a: i64, b: i64) -> i64 { let t = a * 3 + b - 8; if t > a { return t - b; } return t + b + 8; }
+fn f_9(a: i64, b: i64) -> i64 { let t = a * 3 + b - 9; if t > a { return t - b; } return t + b + 9; }
+fn f_10(a: i64, b: i64) -> i64 { let t = a * 3 + b - 10; if t > a { return t - b; } return t + b + 10; }
+fn f_11(a: i64, b: i64) -> i64 { let t = a * 3 + b - 11; if t > a { return t - b; } return t + b + 11; }
+fn f_12(a: i64, b: i64) -> i64 { let t = a * 3 + b - 12; if t > a { return t - b; } return t + b + 12; }
+fn f_13(a: i64, b: i64) -> i64 { let t = a * 3 + b - 13; if t > a { return t - b; } return t + b + 13; }
+fn f_14(a: i64, b: i64) -> i64 { let t = a * 3 + b - 14; if t > a { return t - b; } return t + b + 14; }
+fn f_15(a: i64, b: i64) -> i64 { let t = a * 3 + b - 15; if t > a { return t - b; } return t + b + 15; }
+fn f_16(a: i64, b: i64) -> i64 { let t = a * 3 + b - 16; if t > a { return t - b; } return t + b + 16; }
+fn f_17(a: i64, b: i64) -> i64 { let t = a * 3 + b - 17; if t > a { return t - b; } return t + b + 17; }
+fn f_18(a: i64, b: i64) -> i64 { let t = a * 3 + b - 18; if t > a { return t - b; } return t + b + 18; }
+fn f_19(a: i64, b: i64) -> i64 { let t = a * 3 + b - 19; if t > a { return t - b; } return t + b + 19; }
+fn f_20(a: i64, b: i64) -> i64 { let t = a * 3 + b - 20; if t > a { return t - b; } return t + b + 20; }
+fn f_21(a: i64, b: i64) -> i64 { let t = a * 3 + b - 21; if t > a { return t - b; } return t + b + 21; }
+fn f_22(a: i64, b: i64) -> i64 { let t = a * 3 + b - 22; if t > a { return t - b; } return t + b + 22; }
+fn f_23(a: i64, b: i64) -> i64 { let t = a * 3 + b - 23; if t > a { return t - b; } return t + b + 23; }
+fn f_24(a: i64, b: i64) -> i64 { let t = a * 3 + b - 24; if t > a { return t - b; } return t + b + 24; }
+fn f_25(a: i64, b: i64) -> i64 { let t = a * 3 + b - 25; if t > a { return t - b; } return t + b + 25; }
+fn f_26(a: i64, b: i64) -> i64 { let t = a * 3 + b - 26; if t > a { return t - b; } return t + b + 26; }
+fn f_27(a: i64, b: i64) -> i64 { let t = a * 3 + b - 27; if t > a { return t - b; } return t + b + 27; }
+fn f_28(a: i64, b: i64) -> i64 { let t = a * 3 + b - 28; if t > a { return t - b; } return t + b + 28; }
+fn f_29(a: i64, b: i64) -> i64 { let t = a * 3 + b - 29; if t > a { return t - b; } return t + b + 29; }
+fn f_30(a: i64, b: i64) -> i64 { let t = a * 3 + b - 30; if t > a { return t - b; } return t + b + 30; }
+fn f_31(a: i64, b: i64) -> i64 { let t = a * 3 + b - 31; if t > a { return t - b; } return t + b + 31; }
+fn f_32(a: i64, b: i64) -> i64 { let t = a * 3 + b - 32; if t > a { return t - b; } return t + b + 32; }
+fn f_33(a: i64, b: i64) -> i64 { let t = a * 3 + b - 33; if t > a { return t - b; } return t + b + 33; }
+fn f_34(a: i64, b: i64) -> i64 { let t = a * 3 + b - 34; if t > a { return t - b; } return t + b + 34; }
+fn f_35(a: i64, b: i64) -> i64 { let t = a * 3 + b - 35; if t > a { return t - b; } return t + b + 35; }
+fn f_36(a: i64, b: i64) -> i64 { let t = a * 3 + b - 36; if t > a { return t - b; } return t + b + 36; }
+fn f_37(a: i64, b: i64) -> i64 { let t = a * 3 + b - 37; if t > a { return t - b; } return t + b + 37; }
+fn f_38(a: i64, b: i64) -> i64 { let t = a * 3 + b - 38; if t > a { return t - b; } return t + b + 38; }
+fn f_39(a: i64, b: i64) -> i64 { let t = a * 3 + b - 39; if t > a { return t - b; } return t + b + 39; }
+fn f_40(a: i64, b: i64) -> i64 { let t = a * 3 + b - 40; if t > a { return t - b; } return t + b + 40; }
+fn f_41(a: i64, b: i64) -> i64 { let t = a * 3 + b - 41; if t > a { return t - b; } return t + b + 41; }
+fn f_42(a: i64, b: i64) -> i64 { let t = a * 3 + b - 42; if t > a { return t - b; } return t + b + 42; }
+fn f_43(a: i64, b: i64) -> i64 { let t = a * 3 + b - 43; if t > a { return t - b; } return t + b + 43; }
+fn f_44(a: i64, b: i64) -> i64 { let t = a * 3 + b - 44; if t > a { return t - b; } return t + b + 44; }
+fn f_45(a: i64, b: i64) -> i64 { let t = a * 3 + b - 45; if t > a { return t - b; } return t + b + 45; }
+fn f_46(a: i64, b: i64) -> i64 { let t = a * 3 + b - 46; if t > a { return t - b; } return t + b + 46; }
+fn f_47(a: i64, b: i64) -> i64 { let t = a * 3 + b - 47; if t > a { return t - b; } return t + b + 47; }
+fn f_48(a: i64, b: i64) -> i64 { let t = a * 3 + b - 48; if t > a { return t - b; } return t + b + 48; }
+fn f_49(a: i64, b: i64) -> i64 { let t = a * 3 + b - 49; if t > a { return t - b; } return t + b + 49; }
+fn f_50(a: i64, b: i64) -> i64 { let t = a * 3 + b - 50; if t > a { return t - b; } return t + b + 50; }
+fn f_51(a: i64, b: i64) -> i64 { let t = a * 3 + b - 51; if t > a { return t - b; } return t + b + 51; }
+fn f_52(a: i64, b: i64) -> i64 { let t = a * 3 + b - 52; if t > a { return t - b; } return t + b + 52; }
+fn f_53(a: i64, b: i64) -> i64 { let t = a * 3 + b - 53; if t > a { return t - b; } return t + b + 53; }
+fn f_54(a: i64, b: i64) -> i64 { let t = a * 3 + b - 54; if t > a { return t - b; } return t + b + 54; }
+fn f_55(a: i64, b: i64) -> i64 { let t = a * 3 + b - 55; if t > a { return t - b; } return t + b + 55; }
+fn f_56(a: i64, b: i64) -> i64 { let t = a * 3 + b - 56; if t > a { return t - b; } return t + b + 56; }
+fn f_57(a: i64, b: i64) -> i64 { let t = a * 3 + b - 57; if t > a { return t - b; } return t + b + 57; }
+fn f_58(a: i64, b: i64) -> i64 { let t = a * 3 + b - 58; if t > a { return t - b; } return t + b + 58; }
+fn f_59(a: i64, b: i64) -> i64 { let t = a * 3 + b - 59; if t > a { return t - b; } return t + b + 59; }
+fn f_60(a: i64, b: i64) -> i64 { let t = a * 3 + b - 60; if t > a { return t - b; } return t + b + 60; }
+fn f_61(a: i64, b: i64) -> i64 { let t = a * 3 + b - 61; if t > a { return t - b; } return t + b + 61; }
+fn f_62(a: i64, b: i64) -> i64 { let t = a * 3 + b - 62; if t > a { return t - b; } return t + b + 62; }
+fn f_63(a: i64, b: i64) -> i64 { let t = a * 3 + b - 63; if t > a { return t - b; } return t + b + 63; }
+fn f_64(a: i64, b: i64) -> i64 { let t = a * 3 + b - 64; if t > a { return t - b; } return t + b + 64; }
+fn f_65(a: i64, b: i64) -> i64 { let t = a * 3 + b - 65; if t > a { return t - b; } return t + b + 65; }
+fn f_66(a: i64, b: i64) -> i64 { let t = a * 3 + b - 66; if t > a { return t - b; } return t + b + 66; }
+fn f_67(a: i64, b: i64) -> i64 { let t = a * 3 + b - 67; if t > a { return t - b; } return t + b + 67; }
+fn f_68(a: i64, b: i64) -> i64 { let t = a * 3 + b - 68; if t > a { return t - b; } return t + b + 68; }
+fn f_69(a: i64, b: i64) -> i64 { let t = a * 3 + b - 69; if t > a { return t - b; } return t + b + 69; }
+fn f_70(a: i64, b: i64) -> i64 { let t = a * 3 + b - 70; if t > a { return t - b; } return t + b + 70; }
+fn f_71(a: i64, b: i64) -> i64 { let t = a * 3 + b - 71; if t > a { return t - b; } return t + b + 71; }
+fn f_72(a: i64, b: i64) -> i64 { let t = a * 3 + b - 72; if t > a { return t - b; } return t + b + 72; }
+fn f_73(a: i64, b: i64) -> i64 { let t = a * 3 + b - 73; if t > a { return t - b; } return t + b + 73; }
+fn f_74(a: i64, b: i64) -> i64 { let t = a * 3 + b - 74; if t > a { return t - b; } return t + b + 74; }
+fn f_75(a: i64, b: i64) -> i64 { let t = a * 3 + b - 75; if t > a { return t - b; } return t + b + 75; }
+fn f_76(a: i64, b: i64) -> i64 { let t = a * 3 + b - 76; if t > a { return t - b; } return t + b + 76; }
+fn f_77(a: i64, b: i64) -> i64 { let t = a * 3 + b - 77; if t > a { return t - b; } return t + b + 77; }
+fn f_78(a: i64, b: i64) -> i64 { let t = a * 3 + b - 78; if t > a { return t - b; } return t + b + 78; }
+fn f_79(a: i64, b: i64) -> i64 { let t = a * 3 + b - 79; if t > a { return t - b; } return t + b + 79; }
+fn f_80(a: i64, b: i64) -> i64 { let t = a * 3 + b - 80; if t > a { return t - b; } return t + b + 80; }
+fn f_81(a: i64, b: i64) -> i64 { let t = a * 3 + b - 81; if t > a { return t - b; } return t + b + 81; }
+fn f_82(a: i64, b: i64) -> i64 { let t = a * 3 + b - 82; if t > a { return t - b; } return t + b + 82; }
+fn f_83(a: i64, b: i64) -> i64 { let t = a * 3 + b - 83; if t > a { return t - b; } return t + b + 83; }
+fn f_84(a: i64, b: i64) -> i64 { let t = a * 3 + b - 84; if t > a { return t - b; } return t + b + 84; }
+fn f_85(a: i64, b: i64) -> i64 { let t = a * 3 + b - 85; if t > a { return t - b; } return t + b + 85; }
+fn f_86(a: i64, b: i64) -> i64 { let t = a * 3 + b - 86; if t > a { return t - b; } return t + b + 86; }
+fn f_87(a: i64, b: i64) -> i64 { let t = a * 3 + b - 87; if t > a { return t - b; } return t + b + 87; }
+fn f_88(a: i64, b: i64) -> i64 { let t = a * 3 + b - 88; if t > a { return t - b; } return t + b + 88; }
+fn f_89(a: i64, b: i64) -> i64 { let t = a * 3 + b - 89; if t > a { return t - b; } return t + b + 89; }
+fn f_90(a: i64, b: i64) -> i64 { let t = a * 3 + b - 90; if t > a { return t - b; } return t + b + 90; }
+fn f_91(a: i64, b: i64) -> i64 { let t = a * 3 + b - 91; if t > a { return t - b; } return t + b + 91; }
+fn f_92(a: i64, b: i64) -> i64 { let t = a * 3 + b - 92; if t > a { return t - b; } return t + b + 92; }
+fn f_93(a: i64, b: i64) -> i64 { let t = a * 3 + b - 93; if t > a { return t - b; } return t + b + 93; }
+fn f_94(a: i64, b: i64) -> i64 { let t = a * 3 + b - 94; if t > a { return t - b; } return t + b + 94; }
+fn f_95(a: i64, b: i64) -> i64 { let t = a * 3 + b - 95; if t > a { return t - b; } return t + b + 95; }
+fn f_96(a: i64, b: i64) -> i64 { let t = a * 3 + b - 96; if t > a { return t - b; } return t + b + 96; }
+fn f_97(a: i64, b: i64) -> i64 { let t = a * 3 + b - 97; if t > a { return t - b; } return t + b + 97; }
+fn f_98(a: i64, b: i64) -> i64 { let t = a * 3 + b - 98; if t > a { return t - b; } return t + b + 98; }
+fn f_99(a: i64, b: i64) -> i64 { let t = a * 3 + b - 99; if t > a { return t - b; } return t + b + 99; }
+fn f_100(a: i64, b: i64) -> i64 { let t = a * 3 + b - 100; if t > a { return t - b; } return t + b + 100; }
+fn f_101(a: i64, b: i64) -> i64 { let t = a * 3 + b - 101; if t > a { return t - b; } return t + b + 101; }
+fn f_102(a: i64, b: i64) -> i64 { let t = a * 3 + b - 102; if t > a { return t - b; } return t + b + 102; }
+fn f_103(a: i64, b: i64) -> i64 { let t = a * 3 + b - 103; if t > a { return t - b; } return t + b + 103; }
+fn f_104(a: i64, b: i64) -> i64 { let t = a * 3 + b - 104; if t > a { return t - b; } return t + b + 104; }
+fn f_105(a: i64, b: i64) -> i64 { let t = a * 3 + b - 105; if t > a { return t - b; } return t + b + 105; }
+fn f_106(a: i64, b: i64) -> i64 { let t = a * 3 + b - 106; if t > a { return t - b; } return t + b + 106; }
+fn f_107(a: i64, b: i64) -> i64 { let t = a * 3 + b - 107; if t > a { return t - b; } return t + b + 107; }
+fn f_108(a: i64, b: i64) -> i64 { let t = a * 3 + b - 108; if t > a { return t - b; } return t + b + 108; }
+fn f_109(a: i64, b: i64) -> i64 { let t = a * 3 + b - 109; if t > a { return t - b; } return t + b + 109; }
+fn f_110(a: i64, b: i64) -> i64 { let t = a * 3 + b - 110; if t > a { return t - b; } return t + b + 110; }
+fn f_111(a: i64, b: i64) -> i64 { let t = a * 3 + b - 111; if t > a { return t - b; } return t + b + 111; }
+fn f_112(a: i64, b: i64) -> i64 { let t = a * 3 + b - 112; if t > a { return t - b; } return t + b + 112; }
+fn f_113(a: i64, b: i64) -> i64 { let t = a * 3 + b - 113; if t > a { return t - b; } return t + b + 113; }
+fn f_114(a: i64, b: i64) -> i64 { let t = a * 3 + b - 114; if t > a { return t - b; } return t + b + 114; }
+fn f_115(a: i64, b: i64) -> i64 { let t = a * 3 + b - 115; if t > a { return t - b; } return t + b + 115; }
+fn f_116(a: i64, b: i64) -> i64 { let t = a * 3 + b - 116; if t > a { return t - b; } return t + b + 116; }
+fn f_117(a: i64, b: i64) -> i64 { let t = a * 3 + b - 117; if t > a { return t - b; } return t + b + 117; }
+fn f_118(a: i64, b: i64) -> i64 { let t = a * 3 + b - 118; if t > a { return t - b; } return t + b + 118; }
+fn f_119(a: i64, b: i64) -> i64 { let t = a * 3 + b - 119; if t > a { return t - b; } return t + b + 119; }
+fn f_120(a: i64, b: i64) -> i64 { let t = a * 3 + b - 120; if t > a { return t - b; } return t + b + 120; }
+fn f_121(a: i64, b: i64) -> i64 { let t = a * 3 + b - 121; if t > a { return t - b; } return t + b + 121; }
+fn f_122(a: i64, b: i64) -> i64 { let t = a * 3 + b - 122; if t > a { return t - b; } return t + b + 122; }
+fn f_123(a: i64, b: i64) -> i64 { let t = a * 3 + b - 123; if t > a { return t - b; } return t + b + 123; }
+fn f_124(a: i64, b: i64) -> i64 { let t = a * 3 + b - 124; if t > a { return t - b; } return t + b + 124; }
+fn f_125(a: i64, b: i64) -> i64 { let t = a * 3 + b - 125; if t > a { return t - b; } return t + b + 125; }
+fn f_126(a: i64, b: i64) -> i64 { let t = a * 3 + b - 126; if t > a { return t - b; } return t + b + 126; }
+fn f_127(a: i64, b: i64) -> i64 { let t = a * 3 + b - 127; if t > a { return t - b; } return t + b + 127; }
+
+fn main() -> i32 {
+    let mut acc: i64 = 0;
+    acc = acc + f_0(0, acc);
+    acc = acc + f_1(1, acc);
+    acc = acc + f_2(2, acc);
+    acc = acc + f_3(3, acc);
+    acc = acc + f_4(4, acc);
+    acc = acc + f_5(5, acc);
+    acc = acc + f_6(6, acc);
+    acc = acc + f_7(7, acc);
+    acc = acc + f_8(8, acc);
+    acc = acc + f_9(9, acc);
+    acc = acc + f_10(10, acc);
+    acc = acc + f_11(11, acc);
+    acc = acc + f_12(12, acc);
+    acc = acc + f_13(13, acc);
+    acc = acc + f_14(14, acc);
+    acc = acc + f_15(15, acc);
+    acc = acc + f_16(16, acc);
+    acc = acc + f_17(17, acc);
+    acc = acc + f_18(18, acc);
+    acc = acc + f_19(19, acc);
+    acc = acc + f_20(20, acc);
+    acc = acc + f_21(21, acc);
+    acc = acc + f_22(22, acc);
+    acc = acc + f_23(23, acc);
+    acc = acc + f_24(24, acc);
+    acc = acc + f_25(25, acc);
+    acc = acc + f_26(26, acc);
+    acc = acc + f_27(27, acc);
+    acc = acc + f_28(28, acc);
+    acc = acc + f_29(29, acc);
+    acc = acc + f_30(30, acc);
+    acc = acc + f_31(31, acc);
+    acc = acc + f_32(32, acc);
+    acc = acc + f_33(33, acc);
+    acc = acc + f_34(34, acc);
+    acc = acc + f_35(35, acc);
+    acc = acc + f_36(36, acc);
+    acc = acc + f_37(37, acc);
+    acc = acc + f_38(38, acc);
+    acc = acc + f_39(39, acc);
+    acc = acc + f_40(40, acc);
+    acc = acc + f_41(41, acc);
+    acc = acc + f_42(42, acc);
+    acc = acc + f_43(43, acc);
+    acc = acc + f_44(44, acc);
+    acc = acc + f_45(45, acc);
+    acc = acc + f_46(46, acc);
+    acc = acc + f_47(47, acc);
+    acc = acc + f_48(48, acc);
+    acc = acc + f_49(49, acc);
+    acc = acc + f_50(50, acc);
+    acc = acc + f_51(51, acc);
+    acc = acc + f_52(52, acc);
+    acc = acc + f_53(53, acc);
+    acc = acc + f_54(54, acc);
+    acc = acc + f_55(55, acc);
+    acc = acc + f_56(56, acc);
+    acc = acc + f_57(57, acc);
+    acc = acc + f_58(58, acc);
+    acc = acc + f_59(59, acc);
+    acc = acc + f_60(60, acc);
+    acc = acc + f_61(61, acc);
+    acc = acc + f_62(62, acc);
+    acc = acc + f_63(63, acc);
+    acc = acc + f_64(64, acc);
+    acc = acc + f_65(65, acc);
+    acc = acc + f_66(66, acc);
+    acc = acc + f_67(67, acc);
+    acc = acc + f_68(68, acc);
+    acc = acc + f_69(69, acc);
+    acc = acc + f_70(70, acc);
+    acc = acc + f_71(71, acc);
+    acc = acc + f_72(72, acc);
+    acc = acc + f_73(73, acc);
+    acc = acc + f_74(74, acc);
+    acc = acc + f_75(75, acc);
+    acc = acc + f_76(76, acc);
+    acc = acc + f_77(77, acc);
+    acc = acc + f_78(78, acc);
+    acc = acc + f_79(79, acc);
+    acc = acc + f_80(80, acc);
+    acc = acc + f_81(81, acc);
+    acc = acc + f_82(82, acc);
+    acc = acc + f_83(83, acc);
+    acc = acc + f_84(84, acc);
+    acc = acc + f_85(85, acc);
+    acc = acc + f_86(86, acc);
+    acc = acc + f_87(87, acc);
+    acc = acc + f_88(88, acc);
+    acc = acc + f_89(89, acc);
+    acc = acc + f_90(90, acc);
+    acc = acc + f_91(91, acc);
+    acc = acc + f_92(92, acc);
+    acc = acc + f_93(93, acc);
+    acc = acc + f_94(94, acc);
+    acc = acc + f_95(95, acc);
+    acc = acc + f_96(96, acc);
+    acc = acc + f_97(97, acc);
+    acc = acc + f_98(98, acc);
+    acc = acc + f_99(99, acc);
+    acc = acc + f_100(100, acc);
+    acc = acc + f_101(101, acc);
+    acc = acc + f_102(102, acc);
+    acc = acc + f_103(103, acc);
+    acc = acc + f_104(104, acc);
+    acc = acc + f_105(105, acc);
+    acc = acc + f_106(106, acc);
+    acc = acc + f_107(107, acc);
+    acc = acc + f_108(108, acc);
+    acc = acc + f_109(109, acc);
+    acc = acc + f_110(110, acc);
+    acc = acc + f_111(111, acc);
+    acc = acc + f_112(112, acc);
+    acc = acc + f_113(113, acc);
+    acc = acc + f_114(114, acc);
+    acc = acc + f_115(115, acc);
+    acc = acc + f_116(116, acc);
+    acc = acc + f_117(117, acc);
+    acc = acc + f_118(118, acc);
+    acc = acc + f_119(119, acc);
+    acc = acc + f_120(120, acc);
+    acc = acc + f_121(121, acc);
+    acc = acc + f_122(122, acc);
+    acc = acc + f_123(123, acc);
+    acc = acc + f_124(124, acc);
+    acc = acc + f_125(125, acc);
+    acc = acc + f_126(126, acc);
+    acc = acc + f_127(127, acc);
+    @dbg(acc);
+    0
+}
+""" }]
+stdout = """16256
+"""
+exit_code = 0
+
+# Each `x{i}` has a second write only in an arm whose condition reads
+# `x{i-1}`: the slot becomes single-write, and its loads constant, only once
+# that arm is proven dead. No inlining is involved, so -O1 reached the bound
+# too.
+[[case]]
+name = "dead_arm_store_chain"
+differential_opt = true
+files = [{ path = "main.rue", source = """
+fn g() -> i64 {
+    let c0 = false;
+    let mut x0: i64 = 0;
+    if c0 { x0 = 1; }
+    let mut x1: i64 = 0; if x0 != 0 { x1 = 1; }
+    let mut x2: i64 = 0; if x1 != 0 { x2 = 1; }
+    let mut x3: i64 = 0; if x2 != 0 { x3 = 1; }
+    let mut x4: i64 = 0; if x3 != 0 { x4 = 1; }
+    let mut x5: i64 = 0; if x4 != 0 { x5 = 1; }
+    let mut x6: i64 = 0; if x5 != 0 { x6 = 1; }
+    let mut x7: i64 = 0; if x6 != 0 { x7 = 1; }
+    let mut x8: i64 = 0; if x7 != 0 { x8 = 1; }
+    let mut x9: i64 = 0; if x8 != 0 { x9 = 1; }
+    let mut x10: i64 = 0; if x9 != 0 { x10 = 1; }
+    let mut x11: i64 = 0; if x10 != 0 { x11 = 1; }
+    let mut x12: i64 = 0; if x11 != 0 { x12 = 1; }
+    let mut x13: i64 = 0; if x12 != 0 { x13 = 1; }
+    let mut x14: i64 = 0; if x13 != 0 { x14 = 1; }
+    let mut x15: i64 = 0; if x14 != 0 { x15 = 1; }
+    let mut x16: i64 = 0; if x15 != 0 { x16 = 1; }
+    let mut x17: i64 = 0; if x16 != 0 { x17 = 1; }
+    let mut x18: i64 = 0; if x17 != 0 { x18 = 1; }
+    let mut x19: i64 = 0; if x18 != 0 { x19 = 1; }
+    let mut x20: i64 = 0; if x19 != 0 { x20 = 1; }
+    let mut x21: i64 = 0; if x20 != 0 { x21 = 1; }
+    let mut x22: i64 = 0; if x21 != 0 { x22 = 1; }
+    let mut x23: i64 = 0; if x22 != 0 { x23 = 1; }
+    let mut x24: i64 = 0; if x23 != 0 { x24 = 1; }
+    let mut x25: i64 = 0; if x24 != 0 { x25 = 1; }
+    let mut x26: i64 = 0; if x25 != 0 { x26 = 1; }
+    let mut x27: i64 = 0; if x26 != 0 { x27 = 1; }
+    let mut x28: i64 = 0; if x27 != 0 { x28 = 1; }
+    let mut x29: i64 = 0; if x28 != 0 { x29 = 1; }
+    let mut x30: i64 = 0; if x29 != 0 { x30 = 1; }
+    let mut x31: i64 = 0; if x30 != 0 { x31 = 1; }
+    let mut x32: i64 = 0; if x31 != 0 { x32 = 1; }
+    let mut x33: i64 = 0; if x32 != 0 { x33 = 1; }
+    let mut x34: i64 = 0; if x33 != 0 { x34 = 1; }
+    let mut x35: i64 = 0; if x34 != 0 { x35 = 1; }
+    let mut x36: i64 = 0; if x35 != 0 { x36 = 1; }
+    let mut x37: i64 = 0; if x36 != 0 { x37 = 1; }
+    let mut x38: i64 = 0; if x37 != 0 { x38 = 1; }
+    let mut x39: i64 = 0; if x38 != 0 { x39 = 1; }
+    let mut x40: i64 = 0; if x39 != 0 { x40 = 1; }
+    let mut x41: i64 = 0; if x40 != 0 { x41 = 1; }
+    let mut x42: i64 = 0; if x41 != 0 { x42 = 1; }
+    let mut x43: i64 = 0; if x42 != 0 { x43 = 1; }
+    let mut x44: i64 = 0; if x43 != 0 { x44 = 1; }
+    let mut x45: i64 = 0; if x44 != 0 { x45 = 1; }
+    let mut x46: i64 = 0; if x45 != 0 { x46 = 1; }
+    let mut x47: i64 = 0; if x46 != 0 { x47 = 1; }
+    let mut x48: i64 = 0; if x47 != 0 { x48 = 1; }
+    let mut x49: i64 = 0; if x48 != 0 { x49 = 1; }
+    let mut x50: i64 = 0; if x49 != 0 { x50 = 1; }
+    let mut x51: i64 = 0; if x50 != 0 { x51 = 1; }
+    let mut x52: i64 = 0; if x51 != 0 { x52 = 1; }
+    let mut x53: i64 = 0; if x52 != 0 { x53 = 1; }
+    let mut x54: i64 = 0; if x53 != 0 { x54 = 1; }
+    let mut x55: i64 = 0; if x54 != 0 { x55 = 1; }
+    let mut x56: i64 = 0; if x55 != 0 { x56 = 1; }
+    let mut x57: i64 = 0; if x56 != 0 { x57 = 1; }
+    let mut x58: i64 = 0; if x57 != 0 { x58 = 1; }
+    let mut x59: i64 = 0; if x58 != 0 { x59 = 1; }
+    let mut x60: i64 = 0; if x59 != 0 { x60 = 1; }
+    let mut x61: i64 = 0; if x60 != 0 { x61 = 1; }
+    let mut x62: i64 = 0; if x61 != 0 { x62 = 1; }
+    let mut x63: i64 = 0; if x62 != 0 { x63 = 1; }
+    let mut x64: i64 = 0; if x63 != 0 { x64 = 1; }
+    let mut x65: i64 = 0; if x64 != 0 { x65 = 1; }
+    let mut x66: i64 = 0; if x65 != 0 { x66 = 1; }
+    let mut x67: i64 = 0; if x66 != 0 { x67 = 1; }
+    let mut x68: i64 = 0; if x67 != 0 { x68 = 1; }
+    let mut x69: i64 = 0; if x68 != 0 { x69 = 1; }
+    let mut x70: i64 = 0; if x69 != 0 { x70 = 1; }
+    let mut x71: i64 = 0; if x70 != 0 { x71 = 1; }
+    let mut x72: i64 = 0; if x71 != 0 { x72 = 1; }
+    let mut x73: i64 = 0; if x72 != 0 { x73 = 1; }
+    let mut x74: i64 = 0; if x73 != 0 { x74 = 1; }
+    let mut x75: i64 = 0; if x74 != 0 { x75 = 1; }
+    let mut x76: i64 = 0; if x75 != 0 { x76 = 1; }
+    let mut x77: i64 = 0; if x76 != 0 { x77 = 1; }
+    let mut x78: i64 = 0; if x77 != 0 { x78 = 1; }
+    let mut x79: i64 = 0; if x78 != 0 { x79 = 1; }
+    let mut x80: i64 = 0; if x79 != 0 { x80 = 1; }
+    let mut x81: i64 = 0; if x80 != 0 { x81 = 1; }
+    let mut x82: i64 = 0; if x81 != 0 { x82 = 1; }
+    let mut x83: i64 = 0; if x82 != 0 { x83 = 1; }
+    let mut x84: i64 = 0; if x83 != 0 { x84 = 1; }
+    let mut x85: i64 = 0; if x84 != 0 { x85 = 1; }
+    let mut x86: i64 = 0; if x85 != 0 { x86 = 1; }
+    let mut x87: i64 = 0; if x86 != 0 { x87 = 1; }
+    let mut x88: i64 = 0; if x87 != 0 { x88 = 1; }
+    let mut x89: i64 = 0; if x88 != 0 { x89 = 1; }
+    let mut x90: i64 = 0; if x89 != 0 { x90 = 1; }
+    let mut x91: i64 = 0; if x90 != 0 { x91 = 1; }
+    let mut x92: i64 = 0; if x91 != 0 { x92 = 1; }
+    let mut x93: i64 = 0; if x92 != 0 { x93 = 1; }
+    let mut x94: i64 = 0; if x93 != 0 { x94 = 1; }
+    let mut x95: i64 = 0; if x94 != 0 { x95 = 1; }
+    let mut x96: i64 = 0; if x95 != 0 { x96 = 1; }
+    let mut x97: i64 = 0; if x96 != 0 { x97 = 1; }
+    let mut x98: i64 = 0; if x97 != 0 { x98 = 1; }
+    let mut x99: i64 = 0; if x98 != 0 { x99 = 1; }
+    let mut x100: i64 = 0; if x99 != 0 { x100 = 1; }
+    x100 + 7
+}
+
+fn main() -> i32 {
+    @dbg(g());
+    0
+}
+""" }]
+stdout = """7
+"""
+exit_code = 0
+
+# The competing write sits in a loop inside the dead arm. The loop's back edge
+# keeps its header's incoming-edge count above zero, so only a reachability
+# walk from the entry proves it dead.
+[[case]]
+name = "dead_loop_store_chain"
+differential_opt = true
+files = [{ path = "main.rue", source = """
+fn g(x: i64) -> i64 {
+    let c0 = false;
+    let mut y0: i64 = 0;
+    if c0 { while x > 0 { y0 = 1; } }
+    let mut y1: i64 = 0; if y0 != 0 { while x > 0 { y1 = 1; } }
+    let mut y2: i64 = 0; if y1 != 0 { while x > 0 { y2 = 1; } }
+    let mut y3: i64 = 0; if y2 != 0 { while x > 0 { y3 = 1; } }
+    let mut y4: i64 = 0; if y3 != 0 { while x > 0 { y4 = 1; } }
+    let mut y5: i64 = 0; if y4 != 0 { while x > 0 { y5 = 1; } }
+    let mut y6: i64 = 0; if y5 != 0 { while x > 0 { y6 = 1; } }
+    let mut y7: i64 = 0; if y6 != 0 { while x > 0 { y7 = 1; } }
+    let mut y8: i64 = 0; if y7 != 0 { while x > 0 { y8 = 1; } }
+    let mut y9: i64 = 0; if y8 != 0 { while x > 0 { y9 = 1; } }
+    let mut y10: i64 = 0; if y9 != 0 { while x > 0 { y10 = 1; } }
+    let mut y11: i64 = 0; if y10 != 0 { while x > 0 { y11 = 1; } }
+    let mut y12: i64 = 0; if y11 != 0 { while x > 0 { y12 = 1; } }
+    let mut y13: i64 = 0; if y12 != 0 { while x > 0 { y13 = 1; } }
+    let mut y14: i64 = 0; if y13 != 0 { while x > 0 { y14 = 1; } }
+    let mut y15: i64 = 0; if y14 != 0 { while x > 0 { y15 = 1; } }
+    let mut y16: i64 = 0; if y15 != 0 { while x > 0 { y16 = 1; } }
+    let mut y17: i64 = 0; if y16 != 0 { while x > 0 { y17 = 1; } }
+    let mut y18: i64 = 0; if y17 != 0 { while x > 0 { y18 = 1; } }
+    let mut y19: i64 = 0; if y18 != 0 { while x > 0 { y19 = 1; } }
+    let mut y20: i64 = 0; if y19 != 0 { while x > 0 { y20 = 1; } }
+    let mut y21: i64 = 0; if y20 != 0 { while x > 0 { y21 = 1; } }
+    let mut y22: i64 = 0; if y21 != 0 { while x > 0 { y22 = 1; } }
+    let mut y23: i64 = 0; if y22 != 0 { while x > 0 { y23 = 1; } }
+    let mut y24: i64 = 0; if y23 != 0 { while x > 0 { y24 = 1; } }
+    let mut y25: i64 = 0; if y24 != 0 { while x > 0 { y25 = 1; } }
+    let mut y26: i64 = 0; if y25 != 0 { while x > 0 { y26 = 1; } }
+    let mut y27: i64 = 0; if y26 != 0 { while x > 0 { y27 = 1; } }
+    let mut y28: i64 = 0; if y27 != 0 { while x > 0 { y28 = 1; } }
+    let mut y29: i64 = 0; if y28 != 0 { while x > 0 { y29 = 1; } }
+    let mut y30: i64 = 0; if y29 != 0 { while x > 0 { y30 = 1; } }
+    let mut y31: i64 = 0; if y30 != 0 { while x > 0 { y31 = 1; } }
+    let mut y32: i64 = 0; if y31 != 0 { while x > 0 { y32 = 1; } }
+    let mut y33: i64 = 0; if y32 != 0 { while x > 0 { y33 = 1; } }
+    let mut y34: i64 = 0; if y33 != 0 { while x > 0 { y34 = 1; } }
+    let mut y35: i64 = 0; if y34 != 0 { while x > 0 { y35 = 1; } }
+    let mut y36: i64 = 0; if y35 != 0 { while x > 0 { y36 = 1; } }
+    let mut y37: i64 = 0; if y36 != 0 { while x > 0 { y37 = 1; } }
+    let mut y38: i64 = 0; if y37 != 0 { while x > 0 { y38 = 1; } }
+    let mut y39: i64 = 0; if y38 != 0 { while x > 0 { y39 = 1; } }
+    let mut y40: i64 = 0; if y39 != 0 { while x > 0 { y40 = 1; } }
+    let mut y41: i64 = 0; if y40 != 0 { while x > 0 { y41 = 1; } }
+    let mut y42: i64 = 0; if y41 != 0 { while x > 0 { y42 = 1; } }
+    let mut y43: i64 = 0; if y42 != 0 { while x > 0 { y43 = 1; } }
+    let mut y44: i64 = 0; if y43 != 0 { while x > 0 { y44 = 1; } }
+    let mut y45: i64 = 0; if y44 != 0 { while x > 0 { y45 = 1; } }
+    let mut y46: i64 = 0; if y45 != 0 { while x > 0 { y46 = 1; } }
+    let mut y47: i64 = 0; if y46 != 0 { while x > 0 { y47 = 1; } }
+    let mut y48: i64 = 0; if y47 != 0 { while x > 0 { y48 = 1; } }
+    let mut y49: i64 = 0; if y48 != 0 { while x > 0 { y49 = 1; } }
+    let mut y50: i64 = 0; if y49 != 0 { while x > 0 { y50 = 1; } }
+    let mut y51: i64 = 0; if y50 != 0 { while x > 0 { y51 = 1; } }
+    let mut y52: i64 = 0; if y51 != 0 { while x > 0 { y52 = 1; } }
+    let mut y53: i64 = 0; if y52 != 0 { while x > 0 { y53 = 1; } }
+    let mut y54: i64 = 0; if y53 != 0 { while x > 0 { y54 = 1; } }
+    let mut y55: i64 = 0; if y54 != 0 { while x > 0 { y55 = 1; } }
+    let mut y56: i64 = 0; if y55 != 0 { while x > 0 { y56 = 1; } }
+    let mut y57: i64 = 0; if y56 != 0 { while x > 0 { y57 = 1; } }
+    let mut y58: i64 = 0; if y57 != 0 { while x > 0 { y58 = 1; } }
+    let mut y59: i64 = 0; if y58 != 0 { while x > 0 { y59 = 1; } }
+    let mut y60: i64 = 0; if y59 != 0 { while x > 0 { y60 = 1; } }
+    let mut y61: i64 = 0; if y60 != 0 { while x > 0 { y61 = 1; } }
+    let mut y62: i64 = 0; if y61 != 0 { while x > 0 { y62 = 1; } }
+    let mut y63: i64 = 0; if y62 != 0 { while x > 0 { y63 = 1; } }
+    let mut y64: i64 = 0; if y63 != 0 { while x > 0 { y64 = 1; } }
+    let mut y65: i64 = 0; if y64 != 0 { while x > 0 { y65 = 1; } }
+    let mut y66: i64 = 0; if y65 != 0 { while x > 0 { y66 = 1; } }
+    let mut y67: i64 = 0; if y66 != 0 { while x > 0 { y67 = 1; } }
+    let mut y68: i64 = 0; if y67 != 0 { while x > 0 { y68 = 1; } }
+    let mut y69: i64 = 0; if y68 != 0 { while x > 0 { y69 = 1; } }
+    let mut y70: i64 = 0; if y69 != 0 { while x > 0 { y70 = 1; } }
+    let mut y71: i64 = 0; if y70 != 0 { while x > 0 { y71 = 1; } }
+    let mut y72: i64 = 0; if y71 != 0 { while x > 0 { y72 = 1; } }
+    let mut y73: i64 = 0; if y72 != 0 { while x > 0 { y73 = 1; } }
+    let mut y74: i64 = 0; if y73 != 0 { while x > 0 { y74 = 1; } }
+    let mut y75: i64 = 0; if y74 != 0 { while x > 0 { y75 = 1; } }
+    let mut y76: i64 = 0; if y75 != 0 { while x > 0 { y76 = 1; } }
+    let mut y77: i64 = 0; if y76 != 0 { while x > 0 { y77 = 1; } }
+    let mut y78: i64 = 0; if y77 != 0 { while x > 0 { y78 = 1; } }
+    let mut y79: i64 = 0; if y78 != 0 { while x > 0 { y79 = 1; } }
+    let mut y80: i64 = 0; if y79 != 0 { while x > 0 { y80 = 1; } }
+    let mut y81: i64 = 0; if y80 != 0 { while x > 0 { y81 = 1; } }
+    let mut y82: i64 = 0; if y81 != 0 { while x > 0 { y82 = 1; } }
+    let mut y83: i64 = 0; if y82 != 0 { while x > 0 { y83 = 1; } }
+    let mut y84: i64 = 0; if y83 != 0 { while x > 0 { y84 = 1; } }
+    let mut y85: i64 = 0; if y84 != 0 { while x > 0 { y85 = 1; } }
+    let mut y86: i64 = 0; if y85 != 0 { while x > 0 { y86 = 1; } }
+    let mut y87: i64 = 0; if y86 != 0 { while x > 0 { y87 = 1; } }
+    let mut y88: i64 = 0; if y87 != 0 { while x > 0 { y88 = 1; } }
+    let mut y89: i64 = 0; if y88 != 0 { while x > 0 { y89 = 1; } }
+    let mut y90: i64 = 0; if y89 != 0 { while x > 0 { y90 = 1; } }
+    let mut y91: i64 = 0; if y90 != 0 { while x > 0 { y91 = 1; } }
+    let mut y92: i64 = 0; if y91 != 0 { while x > 0 { y92 = 1; } }
+    let mut y93: i64 = 0; if y92 != 0 { while x > 0 { y93 = 1; } }
+    let mut y94: i64 = 0; if y93 != 0 { while x > 0 { y94 = 1; } }
+    let mut y95: i64 = 0; if y94 != 0 { while x > 0 { y95 = 1; } }
+    let mut y96: i64 = 0; if y95 != 0 { while x > 0 { y96 = 1; } }
+    let mut y97: i64 = 0; if y96 != 0 { while x > 0 { y97 = 1; } }
+    let mut y98: i64 = 0; if y97 != 0 { while x > 0 { y98 = 1; } }
+    let mut y99: i64 = 0; if y98 != 0 { while x > 0 { y99 = 1; } }
+    let mut y100: i64 = 0; if y99 != 0 { while x > 0 { y100 = 1; } }
+    y100 + 7
+}
+
+fn main() -> i32 {
+    @dbg(g(5));
+    0
+}
+""" }]
+stdout = """7
+"""
+exit_code = 0
+
+# `b{i} = x + a{i-1}` is an identity once `a{i-1}` folds to zero, and
+# `a{i} = b{i} - x` folds to zero only through that identity. At -O2 the
+# inlined `h` reoptimizes `g` after forwarding has made the chain SSA; the
+# peephole pass used to expose one link per round.
+[[case]]
+name = "identity_annihilator_chain"
+differential_opt = true
+files = [{ path = "main.rue", source = """
+fn h(a: i64) -> i64 { if a > 0 { return 1; } return 2; }
+
+fn g(x: i64) -> i64 {
+    let c = h(5);
+    let a0 = x - x;
+    let b1 = x + a0; let a1 = b1 - x;
+    let b2 = x + a1; let a2 = b2 - x;
+    let b3 = x + a2; let a3 = b3 - x;
+    let b4 = x + a3; let a4 = b4 - x;
+    let b5 = x + a4; let a5 = b5 - x;
+    let b6 = x + a5; let a6 = b6 - x;
+    let b7 = x + a6; let a7 = b7 - x;
+    let b8 = x + a7; let a8 = b8 - x;
+    let b9 = x + a8; let a9 = b9 - x;
+    let b10 = x + a9; let a10 = b10 - x;
+    let b11 = x + a10; let a11 = b11 - x;
+    let b12 = x + a11; let a12 = b12 - x;
+    let b13 = x + a12; let a13 = b13 - x;
+    let b14 = x + a13; let a14 = b14 - x;
+    let b15 = x + a14; let a15 = b15 - x;
+    let b16 = x + a15; let a16 = b16 - x;
+    let b17 = x + a16; let a17 = b17 - x;
+    let b18 = x + a17; let a18 = b18 - x;
+    let b19 = x + a18; let a19 = b19 - x;
+    let b20 = x + a19; let a20 = b20 - x;
+    let b21 = x + a20; let a21 = b21 - x;
+    let b22 = x + a21; let a22 = b22 - x;
+    let b23 = x + a22; let a23 = b23 - x;
+    let b24 = x + a23; let a24 = b24 - x;
+    let b25 = x + a24; let a25 = b25 - x;
+    let b26 = x + a25; let a26 = b26 - x;
+    let b27 = x + a26; let a27 = b27 - x;
+    let b28 = x + a27; let a28 = b28 - x;
+    let b29 = x + a28; let a29 = b29 - x;
+    let b30 = x + a29; let a30 = b30 - x;
+    let b31 = x + a30; let a31 = b31 - x;
+    let b32 = x + a31; let a32 = b32 - x;
+    let b33 = x + a32; let a33 = b33 - x;
+    let b34 = x + a33; let a34 = b34 - x;
+    let b35 = x + a34; let a35 = b35 - x;
+    let b36 = x + a35; let a36 = b36 - x;
+    let b37 = x + a36; let a37 = b37 - x;
+    let b38 = x + a37; let a38 = b38 - x;
+    let b39 = x + a38; let a39 = b39 - x;
+    let b40 = x + a39; let a40 = b40 - x;
+    let b41 = x + a40; let a41 = b41 - x;
+    let b42 = x + a41; let a42 = b42 - x;
+    let b43 = x + a42; let a43 = b43 - x;
+    let b44 = x + a43; let a44 = b44 - x;
+    let b45 = x + a44; let a45 = b45 - x;
+    let b46 = x + a45; let a46 = b46 - x;
+    let b47 = x + a46; let a47 = b47 - x;
+    let b48 = x + a47; let a48 = b48 - x;
+    let b49 = x + a48; let a49 = b49 - x;
+    let b50 = x + a49; let a50 = b50 - x;
+    let b51 = x + a50; let a51 = b51 - x;
+    let b52 = x + a51; let a52 = b52 - x;
+    let b53 = x + a52; let a53 = b53 - x;
+    let b54 = x + a53; let a54 = b54 - x;
+    let b55 = x + a54; let a55 = b55 - x;
+    let b56 = x + a55; let a56 = b56 - x;
+    let b57 = x + a56; let a57 = b57 - x;
+    let b58 = x + a57; let a58 = b58 - x;
+    let b59 = x + a58; let a59 = b59 - x;
+    let b60 = x + a59; let a60 = b60 - x;
+    let b61 = x + a60; let a61 = b61 - x;
+    let b62 = x + a61; let a62 = b62 - x;
+    let b63 = x + a62; let a63 = b63 - x;
+    let b64 = x + a63; let a64 = b64 - x;
+    let b65 = x + a64; let a65 = b65 - x;
+    let b66 = x + a65; let a66 = b66 - x;
+    let b67 = x + a66; let a67 = b67 - x;
+    let b68 = x + a67; let a68 = b68 - x;
+    let b69 = x + a68; let a69 = b69 - x;
+    let b70 = x + a69; let a70 = b70 - x;
+    let b71 = x + a70; let a71 = b71 - x;
+    let b72 = x + a71; let a72 = b72 - x;
+    let b73 = x + a72; let a73 = b73 - x;
+    let b74 = x + a73; let a74 = b74 - x;
+    let b75 = x + a74; let a75 = b75 - x;
+    let b76 = x + a75; let a76 = b76 - x;
+    let b77 = x + a76; let a77 = b77 - x;
+    let b78 = x + a77; let a78 = b78 - x;
+    let b79 = x + a78; let a79 = b79 - x;
+    let b80 = x + a79; let a80 = b80 - x;
+    let b81 = x + a80; let a81 = b81 - x;
+    let b82 = x + a81; let a82 = b82 - x;
+    let b83 = x + a82; let a83 = b83 - x;
+    let b84 = x + a83; let a84 = b84 - x;
+    let b85 = x + a84; let a85 = b85 - x;
+    let b86 = x + a85; let a86 = b86 - x;
+    let b87 = x + a86; let a87 = b87 - x;
+    let b88 = x + a87; let a88 = b88 - x;
+    let b89 = x + a88; let a89 = b89 - x;
+    let b90 = x + a89; let a90 = b90 - x;
+    let b91 = x + a90; let a91 = b91 - x;
+    let b92 = x + a91; let a92 = b92 - x;
+    let b93 = x + a92; let a93 = b93 - x;
+    let b94 = x + a93; let a94 = b94 - x;
+    let b95 = x + a94; let a95 = b95 - x;
+    let b96 = x + a95; let a96 = b96 - x;
+    let b97 = x + a96; let a97 = b97 - x;
+    let b98 = x + a97; let a98 = b98 - x;
+    let b99 = x + a98; let a99 = b99 - x;
+    let b100 = x + a99; let a100 = b100 - x;
+    if a100 == 0 { return c + 7; }
+    c
+}
+
+fn main() -> i32 {
+    @dbg(g(5));
+    0
+}
+""" }]
+stdout = """8
+"""
+exit_code = 0
+
+# Once `d{i-1}` folds to zero, `y{i}`'s join is entered only from the arm
+# passing `x`, so `y{i} - x` is zero: the join parameter equals the value its
+# only live edge carries.
+[[case]]
+name = "single_edge_join_annihilator_chain"
+differential_opt = true
+files = [{ path = "main.rue", source = """
+fn h(a: i64) -> i64 { if a > 0 { return 1; } return 2; }
+
+fn g(x: i64, z: i64) -> i64 {
+    let k = h(5);
+    let d0 = x - x;
+    let y1 = if d0 == 0 { x } else { z }; let d1 = y1 - x;
+    let y2 = if d1 == 0 { x } else { z }; let d2 = y2 - x;
+    let y3 = if d2 == 0 { x } else { z }; let d3 = y3 - x;
+    let y4 = if d3 == 0 { x } else { z }; let d4 = y4 - x;
+    let y5 = if d4 == 0 { x } else { z }; let d5 = y5 - x;
+    let y6 = if d5 == 0 { x } else { z }; let d6 = y6 - x;
+    let y7 = if d6 == 0 { x } else { z }; let d7 = y7 - x;
+    let y8 = if d7 == 0 { x } else { z }; let d8 = y8 - x;
+    let y9 = if d8 == 0 { x } else { z }; let d9 = y9 - x;
+    let y10 = if d9 == 0 { x } else { z }; let d10 = y10 - x;
+    let y11 = if d10 == 0 { x } else { z }; let d11 = y11 - x;
+    let y12 = if d11 == 0 { x } else { z }; let d12 = y12 - x;
+    let y13 = if d12 == 0 { x } else { z }; let d13 = y13 - x;
+    let y14 = if d13 == 0 { x } else { z }; let d14 = y14 - x;
+    let y15 = if d14 == 0 { x } else { z }; let d15 = y15 - x;
+    let y16 = if d15 == 0 { x } else { z }; let d16 = y16 - x;
+    let y17 = if d16 == 0 { x } else { z }; let d17 = y17 - x;
+    let y18 = if d17 == 0 { x } else { z }; let d18 = y18 - x;
+    let y19 = if d18 == 0 { x } else { z }; let d19 = y19 - x;
+    let y20 = if d19 == 0 { x } else { z }; let d20 = y20 - x;
+    let y21 = if d20 == 0 { x } else { z }; let d21 = y21 - x;
+    let y22 = if d21 == 0 { x } else { z }; let d22 = y22 - x;
+    let y23 = if d22 == 0 { x } else { z }; let d23 = y23 - x;
+    let y24 = if d23 == 0 { x } else { z }; let d24 = y24 - x;
+    let y25 = if d24 == 0 { x } else { z }; let d25 = y25 - x;
+    let y26 = if d25 == 0 { x } else { z }; let d26 = y26 - x;
+    let y27 = if d26 == 0 { x } else { z }; let d27 = y27 - x;
+    let y28 = if d27 == 0 { x } else { z }; let d28 = y28 - x;
+    let y29 = if d28 == 0 { x } else { z }; let d29 = y29 - x;
+    let y30 = if d29 == 0 { x } else { z }; let d30 = y30 - x;
+    let y31 = if d30 == 0 { x } else { z }; let d31 = y31 - x;
+    let y32 = if d31 == 0 { x } else { z }; let d32 = y32 - x;
+    let y33 = if d32 == 0 { x } else { z }; let d33 = y33 - x;
+    let y34 = if d33 == 0 { x } else { z }; let d34 = y34 - x;
+    let y35 = if d34 == 0 { x } else { z }; let d35 = y35 - x;
+    let y36 = if d35 == 0 { x } else { z }; let d36 = y36 - x;
+    let y37 = if d36 == 0 { x } else { z }; let d37 = y37 - x;
+    let y38 = if d37 == 0 { x } else { z }; let d38 = y38 - x;
+    let y39 = if d38 == 0 { x } else { z }; let d39 = y39 - x;
+    let y40 = if d39 == 0 { x } else { z }; let d40 = y40 - x;
+    let y41 = if d40 == 0 { x } else { z }; let d41 = y41 - x;
+    let y42 = if d41 == 0 { x } else { z }; let d42 = y42 - x;
+    let y43 = if d42 == 0 { x } else { z }; let d43 = y43 - x;
+    let y44 = if d43 == 0 { x } else { z }; let d44 = y44 - x;
+    let y45 = if d44 == 0 { x } else { z }; let d45 = y45 - x;
+    let y46 = if d45 == 0 { x } else { z }; let d46 = y46 - x;
+    let y47 = if d46 == 0 { x } else { z }; let d47 = y47 - x;
+    let y48 = if d47 == 0 { x } else { z }; let d48 = y48 - x;
+    let y49 = if d48 == 0 { x } else { z }; let d49 = y49 - x;
+    let y50 = if d49 == 0 { x } else { z }; let d50 = y50 - x;
+    let y51 = if d50 == 0 { x } else { z }; let d51 = y51 - x;
+    let y52 = if d51 == 0 { x } else { z }; let d52 = y52 - x;
+    let y53 = if d52 == 0 { x } else { z }; let d53 = y53 - x;
+    let y54 = if d53 == 0 { x } else { z }; let d54 = y54 - x;
+    let y55 = if d54 == 0 { x } else { z }; let d55 = y55 - x;
+    let y56 = if d55 == 0 { x } else { z }; let d56 = y56 - x;
+    let y57 = if d56 == 0 { x } else { z }; let d57 = y57 - x;
+    let y58 = if d57 == 0 { x } else { z }; let d58 = y58 - x;
+    let y59 = if d58 == 0 { x } else { z }; let d59 = y59 - x;
+    let y60 = if d59 == 0 { x } else { z }; let d60 = y60 - x;
+    let y61 = if d60 == 0 { x } else { z }; let d61 = y61 - x;
+    let y62 = if d61 == 0 { x } else { z }; let d62 = y62 - x;
+    let y63 = if d62 == 0 { x } else { z }; let d63 = y63 - x;
+    let y64 = if d63 == 0 { x } else { z }; let d64 = y64 - x;
+    let y65 = if d64 == 0 { x } else { z }; let d65 = y65 - x;
+    let y66 = if d65 == 0 { x } else { z }; let d66 = y66 - x;
+    let y67 = if d66 == 0 { x } else { z }; let d67 = y67 - x;
+    let y68 = if d67 == 0 { x } else { z }; let d68 = y68 - x;
+    let y69 = if d68 == 0 { x } else { z }; let d69 = y69 - x;
+    let y70 = if d69 == 0 { x } else { z }; let d70 = y70 - x;
+    let y71 = if d70 == 0 { x } else { z }; let d71 = y71 - x;
+    let y72 = if d71 == 0 { x } else { z }; let d72 = y72 - x;
+    let y73 = if d72 == 0 { x } else { z }; let d73 = y73 - x;
+    let y74 = if d73 == 0 { x } else { z }; let d74 = y74 - x;
+    let y75 = if d74 == 0 { x } else { z }; let d75 = y75 - x;
+    let y76 = if d75 == 0 { x } else { z }; let d76 = y76 - x;
+    let y77 = if d76 == 0 { x } else { z }; let d77 = y77 - x;
+    let y78 = if d77 == 0 { x } else { z }; let d78 = y78 - x;
+    let y79 = if d78 == 0 { x } else { z }; let d79 = y79 - x;
+    let y80 = if d79 == 0 { x } else { z }; let d80 = y80 - x;
+    let y81 = if d80 == 0 { x } else { z }; let d81 = y81 - x;
+    let y82 = if d81 == 0 { x } else { z }; let d82 = y82 - x;
+    let y83 = if d82 == 0 { x } else { z }; let d83 = y83 - x;
+    let y84 = if d83 == 0 { x } else { z }; let d84 = y84 - x;
+    let y85 = if d84 == 0 { x } else { z }; let d85 = y85 - x;
+    let y86 = if d85 == 0 { x } else { z }; let d86 = y86 - x;
+    let y87 = if d86 == 0 { x } else { z }; let d87 = y87 - x;
+    let y88 = if d87 == 0 { x } else { z }; let d88 = y88 - x;
+    let y89 = if d88 == 0 { x } else { z }; let d89 = y89 - x;
+    let y90 = if d89 == 0 { x } else { z }; let d90 = y90 - x;
+    let y91 = if d90 == 0 { x } else { z }; let d91 = y91 - x;
+    let y92 = if d91 == 0 { x } else { z }; let d92 = y92 - x;
+    let y93 = if d92 == 0 { x } else { z }; let d93 = y93 - x;
+    let y94 = if d93 == 0 { x } else { z }; let d94 = y94 - x;
+    let y95 = if d94 == 0 { x } else { z }; let d95 = y95 - x;
+    let y96 = if d95 == 0 { x } else { z }; let d96 = y96 - x;
+    let y97 = if d96 == 0 { x } else { z }; let d97 = y97 - x;
+    let y98 = if d97 == 0 { x } else { z }; let d98 = y98 - x;
+    let y99 = if d98 == 0 { x } else { z }; let d99 = y99 - x;
+    let y100 = if d99 == 0 { x } else { z }; let d100 = y100 - x;
+    d100 + k
+}
+
+fn main() -> i32 {
+    @dbg(g(5, 9));
+    0
+}
+""" }]
+stdout = """1
+"""
+exit_code = 0
