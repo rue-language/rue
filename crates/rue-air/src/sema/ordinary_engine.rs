@@ -2337,12 +2337,16 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             Some(
                 receiver
                     .into_iter()
-                    .chain(params.types().iter().zip(params.modes()).map(|(&ty, &mode)| {
-                        crate::AirCalleeParam {
-                            ty,
-                            mode: air_arg_mode(mode),
-                        }
-                    }))
+                    .chain(
+                        params
+                            .types()
+                            .iter()
+                            .zip(params.modes())
+                            .map(|(&ty, &mode)| crate::AirCalleeParam {
+                                ty,
+                                mode: air_arg_mode(mode),
+                            }),
+                    )
                     .collect(),
             )
         };
