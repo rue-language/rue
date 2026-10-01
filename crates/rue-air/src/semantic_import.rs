@@ -1096,18 +1096,6 @@ where
         {
             return Err(F::InvalidParameterModes);
         }
-        // A zero-width parameter's drop entry sits past the ABI range, one
-        // key per such parameter (RUE-2534), so no entry lies beyond
-        // `num_param_slots` plus the entry count.
-        let param_drop_key_limit = u64::from(body.num_param_slots)
-            .saturating_add(u64::try_from(body.param_drops.len()).unwrap_or(u64::MAX));
-        if body
-            .param_drops
-            .iter()
-            .any(|(slot, _)| u64::from(*slot) >= param_drop_key_limit)
-        {
-            return Err(F::InvalidParameterDrop);
-        }
         if body
             .borrow_slots
             .iter()
@@ -1462,9 +1450,25 @@ where
             }
             air.make_place(place.base, base_type, projections)?;
         }
+        // A sized parameter's drop entry names its first ABI slot. A
+        // zero-width parameter has none, so its entry is keyed past the ABI
+        // range (RUE-2534): those keys belong to zero-width types only, and
+        // they run in declaration order from `num_param_slots` without a gap
+        // or a repeat, so every entry names exactly one parameter.
         let mut drops = Vec::with_capacity(body.param_drops.len());
+        let mut next_zero_width_key = body.num_param_slots;
         for (slot, ty) in body.param_drops.iter() {
-            drops.push((*slot, import_type(ty)?));
+            let ty = import_type(ty)?;
+            if *slot >= body.num_param_slots {
+                if *slot != next_zero_width_key || !matches!(type_pool.try_abi_slot_count(ty), Ok(0))
+                {
+                    return Err(F::InvalidParameterDrop);
+                }
+                next_zero_width_key = next_zero_width_key
+                    .checked_add(1)
+                    .ok_or(F::InvalidParameterDrop)?;
+            }
+            drops.push((*slot, ty));
         }
         air.set_param_drops(drops);
         for slot in body.borrow_slots.iter() {
@@ -4581,15 +4585,44 @@ mod tests {
             Err(F::InvalidParameterDrop)
         ));
         // A zero-width parameter's drop entry is keyed past the ABI range,
-        // one key per entry (RUE-2534).
+        // one key per zero-width parameter, in order (RUE-2534).
         let mut zero_width_drop = body(vec![D::Const(0)]);
-        zero_width_drop.param_drops = vec![(0, crate::SemanticImportType::Unit)].into();
+        zero_width_drop.param_drops = vec![
+            (0, crate::SemanticImportType::Unit),
+            (1, crate::SemanticImportType::Unit),
+        ]
+        .into();
         assert!(
             epoch
                 .import_body(&zero_width_drop, Span::with_file(FileId::DEFAULT, 0, 100))
                 .is_ok(),
-            "a zero-width parameter's drop key lies past the ABI range"
+            "zero-width parameters' drop keys lie past the ABI range"
         );
+        // A sized type never takes a key past the ABI range.
+        let mut sized_past_range = body(vec![D::Const(0)]);
+        sized_past_range.param_drops = vec![(0, crate::SemanticImportType::I64)].into();
+        assert!(matches!(
+            epoch.import_body(&sized_past_range, Span::with_file(FileId::DEFAULT, 0, 100)),
+            Err(F::InvalidParameterDrop)
+        ));
+        // Two zero-width parameters never share a key.
+        let mut duplicate_key = body(vec![D::Const(0)]);
+        duplicate_key.param_drops = vec![
+            (0, crate::SemanticImportType::Unit),
+            (0, crate::SemanticImportType::Unit),
+        ]
+        .into();
+        assert!(matches!(
+            epoch.import_body(&duplicate_key, Span::with_file(FileId::DEFAULT, 0, 100)),
+            Err(F::InvalidParameterDrop)
+        ));
+        // The keys start at `num_param_slots` and leave no gap.
+        let mut gapped_key = body(vec![D::Const(0)]);
+        gapped_key.param_drops = vec![(1, crate::SemanticImportType::Unit)].into();
+        assert!(matches!(
+            epoch.import_body(&gapped_key, Span::with_file(FileId::DEFAULT, 0, 100)),
+            Err(F::InvalidParameterDrop)
+        ));
         let mut invalid_borrow = body(vec![D::Const(0)]);
         invalid_borrow.borrow_slots = vec![0].into();
         assert!(matches!(

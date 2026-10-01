@@ -6674,6 +6674,54 @@ mod tests {
             .unwrap();
     }
 
+    /// The place and store forms of the same key: a `PlaceRead` and a
+    /// `PlaceWrite` rooted at it, and a `ParamStore` to it (RUE-2534).
+    #[test]
+    fn verify_accepts_zero_width_parameter_places_and_stores_at_a_key() {
+        let mut cfg = Cfg::new(Type::UNIT, 0, 1, "zst_param_place".to_string(), vec![false]);
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        let place = cfg
+            .make_place(PlaceBase::Param(3), Type::UNIT, std::iter::empty())
+            .unwrap();
+        let read = push(&mut cfg, entry, CfgInstData::PlaceRead { place }, Type::UNIT);
+        let place = cfg
+            .make_place(PlaceBase::Param(3), Type::UNIT, std::iter::empty())
+            .unwrap();
+        push(
+            &mut cfg,
+            entry,
+            CfgInstData::PlaceWrite { place, value: read },
+            Type::UNIT,
+        );
+        push(
+            &mut cfg,
+            entry,
+            CfgInstData::ParamStore {
+                param_slot: 3,
+                value: read,
+            },
+            Type::UNIT,
+        );
+        cfg.set_terminator(entry, Terminator::Return { value: None });
+        cfg.verify_with_type_pool(&FrozenTypeInternPool::new())
+            .unwrap();
+    }
+
+    /// Only a zero-width access may sit past the ABI range: a sized one there
+    /// still names a slot range that does not exist (RUE-2534).
+    #[test]
+    #[should_panic(expected = "parameter slot range 3..4")]
+    fn verify_rejects_a_sized_parameter_access_past_the_abi_range() {
+        let mut cfg = Cfg::new(Type::UNIT, 0, 1, "sized_past_range".to_string(), vec![false]);
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        push(&mut cfg, entry, CfgInstData::Param { index: 3 }, Type::I64);
+        cfg.set_terminator(entry, Terminator::Return { value: None });
+        cfg.verify_with_type_pool(&FrozenTypeInternPool::new())
+            .unwrap();
+    }
+
     #[test]
     #[should_panic(expected = "local slot range 0..2")]
     fn verify_rejects_multi_slot_local_overflow() {

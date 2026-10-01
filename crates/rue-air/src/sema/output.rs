@@ -260,7 +260,9 @@ pub struct SourceParamAbi {
 }
 
 /// The source type of every by-value parameter of a body, keyed by the
-/// parameter's first ABI slot.
+/// parameter's first ABI slot. A zero-width parameter has no slot and is keyed
+/// past the end of the ABI range instead (RUE-2534), so no key names two
+/// parameters.
 ///
 /// `param_drops` covers every `Normal` by-value parameter, including ones the
 /// body never reads; the body's own `Param` instructions supplement any
