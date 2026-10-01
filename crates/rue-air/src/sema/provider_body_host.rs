@@ -6330,6 +6330,25 @@ where
                 }
             }
             TypeKind::Struct(id) => match self.body_struct_identity(id)? {
+                // A slice view is a synthetic builtin struct, but its durable
+                // identity is its element type: the declaration-side resolver
+                // and `export_type_local` both spell it `Slice`, so the body
+                // export must too, or one anonymous method signature projects
+                // to two different facts (RUE-2567).
+                crate::NominalInstanceKey::Builtin { name, .. }
+                    if crate::types::is_slice_struct_name(&name) =>
+                {
+                    let def = self.type_pool.struct_def(id);
+                    let Some(TypeKind::PtrConst(pointer)) =
+                        def.fields.first().map(|field| field.ty.kind())
+                    else {
+                        return Err(crate::SemanticBodyExportFailure::UnsupportedType);
+                    };
+                    TypeInstanceKey::Slice {
+                        element: Node::new(recurse(self.type_pool.ptr_const_def(pointer))?),
+                        name,
+                    }
+                }
                 crate::NominalInstanceKey::Builtin { kind, name } => {
                     TypeInstanceKey::BuiltinNominal { kind, name }
                 }
