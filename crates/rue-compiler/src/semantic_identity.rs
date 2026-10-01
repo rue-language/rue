@@ -140,9 +140,7 @@ pub(crate) fn stable_module_content(module: &ModuleId) -> String {
 /// The canonical name of the slice view over a durable `element`
 /// (see [`rue_air::slice_view_name`]): a function of the element type, so a
 /// view spelled `[T]` names a different struct at every `T` (RUE-2571).
-pub(crate) fn durable_slice_view_name(
-    element: &crate::durable_semantics::DurableType,
-) -> Arc<str> {
+pub(crate) fn durable_slice_view_name(element: &crate::durable_semantics::DurableType) -> Arc<str> {
     Arc::from(rue_air::slice_view_name(
         element,
         stable_definition_content,
