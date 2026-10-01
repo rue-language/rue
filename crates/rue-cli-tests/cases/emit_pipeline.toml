@@ -632,3 +632,24 @@ files = [{ path = "main.rue", source = "fn main() -> i32 {\n    checked \"the re
 args = ["--emit", "rir", "--preview", "checked_reasons", "main.rue"]
 compile_only = true
 compile_stdout_contains = ["=== RIR ===", "checked \"the reason is inert but visible to tooling\" {"]
+
+[[case]]
+name = "emit_abi_names_a_slice_of_a_named_or_anonymous_element_by_its_element"
+description = "RUE-2571: --emit abi spells a slice view from its element, never the view's internal identity digest."
+files = [{ path = "main.rue", source = """
+struct P { v: i64 }
+fn Box(comptime T: type) -> type { struct { v: T } }
+fn f(borrow s: [P], borrow t: [Box(i64)]) -> i64 { s[0].v + t[0].v }
+fn main() -> i32 {
+    let a: [P; 1] = [P { v: 40 }];
+    let b: [Box(i64); 1] = [Box(i64) { v: 2 }];
+    @intCast(f(borrow a, borrow b))
+}
+""" }]
+args = ["--emit", "abi", "--target", "aarch64-macos", "main.rue"]
+compile_only = true
+compile_stdout_contains = [
+    "parameter 0: [P$main_2erue], by value",
+    "parameter 1: [__anon_struct_",
+]
+compile_stdout_not_contains = ["#"]

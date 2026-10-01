@@ -548,7 +548,8 @@ fn provider_type_facts_absent_and_kind_mismatch_do_not_resolve() {
 // The builtin `str` and slice `[T]` name facts — RUE-1091 r6a flips these two
 // arms from documented gaps to positive differentials: their durable identity
 // is a pure durable fact (a `BuiltinNominal` name+kind for `str`, a
-// `Slice { element, name: syntax }` for a slice) needing no new boundary op,
+// `Slice { element, name }` for a slice, its name derived from the element
+// type, RUE-2571) needing no new boundary op,
 // matching what `export_type_local` reproduces for the epoch's materialized
 // `str`/slice struct.
 #[test]
