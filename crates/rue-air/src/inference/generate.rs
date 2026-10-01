@@ -4161,14 +4161,16 @@ impl<'a> ConstraintGenerator<'a> {
             result_ty.clone(),
             lhs_info.span,
         ));
+        // Result must be numeric (catches errors like `true + 1` early). It
+        // follows the lhs equality and precedes the rhs one, so an array lhs
+        // (`a * 2`) is reported at the array before the literal operand is
+        // refused the array type (RUE-2566).
+        self.add_constraint(Constraint::is_numeric(result_ty.clone(), lhs_info.span));
         self.add_constraint(Constraint::equal(
             rhs_info.ty,
             result_ty.clone(),
             rhs_info.span,
         ));
-
-        // Result must be an integer type (catches errors like `true + 1` early)
-        self.add_constraint(Constraint::is_numeric(result_ty.clone(), lhs_info.span));
 
         result_ty
     }
@@ -4292,12 +4294,13 @@ impl<'a> ConstraintGenerator<'a> {
             result_ty.clone(),
             lhs_info.span,
         ));
+        // As in `generate_binary_arith`: numeric before the rhs equality.
+        self.add_constraint(Constraint::is_numeric(result_ty.clone(), lhs_info.span));
         self.add_constraint(Constraint::equal(
             rhs_info.ty,
             result_ty.clone(),
             rhs_info.span,
         ));
-        self.add_constraint(Constraint::is_numeric(result_ty.clone(), lhs_info.span));
         result_ty
     }
 
@@ -5800,10 +5803,12 @@ mod tests {
 
         // Result should be a type variable
         assert!(info.ty.is_var());
-        // Should generate 3 constraints: lhs = result, rhs = result, IsNumeric(result)
+        // Should generate 3 constraints: lhs = result, IsNumeric(result),
+        // rhs = result. The check precedes the rhs equality so an array lhs
+        // is named before a literal rhs is refused its type (RUE-2566).
         assert_eq!(cgen.constraints().len(), 3);
-        // Verify the third constraint admits integer or float arithmetic.
-        match &cgen.constraints()[2] {
+        // Verify the second constraint admits integer or float arithmetic.
+        match &cgen.constraints()[1] {
             Constraint::IsNumeric(_, _) => {}
             _ => panic!("Expected IsNumeric constraint for arithmetic result"),
         }

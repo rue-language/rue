@@ -795,6 +795,25 @@ impl Unifier {
                     }
                     continue;
                 }
+                // An integer, numeric or unsigned check on a type that is
+                // already an array can never succeed, whatever later
+                // constraints bind. Report it in constraint order, so an
+                // array operand of `a * 2` is named before the operand
+                // equality blames the literal (RUE-2566). Every other check
+                // waits for the projections below.
+                Constraint::IsInteger(ty, span)
+                | Constraint::IsNumeric(ty, span)
+                | Constraint::IsUnsigned(ty, span)
+                    if matches!(self.substitution.apply(ty), InferType::Array { .. }) =>
+                {
+                    let result = match constraint {
+                        Constraint::IsUnsigned(..) => self.check_unsigned(ty),
+                        Constraint::IsNumeric(..) => self.check_numeric(ty),
+                        _ => self.check_integer(ty),
+                    };
+                    errors.push(UnificationError::new(result, *span));
+                    continue;
+                }
                 Constraint::IsSigned(..)
                 | Constraint::IsInteger(..)
                 | Constraint::IsNumeric(..)
@@ -1139,6 +1158,32 @@ mod tests {
                 found: InferType::Concrete(Type::I64),
             }
         );
+    }
+
+    #[test]
+    fn integer_check_on_an_array_is_reported_in_constraint_order() {
+        // `a * 2` with `a: [i32; 2]`: (a, r), numeric(r), (2, r). The array
+        // is named at the lhs before the literal is refused the array type.
+        let mut unifier = Unifier::new();
+        let result = TypeVarId::new(0);
+        let literal = TypeVarId::new(1);
+        unifier.mark_int_literal_vars(&[literal]);
+        let array = InferType::Array {
+            element: Box::new(InferType::Concrete(Type::I32)),
+            length: 2,
+        };
+        let constraints = vec![
+            Constraint::equal(array.clone(), InferType::Var(result), Span::new(0, 1)),
+            Constraint::is_numeric(InferType::Var(result), Span::new(0, 1)),
+            Constraint::equal(
+                InferType::Var(literal),
+                InferType::Var(result),
+                Span::new(4, 5),
+            ),
+        ];
+        let errors = unifier.solve_constraints(&constraints);
+        assert_eq!(errors[0].kind, UnifyResult::NotInteger { ty: array });
+        assert_eq!(errors[0].span, Span::new(0, 1));
     }
 
     #[test]

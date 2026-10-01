@@ -188,3 +188,30 @@ fn main() -> i32 {
 """
 compile_fail = true
 error_contains = ["E0206", "expected integer type, found [i32; 2]"]
+
+# An array left operand is named at the array before the literal operand is
+# refused the array type: the operator's numeric check precedes the right
+# operand's equality (RUE-2566).
+[[case]]
+name = "array_operand_beside_a_literal_is_named_at_the_array"
+source = """
+fn main() -> i32 {
+    let a: [i32; 2] = [1, 2];
+    let b = a * 2;
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0206", "expected integer type, found [i32; 2]", "test.rue:3:13"]
+
+[[case]]
+name = "array_compound_assignment_beside_a_literal_is_named_at_the_array"
+source = """
+fn main() -> i32 {
+    let mut a: [i32; 2] = [1, 2];
+    a += 1;
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0206", "expected integer type, found [i32; 2]", "test.rue:3:5"]
