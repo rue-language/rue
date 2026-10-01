@@ -876,6 +876,102 @@ exit_code = 0
 expected_stdout = "195\n169\n"
 
 [[case]]
+name = "strbuf_index_accepts_every_integer_type"
+spec = ["3.7:16"]
+description = "A StrBuf is indexed by an integer of any type; each reaches the u64 byte read unchanged (RUE-2536)"
+real_std = true
+source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+fn main() -> i32 {
+    let s: StrBuf = "abcd";
+    let a: i8 = 0;
+    let b: i32 = 1;
+    let c: u8 = 2;
+    let d: u64 = 3;
+    let e: i64 = 1;
+    let f: u16 = 2;
+    @dbg(s[a]);
+    @dbg(s[b]);
+    @dbg(s[c]);
+    @dbg(s[d]);
+    @dbg(s[e]);
+    @dbg(s[f]);
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "97\n98\n99\n100\n98\n99\n"
+
+[[case]]
+name = "strbuf_negative_i8_index_traps"
+spec = ["3.7:17"]
+description = "A negative i8 StrBuf index traps out of bounds rather than wrapping past the bounds check (RUE-2536)"
+real_std = true
+source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+fn main() -> i32 {
+    let s: StrBuf = "abc";
+    let i: i8 = -1;
+    @dbg(s[i]);
+    0
+}
+"""
+runtime_error = "index out of bounds"
+
+[[case]]
+name = "strbuf_negative_i32_index_traps"
+spec = ["3.7:17"]
+description = "The most negative i32 StrBuf index traps out of bounds (RUE-2536)"
+real_std = true
+source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+fn main() -> i32 {
+    let s: StrBuf = "abc";
+    let i: i32 = -2147483648;
+    @dbg(s[i]);
+    0
+}
+"""
+runtime_error = "index out of bounds"
+
+[[case]]
+name = "strbuf_negative_i64_index_traps"
+spec = ["3.7:17"]
+description = "A negative i64 StrBuf index traps out of bounds (RUE-2536)"
+real_std = true
+source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+fn main() -> i32 {
+    let s: StrBuf = "abc";
+    let i: i64 = -1;
+    @dbg(s[i]);
+    0
+}
+"""
+runtime_error = "index out of bounds"
+
+[[case]]
+name = "strbuf_large_u32_index_traps"
+spec = ["3.7:17"]
+description = "A u32 StrBuf index past the length traps out of bounds (RUE-2536)"
+real_std = true
+source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+fn main() -> i32 {
+    let s: StrBuf = "abc";
+    let i: u32 = 4294967295;
+    @dbg(s[i]);
+    0
+}
+"""
+runtime_error = "index out of bounds"
+
+[[case]]
 name = "string_substring_empty"
 spec = ["3.7:19"]
 real_std = true
