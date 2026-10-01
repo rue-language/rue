@@ -132,6 +132,11 @@ impl Default for Unifier {
 }
 
 impl Unifier {
+    /// Whether a resolved type is the never type `!`.
+    fn is_never(ty: &InferType) -> bool {
+        matches!(ty, InferType::Concrete(t) if t.is_never())
+    }
+
     /// Create a new unifier with an empty substitution.
     pub fn new() -> Self {
         Unifier {
@@ -275,6 +280,14 @@ impl Unifier {
                         expected: *len2,
                         found: *len1,
                     }
+                } else if Self::is_never(elem1) || Self::is_never(elem2) {
+                    // A `!` element is the array form of the never coercion
+                    // (`Type::diverging_array_fits`, RUE-2538): it fits any
+                    // element type and constrains none. Unifying it would
+                    // bind the peer's element variable to `!`, so in
+                    // `[[2], [return 5; 1]]` the literal `2` was typed `!`
+                    // (E0800).
+                    UnifyResult::Ok
                 } else {
                     // Recursively unify element types
                     self.unify_with(elem1, elem2, concrete_types_equal)

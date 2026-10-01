@@ -3394,7 +3394,11 @@ impl<'a> ConstraintGenerator<'a> {
                     // coerces to its peers' type (spec 3.4:3-4), so the first
                     // element that is not `!` supplies the type: in
                     // `[return 15, 1]` the literal is typed by its context,
-                    // not by the `return`.
+                    // not by the `return`. A diverging array literal
+                    // (`[!; N]`) coerces the same way to an array of its
+                    // length (RUE-2538), so in `[[return 5; 1], [2]]` the
+                    // second element supplies the type; it is still
+                    // constrained against the first, which checks the length.
                     let first_info =
                         self.generate_sequenced_operand(elements.get(0).unwrap(), ctx, true);
                     continues &= first_info.continues;
@@ -3409,6 +3413,13 @@ impl<'a> ConstraintGenerator<'a> {
                             break;
                         }
                         if Self::is_never_concrete(&element_ty) {
+                            element_ty = elem_info.ty;
+                        } else if Self::is_diverging_array(&element_ty) {
+                            self.add_peer_equal(
+                                elem_info.ty.clone(),
+                                element_ty.clone(),
+                                elem_info.span,
+                            );
                             element_ty = elem_info.ty;
                         } else {
                             self.add_peer_equal(elem_info.ty, element_ty.clone(), elem_info.span);
@@ -4134,6 +4145,18 @@ impl<'a> ConstraintGenerator<'a> {
     /// as opposed to an unresolved type variable that might resolve to it.
     fn is_never_concrete(ty: &InferType) -> bool {
         matches!(ty, InferType::Concrete(t) if t.is_never())
+    }
+
+    /// Whether `ty` is an array whose element type is `!`, directly or
+    /// through nested arrays: the inferred type of an array literal whose
+    /// elements all diverge (`Type::diverging_array_fits`).
+    fn is_diverging_array(ty: &InferType) -> bool {
+        match ty {
+            InferType::Array { element, .. } => {
+                Self::is_never_concrete(element) || Self::is_diverging_array(element)
+            }
+            _ => false,
+        }
     }
 
     /// Generate constraints for the `+` operator (RUE-17 Phase 1, ADR-0035).
