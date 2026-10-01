@@ -5208,7 +5208,15 @@ mod tests {
             ty: Type,
         ) -> CfgValue {
             self.cfg
-                .append_place_read(self.current, base, base_type, projections, ty, span())
+                .append_place_read(
+                    self.pool,
+                    self.current,
+                    base,
+                    base_type,
+                    projections,
+                    ty,
+                    span(),
+                )
                 .unwrap()
         }
 

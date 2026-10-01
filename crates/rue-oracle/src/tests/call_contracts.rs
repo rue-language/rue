@@ -1348,6 +1348,7 @@ fn validated_cfg_rejects_out_of_bounds_field_pointer_projection_metadata() {
         .cfg
         .try_edit(&type_pool, |editor| {
             editor.replace_place_read(
+                &type_pool,
                 field_read,
                 base,
                 base_type,

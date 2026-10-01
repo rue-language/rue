@@ -41,7 +41,8 @@
 use crate::PayloadError;
 use crate::dominators::DominatorTree;
 use crate::inst::{
-    BlockId, Cfg, CfgInstData, CfgValue, Place, PlaceBase, Projection, Terminator, ValidatedCfg,
+    BlockId, Cfg, CfgInstData, CfgValue, Place, PlaceBase, Projection, RootKind, Terminator,
+    ValidatedCfg, root_slot_range,
 };
 use crate::payload::CfgIntrinsicArgs;
 mod moves;
@@ -2523,8 +2524,7 @@ impl<'a> Verifier<'a> {
         role: &str,
     ) -> Result<(), CfgVerificationError> {
         let width = self.abi_slot_count(ty, block, value, role)?;
-        let end = slot.checked_add(width);
-        if end.is_none_or(|end| end > self.cfg.num_locals()) {
+        if let Err(end) = root_slot_range(RootKind::Local, slot, width, self.cfg.num_locals()) {
             return Err(self.error(format_args!(
                 "{} instruction {} in block {} uses local slot range {}..{} for type {:?}, but only {} local slots exist",
                 role,
@@ -2550,19 +2550,13 @@ impl<'a> Verifier<'a> {
         // Borrowed and inout parameters carry one physical pointer slot even
         // when their logical type is a multi-slot aggregate. Places retain the
         // logical type so projection validation can follow the pointee shape.
-        let width = if self.cfg.is_param_by_ref(slot) {
-            1
-        } else {
-            self.abi_slot_count(ty, block, value, role)?
-        };
+        let width = self
+            .cfg
+            .param_root_width(slot, || self.abi_slot_count(ty, block, value, role))?;
         // A zero-width by-value parameter has no storage, so its access names
         // no slot range: its index is the parameter's key past the end of the
         // ABI range (RUE-2534), which only drop elaboration reads.
-        if width == 0 {
-            return Ok(());
-        }
-        let end = slot.checked_add(width);
-        if end.is_none_or(|end| end > self.cfg.num_params()) {
+        if let Err(end) = root_slot_range(RootKind::Param, slot, width, self.cfg.num_params()) {
             return Err(self.error(format_args!(
                 "{} instruction {} in block {} uses parameter slot range {}..{} for type {:?}, but only {} parameter slots exist",
                 role,

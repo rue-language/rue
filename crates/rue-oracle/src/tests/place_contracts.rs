@@ -276,7 +276,7 @@ fn validated_cfg_requires_the_complete_ordinary_nominal_chain_to_be_well_typed()
         let cfg = &mut state.functions[read_index].cfg;
         let error = cfg
             .try_edit(&type_pool, |editor| {
-                editor.replace_place_read(place_value, base, header_ty, projections)
+                editor.replace_place_read(&type_pool, place_value, base, header_ty, projections)
             })
             .expect_err("ValidatedCfg must reject a malformed nominal projection chain");
         assert!(matches!(
@@ -457,6 +457,7 @@ fn validated_cfg_rejects_invalid_owned_text_projection_metadata() {
     let error = cfg
         .try_edit(&type_pool, |editor| {
             editor.append_place_read(
+                &type_pool,
                 editor.entry,
                 PlaceBase::Local(0),
                 owned_ty,
@@ -468,6 +469,7 @@ fn validated_cfg_rejects_invalid_owned_text_projection_metadata() {
                 span,
             )?;
             editor.append_place_read(
+                &type_pool,
                 editor.entry,
                 PlaceBase::Local(0),
                 owned_ty,
@@ -560,7 +562,14 @@ fn validated_cfg_rejects_malformed_place_writes_before_oracle_model_gaps() {
         let before = cfg.to_string();
         let error = cfg
             .try_edit(&type_pool, |editor| {
-                editor.replace_place_write(write_value, base, base_type, projections, rhs)
+                editor.replace_place_write(
+                    &type_pool,
+                    write_value,
+                    base,
+                    base_type,
+                    projections,
+                    rhs,
+                )
             })
             .expect_err("ValidatedCfg must reject a malformed place write");
         assert!(matches!(
@@ -622,7 +631,7 @@ fn validated_cfg_rejects_out_of_bounds_place_read_bases() {
         let before = cfg.to_string();
         let error = cfg
             .try_edit(&type_pool, |editor| {
-                editor.replace_place_read(read_value, base, base_type, projections)
+                editor.replace_place_read(&type_pool, read_value, base, base_type, projections)
             })
             .expect_err("ValidatedCfg must reject an out-of-bounds place base");
         assert!(matches!(error, rue_cfg::CfgEditTransactionError::Edit(_)));
@@ -730,6 +739,7 @@ fn zero_sized_place_base_may_use_the_canonical_boundary_slot() {
     let error = cfg
         .try_edit(&type_pool, |editor| {
             editor.replace_place_read(
+                &type_pool,
                 read_value,
                 PlaceBase::Local(invalid_slot),
                 base_type,
@@ -800,7 +810,7 @@ fn validated_cfg_requires_exact_type_and_writable_storage_for_whole_place_writes
         let before = cfg.to_string();
         let error = cfg
             .try_edit(&type_pool, |editor| {
-                editor.replace_place_write(write_value, base, base_type, [], rhs)
+                editor.replace_place_write(&type_pool, write_value, base, base_type, [], rhs)
             })
             .expect_err("ValidatedCfg must reject an invalid whole-place write");
         assert!(matches!(
@@ -913,7 +923,7 @@ fn validated_cfg_allows_only_the_explicit_str_view_whole_place_read_coercion() {
     let error = state.functions[probe_index]
         .cfg
         .try_edit(&type_pool, |editor| {
-            editor.replace_place_read(read_value, base, Type::I32, [])
+            editor.replace_place_read(&type_pool, read_value, base, Type::I32, [])
         })
         .expect_err("ValidatedCfg must reject a non-str whole-place read coercion");
     assert!(matches!(
