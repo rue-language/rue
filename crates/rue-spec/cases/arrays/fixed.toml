@@ -2195,6 +2195,58 @@ fn main() -> i32 {
 """
 exit_code = 15
 
+# The block-local length is the annotation's length for type checking too, not
+# only for the evaluator: the initializer takes its element type from the
+# annotation and must have that many elements (RUE-2446).
+[[case]]
+name = "array_length_in_comptime_block_types_the_initializer_at_block_local"
+spec = ["7.1:32", "7.1:4", "4.14:27"]
+description = "A wide element type from an annotation whose length is a block local types the literal elements, with a same-named `const` of a different value in the file"
+source = """
+const n: i32 = 5;
+fn main() -> i32 {
+    let v = comptime {
+        let n = 2;
+        let a: [i64; n] = [3000000000, 1];
+        a[0] / 1000000000
+    };
+    let r: i32 = @intCast(v);
+    r
+}
+"""
+exit_code = 3
+
+[[case]]
+name = "array_length_in_comptime_block_block_local_count_mismatch"
+error_contains = "[E0901]"
+spec = ["7.1:32", "7.1:4"]
+source = """
+const n: i32 = 2;
+fn main() -> i32 {
+    comptime {
+        let n = 3;
+        let a: [i32; n] = [1, 2];
+        a[0]
+    }
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "array_length_in_comptime_block_block_local_element_type_mismatch"
+error_contains = "[E0206]"
+spec = ["7.1:32", "7.1:3"]
+source = """
+fn main() -> i32 {
+    comptime {
+        let n = 2;
+        let a: [bool; n] = [1, 2];
+        a[0]
+    }
+}
+"""
+compile_fail = true
+
 [[case]]
 name = "array_length_in_body_anonymous_struct_field_names_local"
 error_contains = "[E0481]"
