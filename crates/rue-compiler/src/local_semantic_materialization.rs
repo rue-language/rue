@@ -1897,16 +1897,20 @@ pub(crate) fn select_materialization_facts(
                     }
                 }
             }
-            for (kind, name) in std::mem::take(&mut self.pending_slice_builtins) {
-                let query_ty = self
-                    .anonymous_slice_sources
-                    .get(&name)
-                    .cloned()
-                    .unwrap_or_else(|| crate::TypeInstanceKey::BuiltinNominal {
-                        kind,
-                        name: name.clone(),
-                    });
-                self.request_builtin(kind, &name, query_ty);
+            // Drain until empty: requesting a deferred builtin could in
+            // principle defer another, and none may be dropped.
+            while !self.pending_slice_builtins.is_empty() {
+                for (kind, name) in std::mem::take(&mut self.pending_slice_builtins) {
+                    let query_ty = self
+                        .anonymous_slice_sources
+                        .get(&name)
+                        .cloned()
+                        .unwrap_or_else(|| crate::TypeInstanceKey::BuiltinNominal {
+                            kind,
+                            name: name.clone(),
+                        });
+                    self.request_builtin(kind, &name, query_ty);
+                }
             }
             for nominal in std::mem::take(&mut self.opaque_nominals) {
                 if self.seen_nominals.contains(&nominal) {
