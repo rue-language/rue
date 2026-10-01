@@ -631,39 +631,52 @@ fn validated_cfg_rejects_out_of_bounds_place_read_bases() {
 }
 
 #[test]
-fn zero_sized_place_base_uses_the_canonical_boundary_slot() {
+fn zero_sized_place_base_may_use_the_canonical_boundary_slot() {
     const SOURCE: &str = "struct UnitBox { value: () }
+        fn probe(param: UnitBox) -> i32 {
+            if param.value == () { 42 } else { 0 }
+        }
         fn main() -> i32 {
             let boxed = UnitBox { value: () };
-            if boxed.value == () { 42 } else { 0 }
+            if boxed.value == () { probe(UnitBox { value: () }) } else { 0 }
         }";
     let mut state = query_cfg_state(SOURCE).expect("zero-sized place probe must compile");
-    let main_index = state
-        .functions
-        .iter()
-        .position(|function| function.is_source_named("main"))
-        .expect("main CFG");
-    let (read_value, base_type, projections) = {
-        let cfg = &state.functions[main_index].cfg;
-        cfg.blocks()
+    let index_of = |state: &CompileState, name: &str| {
+        state
+            .functions
+            .iter()
+            .position(|function| function.is_source_named(name))
+            .expect("source function CFG")
+    };
+    let main_index = index_of(&state, "main");
+    let probe_index = index_of(&state, "probe");
+
+    // The first projected PlaceRead in a function, its oracle place contract,
+    // and its base.
+    fn projected_read(
+        state: &CompileState,
+        index: usize,
+    ) -> (
+        CfgValue,
+        Type,
+        Vec<Projection>,
+        Option<ContractViolationKind>,
+        PlaceBase,
+    ) {
+        let cfg = &state.functions[index].cfg;
+        let (read_value, place) = cfg
+            .blocks()
             .iter()
             .flat_map(|block| block.insts.iter().copied())
             .find_map(|value| {
                 let CfgInstData::PlaceRead { place } = &cfg.get_inst(value).data else {
                     return None;
                 };
-                (!cfg.get_place_projections(place).is_empty()).then_some((
-                    value,
-                    place.base_type,
-                    cfg.get_place_projections(place).to_vec(),
-                ))
+                (!cfg.get_place_projections(place).is_empty()).then_some((value, place))
             })
-            .expect("zero-sized projected PlaceRead")
-    };
-    {
-        let cfg = &state.functions[main_index].cfg;
+            .expect("zero-sized projected PlaceRead");
         let interp = Interp {
-            state: &state,
+            state,
             stdout_trace: Vec::new(),
             stdout_bytes: 0,
             stdout_cap: MAX_STDOUT_BYTES,
@@ -676,17 +689,39 @@ fn zero_sized_place_base_uses_the_canonical_boundary_slot() {
             small_free_heads: [None; ORACLE_SMALL_CLASS_COUNT],
             heap_metadata_bytes: 0,
         };
-        let CfgInstData::PlaceRead { place } = &cfg.get_inst(read_value).data else {
-            unreachable!()
-        };
         assert_eq!(interp.state.type_pool().abi_slot_count(place.base_type), 0);
-        assert_eq!(place.base, PlaceBase::Local(cfg.num_locals()));
-        assert_eq!(
+        (
+            read_value,
+            place.base_type,
+            cfg.get_place_projections(place).to_vec(),
             interp.place_base_violation(cfg, place, PlaceAccess::Read),
-            None,
-            "a zero-slot root may live at the canonical one-past boundary"
-        );
+            place.base,
+        )
     }
+
+    // A zero-width by-value parameter takes no calling-convention slot, so
+    // the last one sits at the canonical one-past boundary.
+    let (_, _, _, violation, base) = projected_read(&state, probe_index);
+    assert_eq!(
+        base,
+        PlaceBase::Param(state.functions[probe_index].cfg.num_params())
+    );
+    assert_eq!(
+        violation, None,
+        "a zero-slot root may live at the canonical one-past boundary"
+    );
+
+    // A zero-width local has a slot of its own (RUE-2453), inside the frame.
+    let (read_value, base_type, projections, violation, base) = projected_read(&state, main_index);
+    let num_locals = state.functions[main_index].cfg.num_locals();
+    assert!(
+        matches!(base, PlaceBase::Local(slot) if slot < num_locals),
+        "the zero-sized local has its own slot: {base:?} of {num_locals}"
+    );
+    assert_eq!(
+        violation, None,
+        "a zero-slot root in its own slot is in bounds"
+    );
 
     let type_pool = state.type_pool().clone();
     let cfg = &mut state.functions[main_index].cfg;
