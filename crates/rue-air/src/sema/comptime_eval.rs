@@ -2540,12 +2540,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     attribution,
                 )?;
             }
-            InstData::Match { scrutinee, arms } => {
+            InstData::Match { arms, .. } => {
                 // A match arm's payload binders scope over its body and hide
                 // every same-named binding outside it, as a `let` does: an
                 // outer alias, comptime value, block local or `const` (spec
                 // 4.7, RUE-2446). They are runtime bindings for the walk.
-                let scrutinee = *scrutinee;
                 let arms = self
                     .body_rir_ref()
                     .match_arms(arms)
@@ -2556,15 +2555,25 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         (binders, body)
                     })
                     .collect::<Vec<_>>();
-                self.walk_comptime_type_locals(
-                    scrutinee,
-                    inline_heads,
-                    discovered,
-                    scope,
-                    frame,
-                    in_comptime,
-                    attribution,
-                )?;
+                // The scrutinee and every pattern's own operands (a module
+                // root, an inline constructor head) are outside the arms.
+                let mut children = Vec::new();
+                self.body_rir_ref()
+                    .child_instructions(inst_ref, &mut children);
+                for child in children {
+                    if arms.iter().any(|(_, body)| *body == child) {
+                        continue;
+                    }
+                    self.walk_comptime_type_locals(
+                        child,
+                        inline_heads,
+                        discovered,
+                        scope,
+                        frame,
+                        in_comptime,
+                        attribution,
+                    )?;
+                }
                 for (binders, body) in arms {
                     let mut arm_frame = Vec::with_capacity(binders.len());
                     for binder in binders {
