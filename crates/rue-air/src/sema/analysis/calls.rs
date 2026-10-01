@@ -464,6 +464,87 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// directly so module-qualified type constructors do not re-enter
     /// unqualified source-name lookup.
     #[allow(clippy::too_many_arguments)]
+    /// Give each runtime parameter whose declared type depends on a comptime
+    /// argument (`borrow s: T`, `s: Wrap([i64], N)`) its type at this call.
+    ///
+    /// Such a parameter's signature type is the deferred `COMPTIME_TYPE`; its
+    /// real type exists only once the call's comptime arguments are known.
+    /// The call contract, the array-to-slice coercion and the by-value
+    /// lowering of a `[T]` or `str` view all key on the parameter type, so it
+    /// is resolved here, before the operands are analyzed. Checking it only
+    /// afterwards passed a borrowed view by reference to a callee specialized
+    /// to read it as `{ptr, len}` (RUE-2435, RUE-2552).
+    ///
+    /// A parameter whose type cannot be resolved here keeps the deferred
+    /// type; the substituted-type check after operand analysis reports it.
+    #[allow(clippy::too_many_arguments)]
+    fn substitute_deferred_param_types(
+        &mut self,
+        fn_info: &FunctionCallInfo,
+        args_range: &rue_rir::RirCallArgsRange,
+        param_types: &mut [Type],
+        param_comptime: &[bool],
+        param_names: &[Spur],
+        span: Span,
+        ctx: &AnalysisContext,
+    ) {
+        let deferred = |index: usize, ty: &Type| {
+            !param_comptime.get(index).copied().unwrap_or(true) && *ty == Type::COMPTIME_TYPE
+        };
+        if !param_types
+            .iter()
+            .enumerate()
+            .any(|(index, ty)| deferred(index, ty))
+        {
+            return;
+        }
+        let args = self.body_rir_ref().call_args(args_range).to_vec();
+        let type_flags = self.comptime_type_param_flags(fn_info);
+        let mut type_subst = AHashMap::new();
+        let mut value_subst = AHashMap::new();
+        for (index, &is_comptime) in param_comptime.iter().enumerate() {
+            if !is_comptime {
+                continue;
+            }
+            let (Some(arg), Some(&name)) = (args.get(index), param_names.get(index)) else {
+                return;
+            };
+            let Some(value) = self.try_evaluate_const_in_fn(arg.value, ctx) else {
+                return;
+            };
+            let is_type = type_flags
+                .get(index)
+                .copied()
+                .unwrap_or(matches!(value, ConstValue::Type(_)));
+            if is_type {
+                match value {
+                    ConstValue::Type(ty) => type_subst.insert(name, ty),
+                    ConstValue::Unit => type_subst.insert(name, Type::UNIT),
+                    _ => return,
+                };
+            } else {
+                value_subst.insert(name, value);
+            }
+        }
+        for index in 0..param_types.len() {
+            if !deferred(index, &param_types[index]) {
+                continue;
+            }
+            if let Ok(ty) = self.resolve_substituted_param_type(
+                fn_info,
+                index,
+                param_types[index],
+                &type_subst,
+                &value_subst,
+                span,
+            ) && ty != Type::COMPTIME_TYPE
+                && !ty.is_error()
+            {
+                param_types[index] = ty;
+            }
+        }
+    }
+
     fn analyze_resolved_function_call(
         &mut self,
         air: &mut Air,
@@ -520,10 +601,21 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
         // Copy the exact parameter point before any lazy fact can append.
         let param_data = self.body_param_data(fn_info.params);
-        let param_types = param_data.types().to_vec();
+        let mut param_types = param_data.types().to_vec();
         let param_modes = param_data.modes().to_vec();
         let param_comptime = param_data.comptime().to_vec();
         let param_names = param_data.names().to_vec();
+        if fn_info.is_generic {
+            self.substitute_deferred_param_types(
+                &fn_info,
+                args_range,
+                &mut param_types,
+                &param_comptime,
+                &param_names,
+                span,
+                ctx,
+            );
+        }
 
         self.validate_call_contract(args_range, &param_types, &param_modes, span, true, ctx)?;
         // The declaration, visibility, checked-call policy, and explicit call
