@@ -1971,6 +1971,12 @@ impl<'a> ConstraintGenerator<'a> {
                         .and_then(|annotations| annotations.get(&inst_ref))
                         .map(|ty| self.type_to_infer(*ty))
                         .or_else(|| {
+                            // The best-effort hint reads a named length from
+                            // the file's `const`s; a length naming a binding
+                            // in scope gives no hint (RUE-2446).
+                            if self.names_shadowed_length(*type_syntax, ctx) {
+                                return None;
+                            }
                             self.infer_type_hint(
                                 self.rir.type_syntax(),
                                 *type_syntax,
@@ -5111,6 +5117,29 @@ impl<'a> ConstraintGenerator<'a> {
             func.signature_file,
             TypeHintScope::Signature(func),
         )
+    }
+
+    /// Whether a named array length in `syntax` binds lexically — to a
+    /// local, a parameter or a type substitution — rather than to a file's
+    /// `const`, by the precedence a `VarRef` uses (RUE-2446).
+    fn names_shadowed_length(&self, syntax: RirTypeSyntaxRef, ctx: &ConstraintContext) -> bool {
+        let arena = self.rir.type_syntax();
+        let mut pending = vec![syntax];
+        while let Some(reference) = pending.pop() {
+            if let Some(RirTypeSyntaxNode::Array { length, .. }) = arena.node(reference)
+                && let Some(RirTypeSyntaxNode::Named(symbol)) = arena.node(*length)
+                && let Some(name) = arena.symbol(*symbol)
+                && (ctx.locals.contains_key(name)
+                    || ctx.contains_param(*name)
+                    || self
+                        .type_subst
+                        .is_some_and(|types| types.contains_key(name)))
+            {
+                return true;
+            }
+            arena.visit_child_references(reference, |child| pending.push(child));
+        }
+        false
     }
 
     fn infer_type_hint(

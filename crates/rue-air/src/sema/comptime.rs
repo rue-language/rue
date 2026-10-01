@@ -1354,6 +1354,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         values: &AHashMap<H::Name, H::Value>,
         span: Span,
     ) -> ComptimeOutcome<H::Type, H::Failure> {
+        outcome_value!(self.check_named_array_lengths(program, syntax, env, span));
         // Feed only the aliases actually mentioned by this syntax into the
         // host's map-based type resolver. The persistent staged scope remains
         // a point-lookup trie; this bounded syntax walk avoids materializing
@@ -1439,6 +1440,56 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             ComptimeOutcome::HostFailure(error) => ComptimeOutcome::HostFailure(error),
             ComptimeOutcome::Abort(error) => ComptimeOutcome::Abort(error),
         }
+    }
+
+    /// Classify every named array length in `syntax` by the lexical scope
+    /// before the host's map-based type resolver sees it, exactly as a
+    /// repeat count is classified (`eval_array_repeat`). A length naming a
+    /// runtime binding makes the reduction runtime-dependent, and one naming
+    /// a type or another non-integer binding is the host's array-length
+    /// diagnostic. Neither may fall through to a same-named `const`, which
+    /// the map-based resolver would otherwise reach (spec 7.1:32, 7.1:33,
+    /// RUE-2446). An unbound name is left to the resolver.
+    fn check_named_array_lengths(
+        &mut self,
+        program: &H::ProgramKey,
+        syntax: rue_rir::RirTypeSyntaxRef,
+        env: &ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
+        span: Span,
+    ) -> ComptimeOutcome<(), H::Failure> {
+        let mut pending = vec![syntax];
+        while let Some(reference) = pending.pop() {
+            let arena = self.host.program_rir(program).type_syntax();
+            let length_symbol = match arena.node(reference) {
+                Some(rue_rir::RirTypeSyntaxNode::Array { length, .. }) => match arena.node(*length)
+                {
+                    Some(rue_rir::RirTypeSyntaxNode::Named(symbol)) => {
+                        arena.symbol(*symbol).copied()
+                    }
+                    _ => None,
+                },
+                _ => None,
+            };
+            if !arena.visit_child_references(reference, |child| pending.push(child)) {
+                return ComptimeOutcome::RuntimeDependent;
+            }
+            let Some(symbol) = length_symbol else {
+                continue;
+            };
+            let name = self.host.name_from_symbol(program, symbol.into());
+            let binding = Self::classify_array_length_binding(env, &name);
+            if matches!(binding, ComptimeArrayLengthBinding::Unbound) {
+                continue;
+            }
+            let site = self.diagnostic_site(span);
+            outcome_value!(self.host.resolve_named_array_length(
+                &name,
+                &site,
+                Some(&env.value_subst),
+                binding,
+            ));
+        }
+        ComptimeOutcome::Known(())
     }
 
     /// The host-side name for `Self` as `roots` spell it, or `None` when no
@@ -3789,6 +3840,16 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         let mut literal_type = None;
         let annotated = match annotation {
             Some(annotation) => {
+                // A length naming a runtime binding makes the binding itself
+                // runtime-dependent, as the same name in a repeat count does;
+                // it must not leave the annotation merely unchecked, which
+                // let it reach a shadowed `const` (RUE-2446).
+                outcome_value!(self.check_named_array_lengths(
+                    &self.program_key(),
+                    annotation,
+                    env,
+                    span,
+                ));
                 let (types, values) = env.substs_with_locals();
                 match self.evaluate_comptime_type_syntax(
                     &self.program_key(),

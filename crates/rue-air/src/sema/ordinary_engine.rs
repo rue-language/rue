@@ -1184,6 +1184,15 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         syntax: RirTypeSyntaxRef,
         ctx: &AnalysisContext,
     ) -> Option<AHashSet<Spur>> {
+        self.names_in_type_syntax(syntax, |name| ctx.is_runtime_binding(name))
+    }
+
+    /// The names `syntax` mentions that satisfy `is_runtime_binding`.
+    pub(crate) fn names_in_type_syntax(
+        &self,
+        syntax: RirTypeSyntaxRef,
+        is_runtime_binding: impl Fn(Spur) -> bool,
+    ) -> Option<AHashSet<Spur>> {
         let arena = self.body_rir_ref().type_syntax();
         let mut runtime_bindings = None::<AHashSet<Spur>>;
         let mut pending = vec![syntax];
@@ -1193,7 +1202,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
                 _ => None,
             };
             if let Some(name) = symbol
-                && ctx.is_runtime_binding(name)
+                && is_runtime_binding(name)
             {
                 runtime_bindings.get_or_insert_default().insert(name);
             }
@@ -1241,11 +1250,55 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         type_substitutions
     }
 
+    /// Resolve a type written in a body-position declaration (an anonymous
+    /// struct field or enum payload) under explicit type substitutions and
+    /// the body's lexical scope at this point. A length or constructor
+    /// argument naming a runtime binding keeps its own diagnostic (E0481,
+    /// E1201); any other failure is the declaration's unknown type, as
+    /// before (RUE-2446).
+    pub(crate) fn resolve_body_declaration_type(
+        &mut self,
+        syntax: RirTypeSyntaxRef,
+        type_subst: &AHashMap<Spur, Type>,
+        span: Span,
+        ctx: &AnalysisContext,
+    ) -> CompileResult<Type> {
+        let runtime_bindings = self.runtime_bindings_named_in(syntax, ctx);
+        self.storage
+            .resolve_body_type_with_substitutions(
+                syntax,
+                span,
+                Some(type_subst),
+                Some(&ctx.comptime_value_vars),
+                runtime_bindings.as_ref(),
+            )
+            .map_err(|error| match error.kind {
+                ErrorKind::InvalidArrayLength { .. } | ErrorKind::ComptimeArgNotConst { .. } => {
+                    error
+                }
+                _ => CompileError::new(ErrorKind::UnknownType(self.render_rir_type(syntax)), span),
+            })
+    }
+
     pub(crate) fn resolve_rir_type_for_comptime_with_subst_and_values_at_span(
         &mut self,
         syntax: RirTypeSyntaxRef,
         type_subst: &AHashMap<Spur, Type>,
         value_subst: &AHashMap<Spur, ConstValue>,
+        span: Span,
+    ) -> Option<Type> {
+        self.resolve_rir_type_under_runtime_bindings(syntax, type_subst, value_subst, None, span)
+    }
+
+    /// [`Self::resolve_rir_type_for_comptime_with_subst_and_values_at_span`]
+    /// with the runtime bindings in scope, which shadow a same-named `const`
+    /// in a value position (RUE-2446).
+    pub(crate) fn resolve_rir_type_under_runtime_bindings(
+        &mut self,
+        syntax: RirTypeSyntaxRef,
+        type_subst: &AHashMap<Spur, Type>,
+        value_subst: &AHashMap<Spur, ConstValue>,
+        runtime_bindings: Option<&AHashSet<Spur>>,
         span: Span,
     ) -> Option<Type> {
         self.storage
@@ -1254,7 +1307,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
                 span,
                 Some(type_subst),
                 Some(value_subst),
-                None,
+                runtime_bindings,
             )
             .ok()
     }
@@ -1606,6 +1659,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         length: &crate::types::ArrayLen,
         span: Span,
         values: Option<&AHashMap<Spur, ConstValue>>,
+        runtime_bindings: Option<&AHashSet<Spur>>,
     ) -> CompileResult<u64> {
         TypeResolutionHost::resolve_array_length(
             self.storage,
@@ -1614,7 +1668,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
                 span,
                 type_substitutions: None,
                 value_substitutions: values,
-                runtime_bindings: None,
+                runtime_bindings,
             },
         )
     }
