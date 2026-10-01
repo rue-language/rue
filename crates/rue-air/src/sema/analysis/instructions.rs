@@ -506,7 +506,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     // (RUE-2553).
                     if self.type_contains_slice(field_ty) {
                         return Err(CompileError::new(
-                            ErrorKind::SliceInAggregateField,
+                            ErrorKind::SliceInAggregateField {
+                                position: "a struct field".to_owned(),
+                            },
                             inst.span,
                         ));
                     }
@@ -709,7 +711,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         // RUE-2553).
                         if self.type_contains_slice(field_ty) {
                             return Err(CompileError::new(
-                                ErrorKind::SliceInAggregateField,
+                                ErrorKind::SliceInAggregateField {
+                                    position: "an enum payload".to_owned(),
+                                },
                                 inst.span,
                             ));
                         }
