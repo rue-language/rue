@@ -775,7 +775,7 @@ fn has_core_str_definition(module: &str, source: &str) -> bool {
                 ) | (
                     "sema/body_identity",
                     Some("BodyIdentityPool"),
-                    Some("resolve")
+                    Some("mint_slice_view")
                 ) | (
                     "semantic_import",
                     Some("SemanticImportEpoch"),

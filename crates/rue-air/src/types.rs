@@ -226,9 +226,7 @@ fn slice_view_element_spelling(element: &crate::SemanticImportType<String, Strin
                 &identity.with_canonical_producer()
             )
         ),
-        T::Array { element, len } => {
-            array_type_name(&slice_view_element_spelling(element), *len)
-        }
+        T::Array { element, len } => array_type_name(&slice_view_element_spelling(element), *len),
         T::PtrConst(pointee) => format!("ptr const {}", slice_view_element_spelling(pointee)),
         T::PtrMut(pointee) => format!("ptr mut {}", slice_view_element_spelling(pointee)),
         // A nested view is named by its own element, never by a carried name.

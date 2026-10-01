@@ -228,7 +228,9 @@ fn durable_type_diagnostic_name_kernel(ty: &DurableType) -> String {
         }
         // A view's name is an identity spelling (RUE-2571); present the view
         // from its element.
-        T::Slice { element, .. } => rue_air::slice_struct_name(&durable_type_diagnostic_name(element)),
+        T::Slice { element, .. } => {
+            rue_air::slice_struct_name(&durable_type_diagnostic_name(element))
+        }
         T::PtrConst(pointee) => {
             format!("ptr const {}", durable_type_diagnostic_name(pointee))
         }
