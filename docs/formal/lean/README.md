@@ -156,7 +156,7 @@ up one disagreement that is not RUE-2346's shape: `gen_23_343` at `--gen 1000
 (E9000, CFG verification) on `v0.x1 = v0.x1` — a struct **field**
 self-assignment, following a conditionally-taken `@drop` of the same binder
 on an earlier loop turn. Filed as a finding (BRIDGE-SENSITIVITY.md), not
-fixed here. On the draws before loops they reached the
+fixed here; RUE-2453 later fixed it (RUE-2504). On the draws before loops they reached the
 self-assignment (one case at seed 7, three at seed 23) and a dynamic index into a zero-length
 array field (five at seed 23, agreeing since RUE-2345 was fixed); wider runs at
 other seeds reached RUE-2344's shape (`gen_2_1694`, agreeing since RUE-2344
