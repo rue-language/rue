@@ -659,11 +659,10 @@ where
     /// [`resolve_instance_type`] resolves the generated-struct name through
     /// [`BodyEndpointProvider::generated_struct`] (RUE-1091 r6a — the builtin /
     /// slice name facts). The pool mints the fat-pointer struct byte-identically
-    /// to the epoch's `get_or_create_slice_struct_from_element`
-    /// (`import_type_local`'s slice arm), and dedups on repeat, so a second
+    /// to `import_type_local`'s slice arm and dedups on repeat, so a second
     /// consult of the same `(element, name)` returns the same id and mints
-    /// nothing new. The `element` is the slice's durable element type; a caller
-    /// supplies the same durable element the epoch's slice carries.
+    /// nothing new. The `element` is the slice's durable element type and
+    /// `name` its [`crate::types::slice_view_name`].
     pub fn register_generated_slice(
         &self,
         element: &SemanticImportType<K, M>,
