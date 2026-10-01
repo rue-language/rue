@@ -3142,8 +3142,9 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             };
             // A comptime value parameter is substituted into the body, yet it
             // still occupies its slots: the caller materializes the argument
-            // there. Record its type for presentation (`--emit abi`), which
-            // otherwise has nothing to name it by when the body never reads it.
+            // there. Record its type: when the body never reads it, nothing
+            // else types those slots, and the callee must classify them as
+            // the caller places the argument (RUE-2563).
             if *is_comptime && slot_count > 0 {
                 comptime_param_types.push((abi_slot, *ptype));
             }

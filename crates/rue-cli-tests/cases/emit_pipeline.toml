@@ -566,6 +566,23 @@ compile_stdout_contains = [
 compile_stdout_not_contains = [": ?,"]
 
 [[case]]
+name = "emit_abi_places_an_unread_comptime_float_parameter_in_a_float_register"
+description = "RUE-2563: an unread comptime f64 parameter is placed by its type on the callee side, in v0, so the runtime i32 after it is read from x0 where the caller passes it."
+files = [{ path = "main.rue", source = """
+fn take(comptime N: f64, b: i32) -> i32 { b }
+
+fn main() -> i32 {
+    take(1.5, 5) - 5
+}
+""" }]
+args = ["--emit", "abi", "--target", "aarch64-macos", "main.rue"]
+compile_only = true
+compile_stdout_contains = [
+    "parameter 0: f64, by value, fp register 0 (v0)",
+    "parameter 1: i32, by value, gp register 0 (x0)",
+]
+
+[[case]]
 name = "emit_abi_names_a_read_comptime_value_parameter"
 description = "RUE-2551: --emit abi names the type of a comptime value parameter the specialized body reads, as it does an unread one."
 files = [{ path = "main.rue", source = """
