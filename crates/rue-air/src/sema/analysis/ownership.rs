@@ -5342,6 +5342,18 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             self.reject_mutate_iter_borrowed(root_var, span, ctx)?;
         }
         self.check_linear_overwrite(destination_type, false, false, span)?;
+        // A place write copies the value with no conversion step, so the
+        // value must already have the accessor place's type, by the slot rule
+        // a local, field or element assignment applies. Inference unifies the
+        // RHS with the place type, but it admits a `!` element against any
+        // element type, so a continuing `[!; N]` value passes there and only
+        // this check rejects it (RUE-2554).
+        self.require_operand_slot_type(
+            destination_type,
+            value_result.ty,
+            value_result.continues,
+            span,
+        )?;
         let air_ref = air.add_inst(AirInst {
             data: AirInstData::PlaceWrite {
                 place: place_ref,
