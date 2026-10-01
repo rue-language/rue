@@ -2680,7 +2680,7 @@ exit_code = 42
 
 [[case]]
 name = "diverging_array_zero_length_call_argument"
-spec = ["3.4:4a", "4.9:7"]
+spec = ["3.4:3", "7.1:2", "4.9:7"]
 description = "RUE-2538: `[return 9; 0]` is `[!; 0]`, accepted at a `[i64; 0]` parameter; the return drops the live local"
 source = """
 struct D { v: i32 }
@@ -2697,7 +2697,7 @@ expected_stdout = "1\n"
 
 [[case]]
 name = "diverging_array_zero_length_struct_field"
-spec = ["3.4:4a", "4.9:7"]
+spec = ["3.4:3", "7.1:2", "4.9:7"]
 description = "RUE-2538: `[return 10; 0]` is accepted at a `[i64; 0]` struct field"
 source = """
 struct D { v: i32 }
@@ -2715,7 +2715,7 @@ expected_stdout = "2\n"
 
 [[case]]
 name = "diverging_array_zero_length_enum_payload"
-spec = ["3.4:4a", "4.9:7"]
+spec = ["3.4:3", "7.1:2", "4.9:7"]
 description = "RUE-2538: `[return 11; 0]` is accepted at a `[i64; 0]` enum payload"
 source = """
 struct D { v: i32 }
@@ -2733,7 +2733,7 @@ expected_stdout = "3\n"
 
 [[case]]
 name = "diverging_array_call_argument"
-spec = ["3.4:4a", "4.9:7"]
+spec = ["3.4:3", "7.1:2", "4.9:7"]
 description = "RUE-2538: `[return 5; 3]` is `[!; 3]`, accepted at a `[i32; 3]` parameter"
 source = """
 struct D { v: i32 }
@@ -2750,7 +2750,7 @@ expected_stdout = "4\n"
 
 [[case]]
 name = "diverging_array_let_annotation"
-spec = ["3.4:4a"]
+spec = ["3.4:3", "7.1:2"]
 description = "RUE-2538: an annotated binding accepts `[!; 3]` by the same rule as every other slot"
 source = """
 fn main() -> i32 {
@@ -2762,7 +2762,7 @@ exit_code = 4
 
 [[case]]
 name = "diverging_array_nested_call_argument"
-spec = ["3.4:4a"]
+spec = ["3.4:3", "7.1:2"]
 description = "RUE-2538: `[[return 9; 2]]` is `[[!; 2]; 1]`, accepted at `[[i32; 2]; 1]`"
 source = """
 fn take(a: [[i32; 2]; 1]) -> i32 { a[0][1] }
@@ -2772,7 +2772,7 @@ exit_code = 9
 
 [[case]]
 name = "diverging_array_return_value"
-spec = ["3.4:4a"]
+spec = ["3.4:3", "7.1:2"]
 description = "RUE-2538: a diverging array literal as a function's tail value is accepted at its `[i32; 2]` return type"
 source = """
 fn f() -> [i32; 2] { [return [3, 4]; 2] }
@@ -2782,7 +2782,7 @@ exit_code = 4
 
 [[case]]
 name = "diverging_array_assignment"
-spec = ["3.4:4a"]
+spec = ["3.4:3", "7.1:2"]
 description = "RUE-2538: an assignment accepts `[!; 2]` at a `[i32; 2]` variable"
 source = """
 fn main() -> i32 {
@@ -2795,7 +2795,7 @@ exit_code = 12
 
 [[case]]
 name = "diverging_array_element_of_mixed_nested_literal"
-spec = ["3.4:4a", "7.1:3"]
+spec = ["3.4:3", "7.1:2", "7.1:3"]
 description = "RUE-2538: a `[!; 1]` element takes its peers' element type; the literal `2` stays an integer"
 source = """
 fn main() -> i32 {
@@ -2807,7 +2807,7 @@ exit_code = 5
 
 [[case]]
 name = "diverging_array_first_element_of_mixed_nested_literal"
-spec = ["3.4:4a", "7.1:3"]
+spec = ["3.4:3", "7.1:2", "7.1:3"]
 description = "RUE-2538: a leading `[!; 1]` element does not fix the element type; the later `[2]` supplies it"
 source = """
 fn main() -> i32 {
@@ -2819,7 +2819,7 @@ exit_code = 6
 
 [[case]]
 name = "diverging_array_if_join"
-spec = ["3.4:4a", "4.6:4"]
+spec = ["3.4:3", "7.1:2", "4.6:4"]
 description = "RUE-2543: the diverging arm contributes no edge to the join, which has the else arm's `[i64; 0]` type"
 source = """
 fn r(x: bool) -> [i64; 0] { if x { [return []; 0] } else { [] } }
@@ -2832,7 +2832,7 @@ exit_code = 0
 
 [[case]]
 name = "diverging_array_if_join_o2"
-spec = ["3.4:4a", "4.6:4"]
+spec = ["3.4:3", "7.1:2", "4.6:4"]
 description = "RUE-2543: the diverging arm contributes no edge to the join, which has the else arm's `[i64; 0]` type"
 source = """
 fn r(x: bool) -> [i64; 0] { if x { [return []; 0] } else { [] } }
@@ -2846,7 +2846,7 @@ opt_level = 2
 
 [[case]]
 name = "diverging_array_if_join_o3"
-spec = ["3.4:4a", "4.6:4"]
+spec = ["3.4:3", "7.1:2", "4.6:4"]
 description = "RUE-2543: the diverging arm contributes no edge to the join, which has the else arm's `[i64; 0]` type"
 source = """
 fn r(x: bool) -> [i64; 0] { if x { [return []; 0] } else { [] } }
@@ -2860,7 +2860,7 @@ opt_level = 3
 
 [[case]]
 name = "diverging_array_if_join_drops"
-spec = ["3.4:4a", "4.6:4", "4.9:7"]
+spec = ["3.4:3", "7.1:2", "4.6:4", "4.9:7"]
 description = "RUE-2543: the local is dropped once on the returning arm and once at the end of the other path"
 source = """
 struct D { v: i32 }
@@ -2880,7 +2880,7 @@ expected_stdout = "1\n1\n"
 
 [[case]]
 name = "diverging_array_if_join_drops_o2"
-spec = ["3.4:4a", "4.6:4", "4.9:7"]
+spec = ["3.4:3", "7.1:2", "4.6:4", "4.9:7"]
 description = "RUE-2543: the local is dropped once on the returning arm and once at the end of the other path"
 source = """
 struct D { v: i32 }
@@ -2901,7 +2901,7 @@ opt_level = 2
 
 [[case]]
 name = "diverging_array_if_join_drops_o3"
-spec = ["3.4:4a", "4.6:4", "4.9:7"]
+spec = ["3.4:3", "7.1:2", "4.6:4", "4.9:7"]
 description = "RUE-2543: the local is dropped once on the returning arm and once at the end of the other path"
 source = """
 struct D { v: i32 }
@@ -2922,7 +2922,7 @@ opt_level = 3
 
 [[case]]
 name = "diverging_array_if_and_match_join_nonzero"
-spec = ["3.4:4a", "4.6:4", "4.7:12"]
+spec = ["3.4:3", "7.1:2", "4.6:4", "4.7:12"]
 description = "RUE-2543: a `[!; 2]` if arm and match arm join a `[i32; 2]` result"
 source = """
 fn f(x: bool) -> [i32; 2] {
@@ -2938,7 +2938,7 @@ exit_code = 18
 
 [[case]]
 name = "diverging_array_if_and_match_join_nonzero_o2"
-spec = ["3.4:4a", "4.6:4", "4.7:12"]
+spec = ["3.4:3", "7.1:2", "4.6:4", "4.7:12"]
 description = "RUE-2543: a `[!; 2]` if arm and match arm join a `[i32; 2]` result"
 source = """
 fn f(x: bool) -> [i32; 2] {
@@ -2955,7 +2955,7 @@ opt_level = 2
 
 [[case]]
 name = "diverging_array_if_and_match_join_nonzero_o3"
-spec = ["3.4:4a", "4.6:4", "4.7:12"]
+spec = ["3.4:3", "7.1:2", "4.6:4", "4.7:12"]
 description = "RUE-2543: a `[!; 2]` if arm and match arm join a `[i32; 2]` result"
 source = """
 fn f(x: bool) -> [i32; 2] {
@@ -2971,19 +2971,19 @@ exit_code = 18
 opt_level = 3
 
 [[case]]
-name = "diverging_array_length_mismatch_rejected"
-spec = ["3.4:4a", "7.1:4"]
-description = "A non-diverging `[1; 3]` is not accepted at `[i64; 2]`"
+name = "diverging_array_length_mismatch_call_argument_rejected"
+spec = ["3.4:3", "7.1:2", "7.1:4"]
+description = "A diverging `[return 5; 3]` is not accepted at a `[i64; 2]` parameter: its length differs"
 source = """
 fn take(a: [i64; 2]) -> i32 { 0 }
-fn main() -> i32 { take([1; 3]) }
+fn main() -> i32 { take([return 5; 3]) }
 """
 compile_fail = true
 error_contains = "expected array of 2 elements, found 3 elements"
 
 [[case]]
 name = "diverging_array_into_non_array_rejected"
-spec = ["3.4:4a"]
+spec = ["3.4:3", "7.1:2"]
 description = "A `[!; 2]` is not accepted where a non-array `i32` is expected"
 source = """
 fn take(a: i32) -> i32 { a }
@@ -2994,7 +2994,7 @@ error_contains = "expected i32, found [!; 2]"
 
 [[case]]
 name = "diverging_array_wrong_length_rejected"
-spec = ["3.4:4a", "7.1:4"]
+spec = ["3.4:3", "7.1:2", "7.1:4"]
 description = "A `[!; 3]` is not accepted at `[i32; 2]`"
 source = """
 fn main() -> i32 {
@@ -3007,7 +3007,7 @@ error_contains = "expected array of 2 elements, found 3 elements"
 
 [[case]]
 name = "diverging_array_element_wrong_length_rejected"
-spec = ["3.4:4a", "7.1:3"]
+spec = ["3.4:3", "7.1:2", "7.1:3"]
 description = "A `[!; 1]` element does not admit a peer of a different length"
 source = """
 fn main() -> i32 {
@@ -3017,6 +3017,149 @@ fn main() -> i32 {
 """
 compile_fail = true
 error_contains = "expected array of 1 element, found 2 elements"
+
+[[case]]
+name = "diverging_array_deeper_nested_mixed_literal"
+spec = ["3.4:3", "7.1:2", "7.1:3"]
+description = "RUE-2538: a `[[!; 1]; 1]` element of a three-level literal takes its peers' element type"
+source = """
+fn main() -> i32 {
+    let a = [[[return 1; 1]], [[2]]];
+    0
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "diverging_array_deeper_nested_mixed_literal_annotated"
+spec = ["3.4:3", "7.1:2", "7.1:3"]
+description = "RUE-2538: the peer literal is typed at the annotation's `i64`, not at `!`"
+source = """
+fn main() -> i32 {
+    let b: [[[i64; 1]; 1]; 2] = [[[3000000000]], [[return 2; 1]]];
+    0
+}
+"""
+exit_code = 2
+
+[[case]]
+name = "diverging_array_deeper_nested_mixed_literal_middle"
+spec = ["3.4:3", "7.1:2", "7.1:3"]
+description = "RUE-2538: a diverging middle element between two typed peers"
+source = """
+fn main() -> i32 {
+    let c = [[[2]], [[return 7; 1]], [[3]]];
+    c[2][0][0]
+}
+"""
+exit_code = 7
+
+[[case]]
+name = "diverging_array_generic_call_argument"
+spec = ["3.4:3", "7.1:2"]
+description = "RUE-2538: a diverging array literal is accepted at a generic callee's substituted `[T; 2]` parameter"
+source = """
+fn g(comptime T: type, a: [T; 2]) -> i32 { 0 }
+fn main() -> i32 { g(i32, [return 1; 2]) }
+"""
+exit_code = 1
+
+[[case]]
+name = "diverging_array_continuing_struct_field_rejected"
+spec = ["3.4:3", "7.1:2"]
+description = "A continuing value of type `[!; 2]` read from a struct field is not accepted at `[i32; 2]`: only an operand that does not continue is"
+source = """
+struct S { a: [!; 2], n: i32 }
+fn take(a: [i32; 2]) -> i32 { a[0] }
+fn via(s: S) -> i32 { take(s.a) }
+fn main() -> i32 { via(S { a: [return 0; 2], n: 1 }) }
+"""
+compile_fail = true
+error_contains = "expected [i32; 2], found [!; 2]"
+
+[[case]]
+name = "diverging_array_continuing_zero_length_let_rejected"
+spec = ["3.4:3", "7.1:2"]
+description = "A continuing value of type `[!; 0]` is not accepted at a `[i64; 0]` binding"
+source = """
+fn main() -> i32 {
+    let z: [!; 0] = [];
+    let y: [i64; 0] = z;
+    0
+}
+"""
+compile_fail = true
+error_contains = "expected [i64; 0], found [!; 0]"
+
+[[case]]
+name = "diverging_array_continuing_enum_payload_rejected"
+spec = ["3.4:3", "7.1:2"]
+description = "A continuing `[!; 2]` bound from an enum payload is not accepted at `[i32; 2]`"
+source = """
+enum E { A([!; 2]), B(i32) }
+fn take(a: [i32; 2]) -> i32 { a[0] }
+fn via(e: E) -> i32 { match e { E.A(x) => take(x), E.B(n) => n } }
+fn main() -> i32 { via(E.B(0)) }
+"""
+compile_fail = true
+error_contains = "found [!; 2]"
+
+[[case]]
+name = "diverging_array_continuing_inout_rejected"
+spec = ["3.4:3", "7.1:2"]
+description = "A `[!; 0]` place is not accepted at an `inout [i32; 0]` parameter"
+source = """
+fn w0(inout a: [i32; 0]) { a = []; }
+fn main() -> i32 { let mut z: [!; 0] = []; w0(inout z); 0 }
+"""
+compile_fail = true
+error_contains = "expected [i32; 0], found [!; 0]"
+
+[[case]]
+name = "diverging_array_continuing_borrow_rejected"
+spec = ["3.4:3", "7.1:2"]
+description = "A `[!; 0]` place is not accepted at a `borrow [i64; 0]` parameter"
+source = """
+fn b0(borrow a: [i64; 0]) -> i32 { 2 }
+fn main() -> i32 { let z: [!; 0] = []; b0(borrow z) }
+"""
+compile_fail = true
+error_contains = "expected [i64; 0], found [!; 0]"
+
+[[case]]
+name = "diverging_array_continuing_ptr_read_rejected"
+spec = ["3.4:3", "7.1:2"]
+description = "A `checked` read through a `ptr mut [!; 2]` continues, so its value is not accepted at `[i32; 2]`"
+source = """
+fn take(a: [i32; 2]) -> i32 { a[0] }
+fn main() -> i32 {
+    let raw: ptr mut u8 = checked { @alloc(64, 8) };
+    let addr: u64 = checked { @ptr_to_int(raw) };
+    let pi: ptr mut [i32; 2] = checked { @int_to_ptr(addr) };
+    checked { @ptr_write(pi, [7, 8]) };
+    let p2: ptr mut [!; 2] = checked { @int_to_ptr(addr) };
+    take(checked { @ptr_read(p2) })
+}
+"""
+compile_fail = true
+error_contains = "expected [i32; 2], found [!; 2]"
+
+[[case]]
+name = "diverging_array_continuing_ptr_read_struct_field_rejected"
+spec = ["3.4:3", "7.1:2"]
+description = "A `checked` read through a `ptr mut [!; 2]` is not accepted at a `[i32; 2]` struct field"
+source = """
+struct S { a: [i32; 2] }
+fn main() -> i32 {
+    let raw: ptr mut u8 = checked { @alloc(64, 8) };
+    let addr: u64 = checked { @ptr_to_int(raw) };
+    let p2: ptr mut [!; 2] = checked { @int_to_ptr(addr) };
+    let s = S { a: checked { @ptr_read(p2) } };
+    s.a[1]
+}
+"""
+compile_fail = true
+error_contains = "expected [i32; 2], found [!; 2]"
 
 [[case]]
 name = "array_repeat_non_copy_element_error"
