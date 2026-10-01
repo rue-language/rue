@@ -58,6 +58,7 @@ $runtime
                                 substitutions: BTreeMap::new(),
                                 value_substitutions: BTreeMap::new(),
                                 deferred_value_parameters: BTreeMap::new(),
+                                deferred_value_read: false,
                                 anonymous_nominals: BTreeMap::new(),
                                 dependency_source,
                                 dependency_kind:
@@ -264,6 +265,7 @@ $runtime
                                     substitutions: BTreeMap::new(),
                                     value_substitutions: BTreeMap::new(),
                                     deferred_value_parameters: BTreeMap::new(),
+                                    deferred_value_read: false,
                                     anonymous_nominals: BTreeMap::new(),
                                     dependency_source:
                                         crate::semantic_query_nucleus::module_conformances_source(
@@ -619,6 +621,7 @@ $runtime
                                                 substitutions,
                                                 value_substitutions: BTreeMap::new(),
                                                 deferred_value_parameters: BTreeMap::new(),
+                                                deferred_value_read: false,
                                                 anonymous_nominals: BTreeMap::new(),
                                                 dependency_source,
                                                 dependency_kind: rue_air::DeclarationTypeDependencyKind::Signature,
@@ -687,6 +690,7 @@ $runtime
                                 substitutions: BTreeMap::new(),
                                 value_substitutions: BTreeMap::new(),
                                 deferred_value_parameters: BTreeMap::new(),
+                                deferred_value_read: false,
                                 anonymous_nominals: BTreeMap::new(),
                                 dependency_source: identity.key.clone(),
                                 dependency_kind:
@@ -825,6 +829,7 @@ $runtime
                                                 substitutions: BTreeMap::new(),
                                                 value_substitutions: BTreeMap::new(),
                                                 deferred_value_parameters: BTreeMap::new(),
+                                                deferred_value_read: false,
                                                 anonymous_nominals: BTreeMap::new(),
                                                 dependency_source: const_identity.key.clone(),
                                                 dependency_kind: rue_air::DeclarationTypeDependencyKind::DeclaredType,
@@ -1531,6 +1536,7 @@ $runtime
                                                 substitutions: substitutions.clone(),
                                                 value_substitutions: value_substitutions.clone(),
                                                 deferred_value_parameters: BTreeMap::new(),
+                                                deferred_value_read: false,
                                                 anonymous_nominals,
                                                 dependency_source: producer_key.clone(),
                                                 dependency_kind: rue_air::DeclarationTypeDependencyKind::Body,

@@ -10,7 +10,15 @@ pub(super) struct SemanticNucleusTypeProvider<'a> {
     pub(super) configuration: crate::semantic_query_nucleus::SemanticQueryConfiguration,
     pub(super) substitutions: BTreeMap<Arc<str>, crate::durable_semantics::DurableType>,
     pub(super) value_substitutions: BTreeMap<Arc<str>, crate::durable_semantics::DurableConstValue>,
+    /// The comptime value parameters of the generic signature being resolved,
+    /// with their declared types. Their values exist only at a call site, so a
+    /// signature type that reads one is deferred whole; see
+    /// [`SemanticNucleusTypeProvider::defer_value_parameter`].
     pub(super) deferred_value_parameters: BTreeMap<Arc<str>, crate::durable_semantics::DurableType>,
+    /// Set when the type being resolved read a deferred value parameter. The
+    /// read stops resolution with a failure, and the signature resolver turns
+    /// that failure into the call-site-resolved `ComptimeType`.
+    pub(super) deferred_value_read: bool,
     pub(super) anonymous_nominals:
         BTreeMap<crate::AnonymousNominalKey, crate::durable_semantics::DurableAnonymousNominal>,
     pub(super) dependency_source: crate::StableDefinitionKey,
@@ -2151,6 +2159,7 @@ pub(super) fn exact_specialized_callable_types(
         substitutions,
         value_substitutions,
         deferred_value_parameters: BTreeMap::new(),
+        deferred_value_read: false,
         anonymous_nominals: BTreeMap::new(),
         dependency_source: definition.clone(),
         dependency_kind: rue_air::DeclarationTypeDependencyKind::Signature,

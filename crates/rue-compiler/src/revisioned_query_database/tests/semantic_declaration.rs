@@ -2473,6 +2473,7 @@ fn live_type_provider_array_length_adapter_preserves_integer_boundaries_without_
                 substitutions: BTreeMap::new(),
                 value_substitutions,
                 deferred_value_parameters,
+                deferred_value_read: false,
                 anonymous_nominals: BTreeMap::new(),
                 dependency_source,
                 dependency_kind: rue_air::DeclarationTypeDependencyKind::Signature,
@@ -2502,6 +2503,7 @@ fn live_type_provider_array_length_adapter_preserves_integer_boundaries_without_
                 resolve("DEFERRED_I"),
                 resolve("DEFERRED_B"),
                 provider.dependencies.clone(),
+                provider.deferred_value_read,
             );
             *captured.borrow_mut() = Some(values);
             Ok(rue_query::QueryOutput::success(ProviderProbeValue))
@@ -2512,7 +2514,15 @@ fn live_type_provider_array_length_adapter_preserves_integer_boundaries_without_
         matches!(attempt.outcome(), rue_query::QueryOutcome::Success(_)),
         "live provider probe must publish"
     );
-    let (huge, bool_value, negative, deferred_integer, deferred_bool, dependencies) = captured
+    let (
+        huge,
+        bool_value,
+        negative,
+        deferred_integer,
+        deferred_bool,
+        dependencies,
+        provider_deferred_read,
+    ) = captured
         .into_inner()
         .expect("provider probe captured its values");
     assert!(matches!(
@@ -2532,7 +2542,12 @@ fn live_type_provider_array_length_adapter_preserves_integer_boundaries_without_
             rue_error::ErrorKind::InvalidArrayLength { ref reason }
         ))) if reason == "array length 'NEG' is negative (-1)"
     ));
-    assert!(matches!(deferred_integer, Ok(None)));
+    assert!(matches!(
+        deferred_integer,
+        Err(rue_air::SemanticProviderError::Failure(Failure::Resolution(ref reason)))
+            if reason.as_ref() == "comptime value parameter `DEFERRED_I` has no value outside a call site"
+    ));
+    assert!(provider_deferred_read, "a deferred length read must be recorded");
     assert!(matches!(
         deferred_bool,
         Err(rue_air::SemanticProviderError::Failure(Failure::Diagnostic(
@@ -2571,6 +2586,7 @@ fn live_type_provider_array_length_adapter_preserves_integer_boundaries_without_
                 substitutions: BTreeMap::new(),
                 value_substitutions: BTreeMap::new(),
                 deferred_value_parameters: BTreeMap::new(),
+                deferred_value_read: false,
                 anonymous_nominals: BTreeMap::new(),
                 dependency_source,
                 dependency_kind: rue_air::DeclarationTypeDependencyKind::Signature,
@@ -2780,6 +2796,7 @@ fn live_root_authority_resolves_keyed_substitutions_and_restores_provider_state(
                 substitutions: BTreeMap::from([(Arc::from("OLD"), T::I8)]),
                 value_substitutions: BTreeMap::from([(Arc::from("OLD"), V::Integer(7))]),
                 deferred_value_parameters: BTreeMap::new(),
+                deferred_value_read: false,
                 anonymous_nominals: BTreeMap::new(),
                 dependency_source,
                 dependency_kind: rue_air::DeclarationTypeDependencyKind::Signature,
@@ -3097,6 +3114,7 @@ fn production_root_authority_keyed_admission_preserves_identity_and_dependency()
                 substitutions: BTreeMap::new(),
                 value_substitutions: BTreeMap::new(),
                 deferred_value_parameters: BTreeMap::new(),
+                deferred_value_read: false,
                 anonymous_nominals: BTreeMap::new(),
                 dependency_source: accessing_source.clone(),
                 dependency_kind: rue_air::DeclarationTypeDependencyKind::Body,
@@ -3202,6 +3220,7 @@ fn production_root_authority_keyed_admission_preserves_identity_and_dependency()
                 substitutions: BTreeMap::new(),
                 value_substitutions: BTreeMap::new(),
                 deferred_value_parameters: BTreeMap::new(),
+                deferred_value_read: false,
                 anonymous_nominals: BTreeMap::new(),
                 dependency_source: accessing_source.clone(),
                 dependency_kind: rue_air::DeclarationTypeDependencyKind::Body,
