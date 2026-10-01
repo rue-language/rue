@@ -1156,12 +1156,17 @@ fn byref_place_type(
     .ok_or(CfgInlineError::NonPlaceByRefArgument { arg_index })
 }
 
-/// Refuse a splice whose by-reference parameter views a fixed-capacity
-/// `Str(N)` argument place at another type (an `inout str` view) unless the
-/// callee only reads that parameter whole: a write, or a callee projection
-/// through the view, has no CFG form over the caller's `Str(N)` storage
-/// (module docs). Every other place type is the parameter's own type, so the
-/// scan runs only for the one place type that can be viewed.
+/// Refuse a splice whose by-reference parameter is read at another type than
+/// the argument place's storage, unless that is the one coercion the CFG
+/// states: a whole read of a `Str(N)` place as `str` (an `inout str` view,
+/// [`fixed_str_views_as_str`]). A write, or a callee projection through such
+/// a view, has no CFG form over the caller's `Str(N)` storage (module docs),
+/// and any other type mismatch has no form at all; the splice is refused and
+/// the call kept, so translation never emits a read the verifier rejects.
+///
+/// Sema reads an `inout str` view whole and copies it before projecting, so
+/// for the CFG it produces today the refusal never fires; it is a closed
+/// door, not a hot path.
 fn ensure_byref_view_is_only_read(
     callee: &Cfg,
     param_slot: u32,
@@ -1169,17 +1174,14 @@ fn ensure_byref_view_is_only_read(
     type_pool: &FrozenTypeInternPool,
     arg_index: usize,
 ) -> Result<(), CfgInlineError> {
-    let rue_air::TypeKind::Struct(struct_id) = place_ty.kind() else {
-        return Ok(());
-    };
-    if !matches!(
-        type_pool.text_view_kind(struct_id),
-        Some(rue_air::TextViewKind::StrFixed(_))
-    ) {
-        return Ok(());
-    }
     let views = (0..callee.value_count()).any(|raw| {
-        match &callee.get_inst(CfgValue::from_raw(raw as u32)).data {
+        let inst = callee.get_inst(CfgValue::from_raw(raw as u32));
+        match &inst.data {
+            CfgInstData::Param { index } => {
+                *index == param_slot
+                    && inst.ty != place_ty
+                    && !fixed_str_views_as_str(place_ty, inst.ty, type_pool)
+            }
             CfgInstData::ParamStore {
                 param_slot: slot,
                 value,
@@ -1196,6 +1198,21 @@ fn ensure_byref_view_is_only_read(
         return Err(CfgInlineError::ByRefArgumentViewAccess { arg_index });
     }
     Ok(())
+}
+
+/// Whether reading a place of type `place_ty` whole as `read_ty` is the
+/// `Str(N)` to `str` view coercion, the one the CFG verifier admits for a
+/// `PlaceRead` (`is_fixed_str_to_view_coercion`).
+fn fixed_str_views_as_str(place_ty: Type, read_ty: Type, type_pool: &FrozenTypeInternPool) -> bool {
+    let (rue_air::TypeKind::Struct(place_id), rue_air::TypeKind::Struct(read_id)) =
+        (place_ty.kind(), read_ty.kind())
+    else {
+        return false;
+    };
+    matches!(
+        type_pool.text_view_kind(place_id),
+        Some(rue_air::TextViewKind::StrFixed(_))
+    ) && type_pool.text_view_kind(read_id) == Some(rue_air::TextViewKind::Str)
 }
 
 /// Prove that redirecting a by-reference SSA argument back to a caller local
@@ -1397,7 +1414,9 @@ fn translate_data(
         Param { index } => match splice.param(*index)? {
             ParamRedirect::Materialized { slot } => Load { slot },
             // A read at another type than the storage's is a view of it, and
-            // only a coercing `PlaceRead` states that (module docs).
+            // only a coercing `PlaceRead` states that (module docs). The
+            // preflight (`ensure_byref_view_is_only_read`) has refused every
+            // mismatch but `Str(N)` read as `str`.
             ParamRedirect::ByRefPlace {
                 base,
                 base_type,
