@@ -21,6 +21,11 @@ right and evaluates to an array value of type `[T; n]` that owns those `n`
 elements in index order; every element is a value-context use of the one shared
 element type `T` (core calculus `docs/formal/01-core-calculus.md` §5.8, rule
 `(Array-Intro)`, and the reduction `(D-Array)` of §6.5).
+(Informative: an element of type `!` is typed at `T` by the never coercion,
+3.4:3. So a literal whose elements all diverge, such as `[return 5; 3]` or
+`[[return 9; 2]]`, has whatever array type of its length the context expects.
+This is not a further coercion: 3.4:3's "exactly one coercion" is unchanged,
+and a value whose type is written `[!; n]` is not accepted at `[T; n]`.)
 
 {{ rule(id="7.1:3", cat="legality-rule") }}
 

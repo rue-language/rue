@@ -29,34 +29,6 @@ A type coercion is an implicit type conversion applied during type checking. Rue
 
 When type checking requires a value of type `T`, an expression of type `!` is accepted at `T`. The conversion is vacuously sound: `!` has no values (3.4:9), so re-typing a diverging expression at `T` converts no run-time value and creates no ownership obligation (`docs/formal/01-core-calculus.md` §5.7). This lets diverging expressions appear in any context where a value is expected.
 
-{{ rule(id="3.4:4a", cat="normative") }}
-
-The coercion applies to the elements of an array literal. An array literal
-whose element expressions all have type `!` (`[return 5; 3]`,
-`[return 1, return 2]`) has type `[!; n]` (7.1:2, 7.1:36), and nesting such a
-literal gives `[[!; m]; n]`. Each element is re-typed at the element type the
-context expects (core calculus `docs/formal/01-core-calculus.md` §5.8, rule
-`(Array-Intro)`, with (Sub-Never) on each element), so an expression of type
-`[!; n]` is accepted wherever a value of an array type `[T; n]` of the same
-length is expected, at every nesting level down to the `!`: a binding,
-argument, field, payload, return value, assignment, array element, or `if` or
-`match` arm. A different length, or a type that is not an array, is not
-accepted. The conversion is vacuously sound for the reason of 3.4:4: for
-`n > 0` no value of type `[!; n]` exists, and a `[!; 0]` value carries
-nothing.
-
-{{ rule(id="3.4:4b") }}
-
-```rue
-fn first(a: [i32; 3]) -> i32 { a[0] }
-
-fn main() -> i32 {
-    // `[return 7; 3]` never completes; its type `[!; 3]` is accepted at the
-    // `[i32; 3]` parameter, so the call is well-typed and main returns 7.
-    first([return 7; 3])
-}
-```
-
 {{ rule(id="3.4:5") }}
 
 ```rue
