@@ -798,6 +798,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             expr_continues,
             type_var_count,
             fixed_string_types,
+            deferred_annotation_types,
         ) = {
             let facts = self.inference_facts(infer_ctx);
 
@@ -945,6 +946,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 ));
             }
 
+            let deferred_annotation_types = cgen.deferred_annotation_types().to_vec();
             // Consume the constraint generator to release borrows
             let (
                 constraints,
@@ -967,6 +969,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 expr_continues,
                 type_var_count,
                 fixed_string_types,
+                deferred_annotation_types,
             )
         };
         let constraint_generation_ns = elapsed_ns(constraint_generation_started);
@@ -1055,7 +1058,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // whole body has been solved, and only by the final pass: a staged
         // pass may lack the float context that resolves the join.
         if errors.is_empty() && !staged {
-            errors = unifier.unresolved_literal_joins();
+            errors = unifier.unresolved_literal_joins(&deferred_annotation_types);
         }
 
         // Convert unification errors to compile errors
