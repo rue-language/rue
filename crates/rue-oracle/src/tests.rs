@@ -2162,9 +2162,10 @@ fn whole_zst_parameter_at_its_key_is_an_intrinsic_place() {
 }
 
 #[test]
-fn zst_mut_self_at_its_key_is_an_inout_writeback_place() {
-    // Passing the receiver `inout` writes the callee's final value back to
-    // the parameter at its key, alone and before a sized parameter.
+fn zst_mut_self_at_its_key_passes_inout_without_a_writeback() {
+    // Passing the receiver `inout` at its key, alone and before a sized
+    // parameter. A zero-sized argument has no writeback (its one value cannot
+    // change), so the key is never asked for as a writeback place.
     let src = "struct M {
         fn only(mut self) -> i64 { reset(inout self); 1 }
         fn first(mut self, x: i64) -> i64 { reset(inout self); x }
