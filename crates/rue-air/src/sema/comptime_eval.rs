@@ -2544,7 +2544,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     if let Some(ty) = alias {
                         discovered.aliases.insert(inst_ref, ty);
                         eval_types.insert(name, ty);
-                    } else if let Some(value) = comptime_value {
+                    } else if let Some(value) = comptime_value
+                        && !matches!(value, ConstValue::Type(_))
+                    {
                         eval_values.insert(name, value);
                     } else {
                         runtime_bindings.insert(name);
@@ -2601,9 +2603,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// `FixedBuffer(8)` — mirroring `analyze_call`'s implicit-comptime gate)
     /// and direct type expressions (`let P = Q;`, `let P = struct { .. };`).
     /// Returns `None` for anything else.
-    /// Evaluate the initializer of a `comptime` block's `let` as the
-    /// compile-time value the block binds, if it reduces to one that is not
-    /// a type (a type is an alias, above).
+    /// Evaluate the initializer of a `comptime` block's `let` through the
+    /// canonical evaluator, as the block itself will.
     fn try_eval_comptime_local_init(
         &mut self,
         init: InstRef,
@@ -2615,10 +2616,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         env.canonical_identity = self.active_anonymous_producer().cloned();
         env.runtime_local_names = runtime_bindings.clone();
         env.defining_file = Some(self.body_rir_ref().get(init).span.file_id);
-        match self.eval_const_expr(init, &mut env).ok().flatten() {
-            Some(ConstValue::Type(_)) | None => None,
-            Some(value) => Some(value),
-        }
+        self.eval_const_expr(init, &mut env).ok().flatten()
     }
 
     fn try_eval_type_alias_init(

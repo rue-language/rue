@@ -1355,20 +1355,6 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         span: Span,
     ) -> ComptimeOutcome<H::Type, H::Failure> {
         outcome_value!(self.check_named_array_lengths(program, syntax, env, span));
-        self.evaluate_length_checked_type_syntax(program, syntax, env, types, values, span)
-    }
-
-    /// [`Self::evaluate_comptime_type_syntax`] once its named array lengths
-    /// have been classified by [`Self::check_named_array_lengths`].
-    fn evaluate_length_checked_type_syntax(
-        &mut self,
-        program: &H::ProgramKey,
-        syntax: rue_rir::RirTypeSyntaxRef,
-        env: &ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
-        types: &AHashMap<H::Name, H::Type>,
-        values: &AHashMap<H::Name, H::Value>,
-        span: Span,
-    ) -> ComptimeOutcome<H::Type, H::Failure> {
         // Feed only the aliases actually mentioned by this syntax into the
         // host's map-based type resolver. The persistent staged scope remains
         // a point-lookup trie; this bounded syntax walk avoids materializing
@@ -3865,7 +3851,10 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 // A length naming a runtime binding makes the binding itself
                 // runtime-dependent, as the same name in a repeat count does;
                 // it must not leave the annotation merely unchecked, which
-                // let it reach a shadowed `const` (RUE-2446).
+                // let it reach a shadowed `const` (RUE-2446). The helper
+                // below classifies the lengths again, but maps any
+                // runtime-dependent outcome to an unchecked annotation, so
+                // this classification must propagate on its own.
                 outcome_value!(self.check_named_array_lengths(
                     &self.program_key(),
                     annotation,
@@ -3873,7 +3862,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                     span,
                 ));
                 let (types, values) = env.substs_with_locals();
-                match self.evaluate_length_checked_type_syntax(
+                match self.evaluate_comptime_type_syntax(
                     &self.program_key(),
                     annotation,
                     env,
