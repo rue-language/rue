@@ -1083,11 +1083,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 }
                 UnifyResult::NotInteger { ty } => ErrorKind::TypeMismatch {
                     expected: "integer type".to_string(),
-                    found: self.format_type_name(*ty),
+                    found: self.format_infer_type_name(ty),
                 },
                 UnifyResult::NotUnsigned { ty } => ErrorKind::TypeMismatch {
                     expected: "unsigned integer type".to_string(),
-                    found: self.format_type_name(*ty),
+                    found: self.format_infer_type_name(ty),
                 },
                 UnifyResult::ArrayLengthMismatch { expected, found } => {
                     ErrorKind::ArrayLengthMismatch {

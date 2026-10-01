@@ -37,11 +37,12 @@ pub enum UnifyResult {
     /// Type must be signed but is unsigned.
     NotSigned { ty: Type },
 
-    /// Type must be an integer but is not.
-    NotInteger { ty: Type },
+    /// Type must be an integer but is not. An array operand is carried
+    /// whole so the diagnostic names it.
+    NotInteger { ty: InferType },
 
     /// Type must be unsigned but is signed.
-    NotUnsigned { ty: Type },
+    NotUnsigned { ty: InferType },
 
     /// Array lengths don't match.
     ArrayLengthMismatch { expected: u64, found: u64 },
@@ -582,13 +583,15 @@ impl Unifier {
                 if concrete.is_integer() || concrete.is_error() || concrete.is_never() {
                     UnifyResult::Ok
                 } else {
-                    UnifyResult::NotInteger { ty: *concrete }
+                    UnifyResult::NotInteger { ty: ty.clone() }
                 }
             }
             // Type variables and IntLiteral are OK - they will be resolved to integers
             InferType::Var(_) | InferType::IntLiteral => UnifyResult::Ok,
             // Arrays are not integers - return error
-            InferType::Array { .. } => UnifyResult::NotInteger { ty: Type::ERROR },
+            InferType::Array { .. } => UnifyResult::NotInteger {
+                ty: self.render_for_error(&ty),
+            },
         }
     }
 
@@ -600,9 +603,11 @@ impl Unifier {
             {
                 UnifyResult::Ok
             }
-            InferType::Concrete(t) => UnifyResult::NotInteger { ty: *t },
+            InferType::Concrete(_) => UnifyResult::NotInteger { ty: ty.clone() },
             InferType::Var(_) | InferType::IntLiteral => UnifyResult::Ok,
-            InferType::Array { .. } => UnifyResult::NotInteger { ty: Type::ERROR },
+            InferType::Array { .. } => UnifyResult::NotInteger {
+                ty: self.render_for_error(&ty),
+            },
         }
     }
 
@@ -618,10 +623,10 @@ impl Unifier {
                 if concrete.is_unsigned() || concrete.is_error() || concrete.is_never() {
                     UnifyResult::Ok
                 } else if concrete.is_signed() {
-                    UnifyResult::NotUnsigned { ty: *concrete }
+                    UnifyResult::NotUnsigned { ty: ty.clone() }
                 } else {
                     // Non-integer type - report as not unsigned
-                    UnifyResult::NotUnsigned { ty: *concrete }
+                    UnifyResult::NotUnsigned { ty: ty.clone() }
                 }
             }
             // Type variables - defer check (will be validated in sema)
@@ -629,7 +634,9 @@ impl Unifier {
             // IntLiteral can be used as unsigned - it will be inferred to u64
             InferType::IntLiteral => UnifyResult::Ok,
             // Arrays are not unsigned integers
-            InferType::Array { .. } => UnifyResult::NotUnsigned { ty: Type::ERROR },
+            InferType::Array { .. } => UnifyResult::NotUnsigned {
+                ty: self.render_for_error(&ty),
+            },
         }
     }
 
@@ -1135,6 +1142,23 @@ mod tests {
     }
 
     #[test]
+    fn array_operand_names_the_array_in_integer_checks() {
+        let unifier = Unifier::new();
+        let array = InferType::Array {
+            element: Box::new(InferType::Concrete(Type::I32)),
+            length: 2,
+        };
+        assert_eq!(
+            unifier.check_numeric(&array),
+            UnifyResult::NotInteger { ty: array.clone() }
+        );
+        assert_eq!(
+            unifier.check_integer(&array),
+            UnifyResult::NotInteger { ty: array.clone() }
+        );
+    }
+
+    #[test]
     fn test_unify_two_int_literals() {
         let mut unifier = Unifier::new();
         let result = unifier.unify(&InferType::IntLiteral, &InferType::IntLiteral);
@@ -1321,7 +1345,12 @@ mod tests {
         let unifier = Unifier::new();
         let result = unifier.check_integer(&InferType::Concrete(Type::BOOL));
         assert!(!result.is_ok());
-        assert!(matches!(result, UnifyResult::NotInteger { ty: Type::BOOL }));
+        assert!(matches!(
+            result,
+            UnifyResult::NotInteger {
+                ty: InferType::Concrete(Type::BOOL)
+            }
+        ));
     }
 
     #[test]
@@ -1474,7 +1503,9 @@ mod tests {
         assert_eq!(errors.len(), 1);
         assert!(matches!(
             errors[0].kind,
-            UnifyResult::NotInteger { ty: Type::BOOL }
+            UnifyResult::NotInteger {
+                ty: InferType::Concrete(Type::BOOL)
+            }
         ));
     }
 
@@ -1838,8 +1869,12 @@ mod tests {
 
     #[test]
     fn test_unification_error_not_integer_message() {
-        let error =
-            UnificationError::new(UnifyResult::NotInteger { ty: Type::BOOL }, Span::new(0, 5));
+        let error = UnificationError::new(
+            UnifyResult::NotInteger {
+                ty: InferType::Concrete(Type::BOOL),
+            },
+            Span::new(0, 5),
+        );
         let msg = error.message();
         assert!(msg.contains("expected integer"));
         assert!(msg.contains("bool"));
@@ -2029,7 +2064,12 @@ mod tests {
         let unifier = Unifier::new();
         let result = unifier.check_unsigned(&InferType::Concrete(Type::I32));
         assert!(!result.is_ok());
-        assert!(matches!(result, UnifyResult::NotUnsigned { ty: Type::I32 }));
+        assert!(matches!(
+            result,
+            UnifyResult::NotUnsigned {
+                ty: InferType::Concrete(Type::I32)
+            }
+        ));
     }
 
     #[test]
@@ -2046,7 +2086,9 @@ mod tests {
         assert!(!result.is_ok());
         assert!(matches!(
             result,
-            UnifyResult::NotUnsigned { ty: Type::BOOL }
+            UnifyResult::NotUnsigned {
+                ty: InferType::Concrete(Type::BOOL)
+            }
         ));
     }
 
@@ -2072,7 +2114,9 @@ mod tests {
         assert_eq!(errors.len(), 1);
         assert!(matches!(
             errors[0].kind,
-            UnifyResult::NotUnsigned { ty: Type::I32 }
+            UnifyResult::NotUnsigned {
+                ty: InferType::Concrete(Type::I32)
+            }
         ));
     }
 
@@ -2204,8 +2248,12 @@ mod tests {
 
     #[test]
     fn test_unification_error_not_unsigned_message() {
-        let error =
-            UnificationError::new(UnifyResult::NotUnsigned { ty: Type::I32 }, Span::new(0, 5));
+        let error = UnificationError::new(
+            UnifyResult::NotUnsigned {
+                ty: InferType::Concrete(Type::I32),
+            },
+            Span::new(0, 5),
+        );
         let msg = error.message();
         assert!(msg.contains("unsigned"));
         assert!(msg.contains("i32"));
