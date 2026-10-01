@@ -215,12 +215,14 @@ fn matching_cfg_metadata_is_required_before_a_runtime_symptom_is_registrable() {
 
 #[test]
 fn validated_cfg_requires_the_complete_ordinary_nominal_chain_to_be_well_typed() {
-    let source = r#"struct Pair { value: i32 }
+    // `Pair` spans as many parameter slots as `Header`, so the edited base
+    // stays inside the parameter range and only the projection chain is wrong.
+    let source = r#"struct Pair { value: i32, spare: i32, extra: i32 }
         struct Header { pointer: u64, length: u64, capacity: u64 }
         fn read(p: Pair) -> i32 { p.value }
         fn main() -> i32 {
             let header = Header { pointer: 0, length: 0, capacity: 0 };
-            read(Pair { value: @intCast(header.length) })
+            read(Pair { value: @intCast(header.length), spare: 0, extra: 0 })
         }"#;
 
     for invalid_suffix in [false, true] {
@@ -636,6 +638,70 @@ fn validated_cfg_rejects_out_of_bounds_place_read_bases() {
             .expect_err("ValidatedCfg must reject an out-of-bounds place base");
         assert!(matches!(error, rue_cfg::CfgEditTransactionError::Edit(_)));
         assert_eq!(cfg.to_string(), before, "param_base={param_base}");
+    }
+}
+
+/// The oracle's place-base rule matches the one `ValidatedCfg`'s edit API and
+/// the CFG verifier state (`place_edit_api_and_verifier_agree_on_root_slot_ranges`
+/// in rue-cfg): a sized root fits below the limit, a zero-width local may sit
+/// at `num_locals`, and a zero-width by-value parameter has any key.
+#[test]
+fn place_base_rule_matches_the_edit_api_and_verifier_table() {
+    const SOURCE: &str = "fn probe(a: i32, b: i32) -> i32 { a + b }
+        fn main() -> i32 { probe(1, 2) }";
+    let state = query_cfg_state(SOURCE).expect("place rule probe must compile");
+    let cfg = &state
+        .functions
+        .iter()
+        .find(|function| function.is_source_named("probe"))
+        .expect("probe CFG")
+        .cfg;
+    let (locals, params) = (cfg.num_locals(), cfg.num_params());
+    assert!(params >= 2, "probe takes two scalar parameters");
+    let interp = Interp {
+        state: &state,
+        stdout_trace: Vec::new(),
+        stdout_bytes: 0,
+        stdout_cap: MAX_STDOUT_BYTES,
+        stderr_trace: Vec::new(),
+        stderr_bytes: 0,
+        stderr_cap: MAX_STDERR_BYTES,
+        budget: STEP_BUDGET,
+        depth: 0,
+        heap: Vec::new(),
+        small_free_heads: [None; ORACLE_SMALL_CLASS_COUNT],
+        heap_metadata_bytes: 0,
+    };
+    // (is_param, base type, slot, accepted)
+    let table = [
+        (false, Type::UNIT, 0, true),
+        (false, Type::UNIT, locals, true),
+        (false, Type::UNIT, locals + 1, false),
+        (false, Type::I32, locals, false),
+        (false, Type::I32, u32::MAX, false),
+        (true, Type::UNIT, 0, true),
+        (true, Type::UNIT, params, true),
+        (true, Type::UNIT, params + 5, true),
+        (true, Type::UNIT, u32::MAX, true),
+        (true, Type::I32, params - 1, true),
+        (true, Type::I32, params, false),
+        (true, Type::I32, u32::MAX, false),
+    ];
+    for (is_param, ty, slot, accepted) in table {
+        if !is_param && ty == Type::I32 && slot < locals {
+            continue;
+        }
+        let place = if is_param {
+            Place::param(slot, ty)
+        } else {
+            Place::local(slot, ty)
+        };
+        let violation = interp.place_base_violation(cfg, &place, PlaceAccess::Read);
+        assert_eq!(
+            violation.is_none(),
+            accepted,
+            "param={is_param} ty={ty:?} slot={slot}: {violation:?}"
+        );
     }
 }
 

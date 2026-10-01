@@ -1440,7 +1440,7 @@ mod tests {
         let array_id = synthetic_types.intern_array_from_type(pair_ty, 2);
         let array_ty = Type::new_array(array_id);
         let synthetic_types = synthetic_types.freeze();
-        let mut indexed_cfg = Cfg::new(pair_ty, 1, 1, "indexed_pair_read".to_string(), vec![false]);
+        let mut indexed_cfg = Cfg::new(pair_ty, 4, 1, "indexed_pair_read".to_string(), vec![false]);
         let indexed_entry = indexed_cfg.new_block();
         indexed_cfg.entry = indexed_entry;
         let index = indexed_cfg.append_inst(
@@ -1453,7 +1453,7 @@ mod tests {
         );
         let read = indexed_cfg
             .append_place_read(
-                &fixture.pool,
+                &synthetic_types,
                 indexed_entry,
                 PlaceBase::Local(0),
                 array_ty,
