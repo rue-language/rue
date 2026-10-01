@@ -4580,6 +4580,16 @@ mod tests {
             epoch.import_body(&invalid_drop, Span::with_file(FileId::DEFAULT, 0, 100)),
             Err(F::InvalidParameterDrop)
         ));
+        // A zero-width parameter's drop entry is keyed past the ABI range,
+        // one key per entry (RUE-2534).
+        let mut zero_width_drop = body(vec![D::Const(0)]);
+        zero_width_drop.param_drops = vec![(0, crate::SemanticImportType::Unit)].into();
+        assert!(
+            epoch
+                .import_body(&zero_width_drop, Span::with_file(FileId::DEFAULT, 0, 100))
+                .is_ok(),
+            "a zero-width parameter's drop key lies past the ABI range"
+        );
         let mut invalid_borrow = body(vec![D::Const(0)]);
         invalid_borrow.borrow_slots = vec![0].into();
         assert!(matches!(

@@ -6653,6 +6653,27 @@ mod tests {
             .unwrap();
     }
 
+    /// A zero-width by-value parameter has no storage, so its index is the
+    /// parameter's key past the ABI range, not a slot (RUE-2534). The same
+    /// index at a nonzero width is still rejected above.
+    #[test]
+    fn verify_accepts_a_zero_width_parameter_keyed_past_the_abi_range() {
+        let mut cfg = Cfg::new(Type::UNIT, 0, 1, "zst_param".to_string(), vec![false]);
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        cfg.add_inst_to_block(
+            entry,
+            CfgInst {
+                data: CfgInstData::Param { index: 3 },
+                ty: Type::UNIT,
+                span: Span::new(0, 0),
+            },
+        );
+        cfg.set_terminator(entry, Terminator::Return { value: None });
+        cfg.verify_with_type_pool(&FrozenTypeInternPool::new())
+            .unwrap();
+    }
+
     #[test]
     #[should_panic(expected = "local slot range 0..2")]
     fn verify_rejects_multi_slot_local_overflow() {
