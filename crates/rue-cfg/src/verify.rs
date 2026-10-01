@@ -616,7 +616,8 @@ impl<'a> Verifier<'a> {
                 match inst.data {
                     CfgInstData::StorageLive { slot, local_ty }
                     | CfgInstData::StorageDead { slot, local_ty } => {
-                        // Zero-width locals can share a slot and type while
+                        // Zero-width values (parameters, and locals before
+                        // RUE-2453) can share a slot and type while
                         // distinct lexical regions overlap. CFG has no
                         // declaration identity with which to separate them.
                         if self.abi_slot_count(

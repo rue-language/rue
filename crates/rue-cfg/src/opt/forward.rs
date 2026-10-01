@@ -83,10 +83,13 @@
 //!
 //! ## Slot identity is not value identity: the well-typedness guard
 //!
-//! A slot index does not identify a single typed storage location. A
-//! zero-sized local reserves *no* frame slots, so its slot index is the same
-//! index the next local receives, and the two unrelated locals then share one
-//! `$n` in every slot-keyed table here (RUE-2086). Forwarding the value most
+//! A slot index need not identify a single typed storage location. Until
+//! RUE-2453 a zero-sized local reserved *no* frame slots, so its slot index
+//! was the same index the next local received, and the two unrelated locals
+//! then shared one `$n` in every slot-keyed table here (RUE-2086). Source
+//! locals and temporaries now each have their own slot; only zero-width
+//! by-value parameters can still share a number, and the guard below stays as
+//! a defence. Forwarding the value most
 //! recently stored to `$n` into a `Load $n` that belongs to the *other* local
 //! substitutes a value of the wrong type, and downstream consumers that read
 //! an operand's type or materialized slot count off the CFG then plan the
@@ -171,7 +174,8 @@ pub struct Stats {
     pub dominator_computations: u64,
     /// Loads a rule had a candidate value for but declined to forward because
     /// the stored value's type differs from the load's (RUE-2086 — a slot
-    /// shared between a zero-sized local and the local that reuses its index).
+    /// once shared between a zero-sized local and the local that reused its
+    /// index; now only zero-width parameters can share one).
     pub loads_declined_type_mismatch: u64,
     /// Loads of an owned value a rule had a candidate for but declined to
     /// forward because the candidate is rooted at a different local or a
@@ -369,9 +373,10 @@ pub fn run(cfg: &mut Cfg, type_pool: &FrozenTypeInternPool) -> Result<Stats, cra
                     } else if untracked_slot.get(slot as usize) == Some(&false) {
                         // Rule 2: block-local forwarding for multi-write slots.
                         if let Some(&Some(stored)) = last_store.get(slot as usize) {
-                            // A zero-sized local shares its slot index with the
-                            // local that reuses it, so the tracked store may
-                            // belong to a different location entirely
+                            // A zero-width parameter can share its slot index
+                            // with the next one (and, before RUE-2453, so
+                            // could a zero-sized local), so the tracked store
+                            // may belong to a different location entirely
                             // (RUE-2086). Only a same-typed value is this
                             // load's.
                             if cfg.get_inst(stored).ty != load_ty {
@@ -1156,7 +1161,8 @@ mod tests {
 
     #[test]
     fn test_zero_sized_out_of_range_slot_ignored() {
-        // A trailing zero-sized local is assigned slot index == num_locals,
+        // Historically a trailing zero-sized local was assigned slot index
+        // == num_locals (source locals have their own slot since RUE-2453),
         // out of range for the slot tables. Its Alloc/Load must be skipped, not
         // panic (RUE-194), and nothing is forwarded.
         let mut cfg = make_cfg(0);
@@ -1341,8 +1347,9 @@ mod tests {
         ));
     }
 
-    /// RUE-2086: a zero-sized local reserves no frame slots, so its slot index
-    /// is the one the next local receives and the two share `$0`. The
+    /// RUE-2086: when a zero-sized local reserved no frame slots (before
+    /// RUE-2453; a hand-built CFG can still do it), its slot index was the one
+    /// the next local received and the two shared `$0`. The
     /// block-local table then holds the *pointer* the second local stored when
     /// the first local's `()`-typed load is reached, and forwarding it made
     /// `@ptr_write` store eight bytes through a zero-sized sentinel address.
@@ -1392,7 +1399,8 @@ mod tests {
     }
 
     /// The same guard on Rule 1: one whole-slot write is still not this load's
-    /// write when a zero-sized local shares the slot index (RUE-2086).
+    /// write when a zero-sized local shares the slot index (RUE-2086; a shape
+    /// only a hand-built CFG or a zero-width parameter reaches since RUE-2453).
     #[test]
     fn test_single_write_declines_forward_across_a_type_change() {
         let mut cfg = make_cfg(1);
@@ -1417,10 +1425,12 @@ mod tests {
     /// The other direction of the same aliasing: the `()` is stored *last* and
     /// a sized load of the shared slot follows.
     ///
-    /// Reaching this from source needs the zero-sized local to be re-assigned
-    /// after the sized one is initialized (`let mut e: () = (); let y: i64 = 5;
-    /// e = ();`), because slot indices only ever advance, so the zero-sized
-    /// local's `Alloc` always comes first. That shape is miscompiled the other
+    /// Before RUE-2453, reaching this from source needed the zero-sized local
+    /// to be re-assigned after the sized one was initialized (`let mut e: () =
+    /// (); let y: i64 = 5; e = ();`), because slot indices only ever advance,
+    /// so the zero-sized local's `Alloc` always came first. Source programs now
+    /// give each local its own slot, so this test drives a hand-built CFG. That
+    /// shape was miscompiled the other
     /// way round — the `()` reaches a sized consumer and makes its materialized
     /// slot count zero, so a store or an argument disappears rather than
     /// appearing. The source form is covered by the `cli.zero_sized_slot_sharing`
