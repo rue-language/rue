@@ -146,6 +146,20 @@ fn main() -> i32 {
 }
 ```
 
+{{ rule(id="9.2:6f", cat="dynamic-semantics") }}
+
+A read through a pointer whose pointee type `T` is **uninhabited** —
+`@ptr_read(p)` or `@ptr_read_unaligned(p)` (9.2:14k) — does not complete:
+no value of `T` exists to be read, so evaluation of the read traps once its
+operand has been evaluated, and accesses no memory. A type is uninhabited when
+it is `!` (3.4:9); an array `[T; n]` with `n > 0` and `T` uninhabited; a
+struct with an uninhabited field; or an enum each of whose variants carries an
+uninhabited payload type, which includes the zero-variant enum (6.3:12). The
+read keeps its type `T` (9.2:6d): a `checked` block licenses the address, not
+the existence of a value of a type that has none. `[T; 0]` has exactly one
+value whatever `T` is, so a read of it completes, as does a read of a struct
+whose only `!`-mentioning field is such an array.
+
 ## Pointer Arithmetic Intrinsic
 
 {{ rule(id="9.2:7", cat="dynamic-semantics") }}

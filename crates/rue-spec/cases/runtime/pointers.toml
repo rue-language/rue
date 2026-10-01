@@ -235,6 +235,99 @@ fn main() -> i32 {
 compile_fail = true
 error_contains = "E0206"
 
+# 9.2:6f — a read through a pointer to an uninhabited type has no value to
+# produce and traps (RUE-2548). The trap is the `Unreachable` terminator a
+# `ptr mut !` read has always ended in: the process dies of SIGTRAP (AArch64
+# `brk`) or SIGILL (x86-64 `ud2`), not a `@panic` or a built-in runtime error,
+# so no runtime assertion here can name it. Each case pins the divergence the
+# trap follows from instead: control does not continue past the read, so the
+# statement after it is unreachable. The CFG shape itself (no memory access,
+# an `Unreachable` terminator) is pinned in rue-compiler's integration tests.
+[[case]]
+name = "{read}_uninhabited_{shape}_diverges"
+spec = ["9.2:6f", "9.2:6d"]
+source = """
+{decl}
+fn main() -> i32 {
+    let p: ptr mut {pointee} = checked { @int_to_ptr(@ptr_to_int(@alloc(16, 8))) };
+    checked { @{read}(p) };
+    0
+}
+"""
+compile_only = true
+warning_contains = ["unreachable code"]
+expected_warning_count = 1
+params = [
+  { read = "ptr_read", shape = "never", decl = "", pointee = "!", spec_extra = ["9.2:6b"] },
+  { read = "ptr_read", shape = "never_array", decl = "", pointee = "[!; 2]", spec_extra = ["9.2:6b"] },
+  { read = "ptr_read", shape = "nested_never_array", decl = "", pointee = "[[!; 1]; 3]", spec_extra = ["9.2:6b"] },
+  { read = "ptr_read", shape = "struct_with_never_field", decl = "struct S { a: i32, b: ! }", pointee = "S", spec_extra = ["9.2:6b"] },
+  { read = "ptr_read", shape = "struct_with_never_array_field", decl = "struct S { a: i32, b: [!; 2] }", pointee = "S", spec_extra = ["9.2:6b"] },
+  { read = "ptr_read", shape = "enum_with_only_uninhabited_variants", decl = "enum E { A(!), B(i32, [!; 1]) }", pointee = "E", spec_extra = ["9.2:6b"] },
+  { read = "ptr_read", shape = "zero_variant_enum", decl = "enum E {}", pointee = "E", spec_extra = ["9.2:6b"] },
+  { read = "ptr_read_unaligned", shape = "never", decl = "", pointee = "!", spec_extra = ["9.2:14k"] },
+  { read = "ptr_read_unaligned", shape = "never_array", decl = "", pointee = "[!; 2]", spec_extra = ["9.2:14k"] },
+  { read = "ptr_read_unaligned", shape = "nested_never_array", decl = "", pointee = "[[!; 1]; 3]", spec_extra = ["9.2:14k"] },
+  { read = "ptr_read_unaligned", shape = "struct_with_never_field", decl = "struct S { a: i32, b: ! }", pointee = "S", spec_extra = ["9.2:14k"] },
+  { read = "ptr_read_unaligned", shape = "struct_with_never_array_field", decl = "struct S { a: i32, b: [!; 2] }", pointee = "S", spec_extra = ["9.2:14k"] },
+  { read = "ptr_read_unaligned", shape = "enum_with_only_uninhabited_variants", decl = "enum E { A(!), B(i32, [!; 1]) }", pointee = "E", spec_extra = ["9.2:14k"] },
+  { read = "ptr_read_unaligned", shape = "zero_variant_enum", decl = "enum E {}", pointee = "E", spec_extra = ["9.2:14k"] },
+]
+
+# 9.2:6f near misses: `[!; 0]` has exactly one value, a struct whose only
+# `!`-mentioning field is a zero-length array is inhabited, and so is an enum
+# with one variant that can be built. Each read completes and yields its value.
+[[case]]
+name = "ptr_read_zero_length_never_array_completes"
+spec = ["9.2:6f", "9.2:6b", "9.2:14k"]
+source = """
+fn main() -> i32 {
+    let p: ptr mut [!; 0] = checked { @int_to_ptr(@ptr_to_int(@alloc(16, 8))) };
+    let _a = checked { @ptr_read(p) };
+    @dbg(1);
+    let _b = checked { @ptr_read_unaligned(p) };
+    @dbg(2);
+    7
+}
+"""
+exit_code = 7
+expected_stdout = "1\n2\n"
+no_warnings = true
+
+[[case]]
+name = "ptr_read_struct_with_zero_length_never_field_completes"
+spec = ["9.2:6f", "9.2:6b", "9.2:14k"]
+source = """
+struct T { a: i32, z: [!; 0], b: i64 }
+fn main() -> i32 {
+    let p: ptr mut T = checked { @int_to_ptr(@ptr_to_int(@alloc(32, 8))) };
+    checked { @ptr_write(p, T { a: 5, z: [], b: 6 }) };
+    let t = checked { @ptr_read(p) };
+    let u = checked { @ptr_read_unaligned(p) };
+    t.a + @intCast(u.b)
+}
+"""
+exit_code = 11
+no_warnings = true
+
+[[case]]
+name = "ptr_read_enum_with_a_buildable_variant_completes"
+spec = ["9.2:6f", "9.2:6b", "9.2:14k"]
+source = """
+enum F { A(!), B(i32) }
+fn main() -> i32 {
+    let p: ptr mut F = checked { @int_to_ptr(@ptr_to_int(@alloc(16, 8))) };
+    checked { @ptr_write(p, F.B(9)) };
+    let f = checked { @ptr_read(p) };
+    let g = checked { @ptr_read_unaligned(p) };
+    let a = match f { F.A(_) => 0, F.B(n) => n };
+    let b = match g { F.A(_) => 0, F.B(n) => n };
+    a + b
+}
+"""
+exit_code = 18
+no_warnings = true
+
 # =============================================================================
 # @int_to_ptr converts u64 address to pointer with explicit type annotation
 # =============================================================================
