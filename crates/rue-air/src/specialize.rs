@@ -680,11 +680,7 @@ where
                     identity: stable_identity.clone(),
                 },
             ),
-            air: crate::ValidatedAir::from_semantic_air_with_symbols(
-                air,
-                host.body_type_pool(),
-                host.body_interner(),
-            )?,
+            air: OrdinaryBodyEngine::new(host).validate_body_air(air, &referenced_methods)?,
             local_atoms,
             num_locals,
             num_param_slots,
