@@ -2247,6 +2247,97 @@ fn main() -> i32 {
 """
 compile_fail = true
 
+# A match arm's payload binder hides a same-named block local, `const` or
+# `comptime` parameter in the arm's lengths, as a `let` does (RUE-2446).
+[[case]]
+name = "array_length_in_comptime_block_match_binder_hides_block_local"
+spec = ["7.1:32", "4.14:26"]
+source = """
+enum Sh { C(i32), E }
+fn main() -> i32 {
+    comptime {
+        let n = 2;
+        match Sh.C(3) {
+            Sh.C(n) => {
+                let a: [i32; n] = [1, 2, 3];
+                a[2]
+            },
+            Sh.E => 0,
+        }
+    }
+}
+"""
+exit_code = 3
+
+[[case]]
+name = "array_length_in_comptime_block_match_binder_hides_const"
+spec = ["7.1:32", "4.14:26"]
+source = """
+const n: i32 = 2;
+enum Sh { C(i32), E }
+fn main() -> i32 {
+    comptime {
+        match Sh.C(3) {
+            Sh.C(n) => {
+                let a: [i32; n] = [1, 2, 3];
+                a[2]
+            },
+            Sh.E => 0,
+        }
+    }
+}
+"""
+exit_code = 3
+
+# Only a block local whose value is certain is a length: a mutable one, one
+# whose annotation its initializer does not fit, and one whose arithmetic
+# overflows keep their own diagnostics (RUE-2446).
+[[case]]
+name = "array_length_in_comptime_block_names_reassigned_mutable_local"
+error_contains = "[E1200]"
+spec = ["4.14:26", "4.14:29"]
+source = """
+fn main() -> i32 {
+    comptime {
+        let mut n = 2;
+        n = 3;
+        let a: [i32; n] = [1, 2, 3];
+        a[2]
+    }
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "array_length_in_comptime_block_names_out_of_range_annotated_local"
+error_contains = "[E0800]"
+spec = ["3.1:18", "7.1:32"]
+source = """
+fn main() -> i32 {
+    comptime {
+        let n: u8 = 300;
+        let a: [i32; n] = [1, 2];
+        a[1]
+    }
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "array_length_in_comptime_block_names_overflowing_local"
+error_contains = "[E1200]"
+spec = ["4.14:4", "7.1:32"]
+source = """
+fn main() -> i32 {
+    comptime {
+        let m = 2147483647 + 1;
+        let a: [i32; m] = [1, 2];
+        a[1]
+    }
+}
+"""
+compile_fail = true
+
 [[case]]
 name = "array_length_in_body_anonymous_struct_field_names_local"
 error_contains = "[E0481]"
