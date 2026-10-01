@@ -2782,12 +2782,20 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeRejections
         )
     }
 
-    fn reject_callback_member(
+    fn reject_unstorable_member(
         &self,
         ty: &Self::Type,
         position: &str,
         site: &rue_air::ComptimeDiagnosticSite<Self::ProgramKey>,
     ) -> rue_air::ComptimeHostResult<(), Self::Failure> {
+        if crate::durable_semantics::durable_type_contains_slice(ty.as_ref()) {
+            return Err(rue_air::ComptimeHostError::HostFailure(
+                durable_diagnostic_failure(
+                    &self.diagnostic_site(site),
+                    rue_error::ErrorKind::SliceInAggregateField,
+                ),
+            ));
+        }
         if matches!(
             ty.as_ref(),
             crate::durable_semantics::DurableType::Function { .. }

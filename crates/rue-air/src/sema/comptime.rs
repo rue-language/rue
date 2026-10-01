@@ -1101,10 +1101,13 @@ pub trait ComptimeRejections: ComptimeDomain {
             site,
         )
     }
-    /// Refuse a `fn` type as a field or payload of an anonymous nominal
-    /// (ADR-0096, spec 6.1:47): a callback is second-class and is never
-    /// stored, so no type constructor can build a type that holds one.
-    fn reject_callback_member(
+    /// Refuse a second-class type as a field or payload of an anonymous
+    /// nominal, exactly as a named declaration's field or payload is refused:
+    /// a slice view, directly or as an array or pointer element (E0488, spec
+    /// 7.2:5), and a `fn` type (E0214, ADR-0096, spec 6.1:47). Neither is ever
+    /// stored, so no type constructor can build a type that holds one, whether
+    /// the body spells the type or a type parameter substitutes it.
+    fn reject_unstorable_member(
         &self,
         ty: &Self::Type,
         position: &str,
@@ -5015,7 +5018,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                     return ComptimeOutcome::RuntimeDependent;
                 };
                 for field in &struct_fields {
-                    host_value!(self.host.reject_callback_member(
+                    host_value!(self.host.reject_unstorable_member(
                         &field.ty,
                         "a struct field",
                         &self.diagnostic_site(span),
@@ -5091,7 +5094,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                     anchor,
                 );
                 for ty in variant_payloads.iter().flatten() {
-                    host_value!(self.host.reject_callback_member(
+                    host_value!(self.host.reject_unstorable_member(
                         ty,
                         "an enum payload",
                         &self.diagnostic_site(span),
