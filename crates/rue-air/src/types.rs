@@ -148,14 +148,103 @@ pub fn fixed_string_name(capacity: u64) -> String {
     format!("Str({capacity})")
 }
 
-/// Render the canonical synthetic name of the slice view over `element`.
+/// Bracket an element spelling into a slice-view spelling.
 ///
-/// The inverse of [`is_slice_struct_name`]. The slice nominal's name IS its
-/// source spelling, so a producer that has only the element spelling builds the
-/// name here rather than bracketing it by hand.
+/// The inverse of [`is_slice_struct_name`]. A producer naming a slice view
+/// spells it through [`slice_view_name`], which computes the element spelling
+/// from the element type and brackets it here.
 #[must_use]
 pub fn slice_struct_name(element: &str) -> String {
     format!("[{element}]")
+}
+
+/// The canonical name of the slice view over `element`.
+///
+/// A slice view is a generated struct registered under its name, and body
+/// facts name a view by that name alone, so the name is the view's identity:
+/// it must be a function of the element type, never of how the source spelled
+/// it. `[T]` inside a constructor instantiated at `i64` and at `u64`, a named
+/// struct `T`, an alias of `i64`, and two same-named structs in different
+/// modules are five different element types and so five different names
+/// (RUE-2571).
+///
+/// `definition` and `module` relocate the durable identities inside the
+/// element to their stable content — the same relocation an anonymous
+/// nominal's digest is computed over — so every producer, whatever its key
+/// vocabulary, spells one element type identically. An element built only from
+/// primitives, arrays, pointers, function types, and builtin nominals keeps its
+/// source spelling (`[i64]`, `[[i32; 3]]`); a named or anonymous nominal is
+/// spelled with the digest of its stable content (`[P#…]`), which keeps two
+/// same-named nominals apart. Diagnostics render a view from its element type
+/// rather than from this name.
+pub fn slice_view_name<K: Clone + std::hash::Hash, M: Clone + std::hash::Hash>(
+    element: &crate::SemanticImportType<K, M>,
+    definition: impl Fn(&K) -> String,
+    module: impl Fn(&M) -> String,
+) -> String {
+    let relocated = element
+        .try_map_identities::<String, String, std::convert::Infallible>(
+            &|key| Ok(definition(key)),
+            &|key| Ok(module(key)),
+        )
+        .unwrap_or_else(|never| match never {});
+    slice_struct_name(&slice_view_element_spelling(&relocated))
+}
+
+fn slice_view_element_spelling(element: &crate::SemanticImportType<String, String>) -> String {
+    use crate::SemanticImportType as T;
+    match element {
+        T::I8 => "i8".to_owned(),
+        T::I16 => "i16".to_owned(),
+        T::I32 => "i32".to_owned(),
+        T::I64 => "i64".to_owned(),
+        T::U8 => "u8".to_owned(),
+        T::U16 => "u16".to_owned(),
+        T::U32 => "u32".to_owned(),
+        T::U64 => "u64".to_owned(),
+        T::Bool => "bool".to_owned(),
+        T::Unit => "()".to_owned(),
+        T::Never => "!".to_owned(),
+        T::ComptimeType => "type".to_owned(),
+        T::F32 => "f32".to_owned(),
+        T::F64 => "f64".to_owned(),
+        T::ComptimeFloat => "comptime_float".to_owned(),
+        T::BuiltinNominal { name, .. } => name.to_string(),
+        T::Nominal(definition) => {
+            // The stable definition content is `D\u{1}{module}\u{1}{name}…`;
+            // its name part keeps a leaked spelling readable, and its digest
+            // is what tells two same-named definitions apart.
+            let name = definition.split('\u{1}').nth(2).unwrap_or_default();
+            format!(
+                "{name}#{}",
+                crate::stable_digest::stable_content_digest_component(definition)
+            )
+        }
+        T::AnonymousNominal(identity) => format!(
+            "anon#{:032x}",
+            crate::stable_digest::stable_anonymous_identity_digest(
+                &identity.with_canonical_producer()
+            )
+        ),
+        T::Array { element, len } => {
+            array_type_name(&slice_view_element_spelling(element), *len)
+        }
+        T::PtrConst(pointee) => format!("ptr const {}", slice_view_element_spelling(pointee)),
+        T::PtrMut(pointee) => format!("ptr mut {}", slice_view_element_spelling(pointee)),
+        // A nested view is named by its own element, never by a carried name.
+        T::Slice { element, .. } => slice_struct_name(&slice_view_element_spelling(element)),
+        T::Function { params, result } => function_type_name(
+            params
+                .iter()
+                .map(|(mode, ty)| (*mode, slice_view_element_spelling(ty))),
+            (**result != T::Unit).then(|| slice_view_element_spelling(result)),
+        ),
+        T::Module(module) => format!(
+            "module#{}",
+            crate::stable_digest::stable_content_digest_component(module)
+        ),
+        T::GenericParameter(index) => format!("${index}"),
+    }
 }
 
 /// Render the canonical spelling of the array type `[T; N]`.

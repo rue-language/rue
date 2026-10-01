@@ -4543,9 +4543,16 @@ where
         let durable = self.durable_type_from_concrete(element).ok_or_else(|| {
             CompileError::new(rue_error::ErrorKind::UnknownType(syntax.to_owned()), span)
         })?;
+        // The view is named by its element type, not by `syntax`: `[T]` names a
+        // different view at every `T` (RUE-2571).
+        let name = crate::types::slice_view_name(
+            &durable,
+            |key| self.source.definition_symbol_component(key),
+            |module| self.source.module_symbol_component(module),
+        );
         let id = self
             .endpoint
-            .register_generated_slice(&durable, syntax)
+            .register_generated_slice(&durable, &name)
             .ok_or_else(|| {
                 CompileError::new(rue_error::ErrorKind::UnknownType(syntax.to_owned()), span)
             })?;

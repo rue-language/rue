@@ -115,21 +115,39 @@ fn relocate_anonymous_identity(
         .with_canonical_producer()
         .as_ref()
         .try_map_identities::<String, String, std::convert::Infallible>(
-            &|definition| {
-                Ok(rue_air::stable_digest::stable_definition_component(
-                    definition.module().logical_path(),
-                    definition.name(),
-                    definition.owner().map(|owner| owner.name()),
-                    definition.kind() as u8,
-                ))
-            },
-            &|module| {
-                Ok(rue_air::stable_digest::stable_module_component(
-                    module.logical_path(),
-                ))
-            },
+            &|definition| Ok(stable_definition_content(definition)),
+            &|module| Ok(stable_module_content(module)),
         )
         .expect("compiler anonymous identity relocation to stable content is infallible")
+}
+
+/// The request-independent stable content of one definition key: the single
+/// relocation both anonymous digests and slice-view names are computed over.
+pub(crate) fn stable_definition_content(definition: &StableDefinitionKey) -> String {
+    rue_air::stable_digest::stable_definition_component(
+        definition.module().logical_path(),
+        definition.name(),
+        definition.owner().map(|owner| owner.name()),
+        definition.kind() as u8,
+    )
+}
+
+/// The request-independent stable content of one module key.
+pub(crate) fn stable_module_content(module: &ModuleId) -> String {
+    rue_air::stable_digest::stable_module_component(module.logical_path())
+}
+
+/// The canonical name of the slice view over a durable `element`
+/// (see [`rue_air::slice_view_name`]): a function of the element type, so a
+/// view spelled `[T]` names a different struct at every `T` (RUE-2571).
+pub(crate) fn durable_slice_view_name(
+    element: &crate::durable_semantics::DurableType,
+) -> Arc<str> {
+    Arc::from(rue_air::slice_view_name(
+        element,
+        stable_definition_content,
+        stable_module_content,
+    ))
 }
 
 pub(crate) fn anonymous_nominal_digest(identity: &AnonymousNominalKey) -> u128 {

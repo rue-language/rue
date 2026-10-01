@@ -216,7 +216,7 @@ pub use types::{
     FunctionTypeParam, LangItem, ModuleDef, ModuleId, PtrConstTypeId, PtrMutTypeId, StdContainer,
     StructDef, StructField, StructId, TextViewKind, Type, TypeKind, array_type_name,
     fixed_string_capacity, fixed_string_name, function_type_name, is_slice_struct_name,
-    is_string_view_struct_name, slice_struct_name, text_view_name_kind,
+    is_string_view_struct_name, slice_struct_name, slice_view_name, text_view_name_kind,
 };
 
 /// Sentinel value used to encode parameter slots in AIR instructions.

@@ -1909,12 +1909,7 @@ impl CompilerBodyDurableSource<'_> {
 }
 
 pub(super) fn provider_definition_symbol_component(key: &crate::StableDefinitionKey) -> String {
-    rue_air::stable_digest::stable_definition_component(
-        key.module().logical_path(),
-        key.name(),
-        key.owner().map(|owner| owner.name()),
-        key.kind() as u8,
-    )
+    crate::semantic_identity::stable_definition_content(key)
 }
 
 /// Render a compiler-owned anonymous identity into the same stable-content
@@ -3835,18 +3830,16 @@ impl<'p, 'o, 'db>
     fn slice_type(
         &mut self,
         _scope: &ModuleId,
-        syntax: &str,
+        _syntax: &str,
         element: crate::DurableType,
     ) -> rue_air::SemanticProviderResult<crate::DurableType, Self::Abort, Self::Failure> {
-        // The generated slice-struct name IS the slice syntax: the epoch's
-        // `get_or_create_slice_struct_from_element` keys the fat-pointer struct by
-        // `syntax`, and `export_type_local` reproduces it as
-        // `Slice { element, name: syntax }`. So the durable form is a pure durable
-        // fact needing no boundary op — the overlay/pool mints the same
-        // fat-pointer struct on materialization (RUE-1091 r6a — slice name facts).
+        // The generated slice struct is named by its element type, never by the
+        // syntax that spelled it (RUE-2571), so the durable form is a pure
+        // durable fact needing no boundary op: the pool mints the same
+        // fat-pointer struct under the same name on materialization.
         Ok(crate::DurableType::Slice {
+            name: crate::semantic_identity::durable_slice_view_name(&element),
             element: Arc::new(element),
-            name: Arc::from(syntax),
         })
     }
 
