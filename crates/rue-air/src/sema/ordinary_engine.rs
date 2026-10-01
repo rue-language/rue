@@ -658,6 +658,10 @@ pub(crate) struct OrdinaryBodyEngine<'h, H: OrdinaryBodyAnalysisHost> {
     /// first iteration's, leaves unrestored; recorded outside rechecks only,
     /// so a use after the loop can say why the value is moved (RUE-2354).
     pub(super) later_iteration_exit_moves: AHashSet<Span>,
+    /// Every member callable symbol this engine has rendered, with the
+    /// member it names, so AIR validation can find a method call's declared
+    /// signature without rendering the symbol again (RUE-2452).
+    member_symbols: std::cell::RefCell<AHashMap<Spur, (StructId, Spur)>>,
 }
 
 #[cfg(test)]
@@ -727,6 +731,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             loop_head_hints: LoopHeadHints::default(),
             loop_recheck_depth: 0,
             later_iteration_exit_moves: AHashSet::new(),
+            member_symbols: Default::default(),
         }
     }
 
@@ -2291,14 +2296,21 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         method: &str,
         has_self: bool,
     ) -> CompileResult<Spur> {
-        self.storage
+        let symbol = self
+            .storage
             .try_member_callable_symbol(struct_id, method, has_self)
             .map_err(|kind| {
                 CompileError::without_span(rue_error::interner_error_kind(
                     kind,
                     "body symbol interning failed",
                 ))
-            })
+            })?;
+        if let Some(method) = self.body_interner().get(method) {
+            self.member_symbols
+                .borrow_mut()
+                .insert(symbol, (struct_id, method));
+        }
+        Ok(symbol)
     }
     pub(crate) fn is_type_copy(&self, ty: Type) -> bool {
         ty.is_copy_in_pool(self.body_type_pool())
@@ -2313,13 +2325,21 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             // happen to use the same spelling.
             || (self.is_str_struct(found) && self.is_str_struct(expected))
     }
-    /// [`validate_body_air`] over this engine's host.
+    /// [`validate_body_air`] over this engine's host and the member symbols
+    /// it rendered while emitting the body's calls.
     pub(crate) fn validate_body_air(
         &self,
         air: Air,
+        referenced_functions: &AHashSet<Spur>,
         referenced_methods: &AHashSet<(StructId, Spur)>,
     ) -> CompileResult<crate::ValidatedAir> {
-        validate_body_air(&*self.storage, air, referenced_methods)
+        validate_body_air(
+            &*self.storage,
+            air,
+            referenced_functions,
+            referenced_methods,
+            Some(&self.member_symbols.borrow()),
+        )
     }
     pub(crate) fn function_returns_type(&self, function: &FunctionCallInfo) -> bool {
         function.returns_type
@@ -2515,7 +2535,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
                 ordinary_owner: None,
                 name: fn_name.to_owned(),
                 implicit_drop_source: None,
-                air: self.validate_body_air(air, &ref_meths)?,
+                air: self.validate_body_air(air, &ref_fns, &ref_meths)?,
                 local_atoms,
                 num_locals,
                 num_param_slots,
@@ -2666,7 +2686,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
                 name: full_name.to_owned(),
                 implicit_drop_source: is_destructor
                     .then_some(super::ImplicitDropDependencySourceEvent::Anonymous),
-                air: self.validate_body_air(air, &referenced_methods)?,
+                air: self.validate_body_air(air, &referenced_functions, &referenced_methods)?,
                 local_atoms,
                 num_locals,
                 num_param_slots,
@@ -2748,7 +2768,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
                 ordinary_owner: None,
                 name: full_name.to_owned(),
                 implicit_drop_source: None,
-                air: self.validate_body_air(air, &referenced_methods)?,
+                air: self.validate_body_air(air, &referenced_functions, &referenced_methods)?,
                 local_atoms,
                 num_locals,
                 num_param_slots,
@@ -3298,13 +3318,18 @@ impl<H: OrdinaryBodyAnalysisHost> Drop for OrdinaryBodyEngine<'_, H> {
 /// runtime or synthesized callable) are left unchecked.
 ///
 /// Signatures are resolved lazily and memoized per symbol, so a body pays
-/// only for the callees it calls: a method symbol is found by rendering
-/// referenced methods one at a time until it turns up, and each rendered
+/// only for the callees it calls. A method symbol is looked up in
+/// `member_symbols`, the symbols the emitting engine rendered; a free
+/// function only when it is one of the body's `referenced_functions`.
+/// Without an engine's symbols (a specialized body), referenced methods are
+/// rendered one at a time until the symbol turns up, and each rendered
 /// symbol is remembered for later lookups.
 pub(crate) fn validate_body_air<H: OrdinaryBodyAnalysisHost>(
     host: &H,
     air: Air,
+    referenced_functions: &AHashSet<Spur>,
     referenced_methods: &AHashSet<(StructId, Spur)>,
+    member_symbols: Option<&AHashMap<Spur, (StructId, Spur)>>,
 ) -> CompileResult<crate::ValidatedAir> {
     type Signature = Option<std::rc::Rc<crate::AirCalleeSignature>>;
     let declared = |params: ParamRangeData, receiver: Option<crate::AirCalleeParam>| -> Signature {
@@ -3345,31 +3370,46 @@ pub(crate) fn validate_body_air<H: OrdinaryBodyAnalysisHost>(
         if let Some(signature) = memo.borrow().get(&name) {
             return signature.clone();
         }
-        let signature = match host.call_function_info(name) {
-            Some(function) if function.is_generic => None,
-            Some(function) => declared(host.body_param_data(function.params), None),
-            None => {
-                let mut found = None;
-                let mut unrendered = unrendered.borrow_mut();
-                for &(struct_id, method) in unrendered.by_ref() {
-                    let Some(info) = host.call_method_info(struct_id, method) else {
-                        continue;
-                    };
-                    let method_name = host.body_interner().resolve(&method);
-                    let Ok(symbol) =
-                        host.try_member_callable_symbol(struct_id, method_name, info.has_self)
-                    else {
-                        continue;
-                    };
-                    let signature = method_signature(&info);
-                    if symbol == name {
-                        found = signature;
-                        break;
-                    }
-                    memo.borrow_mut().insert(symbol, signature);
+        // Only names this body resolved as callables are looked up, so the
+        // validator repeats lookups sema already made and records no new
+        // name-resolution dependency.
+        let signature = if let Some(&(struct_id, method)) =
+            member_symbols.and_then(|members| members.get(&name))
+        {
+            host.call_method_info(struct_id, method)
+                .and_then(|info| method_signature(&info))
+        } else if referenced_functions.contains(&name) {
+            host.call_function_info(name).and_then(|function| {
+                if function.is_generic {
+                    None
+                } else {
+                    declared(host.body_param_data(function.params), None)
                 }
-                found
+            })
+        } else if member_symbols.is_some() {
+            // The emitting engine rendered every member symbol it called.
+            None
+        } else {
+            let mut found = None;
+            let mut unrendered = unrendered.borrow_mut();
+            for &(struct_id, method) in unrendered.by_ref() {
+                let Some(info) = host.call_method_info(struct_id, method) else {
+                    continue;
+                };
+                let method_name = host.body_interner().resolve(&method);
+                let Ok(symbol) =
+                    host.try_member_callable_symbol(struct_id, method_name, info.has_self)
+                else {
+                    continue;
+                };
+                let signature = method_signature(&info);
+                if symbol == name {
+                    found = signature;
+                    break;
+                }
+                memo.borrow_mut().insert(symbol, signature);
             }
+            found
         };
         memo.borrow_mut().insert(name, signature.clone());
         signature
