@@ -8592,6 +8592,18 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 });
                 continue;
             }
+            // `[i32; 2]` bound to a `comptime T: type` parameter is the array
+            // type, not a repeat of the type value `i32` (spec 4.14:5a).
+            if param_mode == RirParamMode::Normal
+                && param_ty == Type::COMPTIME_TYPE
+                && let Some(value) = self.comptime_type_argument(air, arg.value, ctx)?
+            {
+                air_args.push(AirCallArg {
+                    value,
+                    mode: AirArgMode::Normal,
+                });
+                continue;
+            }
             let is_str_param = self.is_str_like(param_ty);
             let is_inout_str_param = self.is_inout_str_param(param_mode, param_ty);
             let is_exact_str_fixed_ref =
