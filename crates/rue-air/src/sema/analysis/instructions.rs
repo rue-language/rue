@@ -480,9 +480,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     engine.self_type_name(&(), roots)
                 };
                 let mut declared_type_subst = std::borrow::Cow::Borrowed(&*ctx.comptime_type_vars);
+                let mut self_ty = None;
                 if let Some(name) = self_name {
-                    let self_ty = self.anonymous_struct_self_type(&self_identity)?;
-                    declared_type_subst.to_mut().insert(name, self_ty);
+                    let ty = self.anonymous_struct_self_type(&self_identity)?;
+                    declared_type_subst.to_mut().insert(name, ty);
+                    self_ty = Some(ty);
                 }
 
                 // Resolve each field type and build the struct fields
@@ -525,6 +527,14 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         name: name_str,
                         ty: field_ty,
                     });
+                }
+                // Only `Self` can name the struct before its fields resolve,
+                // so only a struct that binds it can contain itself (3.0:5).
+                if let Some(self_ty) = self_ty {
+                    let fields: Vec<Type> = struct_fields.iter().map(|field| field.ty).collect();
+                    if let Some(error) = self.recursive_anonymous_struct_error(self_ty, &fields) {
+                        return Err(error.with_primary_span(inst.span));
+                    }
                 }
 
                 // Signature decoding is owned by the canonical comptime

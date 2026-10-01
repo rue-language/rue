@@ -1201,35 +1201,96 @@ impl TypeInternPoolInner {
 
     fn containment_edges(&self) -> Vec<Vec<usize>> {
         (0..self.entry_count())
-            .map(|index| match self.entry(index) {
-                TypeData::Struct(data) => data
-                    .def
-                    .fields
-                    .iter()
-                    .filter_map(|field| self.by_value_child_index(field.ty))
-                    .collect(),
-                TypeData::Enum(data) => data
-                    .def
-                    .variant_payloads
-                    .iter()
-                    .flatten()
-                    .filter_map(|&ty| self.by_value_child_index(ty))
-                    .collect(),
-                // Preserve the language's recursive-type diagnostic even for
-                // zero-length arrays: arrays are inline structural edges. The
-                // fact fold below gives a zero-length node zero ownership
-                // multiplicity, so it carries neither linearity nor drop glue.
-                TypeData::Array { element, .. } => {
-                    self.by_value_child_index(*element).into_iter().collect()
-                }
-                TypeData::ReservedStruct
-                | TypeData::DeclaredStruct(_)
-                | TypeData::DeclaredEnum(_)
-                | TypeData::PtrConst { .. }
-                | TypeData::PtrMut { .. }
-                | TypeData::Function(_) => Vec::new(),
-            })
+            .map(|index| self.containment_children(index))
             .collect()
+    }
+
+    /// The by-value children of one pool entry: the single definition of a
+    /// containment edge that both the graph-wide pass and the targeted
+    /// reachability walk below read.
+    fn containment_children(&self, index: usize) -> Vec<usize> {
+        match self.entry(index) {
+            TypeData::Struct(data) => data
+                .def
+                .fields
+                .iter()
+                .filter_map(|field| self.by_value_child_index(field.ty))
+                .collect(),
+            TypeData::Enum(data) => data
+                .def
+                .variant_payloads
+                .iter()
+                .flatten()
+                .filter_map(|&ty| self.by_value_child_index(ty))
+                .collect(),
+            // Preserve the language's recursive-type diagnostic even for
+            // zero-length arrays: arrays are inline structural edges. The
+            // fact fold below gives a zero-length node zero ownership
+            // multiplicity, so it carries neither linearity nor drop glue.
+            TypeData::Array { element, .. } => {
+                self.by_value_child_index(*element).into_iter().collect()
+            }
+            TypeData::ReservedStruct
+            | TypeData::DeclaredStruct(_)
+            | TypeData::DeclaredEnum(_)
+            | TypeData::PtrConst { .. }
+            | TypeData::PtrMut { .. }
+            | TypeData::Function(_) => Vec::new(),
+        }
+    }
+
+    /// The nominals on a by-value containment path from one of `roots` to
+    /// `target`, `target` last, or `None` when no such path exists.
+    ///
+    /// A declared shell has no edges yet, so asking this of a shell's
+    /// would-be fields before completing it answers whether completion would
+    /// close a containment cycle through it, while the graph is still
+    /// acyclic.
+    fn containment_path_to(&self, roots: &[Type], target: Type) -> Option<Vec<Type>> {
+        let target = self.by_value_child_index(target)?;
+        let mut visited = vec![false; self.entry_count()];
+        let mut path = Vec::new();
+        let mut stack = Vec::<(usize, Vec<usize>, usize)>::new();
+        for root in roots.iter().filter_map(|&ty| self.by_value_child_index(ty)) {
+            if root == target {
+                return Some(vec![self.type_for_index(target)]);
+            }
+            if std::mem::replace(&mut visited[root], true) {
+                continue;
+            }
+            path.push(root);
+            stack.push((root, self.containment_children(root), 0));
+            while let Some((_, children, next)) = stack.last_mut() {
+                let Some(&child) = children.get(*next) else {
+                    stack.pop();
+                    path.pop();
+                    continue;
+                };
+                *next += 1;
+                if child == target {
+                    path.push(child);
+                    return Some(
+                        path.into_iter()
+                            .filter(|&index| {
+                                !matches!(
+                                    self.entry(index),
+                                    TypeData::Array { .. }
+                                        | TypeData::PtrConst { .. }
+                                        | TypeData::PtrMut { .. }
+                                        | TypeData::Function(_)
+                                )
+                            })
+                            .map(|index| self.type_for_index(index))
+                            .collect(),
+                    );
+                }
+                if !std::mem::replace(&mut visited[child], true) {
+                    path.push(child);
+                    stack.push((child, self.containment_children(child), 0));
+                }
+            }
+        }
+        None
     }
 
     fn containment_cycle_path(&self, path: &[usize], repeated: usize) -> Vec<String> {
@@ -3909,6 +3970,14 @@ impl TypeInternPool {
 
     /// Finalize the canonical by-value graph after declaration fields,
     /// payloads, destructors, and explicit linear markers are known.
+    /// See [`TypeInternPoolInner::containment_path_to`].
+    pub(crate) fn containment_path_to(&self, roots: &[Type], target: Type) -> Option<Vec<Type>> {
+        self.inner
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .containment_path_to(roots, target)
+    }
+
     pub(crate) fn finalize_containment_metadata(
         &self,
     ) -> Result<TypeContainmentWork, TypeContainmentCycle> {
@@ -4854,6 +4923,37 @@ mod tests {
         assert_eq!(pool.get_struct_def(interned).unwrap().fields[0].ty, next);
         let frozen = pool.freeze();
         assert_eq!(frozen.ptr_mut_def(next_id), Type::new_struct(id));
+    }
+
+    #[test]
+    fn containment_path_to_a_declared_shell_names_the_closing_cycle() {
+        let interner = ThreadedRodeo::default();
+        let pool = TypeInternPool::new();
+        let field = |name: &str, ty| StructField {
+            name: name.to_owned(),
+            ty,
+        };
+        let (outer, _) =
+            pool.declare_struct(interner.get_or_intern("Outer"), struct_def("Outer", vec![]));
+        let outer = Type::new_struct(outer);
+        let (inner, _) = pool.register_struct(
+            interner.get_or_intern("Inner"),
+            struct_def("Inner", vec![field("x", outer)]),
+        );
+        let inner = Type::new_struct(inner);
+        // A zero-length array is still an inline edge (spec 3.0:5), and the
+        // path names only the nominals it passes through.
+        let empty = pool.try_intern_array(inner, 0).unwrap();
+        assert_eq!(
+            pool.containment_path_to(&[Type::I64, empty], outer),
+            Some(vec![inner, outer])
+        );
+        assert_eq!(pool.containment_path_to(&[outer], outer), Some(vec![outer]));
+        let pointer = Type::new_ptr_const(pool.intern_ptr_const_from_type(inner));
+        assert_eq!(pool.containment_path_to(&[pointer, Type::I64], outer), None);
+        // The walk never sees the shell's edges, so the graph stays acyclic
+        // until the caller completes it.
+        assert!(pool.finalize_containment_metadata().is_ok());
     }
 
     #[test]

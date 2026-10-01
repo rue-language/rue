@@ -1122,6 +1122,19 @@ pub trait ComptimeRejections: ComptimeDomain {
         position: &str,
         site: &ComptimeDiagnosticSite<Self::ProgramKey>,
     ) -> ComptimeHostResult<(), Self::Failure>;
+    /// Refuse an anonymous struct that contains itself by value, exactly as
+    /// a named struct that does is refused (E0483, spec 3.0:5). `self_ty` is
+    /// the type `Self` named while `fields` resolved; a field reaching it
+    /// through inline fields, enum payloads or array elements (of any length)
+    /// would give the struct no finite size, while a pointer breaks the
+    /// cycle. Checked before the struct is completed, so the type graph never
+    /// holds the cycle.
+    fn reject_recursive_anonymous_struct(
+        &self,
+        self_ty: &Self::Type,
+        fields: &[ComptimeField<Self::Name, Self::Type>],
+        site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> ComptimeHostResult<(), Self::Failure>;
     /// Report the depth overrun this host's failure type spells. The limit is
     /// not a parameter: hosts word it with
     /// [`comptime_depth_exceeded_reason`] rather than a number of their own,
@@ -5027,14 +5040,14 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                     self.self_type_name(&program, roots)
                 });
                 let mut declared_type_subst = Cow::Borrowed(&local_type_subst);
+                let mut self_ty = None;
                 if let Some(name) = self_name {
                     let identity = self_identity
                         .as_ref()
                         .expect("a `Self` name is only sought once an identity is issued");
-                    if let Some(self_ty) =
-                        host_value!(self.host.anonymous_nominal_self_type(identity))
-                    {
-                        declared_type_subst.to_mut().insert(name, self_ty);
+                    if let Some(ty) = host_value!(self.host.anonymous_nominal_self_type(identity)) {
+                        declared_type_subst.to_mut().insert(name, ty.clone());
+                        self_ty = Some(ty);
                     }
                 }
 
@@ -5076,6 +5089,15 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                     host_value!(self.host.reject_unstorable_member(
                         &field.ty,
                         "a struct field",
+                        &self.diagnostic_site(span),
+                    ));
+                }
+                // Only `Self` can name the struct before its fields resolve,
+                // so only a struct that binds it can contain itself.
+                if let Some(self_ty) = &self_ty {
+                    host_value!(self.host.reject_recursive_anonymous_struct(
+                        self_ty,
+                        &struct_fields,
                         &self.diagnostic_site(span),
                     ));
                 }
