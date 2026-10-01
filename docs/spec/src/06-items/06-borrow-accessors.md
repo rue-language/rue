@@ -120,9 +120,11 @@ even though the read syntactically precedes the exclusive access. Using the
 accessor result itself is not a new access of the root: an assignment through
 an exclusive result, passing it `inout`, or calling an `inout self` method on
 it (`v.get_mut(i).reset()`) uses the place that result's loan grants, and a
-`borrow self` method may be called on either kind of result. An `inout self`
-method on a shared result mutates through a shared loan and is rejected
-(E0259). Forming an address of a place under the root — `@raw(p)`,
+`borrow self` method may be called on either kind of result. Passing a shared
+result, or a place projected from it, as an `inout` argument
+(`set(inout v.get_ref(i))`), or calling an `inout self` method on it, mutates
+through a shared loan and is rejected (E0259) even when the root is mutable.
+Forming an address of a place under the root — `@raw(p)`,
 `@raw_mut(p)` or `@field_ptr(p)`, whatever the pointer's mutability — is a
 shared access of the root: it may coexist with shared accessor results and
 conflicts with an exclusive one in the same full expression (E0259). When the
