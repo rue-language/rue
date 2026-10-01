@@ -472,6 +472,32 @@ fn provider_body_counts_multiple_variables() {
     assert_eq!(body.function.num_locals, 2);
 }
 
+// A zero-width binding or temporary takes a slot of its own, so no two
+// declarations share a slot number and the CFG's own temporaries, numbered
+// from `num_locals`, never land on one (RUE-2453).
+#[test]
+fn provider_body_gives_zero_width_locals_their_own_slots() {
+    let mut fixture = ProviderFixture::new();
+    fixture.declare_function("main", Vec::new(), SemanticImportType::I32);
+    let body = fixture
+        .analyze(
+            "fn main() -> i32 { { let a: [i64; 0] = []; a }; let u: () = (); let x = 42; x }",
+            "main",
+        )
+        .expect("zero-width bindings analyze");
+    let air = &body.function.air;
+    let mut live_slots = (0..air.len())
+        .filter_map(|i| match air.get(AirRef::from_raw(i as u32)).data {
+            AirInstData::StorageLive { slot } => Some(slot),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    live_slots.sort_unstable();
+    live_slots.dedup();
+    assert_eq!(body.function.num_locals, 3, "slots: {live_slots:?}");
+    assert_eq!(live_slots, vec![0, 1, 2]);
+}
+
 // Migrated from `tests::test_empty_block_evaluates_to_unit`: an empty block
 // evaluates to `()` and produces a UnitConst.
 #[test]

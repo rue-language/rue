@@ -4881,3 +4881,330 @@ fn main() -> i32 {
 exit_code = 0
 expected_stdout = "1\n1\n10\n11\n11\n10\n20\n21\n21\n20\n30\n31\n30\n31\n32\n33\n"
 opt_level = 3
+
+# -----------------------------------------------------------------------------
+# Zero-width locals and temporaries have their own slot numbers (RUE-2453).
+# A zero-width region used to leave the slot watermark where it was, so the
+# next binding, a by-value parameter's drop flag, or a field drop flag shared
+# its number, and one declaration's move state or flag stood in for the
+# other's. Every destructor below runs exactly once.
+# -----------------------------------------------------------------------------
+
+[[case]]
+name = "zero_width_locals_keep_their_own_drop_state"
+spec = ["3.9:38"]
+description = "A conditionally dropped by-value parameter, binding, or moved field after a discarded zero-width temporary, and a destructor-bearing zero-width local live beside a sized one, each drop exactly once on every path; moving one never moves the other (RUE-2453)"
+source = """
+struct S { v: i64 }
+drop fn S(self) { @dbg(self.v); }
+struct Z {}
+drop fn Z(self) { @dbg(99); }
+struct P { a: S, b: S }
+
+fn param_after_zero_width_temporary(c: bool, x: S) {
+    { let a: [i64; 0] = []; a };
+    if c { @drop(x); } else { () };
+    @dbg(3);
+}   // x (7 or 8) once: in the arm, or here
+
+fn generic_param_after_zero_width_temporary(comptime T: type, c: bool, x: T) {
+    { let a: [T; 0] = []; a };
+    if c { @drop(x); } else { () };
+    @dbg(4);
+}
+
+fn destructor_bearing_zero_width_temporary(c: bool) {
+    { let z = Z {}; z };    // 99 once, when the block's value is discarded
+    let r = S { v: 1 };
+    if c { @drop(r); } else { () };
+    let z2 = Z {};
+    if c { @drop(z2); } else { () };
+    @dbg(2);
+}
+
+fn field_move_after_zero_width_temporary(c: bool) {
+    { let z: [i64; 0] = []; z };
+    let p = P { a: S { v: 5 }, b: S { v: 6 } };
+    if c { let t = p.a; @dbg(10); @drop(t); } else { () };
+    @dbg(11);
+}
+
+fn zero_width_and_sized_locals_live_together(c: bool, d: bool) {
+    let z = Z {};
+    let r = S { v: 20 };
+    if c { @drop(z); } else { () };
+    if d { @drop(r); } else { () };
+    @dbg(21);
+}
+
+fn unconditional_drop_of_the_zero_width_local(c: bool) {
+    let z = Z {};
+    let r = S { v: 30 };
+    @drop(z);
+    if c { @drop(r); } else { () };
+    @dbg(31);
+}   // 30 here when c is false: moving z does not move r
+
+fn unconditional_drop_of_the_sized_local(c: bool) {
+    let z = Z {};
+    let r = S { v: 40 };
+    @drop(r);
+    if c { @drop(z); } else { () };
+    @dbg(41);
+}   // 99 here when c is false: moving r does not move z
+
+fn main() -> i32 {
+    param_after_zero_width_temporary(true, S { v: 7 });
+    param_after_zero_width_temporary(false, S { v: 8 });
+    generic_param_after_zero_width_temporary(S, true, S { v: 12 });
+    generic_param_after_zero_width_temporary(S, false, S { v: 13 });
+    destructor_bearing_zero_width_temporary(true);
+    destructor_bearing_zero_width_temporary(false);
+    field_move_after_zero_width_temporary(true);
+    field_move_after_zero_width_temporary(false);
+    zero_width_and_sized_locals_live_together(true, false);
+    zero_width_and_sized_locals_live_together(false, true);
+    zero_width_and_sized_locals_live_together(true, true);
+    zero_width_and_sized_locals_live_together(false, false);
+    unconditional_drop_of_the_zero_width_local(true);
+    unconditional_drop_of_the_zero_width_local(false);
+    unconditional_drop_of_the_sized_local(true);
+    unconditional_drop_of_the_sized_local(false);
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "7\n3\n3\n8\n12\n4\n4\n13\n99\n1\n99\n2\n99\n2\n99\n1\n10\n5\n11\n6\n11\n5\n6\n99\n21\n20\n20\n21\n99\n99\n20\n21\n21\n20\n99\n99\n30\n31\n99\n31\n30\n40\n99\n41\n40\n41\n99\n"
+
+[[case]]
+name = "zero_width_locals_keep_their_own_drop_state_o2"
+spec = ["3.9:38"]
+description = "The zero-width-local drop cases at -O2 (RUE-2453)"
+source = """
+struct S { v: i64 }
+drop fn S(self) { @dbg(self.v); }
+struct Z {}
+drop fn Z(self) { @dbg(99); }
+struct P { a: S, b: S }
+
+fn param_after_zero_width_temporary(c: bool, x: S) {
+    { let a: [i64; 0] = []; a };
+    if c { @drop(x); } else { () };
+    @dbg(3);
+}   // x (7 or 8) once: in the arm, or here
+
+fn generic_param_after_zero_width_temporary(comptime T: type, c: bool, x: T) {
+    { let a: [T; 0] = []; a };
+    if c { @drop(x); } else { () };
+    @dbg(4);
+}
+
+fn destructor_bearing_zero_width_temporary(c: bool) {
+    { let z = Z {}; z };    // 99 once, when the block's value is discarded
+    let r = S { v: 1 };
+    if c { @drop(r); } else { () };
+    let z2 = Z {};
+    if c { @drop(z2); } else { () };
+    @dbg(2);
+}
+
+fn field_move_after_zero_width_temporary(c: bool) {
+    { let z: [i64; 0] = []; z };
+    let p = P { a: S { v: 5 }, b: S { v: 6 } };
+    if c { let t = p.a; @dbg(10); @drop(t); } else { () };
+    @dbg(11);
+}
+
+fn zero_width_and_sized_locals_live_together(c: bool, d: bool) {
+    let z = Z {};
+    let r = S { v: 20 };
+    if c { @drop(z); } else { () };
+    if d { @drop(r); } else { () };
+    @dbg(21);
+}
+
+fn unconditional_drop_of_the_zero_width_local(c: bool) {
+    let z = Z {};
+    let r = S { v: 30 };
+    @drop(z);
+    if c { @drop(r); } else { () };
+    @dbg(31);
+}   // 30 here when c is false: moving z does not move r
+
+fn unconditional_drop_of_the_sized_local(c: bool) {
+    let z = Z {};
+    let r = S { v: 40 };
+    @drop(r);
+    if c { @drop(z); } else { () };
+    @dbg(41);
+}   // 99 here when c is false: moving r does not move z
+
+fn main() -> i32 {
+    param_after_zero_width_temporary(true, S { v: 7 });
+    param_after_zero_width_temporary(false, S { v: 8 });
+    generic_param_after_zero_width_temporary(S, true, S { v: 12 });
+    generic_param_after_zero_width_temporary(S, false, S { v: 13 });
+    destructor_bearing_zero_width_temporary(true);
+    destructor_bearing_zero_width_temporary(false);
+    field_move_after_zero_width_temporary(true);
+    field_move_after_zero_width_temporary(false);
+    zero_width_and_sized_locals_live_together(true, false);
+    zero_width_and_sized_locals_live_together(false, true);
+    zero_width_and_sized_locals_live_together(true, true);
+    zero_width_and_sized_locals_live_together(false, false);
+    unconditional_drop_of_the_zero_width_local(true);
+    unconditional_drop_of_the_zero_width_local(false);
+    unconditional_drop_of_the_sized_local(true);
+    unconditional_drop_of_the_sized_local(false);
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "7\n3\n3\n8\n12\n4\n4\n13\n99\n1\n99\n2\n99\n2\n99\n1\n10\n5\n11\n6\n11\n5\n6\n99\n21\n20\n20\n21\n99\n99\n20\n21\n21\n20\n99\n99\n30\n31\n99\n31\n30\n40\n99\n41\n40\n41\n99\n"
+opt_level = 2
+
+[[case]]
+name = "zero_width_locals_keep_their_own_drop_state_o3"
+spec = ["3.9:38"]
+description = "The zero-width-local drop cases at -O3 (RUE-2453)"
+source = """
+struct S { v: i64 }
+drop fn S(self) { @dbg(self.v); }
+struct Z {}
+drop fn Z(self) { @dbg(99); }
+struct P { a: S, b: S }
+
+fn param_after_zero_width_temporary(c: bool, x: S) {
+    { let a: [i64; 0] = []; a };
+    if c { @drop(x); } else { () };
+    @dbg(3);
+}   // x (7 or 8) once: in the arm, or here
+
+fn generic_param_after_zero_width_temporary(comptime T: type, c: bool, x: T) {
+    { let a: [T; 0] = []; a };
+    if c { @drop(x); } else { () };
+    @dbg(4);
+}
+
+fn destructor_bearing_zero_width_temporary(c: bool) {
+    { let z = Z {}; z };    // 99 once, when the block's value is discarded
+    let r = S { v: 1 };
+    if c { @drop(r); } else { () };
+    let z2 = Z {};
+    if c { @drop(z2); } else { () };
+    @dbg(2);
+}
+
+fn field_move_after_zero_width_temporary(c: bool) {
+    { let z: [i64; 0] = []; z };
+    let p = P { a: S { v: 5 }, b: S { v: 6 } };
+    if c { let t = p.a; @dbg(10); @drop(t); } else { () };
+    @dbg(11);
+}
+
+fn zero_width_and_sized_locals_live_together(c: bool, d: bool) {
+    let z = Z {};
+    let r = S { v: 20 };
+    if c { @drop(z); } else { () };
+    if d { @drop(r); } else { () };
+    @dbg(21);
+}
+
+fn unconditional_drop_of_the_zero_width_local(c: bool) {
+    let z = Z {};
+    let r = S { v: 30 };
+    @drop(z);
+    if c { @drop(r); } else { () };
+    @dbg(31);
+}   // 30 here when c is false: moving z does not move r
+
+fn unconditional_drop_of_the_sized_local(c: bool) {
+    let z = Z {};
+    let r = S { v: 40 };
+    @drop(r);
+    if c { @drop(z); } else { () };
+    @dbg(41);
+}   // 99 here when c is false: moving r does not move z
+
+fn main() -> i32 {
+    param_after_zero_width_temporary(true, S { v: 7 });
+    param_after_zero_width_temporary(false, S { v: 8 });
+    generic_param_after_zero_width_temporary(S, true, S { v: 12 });
+    generic_param_after_zero_width_temporary(S, false, S { v: 13 });
+    destructor_bearing_zero_width_temporary(true);
+    destructor_bearing_zero_width_temporary(false);
+    field_move_after_zero_width_temporary(true);
+    field_move_after_zero_width_temporary(false);
+    zero_width_and_sized_locals_live_together(true, false);
+    zero_width_and_sized_locals_live_together(false, true);
+    zero_width_and_sized_locals_live_together(true, true);
+    zero_width_and_sized_locals_live_together(false, false);
+    unconditional_drop_of_the_zero_width_local(true);
+    unconditional_drop_of_the_zero_width_local(false);
+    unconditional_drop_of_the_sized_local(true);
+    unconditional_drop_of_the_sized_local(false);
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "7\n3\n3\n8\n12\n4\n4\n13\n99\n1\n99\n2\n99\n2\n99\n1\n10\n5\n11\n6\n11\n5\n6\n99\n21\n20\n20\n21\n99\n99\n20\n21\n21\n20\n99\n99\n30\n31\n99\n31\n30\n40\n99\n41\n40\n41\n99\n"
+opt_level = 3
+
+[[case]]
+name = "zero_width_locals_keep_their_own_drop_state_near_misses"
+spec = ["3.9:38"]
+description = "The same conditional drops with no zero-width temporary or a sized one, and zero-width locals with no conditional drop after them, drop each value once (RUE-2453)"
+source = """
+struct S { v: i64 }
+drop fn S(self) { @dbg(self.v); }
+struct Z {}
+drop fn Z(self) { @dbg(99); }
+struct P { a: S, b: S }
+
+fn param_without_temporary(c: bool, x: S) {
+    if c { @drop(x); } else { () };
+    @dbg(3);
+}
+
+fn sized_temporary_before_param_drop(c: bool, x: S) {
+    { let a: [i64; 1] = [0]; a };
+    if c { @drop(x); } else { () };
+    @dbg(4);
+}
+
+fn binding_without_temporary(c: bool) {
+    let r = S { v: 1 };
+    if c { @drop(r); } else { () };
+    @dbg(2);
+}
+
+fn field_move_without_temporary(c: bool) {
+    let p = P { a: S { v: 5 }, b: S { v: 6 } };
+    if c { let t = p.a; @dbg(10); @drop(t); } else { () };
+    @dbg(11);
+}
+
+fn zero_width_locals_without_a_conditional_drop() {
+    { let a: [i64; 0] = []; a };
+    let u: () = ();
+    let z = Z {};
+    let r = S { v: 20 };
+    let e: [S; 0] = [];
+    @dbg(21);
+}   // r (20), then z (99), each once
+
+fn main() -> i32 {
+    param_without_temporary(true, S { v: 7 });
+    param_without_temporary(false, S { v: 8 });
+    sized_temporary_before_param_drop(true, S { v: 12 });
+    sized_temporary_before_param_drop(false, S { v: 13 });
+    binding_without_temporary(true);
+    binding_without_temporary(false);
+    field_move_without_temporary(true);
+    field_move_without_temporary(false);
+    zero_width_locals_without_a_conditional_drop();
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "7\n3\n3\n8\n12\n4\n4\n13\n1\n2\n2\n1\n10\n5\n11\n6\n11\n5\n6\n21\n20\n99\n"
