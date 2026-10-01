@@ -464,7 +464,7 @@ class GateTests(unittest.TestCase):
         # `core:3.8:5` is the calculus's paragraph 3.8:5 (which it does not
         # declare), never the spec's `3.8:5`, which it does; a bare `5.1:1` is
         # the spec's paragraph 5.1:1, never the calculus's `core:5.1:1`; and
-        # the spec's own `§3.8:5` spelling is the spec's paragraph.
+        # a `§` before a paragraph id is the old calculus spelling, reported.
         self.cite_in_statics("core:3.8:5")
         modules, _, errors = self.collect()
         self.assertEqual(self.use_copy(modules).paragraphs, [])
@@ -481,10 +481,25 @@ class GateTests(unittest.TestCase):
         self.assertNotIn("core:", errors[0])
 
         self.cite_in_statics("§3.8:5")
-        modules, _, errors = self.collect()
-        self.assertEqual(errors, [])
-        self.assertEqual(self.use_copy(modules).paragraphs, ["3.8:5"])
-        self.assertEqual(self.use_copy(modules).calculus_paragraphs, [])
+        _, _, errors = self.collect()
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("`§3.8:5` is the old spelling of a paragraph id", errors[0])
+
+    def test_old_spelling_is_reported_everywhere(self) -> None:
+        # Before RUE-2524 a calculus id was written `§7:3`: undotted ones match no
+        # spec pattern, and dotted ones can collide with a real spec id, so both
+        # are reported, in Markdown as in Lean.
+        (self.root / "03-metatheory.md").write_text("See §7:3 and §5.1:1.\n")
+        _, _, errors = self.collect()
+        self.assertEqual(len(errors), 2, errors)
+        self.assertTrue(all("old spelling of a paragraph id" in e for e in errors), errors)
+        self.assertIn("`core:7:3`", errors[0])
+
+    def test_dangling_range_is_an_error(self) -> None:
+        (self.root / "03-metatheory.md").write_text("By core:5.1:1– alone.\n")
+        _, _, errors = self.collect()
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("a range names its last paragraph", errors[0])
 
     def test_section_without_a_paragraph_number_is_an_error(self) -> None:
         # `core:7` is not an id; a section alone is cited `§7`. `core:` followed
