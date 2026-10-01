@@ -577,6 +577,39 @@ expected_stdout = """
 exit_code = 0
 
 [[case]]
+name = "integer_literals_are_accepted_in_float_array_and_projected_accessor_places"
+spec = ["3.12:11", "6.6:15"]
+description = "Integer literals in a `[f64; 2]` accessor place, an element of it, and a float field projected from an accessor result denote floats, as at the fields they yield (RUE-2560)"
+source = """
+struct Q { f: f64 }
+struct P {
+    a: [f64; 2],
+    q: Q,
+
+    fn ar(inout self) -> inout [f64; 2] { yield self.a; }
+    fn qr(inout self) -> inout Q { yield self.q; }
+}
+fn main() -> i32 {
+    let mut p = P { a: [0.5, 0.5], q: Q { f: 0.5 } };
+    p.ar() = [1, 2];
+    @dbg(p.a[0]);
+    @dbg(p.a[1]);
+    p.ar()[1] = 7;
+    @dbg(p.a[1]);
+    p.qr().f = 3;
+    @dbg(p.q.f);
+    0
+}
+"""
+expected_stdout = """
+1.0
+2.0
+7.0
+3.0
+"""
+exit_code = 0
+
+[[case]]
 name = "float_literal_is_never_given_an_integer_type"
 spec = ["3.12:11"]
 description = "The converse coercion does not exist, even for an integral value"
