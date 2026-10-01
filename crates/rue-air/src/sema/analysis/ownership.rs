@@ -1638,12 +1638,14 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 (false, receiver_trace.is_borrow_param)
             };
             if root_mutable {
-                return Err(self.inout_self_accessor_through_shared_accessor_result_error(
-                    root,
-                    receiver_span,
-                    span,
-                    ctx,
-                ));
+                return Err(
+                    self.inout_self_accessor_through_shared_accessor_result_error(
+                        root,
+                        receiver_span,
+                        span,
+                        ctx,
+                    ),
+                );
             }
             let root_name = self.body_interner().resolve(&root).to_string();
             return Err(CompileError::new(
