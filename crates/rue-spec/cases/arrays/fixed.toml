@@ -3219,7 +3219,8 @@ fn main() -> i32 {
     0
 }
 """
-runtime_error = "x"
+exit_code = 101
+stderr_contains = "panic: x"
 
 [[case]]
 name = "diverging_array_mixed_literal_assignment_local"
