@@ -3033,6 +3033,26 @@ pub(in crate::revisioned_query_database) fn resolve_parsed_semantic_signature(
         )
     };
 
+    // A method or associated function is never specialized per comptime
+    // argument (RUE-2092), so a signature type that depends on one of its
+    // comptime value parameters has no call site that would resolve it. That
+    // is reported here, at the declaration, rather than as a runtime `type`
+    // value at body analysis.
+    let is_member = provider.dependency_source.owner().is_some();
+    let member_deferred_type =
+        |position: &str, anchor: crate::semantic_query_nucleus::SignatureTypeAnchor| {
+            ResolveSemanticSignatureError::failure(
+                crate::semantic_query_nucleus::SemanticNucleusFailure::DiagnosticAtSignatureType {
+                    kind: rue_error::ErrorKind::ComptimeEvaluationFailed {
+                        reason: format!(
+                            "a {position} type that depends on a comptime value parameter is not supported on a method or associated function (RUE-2092)"
+                        ),
+                    },
+                    anchor,
+                },
+            )
+        };
+
     // A `fn` type is legal only as the type of a by-value runtime parameter
     // (ADR-0096, 6.1:47). The structural constructors already refuse it as an
     // element, pointee, or slice element, so the positions left to the
@@ -3047,6 +3067,8 @@ pub(in crate::revisioned_query_database) fn resolve_parsed_semantic_signature(
         }
     };
 
+    // Whether the type `resolve` last returned was deferred to the call site.
+    let last_deferred = std::cell::Cell::new(false);
     let resolve = |provider: &mut SemanticNucleusTypeProvider<'_>,
                    syntax: &rue_rir::RirTypeSyntaxArena<Arc<str>>,
                    root: rue_rir::RirTypeSyntaxRef,
@@ -3062,6 +3084,7 @@ pub(in crate::revisioned_query_database) fn resolve_parsed_semantic_signature(
         // under its own value substitution (RUE-2435). The rest of the type
         // was still resolved, so an error anywhere in it is reported here.
         let deferred = std::mem::take(&mut provider.deferred_value_read);
+        last_deferred.set(deferred && resolved.is_ok());
         match resolved {
             Ok(_) if deferred => Ok(crate::durable_semantics::DurableType::ComptimeType),
             resolved => resolved,
@@ -3219,7 +3242,7 @@ pub(in crate::revisioned_query_database) fn resolve_parsed_semantic_signature(
                 .enumerate()
                 .map(|(ordinal, (parameter, bounds))| {
                     let ty = if bounds.is_empty() {
-                        resolve(
+                        let ty = resolve(
                             provider,
                             syntax,
                             parameter.ty,
@@ -3231,7 +3254,16 @@ pub(in crate::revisioned_query_database) fn resolve_parsed_semantic_signature(
                                     ordinal as u32,
                                 ),
                             )
-                        })?
+                        })?;
+                        if last_deferred.get() && is_member {
+                            return Err(member_deferred_type(
+                                "parameter",
+                                crate::semantic_query_nucleus::SignatureTypeAnchor::Parameter(
+                                    ordinal as u32,
+                                ),
+                            ));
+                        }
+                        ty
                     } else {
                         // A bounded parameter is a type parameter (spec
                         // 6.8:16); only the call site reads its bound.
@@ -3295,6 +3327,12 @@ pub(in crate::revisioned_query_database) fn resolve_parsed_semantic_signature(
             .map_err(|error| {
                 error.at_signature_type(crate::semantic_query_nucleus::SignatureTypeAnchor::Result)
             })?;
+            if last_deferred.get() && is_member {
+                return Err(member_deferred_type(
+                    "return",
+                    crate::semantic_query_nucleus::SignatureTypeAnchor::Result,
+                ));
+            }
             if contains_slice(&result) {
                 return Err(diagnostic(rue_error::ErrorKind::SliceReturnNotAllowed));
             }
