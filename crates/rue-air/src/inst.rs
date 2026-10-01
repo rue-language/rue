@@ -279,30 +279,18 @@ impl AirValidationContext<'_> {
     /// - A `!` value never arrives, so it coerces to every slot (spec 3.4:3-4).
     /// - An `<error>` value or slot has already been reported.
     /// - An array whose element type is `!` is the type sema gives an array
-    ///   literal whose element expression diverges (`[return 42; 0]`, which
-    ///   sema binds to a `[i32; 0]` slot). Its element operand never produces
-    ///   a value, so building the array never completes. It is accepted only
-    ///   into an array slot of the same length (at every nesting level),
-    ///   the one shape sema emits.
+    ///   literal whose elements all diverge (`[return 42; 0]`,
+    ///   `[return 5; 3]`). Its element operand never produces a value, so
+    ///   building the array never completes. It is accepted only into an
+    ///   array slot of the same length (at every nesting level), the rule
+    ///   sema applies at every slot ([`Type::diverging_array_fits`]).
     fn slot_accepts(&self, slot: Type, value: Type) -> bool {
-        value.can_coerce_to(&slot) || slot.is_error() || self.diverging_array_fits(slot, value)
-    }
-
-    /// Whether `value` is an array whose element type is `!` (directly or
-    /// through nested arrays) and `slot` is an array of the same length at
-    /// every level down to that `!`.
-    fn diverging_array_fits(&self, slot: Type, value: Type) -> bool {
-        let array_def = |id| match self {
-            Self::Semantic(pool) | Self::SemanticWithSymbols(pool, _) => pool.array_def(id),
-            Self::Canonical(pool) | Self::CanonicalWithSymbols(pool, _) => pool.array_def(id),
-        };
-        let (Some(value_id), Some(slot_id)) = (value.as_array(), slot.as_array()) else {
-            return false;
-        };
-        let ((value_element, value_len), (slot_element, slot_len)) =
-            (array_def(value_id), array_def(slot_id));
-        value_len == slot_len
-            && (value_element.is_never() || self.diverging_array_fits(slot_element, value_element))
+        value.can_coerce_to(&slot)
+            || slot.is_error()
+            || value.diverging_array_fits(slot, &|id| match self {
+                Self::Semantic(pool) | Self::SemanticWithSymbols(pool, _) => pool.array_def(id),
+                Self::Canonical(pool) | Self::CanonicalWithSymbols(pool, _) => pool.array_def(id),
+            })
     }
 
     /// Whether `ty` is a string an `inout str` parameter may view in place:

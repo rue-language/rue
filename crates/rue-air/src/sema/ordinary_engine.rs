@@ -2445,6 +2445,11 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         found.is_never()
             || found.is_error()
             || self.types_equivalent(found, expected)
+            // An array literal whose elements all diverge is `[!; N]`, which
+            // the never coercion admits at any array of the same length
+            // (spec 3.4:3-4, RUE-2538). This is the one rule for every
+            // slot; AIR validation admits the same shape.
+            || found.diverging_array_fits(expected, &|id| self.body_type_pool().array_def(id))
             // The synthetic `str` view is registered in each body-facing type
             // pool. Preserve its canonical builtin identity across those pool
             // projections without accepting source-defined structs that merely
