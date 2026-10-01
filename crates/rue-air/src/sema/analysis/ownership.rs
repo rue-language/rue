@@ -7641,8 +7641,25 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         }
         self.reject_accessor_shared_loan_conflict(root, "by a shared read", span, ctx)?;
         // A projected chain re-enters here at each level (`a.p.c`, `a.p`,
-        // `a`); one record per root and full expression is enough, since the
-        // ledger is only ever searched for the root.
+        // `a`); `record_completed_shared_use` keeps one record per root.
+        self.record_completed_shared_use(root, span, ctx)
+    }
+
+    /// Remember a shared use of `root` -- a borrowed place, or a `borrow`
+    /// argument or `borrow self` receiver once its call has completed -- for
+    /// the rest of the full expression, so a later exclusive accessor result
+    /// on the same root is rejected exactly as after a value-context read
+    /// (spec 6.6:10, E0259). Those by-ref uses are analyzed under
+    /// `byref_arg_root`, which keeps the value path from recording them.
+    ///
+    /// One record per root and full expression is enough, since the ledger
+    /// is only ever searched for the root.
+    pub(crate) fn record_completed_shared_use(
+        &self,
+        root: Spur,
+        span: Span,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<()> {
         let key = Self::ledger_root(root, span, ctx)?;
         if !ctx
             .ownership
@@ -8278,20 +8295,21 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 }
             }
         }
-        // The exclusive use is complete once this call's argument list has
+        // A by-ref use is complete once this call's argument list has
         // finished and all same-call accessor checks have succeeded. Retain
         // it for the enclosing full expression so a later accessor result
-        // still observes the conflict.
+        // still observes the conflict: an `inout` argument as an exclusive
+        // use, a `borrow` argument as a shared one (spec 6.6:10).
         if result.continues && call_may_continue {
             for arg in args {
-                if arg.is_inout()
-                    && let Some(root) = self.extract_root_variable(arg.value)
-                {
-                    self.record_completed_exclusive_use(
-                        root,
-                        self.body_rir_ref().get(arg.value).span,
-                        ctx,
-                    )?;
+                let Some(root) = self.extract_root_variable(arg.value) else {
+                    continue;
+                };
+                let arg_span = self.body_rir_ref().get(arg.value).span;
+                if arg.is_inout() {
+                    self.record_completed_exclusive_use(root, arg_span, ctx)?;
+                } else if arg.is_borrow() {
+                    self.record_completed_shared_use(root, arg_span, ctx)?;
                 }
             }
         }
