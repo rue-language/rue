@@ -4816,6 +4816,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             self.materialize_borrow_argument(air, base_result.air_ref, base_result.ty, span, ctx)?;
         let call_name = self.method_symbol_handle(struct_id, "byte_at_borrowed", false)?;
         let receiver_mode = AirArgMode::Borrow;
+        // `byte_at_borrowed` declares its index `u64` (RUE-2536).
+        let index_ty = air.get(index_result.air_ref).ty;
+        let index = self.string_index_as_u64(air, index_result.air_ref, index_ty, span)?;
         let call_ref = air.add_call(
             None,
             call_name,
@@ -4825,7 +4828,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     mode: receiver_mode,
                 },
                 AirCallArg {
-                    value: index_result.air_ref,
+                    value: index,
                     mode: AirArgMode::Normal,
                 },
             ],
@@ -4839,6 +4842,61 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             Type::U8,
             base_result.continues && index_result.continues,
         ))
+    }
+
+    /// Convert a `StrBuf` byte index of any integer type to the `u64` that
+    /// `StrBuf::byte_at_borrowed` declares (RUE-2536).
+    ///
+    /// The conversion keeps the out-of-bounds trap exactly where it was: in
+    /// `byte_at_borrowed`'s own `index >= len` check, with its own message.
+    /// An unsigned index widens with a zero-extending `IntCast`, which cannot
+    /// trap. A signed index sign-extends to `i64` (an `IntCast` that cannot
+    /// trap either) and is then reinterpreted as `u64` with a same-width
+    /// `BitCast`, so a negative index arrives as a value of at least 2^63,
+    /// which no buffer length reaches. A checked `IntCast` straight to `u64`
+    /// would trap a negative index as a failed cast instead, and an explicit
+    /// lower-bound check (the slice path's shape) would run before the
+    /// receiver operand is evaluated. A `!` or `<error>` index is passed
+    /// through unchanged: it never produces a value.
+    fn string_index_as_u64(
+        &mut self,
+        air: &mut Air,
+        index: AirRef,
+        index_ty: Type,
+        span: Span,
+    ) -> CompileResult<AirRef> {
+        if index_ty == Type::U64 || !index_ty.is_integer() {
+            return Ok(index);
+        }
+        if !index_ty.is_signed() {
+            return Ok(air.add_inst(AirInst {
+                data: AirInstData::IntCast {
+                    value: index,
+                    from_ty: index_ty,
+                },
+                ty: Type::U64,
+                span,
+            }));
+        }
+        let wide = if index_ty == Type::I64 {
+            index
+        } else {
+            air.add_inst(AirInst {
+                data: AirInstData::IntCast {
+                    value: index,
+                    from_ty: index_ty,
+                },
+                ty: Type::I64,
+                span,
+            })
+        };
+        Ok(air.add_intrinsic(
+            crate::IntrinsicOperation::BitCast,
+            self.known_symbols().intrinsic(IntrinsicName::BitCast),
+            &[wide],
+            Type::U64,
+            span,
+        )?)
     }
 
     /// Analyze a `str` byte index read: `s[i] -> u8` (ADR-0043 Phase 3,
