@@ -362,3 +362,70 @@ fn main() -> i32 {
 """
 compile_fail = true
 error_contains = ["E0206", "expected bool, found {integer}", "test.rue:2:22"]
+
+# An integer literal joined with a float literal is rejected at the
+# constraint that joins them, in its direction, rather than when the float
+# literal later meets the defaulted `i32` (RUE-2573). Assigning a float
+# literal to an integer-literal local finds the float.
+[[case]]
+name = "float_literal_assigned_to_an_integer_literal_local"
+source = """
+fn main() -> i32 {
+    let mut x = 3;
+    x = 1.5;
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0206", "expected integer type, found comptime_float", "test.rue:3:9"]
+
+[[case]]
+name = "integer_literal_arm_sets_the_expectation_of_a_float_arm"
+source = """
+fn main() -> i32 {
+    let c = true;
+    let y = if c { 5 } else { 1.5 };
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0206", "expected integer type, found comptime_float", "test.rue:3:31"]
+
+[[case]]
+name = "float_literal_arm_sets_the_expectation_of_an_integer_arm"
+source = """
+fn main() -> i32 {
+    let c = true;
+    let y = if c { 1.5 } else { 5 };
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0206", "expected comptime_float, found {integer}", "test.rue:3:33"]
+
+[[case]]
+name = "integer_pattern_against_a_float_literal_scrutinee"
+source = """
+fn main() -> i32 {
+    let a = 1.5;
+    match a { 1 => 0, _ => 1 }
+}
+"""
+compile_fail = true
+error_contains = ["E0206", "expected comptime_float, found {integer}", "test.rue:3:15"]
+
+# A join a float context resolves stays accepted (3.12:11); only the
+# unresolved one is reported.
+[[case]]
+name = "only_the_unresolved_integer_float_join_is_reported"
+source = """
+fn main() -> i32 {
+    let c = true;
+    let y: f64 = if c { 5 } else { 1.5 };
+    let mut x = 3;
+    x = 1.5;
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0206", "expected integer type, found comptime_float", "test.rue:5:9"]
