@@ -340,10 +340,15 @@ pub(crate) fn substitute_durable_generics(
             element: Arc::new(substitute_durable_generics(element, type_arguments)),
             len: *len,
         },
-        T::Slice { element, name } => T::Slice {
-            element: Arc::new(substitute_durable_generics(element, type_arguments)),
-            name: name.clone(),
-        },
+        T::Slice { element, .. } => {
+            // A substituted element is a different element type, so the view
+            // is renamed with it (RUE-2571).
+            let element = substitute_durable_generics(element, type_arguments);
+            T::Slice {
+                name: crate::semantic_identity::durable_slice_view_name(&element),
+                element: Arc::new(element),
+            }
+        }
         T::PtrConst(pointee) => T::PtrConst(Arc::new(substitute_durable_generics(
             pointee,
             type_arguments,

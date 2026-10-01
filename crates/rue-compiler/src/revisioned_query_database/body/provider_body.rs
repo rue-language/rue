@@ -2127,7 +2127,7 @@ impl rue_air::SemanticTypeSyntaxProvider<ModuleId, ModuleId, StableDefinitionKey
     fn slice_type(
         &mut self,
         _scope: &ModuleId,
-        syntax: &str,
+        _syntax: &str,
         element: crate::durable_semantics::DurableType,
     ) -> rue_air::SemanticProviderResult<
         crate::durable_semantics::DurableType,
@@ -2135,9 +2135,10 @@ impl rue_air::SemanticTypeSyntaxProvider<ModuleId, ModuleId, StableDefinitionKey
         crate::semantic_query_nucleus::SemanticNucleusFailure,
     > {
         reject_function_child(&element, "a slice element")?;
+        // Named by the element type, not by `syntax` (RUE-2571).
         Ok(crate::durable_semantics::DurableType::Slice {
+            name: crate::semantic_identity::durable_slice_view_name(&element),
             element: Arc::new(element),
-            name: Arc::from(syntax),
         })
     }
     fn builtin_type_call(
