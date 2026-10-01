@@ -6304,3 +6304,88 @@ fn main() -> i32 {
 }
 """
 exit_code = 5
+
+[[case]]
+name = "value_param_ctor_sibling_unknown_type_in_result_rejected"
+spec = ["4.14:23"]
+description = "An unknown type beside a value-dependent argument, `-> Pair(Buf(N), Nope)`, is rejected with the uncalled declaration (RUE-2435)"
+source = """
+fn Buf(comptime N: i32) -> type { struct { data: [i32; N] } }
+fn Pair(comptime A: type, comptime B: type) -> type { struct { a: A, b: B } }
+fn bad(comptime N: i32) -> Pair(Buf(N), Nope) { @compile_error("unreachable") }
+
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0204", "unknown type 'Nope'"]
+
+[[case]]
+name = "value_param_array_sibling_unknown_type_in_result_rejected"
+spec = ["4.14:23", "7.1:34"]
+description = "An unknown type beside a value-dependent array, `-> Pair([i32; N], Nope)`, is rejected with the uncalled declaration (RUE-2435)"
+source = """
+fn Pair(comptime A: type, comptime B: type) -> type { struct { a: A, b: B } }
+fn bad(comptime N: i32) -> Pair([i32; N], Nope) { @compile_error("unreachable") }
+
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0204", "unknown type 'Nope'"]
+
+[[case]]
+name = "value_param_ctor_sibling_unknown_type_in_parameter_rejected"
+spec = ["4.14:23"]
+description = "An unknown type beside a value-dependent argument in a parameter type, `x: Pair(Buf(N), Nope)`, is rejected with the uncalled declaration (RUE-2435)"
+source = """
+fn Buf(comptime N: i32) -> type { struct { data: [i32; N] } }
+fn Pair(comptime A: type, comptime B: type) -> type { struct { a: A, b: B } }
+fn bad(comptime N: i32, x: Pair(Buf(N), Nope)) -> i32 { 0 }
+
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0204", "unknown type 'Nope'"]
+
+[[case]]
+name = "value_param_array_sibling_unknown_type_in_parameter_rejected"
+spec = ["4.14:23", "7.1:34"]
+description = "An unknown type beside a value-dependent array in a parameter type, `x: Pair([i32; N], Nope)`, is rejected with the uncalled declaration (RUE-2435)"
+source = """
+fn Pair(comptime A: type, comptime B: type) -> type { struct { a: A, b: B } }
+fn bad(comptime N: i32, x: Pair([i32; N], Nope)) -> i32 { 0 }
+
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0204", "unknown type 'Nope'"]
+
+[[case]]
+name = "value_param_ctor_slice_result_rejected_at_call"
+spec = ["4.14:23"]
+description = "A value-dependent return type that is a slice, `-> Wrap([i64], N)`, is E0487 at the call that makes it concrete (RUE-2435)"
+source = """
+fn Wrap(comptime T: type, comptime N: i32) -> type { T }
+fn mk(comptime N: i32) -> Wrap([i64], N) {
+    let a: [i64; 3] = [1, 2, 3];
+    a
+}
+
+fn main() -> i32 {
+    let v = mk(3);
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0487"]
+
+[[case]]
+name = "value_param_ctor_slice_result_uncalled_accepted"
+spec = ["4.14:23"]
+description = "An uncalled function whose value-dependent return type would be a slice compiles: the type is known only at a call (RUE-2435)"
+source = """
+fn Wrap(comptime T: type, comptime N: i32) -> type { T }
+fn f(comptime N: i32, borrow s: [i32]) -> Wrap([i32], N) { s }
+
+fn main() -> i32 { 0 }
+"""
+exit_code = 0
