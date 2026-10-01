@@ -2028,7 +2028,8 @@ path-granular disjointness.
 <a id="core:6:1"></a>**[core:6:1]** This section gives the small-step operational semantics for **every** core form
 of §2. It has two executable presentations that must agree with it: the
 mechanization's definitional interpreter (`lean/`, ADR-0097), whose semantic
-equivalence with the reduction relation here is a lemma `03-metatheory.md` owes, and
+equivalence with the reduction relation here `03-metatheory.md` proves in both
+directions (`RueCore.eval_big_to_small`, `RueCore.eval_small_to_big`), and
 `crates/rue-oracle` — the executable reference
 interpreter that runs a core program and produces its exit code, its `@dbg`
 output, its panics, and its drop trace, and is differential-tested against the
@@ -3475,8 +3476,9 @@ neither claims anything about an uninhabited-parameter function such as
   defined panics. Types are preserved under reduction. The mechanization states
   this over its interpreter instead (ADR-0097): a well-typed program evaluates
   to a well-typed value, a defined panic, or exhausted fuel, never to a named
-  stuck state; the two readings meet in the semantic-equivalence lemma
-  `03-metatheory.md` owes. For `match`, progress rests
+  stuck state; the two readings meet in the semantic equivalence
+  `03-metatheory.md` proves in both directions (`RueCore.eval_big_to_small`,
+  `RueCore.eval_small_to_big`). For `match`, progress rests
   on **exhaustiveness** (§5.5): a well-typed enum value carries one of the
   variants `K1..Kn`, and the arms cover exactly those, so some arm always
   matches — a `match` is never stuck on an uncovered tag.
