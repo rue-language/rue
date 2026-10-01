@@ -1311,10 +1311,10 @@ def Spec.Nonvacuous.open_activation_stmt : Prop :=
         {
           structs :=
             [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed], dtor := true,
-                cls := Qual.affine },
+                qual := Qual.affine },
               { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                dtor := false, cls := Qual.linear }],
-          enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] } →
+                dtor := false, qual := Qual.linear }],
+          enums := [{ variants := [[Ty.struct 0], []], qual := Qual.affine }] } →
       ∀ (e : Expr),
         e = (Expr.drop (Place.var 0)).seq (Expr.intLit IntWidth.w64 Sign.signed 1) →
           ∀ (P : Program),
@@ -1396,10 +1396,10 @@ def Spec.Nonvacuous.dtor_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine },
+                        dtor := true, qual := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.linear }],
-                  enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                        dtor := false, qual := Qual.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], qual := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
           checkProgram P = true ∧
@@ -1454,10 +1454,10 @@ def Spec.Nonvacuous.linear_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine },
+                        dtor := true, qual := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.linear }],
-                  enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                        dtor := false, qual := Qual.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], qual := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
           checkProgram P = true ∧
@@ -1506,10 +1506,10 @@ def Spec.Nonvacuous.loop_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine },
+                        dtor := true, qual := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.linear }],
-                  enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                        dtor := false, qual := Qual.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], qual := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
           checkProgram P = true ∧
@@ -1553,10 +1553,10 @@ def Spec.Nonvacuous.array_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine },
+                        dtor := true, qual := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.linear }],
-                  enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                        dtor := false, qual := Qual.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], qual := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
           checkProgram P = true ∧
@@ -1600,10 +1600,10 @@ def Spec.Nonvacuous.enum_match_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine },
+                        dtor := true, qual := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.linear }],
-                  enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                        dtor := false, qual := Qual.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], qual := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
           checkProgram P = true ∧
@@ -1646,10 +1646,10 @@ def Spec.Nonvacuous.early_return_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine },
+                        dtor := true, qual := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.linear }],
-                  enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                        dtor := false, qual := Qual.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], qual := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
           checkProgram P = true ∧
@@ -1691,10 +1691,10 @@ def Spec.Nonvacuous.panic_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine },
+                        dtor := true, qual := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.linear }],
-                  enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                        dtor := false, qual := Qual.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], qual := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
           checkProgram P = true ∧
@@ -1739,10 +1739,10 @@ def Spec.Nonvacuous.float_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine },
+                        dtor := true, qual := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.linear }],
-                  enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                        dtor := false, qual := Qual.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], qual := Qual.affine }] },
               fns := [{ params := [], ret := Ty.float FloatWidth.w64, body := B }] } →
           checkProgram P = true ∧
             ProgramTyped P ∧
@@ -1805,10 +1805,10 @@ def Spec.Nonvacuous.diverges_drop_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine },
+                        dtor := true, qual := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.linear }],
-                  enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                        dtor := false, qual := Qual.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], qual := Qual.affine }] },
               fns := [{ params := [], ret := Ty.unit, body := B }] } →
           checkProgram P = true ∧
             ProgramTyped P ∧
@@ -1845,10 +1845,10 @@ def Spec.Nonvacuous.whole_drops_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine },
+                        dtor := true, qual := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.linear }],
-                  enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                        dtor := false, qual := Qual.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], qual := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
           checkProgram P = true ∧
@@ -1885,10 +1885,10 @@ def Spec.Nonvacuous.whole_result_stmt : Prop :=
             {
               structs :=
                 [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                    dtor := true, cls := Qual.affine },
+                    dtor := true, qual := Qual.affine },
                   { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                    dtor := false, cls := Qual.linear }],
-              enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                    dtor := false, qual := Qual.linear }],
+              enums := [{ variants := [[Ty.struct 0], []], qual := Qual.affine }] },
           fns :=
             [{ params := [], ret := Ty.struct 0,
                 body := Expr.mkStruct 0 [Expr.intLit IntWidth.w64 Sign.signed 7] }] } →
@@ -1929,10 +1929,10 @@ def Spec.Nonvacuous.refused_stuck_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine },
+                        dtor := true, qual := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.linear }],
-                  enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                        dtor := false, qual := Qual.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], qual := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
           checkProgram P = false ∧
@@ -1987,10 +1987,10 @@ def Spec.Sharp.refused_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine },
+                        dtor := true, qual := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.linear }],
-                  enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                        dtor := false, qual := Qual.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], qual := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
           checkProgram P = false ∧
@@ -2069,10 +2069,10 @@ def Spec.Sharp.stuck_step_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine },
+                        dtor := true, qual := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.linear }],
-                  enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                        dtor := false, qual := Qual.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], qual := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
           ¬ProgramTyped P ∧
@@ -2139,10 +2139,10 @@ def Spec.Sharp.typed_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine },
+                        dtor := true, qual := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.linear }],
-                  enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                        dtor := false, qual := Qual.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], qual := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
           ∀ (e : Expr),
@@ -2208,10 +2208,10 @@ def Spec.Sharp.activation_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine },
+                        dtor := true, qual := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.linear }],
-                  enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                        dtor := false, qual := Qual.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], qual := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
           ∀ (e : Expr),
@@ -2268,10 +2268,10 @@ def Spec.Sharp.no_entry_stmt : Prop :=
             {
               structs :=
                 [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                    dtor := true, cls := Qual.affine },
+                    dtor := true, qual := Qual.affine },
                   { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                    dtor := false, cls := Qual.linear }],
-              enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                    dtor := false, qual := Qual.linear }],
+              enums := [{ variants := [[Ty.struct 0], []], qual := Qual.affine }] },
           fns := [] } →
       WfProgram P ∧
         P.fns[0]? = none ∧
@@ -2304,10 +2304,10 @@ def Spec.Sharp.entry_param_stmt : Prop :=
             {
               structs :=
                 [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                    dtor := true, cls := Qual.affine },
+                    dtor := true, qual := Qual.affine },
                   { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                    dtor := false, cls := Qual.linear }],
-              enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                    dtor := false, qual := Qual.linear }],
+              enums := [{ variants := [[Ty.struct 0], []], qual := Qual.affine }] },
           fns :=
             [{ params := [{ ty := Ty.int IntWidth.w64 Sign.signed, mu := false }],
                 ret := Ty.int IntWidth.w64 Sign.signed,
@@ -2356,9 +2356,9 @@ def Spec.Sharp.copy_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.copy, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.copy },
+                        dtor := false, qual := Qual.copy },
                       { attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine }],
+                        dtor := true, qual := Qual.affine }],
                   enums := [] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
@@ -2393,10 +2393,10 @@ def Spec.Sharp.leak_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine },
+                        dtor := true, qual := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.linear }],
-                  enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                        dtor := false, qual := Qual.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], qual := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
           checkProgram P = false ∧
@@ -2435,10 +2435,10 @@ def Spec.Sharp.overwrite_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine },
+                        dtor := true, qual := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.linear }],
-                  enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                        dtor := false, qual := Qual.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], qual := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
           checkProgram P = false ∧
@@ -2469,10 +2469,10 @@ def Spec.Sharp.discard_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine },
+                        dtor := true, qual := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.linear }],
-                  enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                        dtor := false, qual := Qual.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], qual := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
           checkProgram P = false ∧
@@ -2508,10 +2508,10 @@ def Spec.Sharp.discard_loop_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine },
+                        dtor := true, qual := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.linear }],
-                  enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                        dtor := false, qual := Qual.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], qual := Qual.affine }] },
               fns := [{ params := [], ret := Ty.unit, body := B }] } →
           checkProgram P = false ∧
             ¬ProgramTyped P ∧
@@ -2559,10 +2559,10 @@ def Spec.Sharp.fuel_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine },
+                        dtor := true, qual := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.linear }],
-                  enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                        dtor := false, qual := Qual.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], qual := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
           ProgramTyped P ∧
@@ -2606,10 +2606,10 @@ def Spec.Sharp.fuel_panic_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine },
+                        dtor := true, qual := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.linear }],
-                  enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                        dtor := false, qual := Qual.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], qual := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
           ProgramTyped P ∧
@@ -2647,10 +2647,10 @@ def Spec.Sharp.not_fits_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine },
+                        dtor := true, qual := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.linear }],
-                  enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                        dtor := false, qual := Qual.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], qual := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
           ProgramTyped P ∧
@@ -2694,13 +2694,13 @@ def Spec.Sharp.double_drop_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.copy, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.copy },
+                        dtor := true, qual := Qual.copy },
                       { attr := Attr.none, fields := [Ty.struct 0], dtor := false,
-                        cls := Qual.affine },
+                        qual := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.struct 0, Ty.struct 3],
-                        dtor := false, cls := Qual.linear },
+                        dtor := false, qual := Qual.linear },
                       { attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine }],
+                        dtor := true, qual := Qual.affine }],
                   enums := [] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
@@ -2746,13 +2746,13 @@ def Spec.Sharp.bare_dtor_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.copy, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.copy },
+                        dtor := true, qual := Qual.copy },
                       { attr := Attr.none, fields := [Ty.struct 0], dtor := false,
-                        cls := Qual.affine },
+                        qual := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.struct 0, Ty.struct 3],
-                        dtor := false, cls := Qual.linear },
+                        dtor := false, qual := Qual.linear },
                       { attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine }],
+                        dtor := true, qual := Qual.affine }],
                   enums := [] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
@@ -2785,10 +2785,10 @@ def Spec.Sharp.pending_program_stmt : Prop :=
             {
               structs :=
                 [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                    dtor := true, cls := Qual.affine },
+                    dtor := true, qual := Qual.affine },
                   { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                    dtor := false, cls := Qual.linear }],
-              enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                    dtor := false, qual := Qual.linear }],
+              enums := [{ variants := [[Ty.struct 0], []], qual := Qual.affine }] },
           fns :=
             [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                 body := Expr.intLit IntWidth.w64 Sign.signed 0 },
@@ -2885,10 +2885,10 @@ def Spec.Sharp.pending_expr_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine },
+                        dtor := true, qual := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.linear }],
-                  enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                        dtor := false, qual := Qual.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], qual := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
           ∀ (e : Expr),
@@ -2990,10 +2990,10 @@ def Spec.Sharp.store_cc_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine },
+                        dtor := true, qual := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.linear }],
-                  enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                        dtor := false, qual := Qual.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], qual := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
           ∀ (e : Expr),
@@ -3097,10 +3097,10 @@ def Spec.Sharp.no_lead_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine },
+                        dtor := true, qual := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.linear }],
-                  enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                        dtor := false, qual := Qual.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], qual := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
           ProgramTyped P ∧
@@ -3155,10 +3155,10 @@ def Spec.Sharp.no_eval_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine },
+                        dtor := true, qual := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.linear }],
-                  enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                        dtor := false, qual := Qual.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], qual := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
           ProgramTyped P ∧
@@ -3207,10 +3207,10 @@ def Spec.Sharp.unreached_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine },
+                        dtor := true, qual := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.linear }],
-                  enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                        dtor := false, qual := Qual.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], qual := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
           ProgramTyped P ∧
@@ -3262,10 +3262,10 @@ def Spec.Sharp.unreached_panic_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine },
+                        dtor := true, qual := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.linear }],
-                  enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                        dtor := false, qual := Qual.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], qual := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
           ProgramTyped P ∧
@@ -3315,10 +3315,10 @@ def Spec.Sharp.unordered_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine },
+                        dtor := true, qual := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.linear }],
-                  enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                        dtor := false, qual := Qual.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], qual := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
           ProgramTyped P ∧
@@ -3375,10 +3375,10 @@ def Spec.Sharp.not_a_step_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine },
+                        dtor := true, qual := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.linear }],
-                  enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                        dtor := false, qual := Qual.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], qual := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
           ProgramTyped P ∧
@@ -3426,10 +3426,10 @@ def Spec.Sharp.init_steps_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine },
+                        dtor := true, qual := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.linear }],
-                  enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                        dtor := false, qual := Qual.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], qual := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
           ProgramTyped P ∧
@@ -3475,10 +3475,10 @@ def Spec.Sharp.unreachable_stuck_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine },
+                        dtor := true, qual := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.linear }],
-                  enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                        dtor := false, qual := Qual.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], qual := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
           ProgramTyped P ∧
@@ -3535,10 +3535,10 @@ def Spec.Sharp.tombstoned_cell_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine },
+                        dtor := true, qual := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.linear }],
-                  enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                        dtor := false, qual := Qual.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], qual := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
           ProgramTyped P ∧
@@ -3580,10 +3580,10 @@ def Spec.Sharp.unreached_double_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine },
+                        dtor := true, qual := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.linear }],
-                  enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                        dtor := false, qual := Qual.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], qual := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
           ProgramTyped P ∧
@@ -3633,10 +3633,10 @@ def Spec.Sharp.uncut_drop_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine },
+                        dtor := true, qual := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.linear }],
-                  enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                        dtor := false, qual := Qual.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], qual := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
           ProgramTyped P ∧
@@ -3761,10 +3761,10 @@ def Spec.Sharp.ill_typed_halt_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine },
+                        dtor := true, qual := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.linear }],
-                  enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                        dtor := false, qual := Qual.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], qual := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
           ProgramTyped P ∧
@@ -3801,10 +3801,10 @@ def Spec.Sharp.out_of_range_halt_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine },
+                        dtor := true, qual := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.linear }],
-                  enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                        dtor := false, qual := Qual.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], qual := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
           ProgramTyped P ∧
@@ -3855,10 +3855,10 @@ def Spec.Sharp.float_halt_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine },
+                        dtor := true, qual := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.linear }],
-                  enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                        dtor := false, qual := Qual.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], qual := Qual.affine }] },
               fns := [{ params := [], ret := Ty.float FloatWidth.w64, body := B }] } →
           ProgramTyped P ∧
             (∃ H tr,
@@ -3931,9 +3931,9 @@ def Spec.Sharp.copy_leak_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.copy, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.copy },
+                        dtor := false, qual := Qual.copy },
                       { attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine }],
+                        dtor := true, qual := Qual.affine }],
                   enums := [] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
@@ -3976,10 +3976,10 @@ def Spec.Sharp.pending_leak_stmt : Prop :=
             {
               structs :=
                 [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                    dtor := true, cls := Qual.affine },
+                    dtor := true, qual := Qual.affine },
                   { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                    dtor := false, cls := Qual.linear }],
-              enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                    dtor := false, qual := Qual.linear }],
+              enums := [{ variants := [[Ty.struct 0], []], qual := Qual.affine }] },
           fns :=
             [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                 body :=
@@ -4033,10 +4033,10 @@ def Spec.Sharp.unreached_held_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine },
+                        dtor := true, qual := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.linear }],
-                  enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                        dtor := false, qual := Qual.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], qual := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
           ProgramTyped P ∧
@@ -4085,10 +4085,10 @@ def Spec.Sharp.unheld_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine },
+                        dtor := true, qual := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.linear }],
-                  enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                        dtor := false, qual := Qual.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], qual := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
           ProgramTyped P ∧
@@ -4127,10 +4127,10 @@ def Spec.Sharp.off_run_stmt : Prop :=
                 {
                   structs :=
                     [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine },
+                        dtor := true, qual := Qual.affine },
                       { attr := Attr.linear, fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.linear }],
-                  enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                        dtor := false, qual := Qual.linear }],
+                  enums := [{ variants := [[Ty.struct 0], []], qual := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed, body := B }] } →
           ProgramTyped P ∧
