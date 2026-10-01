@@ -6738,6 +6738,40 @@ mod tests {
         }
     }
 
+    /// RUE-2554: `a == [return 5; 0]` compares an array with a diverging
+    /// array literal's `[!; 0]`, in either operand position; an array of
+    /// another shape, or a non-array, still disagrees.
+    #[test]
+    fn validation_admits_a_diverging_array_operand_beside_its_own_shape() {
+        let fixture = slot_fixture();
+        let compare = |lhs: Type, rhs: Type| {
+            let mut air = Air::new(Type::UNIT);
+            let a = opaque_value(&mut air, lhs);
+            let b = opaque_value(&mut air, rhs);
+            air.push_inst(AirInst {
+                data: AirInstData::Eq(a, b),
+                ty: Type::BOOL,
+                span: NOWHERE,
+            });
+            fixture.validate(air, None)
+        };
+        assert!(compare(fixture.empty_i32_array, fixture.diverging_array).is_ok());
+        assert!(compare(fixture.diverging_array, fixture.empty_i32_array).is_ok());
+        for other in [fixture.one_i32_array, Type::I64] {
+            for (lhs, rhs) in [
+                (other, fixture.diverging_array),
+                (fixture.diverging_array, other),
+            ] {
+                let error = compare(lhs, rhs).unwrap_err();
+                assert!(
+                    error.reason.contains("have mismatched types"),
+                    "unexpected reason: {}",
+                    error.reason
+                );
+            }
+        }
+    }
+
     #[test]
     fn validation_rejects_a_return_value_of_another_type() {
         let fixture = slot_fixture();
