@@ -278,26 +278,53 @@ impl AirValidationContext<'_> {
     ///
     /// - A `!` value never arrives, so it coerces to every slot (spec 3.4:3-4).
     /// - An `<error>` value or slot has already been reported.
-    /// - An array whose element type is `!` (at any depth) is the type sema
-    ///   gives an array literal whose element expression diverges
-    ///   (`[return 42; 0]`). Its element operand never produces a value, so
-    ///   building the array never completes and, like `!` itself, it reaches
-    ///   no slot.
+    /// - An array whose element type is `!` is the type sema gives an array
+    ///   literal whose element expression diverges (`[return 42; 0]`, which
+    ///   sema binds to a `[i32; 0]` slot). Its element operand never produces
+    ///   a value, so building the array never completes. It is accepted only
+    ///   into an array slot of the same length (at every nesting level),
+    ///   the one shape sema emits.
     fn slot_accepts(&self, slot: Type, value: Type) -> bool {
-        value.can_coerce_to(&slot) || slot.is_error() || self.is_diverging_array(value)
+        value.can_coerce_to(&slot) || slot.is_error() || self.diverging_array_fits(slot, value)
     }
 
-    /// Whether `ty` is an array whose element type is `!`, directly or through
-    /// nested arrays.
-    fn is_diverging_array(&self, ty: Type) -> bool {
-        let mut current = ty;
-        while let Some(id) = current.as_array() {
-            current = match self {
-                Self::Semantic(pool) | Self::SemanticWithSymbols(pool, _) => pool.array_def(id).0,
-                Self::Canonical(pool) | Self::CanonicalWithSymbols(pool, _) => pool.array_def(id).0,
-            };
-        }
-        current != ty && current.is_never()
+    /// Whether `value` is an array whose element type is `!` (directly or
+    /// through nested arrays) and `slot` is an array of the same length at
+    /// every level down to that `!`.
+    fn diverging_array_fits(&self, slot: Type, value: Type) -> bool {
+        let array_def = |id| match self {
+            Self::Semantic(pool) | Self::SemanticWithSymbols(pool, _) => pool.array_def(id),
+            Self::Canonical(pool) | Self::CanonicalWithSymbols(pool, _) => pool.array_def(id),
+        };
+        let (Some(value_id), Some(slot_id)) = (value.as_array(), slot.as_array()) else {
+            return false;
+        };
+        let ((value_element, value_len), (slot_element, slot_len)) =
+            (array_def(value_id), array_def(slot_id));
+        value_len == slot_len
+            && (value_element.is_never() || self.diverging_array_fits(slot_element, value_element))
+    }
+
+    /// Whether `ty` is a string an `inout str` parameter may view in place:
+    /// the `str` view, a fixed-capacity `Str(N)`, or the standard `StrBuf`
+    /// (sema's `validate_inout_str_operand` admits exactly these).
+    fn is_inout_str_source(&self, ty: Type) -> bool {
+        let Some(id) = ty.as_struct() else {
+            return false;
+        };
+        let (kind, is_strbuf) = match self {
+            Self::Semantic(pool) | Self::SemanticWithSymbols(pool, _) => {
+                (pool.text_view_kind(id), pool.is_strbuf(id))
+            }
+            Self::Canonical(pool) | Self::CanonicalWithSymbols(pool, _) => {
+                (pool.text_view_kind(id), pool.is_strbuf(id))
+            }
+        };
+        is_strbuf
+            || matches!(
+                kind,
+                Some(crate::types::TextViewKind::Str | crate::types::TextViewKind::StrFixed(_))
+            )
     }
 
     /// Whether `ty` is the builtin `str` view.
@@ -1846,12 +1873,22 @@ pub struct AirCalleeParam {
     pub mode: AirArgMode,
 }
 
-/// Resolves a direct call's symbol to its callee's declared parameters, in
-/// argument order (a method's receiver first). `None` means the validator
-/// cannot name the callee's signature, and the call's arguments are not
-/// checked: a generic callee, whose declared types still mention its type
-/// parameters, or a synthesized or runtime callable with no source signature.
-pub type AirCalleeResolver<'a> = &'a dyn Fn(Spur) -> Option<Vec<AirCalleeParam>>;
+/// A direct callee's declared parameters, in AIR argument order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AirCalleeSignature {
+    /// Whether the first parameter is a method's `self` receiver.
+    pub has_receiver: bool,
+    /// Every parameter, the receiver first when there is one.
+    pub params: Vec<AirCalleeParam>,
+}
+
+/// Resolves a direct call's symbol to its callee's declared signature. `None`
+/// means the validator cannot name the callee's signature, and the call's
+/// arguments are not checked: a generic callee, whose declared types still
+/// mention its type parameters, or a synthesized or runtime callable with no
+/// source signature. The signature is shared so that a resolver can memoize
+/// it across the calls of a body.
+pub type AirCalleeResolver<'a> = &'a dyn Fn(Spur) -> Option<std::rc::Rc<AirCalleeSignature>>;
 
 /// One operand of an AIR instruction, as [`Air::try_for_each_operand`]
 /// reports it.
@@ -2194,23 +2231,28 @@ impl Air {
                 };
             }
         }
-        // The declared types of every local and parameter slot a store may
-        // write: a local's come from its `StorageLive` markers, a parameter's
+        // The declared type of every local and parameter slot a store may
+        // write: a local's comes from its `StorageLive` marker, a parameter's
         // from the body's `Param` reads and the base types of places rooted at
-        // it. A local slot index names a frame position, not one binding: a
-        // zero-width local (a `()`, an empty array, a module or `type` value)
-        // occupies no slot, so it shares its index with the next local. A
-        // store must therefore match one of the bindings declared at its
-        // index. A slot no marker names (a temporary typed by its own
+        // it. Every local binding, zero-width ones included, has its own slot
+        // (RUE-2453), so a second marker for one slot at another type is a
+        // producer bug. A slot no marker names (a temporary typed by its own
         // `Alloc`) has no declaration to check against.
-        let mut local_slot_types: ahash::AHashMap<u32, Vec<Type>> = ahash::AHashMap::new();
+        let mut local_slot_types: ahash::AHashMap<u32, Type> = ahash::AHashMap::new();
         let mut param_slot_types: ahash::AHashMap<u32, Type> = ahash::AHashMap::new();
-        for inst in &self.instructions {
+        for (index, inst) in self.instructions.iter().enumerate() {
             match inst.data {
                 AirInstData::StorageLive { slot } => {
-                    let declared = local_slot_types.entry(slot).or_default();
-                    if !declared.contains(&inst.ty) {
-                        declared.push(inst.ty);
+                    let declared = *local_slot_types.entry(slot).or_insert(inst.ty);
+                    if declared != inst.ty {
+                        return Err(fail(
+                            Some(index),
+                            format!(
+                                "local slot {slot} is declared {} after it was declared {}",
+                                context.type_name(inst.ty),
+                                context.type_name(declared)
+                            ),
+                        ));
                     }
                 }
                 AirInstData::Param { index } => {
@@ -2390,22 +2432,27 @@ impl Air {
                     ))
                 }
             };
-            let slot_agrees =
-                |slot_ty: Type, value: AirRef, what: &str| -> Result<(), AirValidationError> {
-                    let value_ty = operand_ty(value);
-                    if context.slot_accepts(slot_ty, value_ty) {
-                        Ok(())
-                    } else {
-                        Err(fail(
-                            Some(index),
-                            format!(
-                                "{what} {value} has type {}, but its slot has type {}",
-                                context.type_name(value_ty),
-                                context.type_name(slot_ty)
-                            ),
-                        ))
-                    }
-                };
+            // `what` names the position only when the check fails, so a
+            // passing operand formats nothing.
+            let slot_agrees = |slot_ty: Type,
+                               value: AirRef,
+                               what: &dyn Fn() -> String|
+             -> Result<(), AirValidationError> {
+                let value_ty = operand_ty(value);
+                if context.slot_accepts(slot_ty, value_ty) {
+                    Ok(())
+                } else {
+                    Err(fail(
+                        Some(index),
+                        format!(
+                            "{} {value} has type {}, but its slot has type {}",
+                            what(),
+                            context.type_name(value_ty),
+                            context.type_name(slot_ty)
+                        ),
+                    ))
+                }
+            };
             let result_is_bool = || -> Result<(), AirValidationError> {
                 if agree(inst.ty, Type::BOOL) {
                     Ok(())
@@ -2467,7 +2514,7 @@ impl Air {
                 // the declared type of the slot it flows into (RUE-2452).
                 AirInstData::PlaceWrite { place, value } => {
                     let place_ty = check_place(*place)?;
-                    slot_agrees(place_ty, *value, "place store")?;
+                    slot_agrees(place_ty, *value, &|| "place store".into())?;
                 }
                 AirInstData::Store {
                     slot,
@@ -2477,43 +2524,40 @@ impl Air {
                     slot,
                     init: operand,
                 } => {
-                    if let Some(declared) = local_slot_types.get(slot) {
-                        let value_ty = operand_ty(*operand);
-                        if !declared
-                            .iter()
-                            .any(|&slot_ty| context.slot_accepts(slot_ty, value_ty))
-                        {
-                            let what = if matches!(inst.data, AirInstData::Alloc { .. }) {
-                                "initializer"
-                            } else {
-                                "store"
-                            };
-                            let declared = declared
-                                .iter()
-                                .map(|&ty| context.type_name(ty))
-                                .collect::<Vec<_>>()
-                                .join(" or ");
-                            return Err(fail(
-                                Some(index),
-                                format!(
-                                    "{what} {operand} of local slot {slot} has type {}, but the slot has type {declared}",
-                                    context.type_name(value_ty)
-                                ),
-                            ));
-                        }
+                    if let Some(&slot_ty) = local_slot_types.get(slot) {
+                        let what = if matches!(inst.data, AirInstData::Alloc { .. }) {
+                            "initializer of"
+                        } else {
+                            "store to"
+                        };
+                        slot_agrees(slot_ty, *operand, &|| format!("{what} local slot {slot}"))?;
                     }
                 }
                 AirInstData::ParamStore { param_slot, value } => {
                     if let Some(&slot_ty) = param_slot_types.get(param_slot) {
-                        slot_agrees(
-                            slot_ty,
-                            *value,
-                            &format!("store to parameter slot {param_slot}"),
-                        )?;
+                        slot_agrees(slot_ty, *value, &|| {
+                            format!("store to parameter slot {param_slot}")
+                        })?;
                     }
                 }
                 AirInstData::Ret(Some(value)) => {
-                    slot_agrees(self.return_type, *value, "return value")?;
+                    slot_agrees(self.return_type, *value, &|| "return value".into())?;
+                }
+                // A valueless return yields `()`, so the function must return
+                // `()` (or never return at all).
+                AirInstData::Ret(None) => {
+                    if !Type::UNIT.can_coerce_to(&self.return_type)
+                        && !self.return_type.is_never()
+                        && !self.return_type.is_error()
+                    {
+                        return Err(fail(
+                            Some(index),
+                            format!(
+                                "a return without a value leaves a function returning {}",
+                                context.type_name(self.return_type)
+                            ),
+                        ));
+                    }
                 }
                 AirInstData::Call {
                     runtime: None,
@@ -2521,7 +2565,8 @@ impl Air {
                     args,
                 }
                 | AirInstData::AccessorCall { name, args } => {
-                    if let Some(params) = callees.and_then(|resolve| resolve(*name)) {
+                    if let Some(signature) = callees.and_then(|resolve| resolve(*name)) {
+                        let params = &signature.params;
                         let args = self
                             .try_get_call_args(args)
                             .map_err(|e| fail(Some(index), e.to_string()))?;
@@ -2536,23 +2581,42 @@ impl Air {
                                 ),
                             ));
                         }
-                        for (position, (arg, param)) in args.zip(params).enumerate() {
+                        // A method's receiver is named as such; the other
+                        // arguments are numbered from 1 as the source writes
+                        // them.
+                        let describe = |position: usize| {
+                            let callee = context.symbol_name(*name);
+                            match (signature.has_receiver, position) {
+                                (true, 0) => format!("the receiver of the call to `{callee}`"),
+                                (true, n) => format!("argument {n} of the call to `{callee}`"),
+                                (false, n) => {
+                                    format!("argument {} of the call to `{callee}`", n + 1)
+                                }
+                            }
+                        };
+                        for (position, (arg, param)) in args.zip(params.iter()).enumerate() {
                             // An `inout str` parameter views its caller's
                             // `StrBuf`, `Str(N)` or `str` storage in place, so
-                            // the operand keeps its source's own type; sema's
-                            // `validate_inout_str_operand` is that position's
-                            // authority (RUE-386).
+                            // the operand keeps its source's own type (RUE-386);
+                            // sema's `validate_inout_str_operand` decides which
+                            // source is legal. Here it must at least be one of
+                            // those strings.
                             if param.mode == AirArgMode::Inout && context.is_str_view(param.ty) {
+                                let value_ty = operand_ty(arg.value);
+                                if !(value_ty.coerces_into(|ty| context.is_inout_str_source(*ty))) {
+                                    return Err(fail(
+                                        Some(index),
+                                        format!(
+                                            "{} {} has type {}, but an `inout str` parameter views a `str`, `Str(N)` or `StrBuf`",
+                                            describe(position),
+                                            arg.value,
+                                            context.type_name(value_ty)
+                                        ),
+                                    ));
+                                }
                                 continue;
                             }
-                            slot_agrees(
-                                param.ty,
-                                arg.value,
-                                &format!(
-                                    "argument {position} of the call to `{}`",
-                                    context.symbol_name(*name)
-                                ),
-                            )?;
+                            slot_agrees(param.ty, arg.value, &|| describe(position))?;
                         }
                     }
                 }
@@ -6243,20 +6307,25 @@ mod tests {
     }
 
     /// Two instances of one generic nominal, `Box(i32)` and `Box(i64)`: the
-    /// RUE-2438 pair whose layouts disagree (RUE-2452).
+    /// RUE-2438 pair whose layouts disagree (RUE-2452). Also the builtin
+    /// `str` view and a `StrBuf` for the `inout str` position, and arrays for
+    /// the diverging-array escape.
     struct SlotFixture {
         pool: FrozenTypeInternPool,
         interner: ThreadedRodeo,
         box_i32: Type,
         box_i64: Type,
+        str_view: Type,
+        strbuf: Type,
         diverging_array: Type,
         empty_i32_array: Type,
+        one_i32_array: Type,
     }
 
     fn slot_fixture() -> SlotFixture {
         let interner = ThreadedRodeo::new();
         let pool = TypeInternPool::new();
-        let make_box = |name: &str, ty: Type| crate::StructDef {
+        let make_struct = |name: &str, ty: Type, is_builtin: bool| crate::StructDef {
             name: name.into(),
             fields: vec![crate::StructField {
                 name: "v".into(),
@@ -6266,27 +6335,35 @@ mod tests {
             is_linear: false,
             declared_linear: false,
             destructor: None,
-            is_builtin: false,
+            is_builtin,
             is_pub: false,
             file_id: rue_span::FileId::DEFAULT,
         };
-        let (box_i32, _) = pool.register_struct(
-            interner.get_or_intern("Box(i32)"),
-            make_box("Box(i32)", Type::I32),
-        );
-        let (box_i64, _) = pool.register_struct(
-            interner.get_or_intern("Box(i64)"),
-            make_box("Box(i64)", Type::I64),
-        );
+        let register = |name: &str, ty: Type, is_builtin: bool| {
+            pool.register_struct(
+                interner.get_or_intern(name),
+                make_struct(name, ty, is_builtin),
+            )
+            .0
+        };
+        let box_i32 = register("Box(i32)", Type::I32, false);
+        let box_i64 = register("Box(i64)", Type::I64, false);
+        let str_view = register("str", Type::U64, true);
+        let strbuf = register("StrBuf", Type::U64, false);
+        pool.set_struct_lang_item(strbuf, crate::LangItem::StrBuf);
         let diverging_array = Type::new_array(pool.intern_array_from_type(Type::NEVER, 0));
         let empty_i32_array = Type::new_array(pool.intern_array_from_type(Type::I32, 0));
+        let one_i32_array = Type::new_array(pool.intern_array_from_type(Type::I32, 1));
         SlotFixture {
             pool: pool.freeze(),
             interner,
             box_i32: Type::new_struct(box_i32),
             box_i64: Type::new_struct(box_i64),
+            str_view: Type::new_struct(str_view),
+            strbuf: Type::new_struct(strbuf),
             diverging_array,
             empty_i32_array,
+            one_i32_array,
         }
     }
 
@@ -6313,33 +6390,38 @@ mod tests {
             )
         }
 
-        /// `take(%0)`, where `take` declares one by-value `Box(i32)`
-        /// parameter and `%0` has type `argument`.
-        fn call_take(&self, argument: Type) -> Result<ValidatedAir, AirValidationError> {
+        /// `take(%0)`, where `take` declares one parameter of type `param`
+        /// passed by `mode`, and `%0` has type `argument`. With
+        /// `has_receiver`, that parameter is a method's receiver.
+        fn call_one(
+            &self,
+            param: Type,
+            mode: AirArgMode,
+            has_receiver: bool,
+            argument: Type,
+        ) -> Result<ValidatedAir, AirValidationError> {
             let take = self.interner.get_or_intern("take");
             let mut air = Air::new(Type::UNIT);
             let value = opaque_value(&mut air, argument);
             air.add_call(
                 None,
                 take,
-                &[AirCallArg {
-                    value,
-                    mode: AirArgMode::Normal,
-                }],
+                &[AirCallArg { value, mode }],
                 Type::UNIT,
                 NOWHERE,
             )
             .unwrap();
-            let box_i32 = self.box_i32;
-            let resolve = move |name: Spur| {
-                (name == take).then(|| {
-                    vec![AirCalleeParam {
-                        ty: box_i32,
-                        mode: AirArgMode::Normal,
-                    }]
-                })
-            };
+            let signature = std::rc::Rc::new(AirCalleeSignature {
+                has_receiver,
+                params: vec![AirCalleeParam { ty: param, mode }],
+            });
+            let resolve = move |name: Spur| (name == take).then(|| signature.clone());
             self.validate(air, Some(&resolve))
+        }
+
+        /// `take(%0)` into one by-value `Box(i32)` parameter.
+        fn call_take(&self, argument: Type) -> Result<ValidatedAir, AirValidationError> {
+            self.call_one(self.box_i32, AirArgMode::Normal, false, argument)
         }
     }
 
@@ -6350,7 +6432,18 @@ mod tests {
         assert_eq!(error.instruction, Some(1));
         assert!(
             error.reason.contains(
-                "argument 0 of the call to `take` %0 has type Box(i64), but its slot has type Box(i32)"
+                "argument 1 of the call to `take` %0 has type Box(i64), but its slot has type Box(i32)"
+            ),
+            "unexpected reason: {}",
+            error.reason
+        );
+        // A receiver is named as such.
+        let error = fixture
+            .call_one(fixture.box_i32, AirArgMode::Borrow, true, fixture.box_i64)
+            .unwrap_err();
+        assert!(
+            error.reason.contains(
+                "the receiver of the call to `take` %0 has type Box(i64), but its slot has type Box(i32)"
             ),
             "unexpected reason: {}",
             error.reason
@@ -6363,18 +6456,44 @@ mod tests {
     }
 
     #[test]
+    fn validation_admits_only_strings_into_an_inout_str_parameter() {
+        let fixture = slot_fixture();
+        let inout_str =
+            |argument: Type| fixture.call_one(fixture.str_view, AirArgMode::Inout, false, argument);
+        // The viewed buffer keeps its own type: a `StrBuf` or a `str`.
+        assert!(inout_str(fixture.strbuf).is_ok());
+        assert!(inout_str(fixture.str_view).is_ok());
+        assert!(inout_str(Type::NEVER).is_ok());
+        let error = inout_str(fixture.box_i32).unwrap_err();
+        assert!(
+            error.reason.contains(
+                "argument 1 of the call to `take` %0 has type Box(i32), but an `inout str` parameter views a `str`, `Str(N)` or `StrBuf`"
+            ),
+            "unexpected reason: {}",
+            error.reason
+        );
+        // A by-value `str` parameter gets no such latitude.
+        assert!(
+            fixture
+                .call_one(fixture.str_view, AirArgMode::Normal, false, fixture.strbuf)
+                .is_err()
+        );
+    }
+
+    #[test]
     fn validation_rejects_a_call_with_the_wrong_argument_count() {
         let fixture = slot_fixture();
         let take = fixture.interner.get_or_intern("take");
         let mut air = Air::new(Type::UNIT);
         air.add_call(None, take, &[], Type::UNIT, NOWHERE).unwrap();
-        let box_i32 = fixture.box_i32;
-        let resolve = move |_: Spur| {
-            Some(vec![AirCalleeParam {
-                ty: box_i32,
+        let signature = std::rc::Rc::new(AirCalleeSignature {
+            has_receiver: false,
+            params: vec![AirCalleeParam {
+                ty: fixture.box_i32,
                 mode: AirArgMode::Normal,
-            }])
-        };
+            }],
+        });
+        let resolve = move |_: Spur| Some(signature.clone());
         let error = fixture.validate(air, Some(&resolve)).unwrap_err();
         assert!(
             error
@@ -6445,7 +6564,7 @@ mod tests {
         assert_eq!(error.instruction, Some(2));
         assert!(
             error.reason.contains(
-                "initializer %0 of local slot 0 has type Box(i64), but the slot has type Box(i32)"
+                "initializer of local slot 0 %0 has type Box(i64), but its slot has type Box(i32)"
             ),
             "unexpected reason: {}",
             error.reason
@@ -6462,7 +6581,7 @@ mod tests {
         let error = fixture.validate(air, None).unwrap_err();
         assert!(
             error.reason.contains(
-                "store %3 of local slot 0 has type Box(i64), but the slot has type Box(i32)"
+                "store to local slot 0 %3 has type Box(i64), but its slot has type Box(i32)"
             ),
             "unexpected reason: {}",
             error.reason
@@ -6522,6 +6641,37 @@ mod tests {
     }
 
     #[test]
+    fn validation_rejects_a_local_slot_declared_at_two_types() {
+        // Every binding has its own slot (RUE-2453), zero-width ones
+        // included, so one slot index never carries two declarations.
+        let fixture = slot_fixture();
+        let mut air = local_init(Type::UNIT, Type::UNIT);
+        let value = opaque_value(&mut air, fixture.box_i32);
+        air.push_inst(AirInst {
+            data: AirInstData::StorageLive { slot: 0 },
+            ty: fixture.box_i32,
+            span: NOWHERE,
+        });
+        air.push_inst(AirInst {
+            data: AirInstData::Alloc {
+                slot: 0,
+                init: value,
+            },
+            ty: Type::UNIT,
+            span: NOWHERE,
+        });
+        let error = fixture.validate(air, None).unwrap_err();
+        assert_eq!(error.instruction, Some(4));
+        assert!(
+            error
+                .reason
+                .contains("local slot 0 is declared Box(i32) after it was declared ()"),
+            "unexpected reason: {}",
+            error.reason
+        );
+    }
+
+    #[test]
     fn validation_accepts_every_legitimate_store_shape() {
         let fixture = slot_fixture();
         // The declared aggregate.
@@ -6545,40 +6695,47 @@ mod tests {
                 )
                 .is_ok()
         );
-        // A zero-width local shares its slot index with the next local, so
-        // the index names both bindings.
-        let mut air = local_init(Type::UNIT, Type::UNIT);
-        let value = opaque_value(&mut air, fixture.box_i32);
+        // A marker repeated at the same type declares nothing new.
+        let mut air = local_init(fixture.box_i32, fixture.box_i32);
         air.push_inst(AirInst {
             data: AirInstData::StorageLive { slot: 0 },
             ty: fixture.box_i32,
-            span: NOWHERE,
-        });
-        air.push_inst(AirInst {
-            data: AirInstData::Alloc {
-                slot: 0,
-                init: value,
-            },
-            ty: Type::UNIT,
             span: NOWHERE,
         });
         assert!(fixture.validate(air, None).is_ok());
     }
 
     #[test]
+    fn validation_admits_a_diverging_array_only_into_its_own_shape() {
+        let fixture = slot_fixture();
+        for slot in [Type::I64, fixture.one_i32_array, fixture.box_i32] {
+            let error = fixture
+                .validate(local_init(slot, fixture.diverging_array), None)
+                .unwrap_err();
+            assert!(
+                error
+                    .reason
+                    .contains("initializer of local slot 0 %0 has type [!; 0]"),
+                "unexpected reason: {}",
+                error.reason
+            );
+        }
+    }
+
+    #[test]
     fn validation_rejects_a_return_value_of_another_type() {
         let fixture = slot_fixture();
-        let returning = |result: Type, value_ty: Type| {
+        let returning = |result: Type, value_ty: Option<Type>| {
             let mut air = Air::new(result);
-            let value = opaque_value(&mut air, value_ty);
+            let value = value_ty.map(|ty| opaque_value(&mut air, ty));
             air.push_inst(AirInst {
-                data: AirInstData::Ret(Some(value)),
+                data: AirInstData::Ret(value),
                 ty: Type::NEVER,
                 span: NOWHERE,
             });
             fixture.validate(air, None)
         };
-        let error = returning(fixture.box_i32, fixture.box_i64).unwrap_err();
+        let error = returning(fixture.box_i32, Some(fixture.box_i64)).unwrap_err();
         assert_eq!(error.instruction, Some(1));
         assert!(
             error
@@ -6587,7 +6744,19 @@ mod tests {
             "unexpected reason: {}",
             error.reason
         );
-        assert!(returning(fixture.box_i32, fixture.box_i32).is_ok());
-        assert!(returning(fixture.box_i32, Type::NEVER).is_ok());
+        assert!(returning(fixture.box_i32, Some(fixture.box_i32)).is_ok());
+        assert!(returning(fixture.box_i32, Some(Type::NEVER)).is_ok());
+
+        // A valueless return belongs to a `()` (or `!`) function only.
+        let error = returning(fixture.box_i32, None).unwrap_err();
+        assert!(
+            error
+                .reason
+                .contains("a return without a value leaves a function returning Box(i32)"),
+            "unexpected reason: {}",
+            error.reason
+        );
+        assert!(returning(Type::UNIT, None).is_ok());
+        assert!(returning(Type::NEVER, None).is_ok());
     }
 }
