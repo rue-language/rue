@@ -1648,16 +1648,31 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 );
             }
             let root_name = self.body_interner().resolve(&root).to_string();
-            return Err(CompileError::new(
-                if root_borrow_param {
+            if root_borrow_param {
+                return Err(CompileError::new(
                     ErrorKind::MutateBorrowedValue {
                         variable: root_name,
-                    }
-                } else {
-                    ErrorKind::AssignToImmutable(root_name)
+                    },
+                    span,
+                ));
+            }
+            // Anything but a bare variable is a place under the root.
+            let projected = !matches!(
+                self.body_rir_ref().get(receiver).data,
+                InstData::VarRef { .. }
+            );
+            let help = format!(
+                "`inout self` needs a mutable receiver; make the binding mutable: \
+                 `let mut {root_name} = ...`"
+            );
+            return Err(CompileError::new(
+                ErrorKind::InoutSelfOfImmutable {
+                    variable: root_name,
+                    projected,
                 },
                 span,
-            ));
+            )
+            .with_help(help));
         }
         // Analyze guard operands before installing the result loan. Under the
         // accessor-call evaluation rule, no accessor result exists when the

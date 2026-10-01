@@ -3501,6 +3501,15 @@ pub enum ErrorKind {
         if *projected { "a place under " } else { "" }
     )]
     InoutArgOfImmutable { variable: String, projected: bool },
+    /// The receiver of an `inout self` method or accessor whose root is an
+    /// immutable binding (spec 6.1:43): the same requirement as an `inout`
+    /// argument, worded for the receiver (RUE-2558). `projected` is set when
+    /// the receiver is a place under the binding rather than the binding.
+    #[error(
+        "cannot use {}immutable variable '{variable}' as an `inout self` receiver",
+        if *projected { "a place under " } else { "" }
+    )]
+    InoutSelfOfImmutable { variable: String, projected: bool },
     #[error("unknown type '{0}'")]
     UnknownType(String),
     /// An array length `[T; N]` where `N` is not a usable compile-time
@@ -4494,7 +4503,9 @@ impl ErrorKind {
             ErrorKind::InvalidMainSignature { .. } => ErrorCode::INVALID_MAIN_SIGNATURE,
             ErrorKind::UndefinedVariable(_) => ErrorCode::UNDEFINED_VARIABLE,
             ErrorKind::UndefinedFunction(_) => ErrorCode::UNDEFINED_FUNCTION,
-            ErrorKind::AssignToImmutable(_) | ErrorKind::InoutArgOfImmutable { .. } => {
+            ErrorKind::AssignToImmutable(_)
+            | ErrorKind::InoutArgOfImmutable { .. }
+            | ErrorKind::InoutSelfOfImmutable { .. } => {
                 ErrorCode::ASSIGN_TO_IMMUTABLE
             }
             ErrorKind::UnknownType(_) => ErrorCode::UNKNOWN_TYPE,
