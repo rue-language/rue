@@ -494,14 +494,23 @@ impl Unifier {
     /// final inference pass alone: a staged pass that sees part of a body (or
     /// a branch comptime selection later drops) can leave a class unresolved
     /// that the full body resolves.
-    pub(crate) fn unresolved_literal_joins(&self) -> Vec<UnificationError> {
+    ///
+    /// `exempt` holds the types of bindings whose annotation semantic
+    /// analysis diagnoses instead: a join in their class is a consequence of
+    /// that missing annotation, not an error of its own.
+    pub(crate) fn unresolved_literal_joins(&self, exempt: &[InferType]) -> Vec<UnificationError> {
+        let exempt: Vec<InferType> = exempt
+            .iter()
+            .map(|ty| self.substitution.apply(ty))
+            .collect();
         self.literal_joins
             .iter()
             .filter(|(rep, _, _)| {
+                let resolved = self.substitution.apply(&InferType::Var(*rep));
                 !matches!(
-                    self.substitution.apply(&InferType::Var(*rep)),
+                    resolved,
                     InferType::Concrete(ty) if ty.is_float() || ty.is_error() || ty.is_never()
-                )
+                ) && !exempt.contains(&resolved)
             })
             .map(|(_, int_side, span)| {
                 UnificationError::new(
@@ -1834,7 +1843,14 @@ mod tests {
                 Span::new(3, 4),
             )]);
             assert!(errors.is_empty());
-            unifier.unresolved_literal_joins()
+            // A binding whose annotation semantic analysis diagnoses exempts
+            // its class.
+            assert!(
+                unifier
+                    .unresolved_literal_joins(&[InferType::Var(found)])
+                    .is_empty()
+            );
+            unifier.unresolved_literal_joins(&[])
         };
 
         let float_found = join(float, int);
@@ -1874,7 +1890,7 @@ mod tests {
             ),
         ]);
         assert!(errors.is_empty());
-        assert!(unifier.unresolved_literal_joins().is_empty());
+        assert!(unifier.unresolved_literal_joins(&[]).is_empty());
         assert_eq!(unifier.resolve(&InferType::Var(float)), Some(Type::F64));
     }
 
