@@ -2966,7 +2966,9 @@ pub(crate) fn apply_general_inlining(
             let Some(callee) = record_lookup.get(&callee_function).copied() else {
                 continue;
             };
-            let growth = match rue_cfg::splice_call_growth(&state.cfg, call, &callee.cfg) {
+            let growth =
+                rue_cfg::splice_call_growth(&state.cfg, call, &callee.cfg, &record.type_pool);
+            let growth = match growth {
                 Ok(growth) => growth,
                 Err(
                     rue_cfg::CfgInlineError::ByRefArgumentStorageEnded { .. }
