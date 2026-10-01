@@ -146,6 +146,12 @@ pub(super) struct TypeSyntaxProviderState {
     resolution_context: SemaTypeResolutionContext,
     type_substitutions: Option<AHashMap<Spur, Type>>,
     value_substitutions: Option<AHashMap<Spur, ConstValue>>,
+    /// Names bound at the resolution site to a runtime value: a body local or
+    /// a runtime parameter. Such a binding shadows every same-named `const`
+    /// and outer comptime value (spec 5.1:10), so a value position naming it
+    /// (an array length, a type-constructor value argument) is not a
+    /// compile-time constant (7.1:37, RUE-2446). Empty outside a body.
+    runtime_bindings: AHashSet<Spur>,
     // Preserve observation order for the host while using a lazy membership
     // index once a resolution grows beyond the allocation-free small case.
     observed_type_dependencies: Vec<ObservedTypeDependency>,
@@ -684,9 +690,21 @@ impl TypeSyntaxProviderState {
             resolution_context,
             type_substitutions: type_substitutions.cloned(),
             value_substitutions: value_substitutions.cloned(),
+            runtime_bindings: AHashSet::new(),
             observed_type_dependencies: Vec::new(),
             observed_type_dependency_index: None,
         }
+    }
+
+    /// Resolve under the runtime bindings in scope at the resolution site.
+    pub(super) fn with_runtime_bindings(
+        mut self,
+        runtime_bindings: Option<&AHashSet<Spur>>,
+    ) -> Self {
+        if let Some(runtime_bindings) = runtime_bindings {
+            self.runtime_bindings = runtime_bindings.clone();
+        }
+        self
     }
 
     fn observe_type_dependency(
@@ -747,6 +765,25 @@ impl<'s, 'c, H: TypeSyntaxHost> TypeSyntaxProvider<'s, 'c, H> {
         };
         let symbol = self.host.type_syntax_symbol(name);
         let root_file = self.state.root_authority.file();
+        // The name binds lexically before it binds to a module-level `const`
+        // (spec 5.1:10): a runtime local or parameter, a comptime type
+        // parameter or a type alias in scope shadows the `const`, and none of
+        // them is an integer constant (7.1:37, RUE-2446).
+        if self.state.runtime_bindings.contains(&symbol) {
+            return Err(self.invalid_array_length(format!(
+                "'{name}' is a runtime value, not a compile-time constant; array lengths must be an integer literal, a `const`, or a `comptime` value parameter"
+            )));
+        }
+        if self
+            .state
+            .type_substitutions
+            .as_ref()
+            .is_some_and(|substitutions| substitutions.contains_key(&symbol))
+        {
+            return Err(self.invalid_array_length(format!(
+                "'{name}' names a type, not a compile-time integer constant; array lengths must be an integer literal, a `const`, or a `comptime` value parameter"
+            )));
+        }
         let value = if let Some(value) = self
             .state
             .value_substitutions
@@ -829,6 +866,16 @@ impl<'s, 'c, H: TypeSyntaxHost> TypeSyntaxProvider<'s, 'c, H> {
             return Ok(ConstValue::Bool(false));
         }
         let symbol = self.host.type_syntax_symbol(text);
+        if self.state.runtime_bindings.contains(&symbol) {
+            return Err(CompileError::new(
+                ErrorKind::ComptimeEvaluationFailed {
+                    reason: format!(
+                        "argument '{text}' of type constructor '{constructor}' is a runtime value; it must be a compile-time known value (an integer or bool literal, a comptime parameter, or a constant)"
+                    ),
+                },
+                self.state.span,
+            ));
+        }
         if let Some(value_substitutions) = &self.state.value_substitutions
             && let Some(value) = value_substitutions.get(&symbol)
         {

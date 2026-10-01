@@ -5,7 +5,7 @@
 //! storage strategy. The provider body host supplies these facts to executable
 //! body analysis.
 
-use ahash::AHashMap;
+use ahash::{AHashMap, AHashSet};
 
 use lasso::Spur;
 use rue_span::{FileId, Span};
@@ -32,6 +32,9 @@ pub(crate) struct StructuredTypeSyntaxRequest<'a> {
     pub(crate) span: Span,
     pub(crate) type_substitutions: Option<&'a AHashMap<Spur, Type>>,
     pub(crate) value_substitutions: Option<&'a AHashMap<Spur, ConstValue>>,
+    /// Names bound at the site to a runtime local or parameter; they shadow
+    /// a same-named `const` in a value position (RUE-2446).
+    pub(crate) runtime_bindings: Option<&'a AHashSet<Spur>>,
 }
 
 /// Exact input for resolving a module-qualified type prefix.
@@ -51,7 +54,13 @@ pub(crate) struct ModulePrefixRequest<'a> {
 pub(crate) struct ArrayLengthRequest<'a> {
     pub(crate) length: &'a ArrayLen,
     pub(crate) span: Span,
+    /// Comptime type parameters and type aliases in scope: a length naming
+    /// one names a type, which shadows a same-named `const` (RUE-2446).
+    pub(crate) type_substitutions: Option<&'a AHashMap<Spur, Type>>,
     pub(crate) value_substitutions: Option<&'a AHashMap<Spur, ConstValue>>,
+    /// Names bound at the site to a runtime local or parameter; they shadow
+    /// a same-named `const` (RUE-2446).
+    pub(crate) runtime_bindings: Option<&'a AHashSet<Spur>>,
 }
 
 pub(crate) type TypeSyntaxResult = Result<

@@ -23,7 +23,7 @@ use super::context::{AnalysisContext, AnalysisResult, ConstValue};
 use crate::inst::{
     Air, AirArgMode, AirCallArg, AirInst, AirInstData, AirPattern, AirProjection, AirRef,
 };
-use crate::types::{ArrayLen, Type, TypeKind};
+use crate::types::{Type, TypeKind};
 
 impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// Resolve a path/pattern enum type name that may be a comptime
@@ -2173,14 +2173,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // same rules as an array-type length (spec 7.1:37).
         let count = match count {
             RepeatCount::Literal(length) => length,
-            RepeatCount::Named(name) => {
-                let name = self.body_interner().resolve(&name).to_owned();
-                self.resolve_array_length(
-                    &ArrayLen::Named(name),
-                    span,
-                    Some(&ctx.comptime_value_vars),
-                )?
-            }
+            RepeatCount::Named(name) => self.resolve_array_length_in_body(name, span, ctx)?,
         };
 
         // A repeat literal of a non-runtime value — a `type` value (`[i32; 2]`,
