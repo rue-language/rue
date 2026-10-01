@@ -700,7 +700,7 @@ a slice author writes:
     `§5.1–§5.3` is read as its two endpoints only;
   - a paragraph of the calculus's §5–§7: `core:5.3:4`, `core:6.13.3:5`,
     `core:7:3`, the id the calculus prints at the paragraph's start
-    (RUE-2511), written with the `core:` prefix so that it never reads as a
+    (RUE-2511), written with a leading `core:` so that it never reads as a
     prose-specification paragraph (RUE-2524). It also counts as citing its
     section, and the gate fails on an id the calculus does not declare, or one
     written malformed (a section with no paragraph number, or a `.`-numbered
