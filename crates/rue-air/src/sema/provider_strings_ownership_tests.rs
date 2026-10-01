@@ -839,7 +839,7 @@ fn provider_body_string_literal_join_cannot_default_through_an_integer_literal()
         matches!(
             &error.kind,
             ErrorKind::TypeMismatch { expected, found }
-                if expected == "string type" && found == "{integer}"
+                if expected == "integer type" && found == "str"
         ),
         "unexpected diagnostic: {error:?}"
     );
@@ -1007,7 +1007,7 @@ fn provider_body_source_nominal_cannot_counterfeit_fixed_string_payload() {
         matches!(
             &error.kind,
             ErrorKind::TypeMismatch { expected, found }
-                if expected == "string type" && found == "Str(8)"
+                if expected == "Str(8)" && found == "str"
         ),
         "unexpected counterfeit fixed-string diagnostic: {error:?}"
     );

@@ -1071,6 +1071,20 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     expected: "string type".to_string(),
                     found: self.format_infer_type_name(found),
                 },
+                // The literal's own type is `str` unless a string-buffer
+                // context gives it another (3.7:44), and the const path names
+                // a mismatched string-literal initializer the same way. An
+                // integer literal that set the expectation (the first arm of
+                // `if c { 5 } else { "x" }`) reads as it does against any
+                // other type: "expected integer type".
+                UnifyResult::StringLiteralMismatch { expected } => ErrorKind::TypeMismatch {
+                    expected: if expected.is_int_literal() {
+                        "integer type".to_string()
+                    } else {
+                        self.format_infer_type_name(expected)
+                    },
+                    found: self.format_type_name(string_literal_default),
+                },
                 UnifyResult::OccursCheck { var, ty } => ErrorKind::TypeMismatch {
                     expected: "non-recursive type".to_string(),
                     found: format!(
