@@ -1363,7 +1363,11 @@ where
     /// `SemanticImportedProgram::import_type_local` registers it (ptr + len,
     /// builtin, copy). The view's `name` is its identity
     /// ([`crate::types::slice_view_name`]).
-    fn mint_slice_view(&mut self, element: Type, name: &str) -> Result<Type, IdentityMintError> {
+    pub(in crate::sema) fn mint_slice_view(
+        &mut self,
+        element: Type,
+        name: &str,
+    ) -> Result<Type, IdentityMintError> {
         let symbol = self
             .intern_name(name)
             .map_err(IdentityMintError::Interner)?;

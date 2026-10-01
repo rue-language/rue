@@ -188,7 +188,16 @@ pub fn slice_view_name<K: Clone + std::hash::Hash, M: Clone + std::hash::Hash>(
             &|key| Ok(module(key)),
         )
         .unwrap_or_else(|never| match never {});
-    slice_struct_name(&slice_view_element_spelling(&relocated))
+    stable_slice_view_name(&relocated)
+}
+
+/// [`slice_view_name`] for an element already relocated to stable content,
+/// for a body that relocates an anonymous nominal it is still producing from
+/// its issued identity rather than from a durable type (RUE-2579).
+pub(crate) fn stable_slice_view_name(
+    element: &crate::SemanticImportType<String, String>,
+) -> String {
+    slice_struct_name(&slice_view_element_spelling(element))
 }
 
 fn slice_view_element_spelling(element: &crate::SemanticImportType<String, String>) -> String {
