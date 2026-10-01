@@ -16,8 +16,9 @@ pub(super) struct SemanticNucleusTypeProvider<'a> {
     /// [`SemanticNucleusTypeProvider::defer_value_parameter`].
     pub(super) deferred_value_parameters: BTreeMap<Arc<str>, crate::durable_semantics::DurableType>,
     /// Set when the type being resolved read a deferred value parameter. The
-    /// read stops resolution with a failure, and the signature resolver turns
-    /// that failure into the call-site-resolved `ComptimeType`.
+    /// calls and arrays that depend on the read are left unreduced while the
+    /// rest of the type still resolves, and the signature resolver then turns
+    /// a successful resolution into the call-site-resolved `ComptimeType`.
     pub(super) deferred_value_read: bool,
     pub(super) anonymous_nominals:
         BTreeMap<crate::AnonymousNominalKey, crate::durable_semantics::DurableAnonymousNominal>,

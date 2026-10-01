@@ -1989,6 +1989,15 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // argument scope (E0489).
             self.reject_slice_escape(ty_sym, span, ErrorKind::SliceEscapesScope)?;
             let annotation = self.resolve_rir_type_with_ctx(ty_sym, span, ctx)?;
+            // The same rule for an annotation that only resolves to a slice,
+            // through a type constructor: `let t: Wrap([i64], 3) = s`
+            // (RUE-2435).
+            if let crate::types::TypeKind::Struct(id) = annotation.kind()
+                && self.body_type_pool().text_view_kind(id)
+                    == Some(crate::types::TextViewKind::Slice)
+            {
+                return Err(CompileError::new(ErrorKind::SliceEscapesScope, span));
+            }
             // A callback is second-class (ADR-0096, 6.1:47): it is bound by a
             // parameter and never by a local.
             if annotation.is_function() {
