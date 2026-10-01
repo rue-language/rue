@@ -1144,19 +1144,19 @@ $runtime
                                                                     },
                                                                     // An untyped literal that cannot take the
                                                                     // declared type at all reads as the body
-                                                                    // path's inference reports it, from the
-                                                                    // literal's side: `let x: bool = 1;` is
-                                                                    // "expected integer type, found bool" and
-                                                                    // `let x: i32 = 1.5;` is "expected
-                                                                    // comptime_float, found i32".
+                                                                    // path's inference reports it, with the
+                                                                    // literal found: `let x: bool = 1;` is
+                                                                    // "expected bool, found {integer}" and
+                                                                    // `let x: i32 = 1.5;` is "expected i32,
+                                                                    // found comptime_float".
                                                                     (_, crate::durable_semantics::DurableConstValue::Integer(_), None)
                                                                         if typed.ty.is_none()
                                                                             && crate::durable_comptime::durable_int_width(&ty).is_none()
                                                                             && !matches!(ty, crate::durable_semantics::DurableType::F32 | crate::durable_semantics::DurableType::F64) =>
                                                                     {
                                                                         rue_error::ErrorKind::TypeMismatch {
-                                                                            expected: "integer type".to_owned(),
-                                                                            found: durable_type_diagnostic_name(&ty),
+                                                                            expected: durable_type_diagnostic_name(&ty),
+                                                                            found: "{integer}".to_owned(),
                                                                         }
                                                                     }
                                                                     (_, crate::durable_semantics::DurableConstValue::Float(_), None)
@@ -1164,8 +1164,8 @@ $runtime
                                                                             && !matches!(ty, crate::durable_semantics::DurableType::F32 | crate::durable_semantics::DurableType::F64) =>
                                                                     {
                                                                         rue_error::ErrorKind::TypeMismatch {
-                                                                            expected: "comptime_float".to_owned(),
-                                                                            found: durable_type_diagnostic_name(&ty),
+                                                                            expected: durable_type_diagnostic_name(&ty),
+                                                                            found: "comptime_float".to_owned(),
                                                                         }
                                                                     }
                                                                     // One code for "does not fit", whatever

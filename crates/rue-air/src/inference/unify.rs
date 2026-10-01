@@ -26,7 +26,7 @@ pub enum UnifyResult {
     },
 
     /// Integer literal cannot unify with non-integer type.
-    IntLiteralNonInteger { found: Type },
+    IntLiteralNonInteger { found: InferType },
 
     /// String literal cannot unify with a non-string type.
     StringLiteralNonString { found: InferType },
@@ -52,6 +52,13 @@ impl UnifyResult {
     pub fn is_ok(&self) -> bool {
         matches!(self, UnifyResult::Ok)
     }
+}
+
+/// Which side of a `(found, expected)` constraint a bound variable came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VarSide {
+    Found,
+    Expected,
 }
 
 /// An error that occurred during unification.
@@ -231,11 +238,13 @@ impl Unifier {
                 }
             }
 
-            // Variable on left: bind it to right (if occurs check passes)
-            (InferType::Var(var), _) => self.bind(*var, &rhs_resolved),
+            // Variable on left: bind it to right (if occurs check passes).
+            // The variable is the found side and the type the expected one.
+            (InferType::Var(var), _) => self.bind(*var, &rhs_resolved, VarSide::Found),
 
-            // Variable on right: bind it to left
-            (_, InferType::Var(var)) => self.bind(*var, &lhs_resolved),
+            // Variable on right: bind it to left. The variable is the
+            // expected side and the type the found one.
+            (_, InferType::Var(var)) => self.bind(*var, &lhs_resolved, VarSide::Expected),
 
             // IntLiteral with concrete type
             (InferType::IntLiteral, InferType::Concrete(ty))
@@ -251,7 +260,12 @@ impl Unifier {
                     // Error type propagates
                     UnifyResult::Ok
                 } else {
-                    UnifyResult::IntLiteralNonInteger { found: *ty }
+                    let side = if lhs_resolved.is_int_literal() {
+                        VarSide::Found
+                    } else {
+                        VarSide::Expected
+                    };
+                    Self::int_literal_mismatch(InferType::Concrete(*ty), side)
                 }
             }
 
@@ -364,10 +378,48 @@ impl Unifier {
         }
     }
 
+    /// The mismatch for an integer literal that meets a type it cannot take.
+    ///
+    /// When the literal is the found side (`let b: bool = 5;`), the other
+    /// type is what the context expects: "expected bool, found {integer}".
+    /// When the literal sets the expectation (the first arm of
+    /// `if c { 5 } else { false }`), the other type is what was found:
+    /// "expected integer type, found bool".
+    fn int_literal_mismatch(other: InferType, literal_side: VarSide) -> UnifyResult {
+        match literal_side {
+            VarSide::Found => UnifyResult::TypeMismatch {
+                expected: other,
+                found: InferType::IntLiteral,
+            },
+            VarSide::Expected => UnifyResult::IntLiteralNonInteger { found: other },
+        }
+    }
+
+    /// The mismatch for a float literal (type `comptime_float`) that
+    /// meets a type it cannot take, in the same direction as
+    /// [`Unifier::int_literal_mismatch`].
+    fn float_literal_mismatch(other: InferType, literal_side: VarSide) -> UnifyResult {
+        let literal = InferType::Concrete(Type::COMPTIME_FLOAT);
+        match literal_side {
+            VarSide::Found => UnifyResult::TypeMismatch {
+                expected: other,
+                found: literal,
+            },
+            VarSide::Expected => UnifyResult::TypeMismatch {
+                expected: literal,
+                found: other,
+            },
+        }
+    }
+
     /// Bind a type variable to a type.
     ///
-    /// Performs the occurs check to prevent infinite types.
-    fn bind(&mut self, var: TypeVarId, ty: &InferType) -> UnifyResult {
+    /// Performs the occurs check to prevent infinite types. `side` says which
+    /// side of the `(found, expected)` constraint the variable came from, so
+    /// a literal variable that cannot take `ty` reports the mismatch in the
+    /// constraint's direction rather than always naming the literal as
+    /// expected.
+    fn bind(&mut self, var: TypeVarId, ty: &InferType, side: VarSide) -> UnifyResult {
         // If binding to itself, it's a no-op
         if let InferType::Var(id) = ty {
             if *id == var {
@@ -411,12 +463,17 @@ impl Unifier {
                         return UnifyResult::Ok;
                     }
                     if !t.is_integer() && !t.is_never() {
-                        return UnifyResult::IntLiteralNonInteger { found: *t };
+                        return Self::int_literal_mismatch(ty.clone(), side);
                     }
                 }
-                // IntLiteral keeps the variable a literal; arrays are reported
-                // by the Array-vs-non-array case in `unify`.
-                InferType::IntLiteral | InferType::Array { .. } => {}
+                // An integer literal is never an array. Binding the literal's
+                // variable to one would type the literal itself as the array
+                // and surface later as a bogus out-of-range literal (E0800).
+                InferType::Array { .. } => {
+                    return Self::int_literal_mismatch(self.render_for_error(ty), side);
+                }
+                // IntLiteral keeps the variable a literal.
+                InferType::IntLiteral => {}
             }
         }
 
@@ -430,17 +487,8 @@ impl Unifier {
                         || *t == Type::COMPTIME_FLOAT
                         || t.is_error()
                         || t.is_never() => {}
-                InferType::Concrete(t) => {
-                    return UnifyResult::TypeMismatch {
-                        expected: InferType::Concrete(Type::COMPTIME_FLOAT),
-                        found: InferType::Concrete(*t),
-                    };
-                }
-                InferType::IntLiteral | InferType::Array { .. } => {
-                    return UnifyResult::TypeMismatch {
-                        expected: InferType::Concrete(Type::COMPTIME_FLOAT),
-                        found: ty.clone(),
-                    };
+                InferType::Concrete(_) | InferType::IntLiteral | InferType::Array { .. } => {
+                    return Self::float_literal_mismatch(self.render_for_error(ty), side);
                 }
             }
         } else if let InferType::Var(other) = ty
@@ -1010,9 +1058,80 @@ mod tests {
     #[test]
     fn test_unify_int_literal_with_non_integer() {
         let mut unifier = Unifier::new();
+        // The literal is the found side: the context expects bool.
         let result = unifier.unify(&InferType::IntLiteral, &InferType::Concrete(Type::BOOL));
-        assert!(!result.is_ok());
-        assert!(matches!(result, UnifyResult::IntLiteralNonInteger { .. }));
+        assert_eq!(
+            result,
+            UnifyResult::TypeMismatch {
+                expected: InferType::Concrete(Type::BOOL),
+                found: InferType::IntLiteral,
+            }
+        );
+        // The literal sets the expectation: an integer type was expected.
+        let result = unifier.unify(&InferType::Concrete(Type::BOOL), &InferType::IntLiteral);
+        assert_eq!(
+            result,
+            UnifyResult::IntLiteralNonInteger {
+                found: InferType::Concrete(Type::BOOL)
+            }
+        );
+    }
+
+    #[test]
+    fn literal_variable_mismatch_follows_the_constraint_direction() {
+        // `let b: bool = 5;` constrains (literal, bool): expected bool.
+        let mut unifier = Unifier::new();
+        let lit = TypeVarId::new(0);
+        unifier.mark_int_literal_vars(&[lit]);
+        assert_eq!(
+            unifier.unify(&InferType::Var(lit), &InferType::Concrete(Type::BOOL)),
+            UnifyResult::TypeMismatch {
+                expected: InferType::Concrete(Type::BOOL),
+                found: InferType::IntLiteral,
+            }
+        );
+        // `if c { 5 } else { false }`: the literal arm sets the expectation.
+        let mut unifier = Unifier::new();
+        unifier.mark_int_literal_vars(&[lit]);
+        assert_eq!(
+            unifier.unify(&InferType::Concrete(Type::BOOL), &InferType::Var(lit)),
+            UnifyResult::IntLiteralNonInteger {
+                found: InferType::Concrete(Type::BOOL)
+            }
+        );
+        // An integer literal never takes an array type.
+        let mut unifier = Unifier::new();
+        unifier.mark_int_literal_vars(&[lit]);
+        let array = InferType::Array {
+            element: Box::new(InferType::Concrete(Type::I32)),
+            length: 2,
+        };
+        assert_eq!(
+            unifier.unify(&InferType::Var(lit), &array),
+            UnifyResult::TypeMismatch {
+                expected: array.clone(),
+                found: InferType::IntLiteral,
+            }
+        );
+        // `let y: i64 = 1.5;`: the float literal is found, i64 expected.
+        let mut unifier = Unifier::new();
+        unifier.mark_float_literal_vars(&[lit]);
+        assert_eq!(
+            unifier.unify(&InferType::Var(lit), &InferType::Concrete(Type::I64)),
+            UnifyResult::TypeMismatch {
+                expected: InferType::Concrete(Type::I64),
+                found: InferType::Concrete(Type::COMPTIME_FLOAT),
+            }
+        );
+        let mut unifier = Unifier::new();
+        unifier.mark_float_literal_vars(&[lit]);
+        assert_eq!(
+            unifier.unify(&InferType::Concrete(Type::I64), &InferType::Var(lit)),
+            UnifyResult::TypeMismatch {
+                expected: InferType::Concrete(Type::COMPTIME_FLOAT),
+                found: InferType::Concrete(Type::I64),
+            }
+        );
     }
 
     #[test]
@@ -1168,7 +1287,7 @@ mod tests {
         unifier.substitution.insert(v1, InferType::Var(v0));
 
         // Now try to bind v0 to v1 - this would create a cycle
-        let result = unifier.bind(v0, &InferType::Var(v1));
+        let result = unifier.bind(v0, &InferType::Var(v1), VarSide::Found);
         assert!(matches!(result, UnifyResult::OccursCheck { .. }));
     }
 
@@ -1698,7 +1817,9 @@ mod tests {
     #[test]
     fn test_unification_error_int_literal_non_integer_message() {
         let error = UnificationError::new(
-            UnifyResult::IntLiteralNonInteger { found: Type::BOOL },
+            UnifyResult::IntLiteralNonInteger {
+                found: InferType::Concrete(Type::BOOL),
+            },
             Span::new(0, 5),
         );
         let msg = error.message();
@@ -1734,10 +1855,13 @@ mod tests {
         )];
         let errors = unifier.solve_constraints(&constraints);
         assert_eq!(errors.len(), 1);
-        assert!(matches!(
+        assert_eq!(
             errors[0].kind,
-            UnifyResult::IntLiteralNonInteger { found: Type::BOOL }
-        ));
+            UnifyResult::TypeMismatch {
+                expected: InferType::Concrete(Type::BOOL),
+                found: InferType::IntLiteral,
+            }
+        );
     }
 
     #[test]

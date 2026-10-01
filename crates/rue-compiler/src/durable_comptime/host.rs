@@ -225,15 +225,15 @@ impl<'a, A: DurableComptimeHostAuthority + ?Sized> DurableComptimeHost<'a, A> {
                 None => DurableComptimeFailure::failure(SemanticNucleusFailure::Diagnostic(kind)),
             })
         };
-        // An untyped literal that cannot take the slot's type at all reads
-        // from the literal's side, as the body path's inference and the
-        // scalar `const X: bool = 1;` report it: `S { s: 1 }` at an `S`
-        // field is "expected integer type, found S", and a float literal
-        // there "expected comptime_float, found S".
+        // An untyped literal that cannot take the slot's type at all is the
+        // found side, as the body path's inference and the scalar
+        // `const X: bool = 1;` report it: `S { s: 1 }` at an `S` field is
+        // "expected S, found {integer}", and a float literal there
+        // "expected S, found comptime_float".
         if let EvaluatedSemanticConst::Value(typed) = value {
             let literal = match (&typed.value, typed.ty.as_ref()) {
                 (DurableConstValue::Integer(_), None) if durable_int_width(slot).is_none() => {
-                    Some("integer type")
+                    Some("{integer}")
                 }
                 (DurableConstValue::Float(_), Some(DurableType::ComptimeFloat)) => {
                     Some("comptime_float")
@@ -244,8 +244,8 @@ impl<'a, A: DurableComptimeHostAuthority + ?Sized> DurableComptimeHost<'a, A> {
                 && !matches!(slot, DurableType::F32 | DurableType::F64)
             {
                 return Err(reject(rue_error::ErrorKind::TypeMismatch {
-                    expected: literal.to_owned(),
-                    found: durable_type_diagnostic_name(slot),
+                    expected: durable_type_diagnostic_name(slot),
+                    found: literal.to_owned(),
                 }));
             }
         }

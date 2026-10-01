@@ -43,7 +43,7 @@ fn main() -> i32 {
 }
 """
 compile_fail = true
-error_contains = ["E0206", "expected comptime_float, found i32"]
+error_contains = ["E0206", "expected i32, found comptime_float"]
 
 [[case]]
 name = "contextual_f32_reaches_typed_boundary"

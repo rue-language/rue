@@ -1065,7 +1065,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 },
                 UnifyResult::IntLiteralNonInteger { found } => ErrorKind::TypeMismatch {
                     expected: "integer type".to_string(),
-                    found: self.format_type_name(*found),
+                    found: self.format_infer_type_name(found),
                 },
                 UnifyResult::StringLiteralNonString { found } => ErrorKind::TypeMismatch {
                     expected: "string type".to_string(),
