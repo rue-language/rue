@@ -26,8 +26,9 @@ The index cannot rot silently because the gate fails when:
   and the Lean sources in full, strings and ``--`` comments included) cites a
   calculus paragraph ``core:X.Y:Z`` the calculus does not declare, at either
   end of a range (``core:6.4:3–9``), or writes one malformed (``core:7:3.1``,
-  ``core:7``); a citation
-  split across two lines is not read, and so not checked;
+  ``core:7``, ``core:6.4:3–``), or writes a paragraph id with a ``§`` (the
+  spelling before RUE-2524); a citation split across two lines is not read,
+  and so not checked;
 * the calculus's own paragraph markers are malformed, duplicated, or declared
   under a section other than their own (a marker inside a code fence is not a
   declaration);
@@ -107,8 +108,13 @@ PARAGRAPH_CITATION = re.compile(r"(?<![\d.])(?<!core:)(\d+\.\d+):(\d+[a-z]?)(?![
 # syntax`) is prose, not a citation.
 CALCULUS_CITATION_TOKEN = re.compile(
     r"\bcore:(?P<section>\d+(?:\.\d+)*)(?::(?P<first>\w+)(?P<tail>(?:\.\d[\w.]*)?)"
-    r"(?:[–-](?P<last>\d\w*))?)?"
+    r"(?:(?P<dash>[–-])(?P<last>\d\w*)?)?)?"
 )
+# The spelling calculus ids had before RUE-2524 gave them their own prefix:
+# ``§5.3:4``. Inside docs/formal a calculus paragraph is ``core:5.3:4`` and a
+# spec paragraph ``5.3:4``, so a ``§`` before a paragraph id is wrong either way,
+# and the old spelling is reported rather than read as a spec id.
+OLD_PARAGRAPH_SPELLING = re.compile(r"§(\d+(?:\.\d+)*):(\d+[a-z]?)(?![\w])")
 CALCULUS_PARAGRAPH_NUMBER = re.compile(r"^\d+[a-z]?$")
 CALCULUS_PARAGRAPH_ID = re.compile(r"^core:\d+(?:\.\d+)*:\d+[a-z]?$")
 # How the calculus declares one: a linkable anchor and the visible tag, both
@@ -812,7 +818,7 @@ def calculus_citations(text: str) -> List[Tuple[List[str], Optional[str]]]:
     """
     found: List[Tuple[List[str], Optional[str]]] = []
     for match in CALCULUS_CITATION_TOKEN.finditer(text):
-        section, first, tail, last = match.group("section", "first", "tail", "last")
+        section, first, tail, dash, last = match.group("section", "first", "tail", "dash", "last")
         if first is None:
             found.append(
                 ([], f"cites `{match.group(0)}`: a paragraph id names its paragraph (`core:X.Y:Z`); "
@@ -821,6 +827,9 @@ def calculus_citations(text: str) -> List[Tuple[List[str], Optional[str]]]:
             continue
         if tail:
             found.append(([], f"cites `{match.group(0)}`: a paragraph id has no `.`-numbered part after its number"))
+            continue
+        if dash and last is None:
+            found.append(([], f"cites `{match.group(0)}`: a range names its last paragraph (`core:6.4:3–9`)"))
             continue
         bad = [n for n in (first, last) if n is not None and not CALCULUS_PARAGRAPH_NUMBER.match(n)]
         if bad:
@@ -871,7 +880,7 @@ def calculus_citations_in_files(
             text = resolved.read_text(encoding="utf-8")
         except (UnicodeDecodeError, OSError):
             continue
-        if "core:" not in text:
+        if "core:" not in text and "§" not in text:
             continue
         is_calculus = resolved == calculus_path.resolve()
         lines = _fenced_lines(text) if is_calculus else [(line, False) for line in text.splitlines()]
@@ -880,6 +889,13 @@ def calculus_citations_in_files(
                 # A marker declares (outside a fence) or cites once, by its
                 # tag (inside one): its anchor names the same id again.
                 line = CALCULUS_PARAGRAPH_MARKER.sub("" if not in_fence else (lambda m: m.group("label")), line)
+            for old in OLD_PARAGRAPH_SPELLING.finditer(line):
+                section, paragraph = old.groups()
+                errors.append(
+                    f"{relative}:{number}: `{old.group(0)}` is the old spelling of a paragraph id: "
+                    f"write a calculus paragraph `core:{section}:{paragraph}` and a spec paragraph "
+                    f"`{section}:{paragraph}` (no `§`)"
+                )
             for refs, problem in calculus_citations(line):
                 if problem is not None:
                     errors.append(f"{relative}:{number}: {problem}")
