@@ -6290,3 +6290,17 @@ fn main() -> i32 {
 """
 compile_fail = true
 error_contains = ["E0206", "expected Buf(3), found Buf(2)"]
+
+[[case]]
+name = "value_param_ctor_wider_declared_integer"
+spec = ["4.14:5", "4.14:23"]
+description = "A `comptime N: i64` forwarded to a constructor's `comptime N: i32` is accepted with the declaration; the call's value 3 fits i32 (RUE-2435)"
+source = """
+fn Buf(comptime N: i32) -> type { struct { data: [i32; N] } }
+fn buf(comptime N: i64) -> Buf(N) { Buf(N) { data: [5; N] } }
+
+fn main() -> i32 {
+    buf(3).data[2]
+}
+"""
+exit_code = 5
