@@ -108,6 +108,7 @@ pub use runtime_call::{
 };
 pub use sema::ComptimeMethodReceiverPolicy;
 pub use sema::finite_float_literal;
+pub use sema::shadowed_const_array_length_reason;
 pub use sema::{
     AnalyzedBodyOwnerEvent, AnalyzedCallableKind, AnalyzedFunction, BodyAnalysisWork,
     BodyFactProvider, BodyNamedDependencyEvent, BodyOwnerEndpoint, BodyOwnerKind, BodyOwnerToken,

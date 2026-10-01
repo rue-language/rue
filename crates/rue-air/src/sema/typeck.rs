@@ -211,6 +211,18 @@ fn provider_failure<T>(result: CompileResult<T>) -> SemaProviderResult<T> {
     result.map_err(crate::SemanticProviderError::Failure)
 }
 
+/// The E0481 reason for an array length naming a binding in scope that
+/// shadows a same-named `const` and is not a compile-time integer (spec 5.1:10,
+/// 7.1:32, 7.1:33). Body resolution (a runtime local or parameter, a comptime
+/// type parameter, a type alias; RUE-2446) and signature resolution (a comptime
+/// type parameter; RUE-2541) report it with this one wording, and only when
+/// the `const` exists.
+pub fn shadowed_const_array_length_reason(name: &str) -> String {
+    format!(
+        "'{name}' is not a compile-time constant here: a binding of that name in scope shadows the `const` `{name}`; array lengths must be an integer literal, a `const`, or a `comptime` value parameter"
+    )
+}
+
 /// The diagnostic for an interface name where a type is required (spec
 /// 6.8:18). It is a type mismatch in the type language: the position expects
 /// a type and an interface is a set of requirements, usable only as a
@@ -851,9 +863,7 @@ impl<'s, 'c, H: TypeSyntaxHost> TypeSyntaxProvider<'s, 'c, H> {
             .type_syntax_value_const(root_file, symbol)
             .is_some()
         {
-            return self.invalid_array_length(format!(
-                "'{name}' is not a compile-time constant here: a binding of that name in scope shadows the `const` `{name}`; array lengths must be an integer literal, a `const`, or a `comptime` value parameter"
-            ));
+            return self.invalid_array_length(shadowed_const_array_length_reason(name));
         }
         let hint = self
             .host
