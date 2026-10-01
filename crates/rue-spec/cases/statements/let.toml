@@ -728,6 +728,184 @@ fn main() -> i32 {
 exit_code = 42
 
 [[case]]
+name = "struct_pattern_consumes_an_empty_linear_struct"
+spec = ["5.1:21", "3.8:74"]
+preview = "struct_patterns"
+preview_should_pass = true
+description = "A struct pattern over a field-less linear struct consumes it (RUE-2540)"
+source = """
+linear struct Done {}
+fn finish(d: Done) -> i32 {
+    let Done {} = d;
+    40
+}
+fn main() -> i32 {
+    let d = Done {};
+    let Done {} = d;
+    finish(Done {}) + 2
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "struct_pattern_takes_a_linear_struct_apart_whole"
+spec = ["5.1:21", "3.8:33"]
+preview = "struct_patterns"
+preview_should_pass = true
+description = "Every field of a linear struct binds, rather than the first field read consuming the temporary (RUE-2540)"
+source = """
+linear struct Token { id: i32 }
+linear struct Ticket { t: Token, a: i32, b: i32 }
+fn redeem(t: Token) -> i32 { t.id }
+fn main() -> i32 {
+    let Ticket { t, a, b: mut b } = Ticket { t: Token { id: 30 }, a: 10, b: 1 };
+    b = b + 1;
+    redeem(t) + a + b
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "struct_pattern_drops_the_move_fields_of_a_linear_struct_once"
+spec = ["5.1:21", "3.9:4"]
+preview = "struct_patterns"
+preview_should_pass = true
+description = "A discarded move field of a linear struct drops at its let; a bound one drops with its binding; nothing drops twice"
+source = """
+struct Tag { id: i32 }
+drop fn Tag(self) { @dbg(self.id); }
+linear struct Pair { a: Tag, b: Tag }
+fn main() -> i32 {
+    {
+        let Pair { a: _, b } = Pair { a: Tag { id: 1 }, b: Tag { id: 2 } };
+        @dbg(b.id + 10);
+    }
+    @dbg(3);
+    0
+}
+"""
+expected_stdout = """
+1
+12
+2
+3
+"""
+exit_code = 0
+
+[[case]]
+name = "struct_pattern_bound_linear_field_must_still_be_consumed"
+spec = ["5.1:21", "3.8:32"]
+preview = "struct_patterns"
+preview_should_pass = true
+description = "Taking a linear struct apart moves its linear field into the binding, which carries the obligation from there"
+source = """
+linear struct Token { id: i32 }
+linear struct Ticket { t: Token, n: i32 }
+fn main() -> i32 {
+    let Ticket { t, n } = Ticket { t: Token { id: 1 }, n: 2 };
+    n
+}
+"""
+compile_fail = true
+error_contains = ["E0406", "linear value 't' must be consumed"]
+
+[[case]]
+name = "struct_pattern_over_one_linear_value_leaves_another_unconsumed"
+spec = ["5.1:21", "3.8:32"]
+preview = "struct_patterns"
+preview_should_pass = true
+description = "Destructuring one empty linear value consumes that value only"
+source = """
+linear struct Done {}
+fn main() -> i32 {
+    let d = Done {};
+    let e = Done {};
+    let Done {} = d;
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0406", "linear value 'e' must be consumed"]
+
+[[case]]
+name = "struct_pattern_over_an_empty_linear_struct_on_one_path_rejected"
+spec = ["5.1:21", "3.8:32"]
+preview = "struct_patterns"
+preview_should_pass = true
+source = """
+linear struct Done {}
+fn main() -> i32 {
+    let d = Done {};
+    let c = true;
+    if c { let Done {} = d; }
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0443", "linear value 'd' is not consumed on all paths"]
+
+[[case]]
+name = "struct_pattern_consumed_empty_linear_value_cannot_be_used_again"
+spec = ["5.1:21", "3.8:5"]
+preview = "struct_patterns"
+preview_should_pass = true
+source = """
+linear struct Done {}
+fn finish(d: Done) -> i32 { let Done {} = d; 0 }
+fn main() -> i32 {
+    let d = Done {};
+    let Done {} = d;
+    finish(d)
+}
+"""
+compile_fail = true
+error_contains = ["E0205", "use of moved value 'd'"]
+
+[[case]]
+name = "struct_pattern_does_not_consume_a_linear_struct_with_a_destructor"
+spec = ["5.1:21"]
+preview = "struct_patterns"
+preview_should_pass = true
+description = "A linear struct with its own destructor is not discharged by a pattern, which would hand it to the destructor implicitly"
+source = """
+linear struct Done {}
+drop fn Done(self) { @dbg(1); }
+fn main() -> i32 {
+    let d = Done {};
+    let Done {} = d;
+    0
+}
+"""
+compile_fail = true
+error_contains = "E0406"
+
+[[case]]
+name = "struct_pattern_drops_an_empty_destructor_struct_once"
+spec = ["5.1:21", "3.9:4"]
+preview = "struct_patterns"
+preview_should_pass = true
+description = "The temporary of an empty affine struct with a destructor drops exactly once, when its block ends"
+source = """
+struct Guard {}
+drop fn Guard(self) { @dbg(9); }
+fn main() -> i32 {
+    {
+        let g = Guard {};
+        let Guard {} = g;
+        @dbg(1);
+    }
+    @dbg(2);
+    0
+}
+"""
+expected_stdout = """
+1
+9
+2
+"""
+exit_code = 0
+
+[[case]]
 name = "struct_pattern_cannot_move_out_of_a_destructor_struct"
 spec = ["5.1:21"]
 preview = "struct_patterns"
