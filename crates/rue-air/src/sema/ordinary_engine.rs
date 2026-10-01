@@ -3122,6 +3122,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         // with, which callers and the calling convention never see.
         let mut next_abi_slot = 0_u32;
         let mut next_zero_width_key = num_param_slots;
+        let mut comptime_param_types = Vec::new();
         for ((pname, ptype, mode, is_comptime), (is_by_ref, is_mut_binding, slot_count)) in
             params.iter().zip(param_layouts)
         {
@@ -3139,6 +3140,13 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             } else {
                 next_abi_slot
             };
+            // A comptime value parameter is substituted into the body, yet it
+            // still occupies its slots: the caller materializes the argument
+            // there. Record its type for presentation (`--emit abi`), which
+            // otherwise has nothing to name it by when the body never reads it.
+            if *is_comptime && slot_count > 0 {
+                comptime_param_types.push((abi_slot, *ptype));
+            }
             param_vec.push(ParamInfo {
                 name: *pname,
                 abi_slot,
@@ -3173,6 +3181,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
                 .map(|p| (p.abi_slot, p.ty))
                 .collect(),
         );
+        air.set_comptime_param_types(comptime_param_types);
         let param_index = ParamIndex::new(&param_vec);
 
         // ======================================================================

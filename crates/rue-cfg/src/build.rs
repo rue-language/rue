@@ -5564,6 +5564,7 @@ mod tests {
                 strings: Arc::from([Arc::from("")]),
                 local_atoms: Arc::new([]),
                 param_drops: self.param_drops.into(),
+                comptime_param_types: Arc::new([]),
                 borrow_slots: Arc::new([]),
                 num_locals: self.num_locals,
                 num_param_slots: self.num_param_slots,

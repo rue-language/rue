@@ -524,6 +524,11 @@ pub(crate) fn export_body<H: SemanticBodyExportHost>(
         .iter()
         .map(|(slot, ty)| Ok((*slot, host.export_body_type(*ty)?)))
         .collect::<Result<Vec<_>, F>>()?;
+    let comptime_param_types = body
+        .comptime_param_types()
+        .iter()
+        .map(|(slot, ty)| Ok((*slot, host.export_body_type(*ty)?)))
+        .collect::<Result<Vec<_>, F>>()?;
     // Read the recorded set rather than asking about each slot of the frame:
     // one array local can own a hundred million slots (RUE-2069). Sorted so
     // the exported body stays canonical whatever order the binders were
@@ -580,6 +585,7 @@ pub(crate) fn export_body<H: SemanticBodyExportHost>(
                 })
                 .collect(),
             param_drops: Arc::from(param_drops),
+            comptime_param_types: Arc::from(comptime_param_types),
             borrow_slots: Arc::from(borrow_slots),
             num_locals: analyzed.num_locals,
             num_param_slots: analyzed.num_param_slots,

@@ -1472,6 +1472,25 @@ where
             drops.push((*slot, ty));
         }
         air.set_param_drops(drops);
+        // A comptime value parameter is recorded only when it occupies a slot,
+        // so each entry lies wholly inside the ABI range, and entries ascend
+        // without overlapping: every entry names one parameter's own slots.
+        let mut comptime_param_types = Vec::with_capacity(body.comptime_param_types.len());
+        let mut next_free_slot = 0_u32;
+        for (slot, ty) in body.comptime_param_types.iter() {
+            let ty = import_type(ty)?;
+            let width = match type_pool.try_abi_slot_count(ty) {
+                Ok(width) if width > 0 => width,
+                _ => return Err(F::InvalidComptimeParameter),
+            };
+            let end = slot.checked_add(width).ok_or(F::InvalidComptimeParameter)?;
+            if *slot < next_free_slot || end > body.num_param_slots {
+                return Err(F::InvalidComptimeParameter);
+            }
+            next_free_slot = end;
+            comptime_param_types.push((*slot, ty));
+        }
+        air.set_comptime_param_types(comptime_param_types);
         for slot in body.borrow_slots.iter() {
             air.add_borrow_slot(*slot)
         }
@@ -3744,6 +3763,7 @@ mod tests {
             strings: Arc::new([]),
             local_atoms: Arc::new([]),
             param_drops: Arc::new([]),
+            comptime_param_types: Arc::new([]),
             borrow_slots: Arc::new([]),
             num_locals: 0,
             num_param_slots: 0,
@@ -4623,6 +4643,51 @@ mod tests {
         assert!(matches!(
             epoch.import_body(&gapped_key, Span::with_file(FileId::DEFAULT, 0, 100)),
             Err(F::InvalidParameterDrop)
+        ));
+        // A comptime value parameter's type names slots inside the ABI range,
+        // one parameter per span.
+        let mut comptime = body(vec![D::Const(0)]);
+        comptime.num_param_slots = 2;
+        comptime.param_by_ref = vec![false, false].into();
+        comptime.param_writable = vec![false, false].into();
+        comptime.comptime_param_types = vec![(0, crate::SemanticImportType::I32)].into();
+        assert_eq!(
+            epoch
+                .import_body(&comptime, Span::with_file(FileId::DEFAULT, 0, 100))
+                .expect("a comptime parameter inside the ABI range imports")
+                .air
+                .comptime_param_types()
+                .len(),
+            1
+        );
+        let mut comptime_past_range = comptime.clone();
+        comptime_past_range.comptime_param_types = vec![(2, crate::SemanticImportType::I32)].into();
+        assert!(matches!(
+            epoch.import_body(
+                &comptime_past_range,
+                Span::with_file(FileId::DEFAULT, 0, 100)
+            ),
+            Err(F::InvalidComptimeParameter)
+        ));
+        let mut comptime_zero_width = comptime.clone();
+        comptime_zero_width.comptime_param_types =
+            vec![(0, crate::SemanticImportType::Unit)].into();
+        assert!(matches!(
+            epoch.import_body(
+                &comptime_zero_width,
+                Span::with_file(FileId::DEFAULT, 0, 100)
+            ),
+            Err(F::InvalidComptimeParameter)
+        ));
+        let mut comptime_overlap = comptime;
+        comptime_overlap.comptime_param_types = vec![
+            (1, crate::SemanticImportType::I32),
+            (0, crate::SemanticImportType::I32),
+        ]
+        .into();
+        assert!(matches!(
+            epoch.import_body(&comptime_overlap, Span::with_file(FileId::DEFAULT, 0, 100)),
+            Err(F::InvalidComptimeParameter)
         ));
         let mut invalid_borrow = body(vec![D::Const(0)]);
         invalid_borrow.borrow_slots = vec![0].into();

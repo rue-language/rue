@@ -1973,7 +1973,10 @@ pub(crate) fn select_materialization_facts(
     };
     selection.callable(identity);
     let mut required_types = Vec::with_capacity(
-        1 + body.instructions.len() + body.places.len() + body.param_drops.len(),
+        1 + body.instructions.len()
+            + body.places.len()
+            + body.param_drops.len()
+            + body.comptime_param_types.len(),
     );
     let mut seen_required_types = AHashSet::new();
     let mut require_type = |ty: &crate::durable_semantics::DurableType| {
@@ -2029,7 +2032,11 @@ pub(crate) fn select_materialization_facts(
             }
         }
     }
-    for (_, ty) in body.param_drops.iter() {
+    for (_, ty) in body
+        .param_drops
+        .iter()
+        .chain(body.comptime_param_types.iter())
+    {
         require_type(ty);
         selection.semantic_type(ty);
     }
@@ -2123,6 +2130,7 @@ pub(crate) fn select_drop_glue_materialization_facts(
         strings: Arc::new([]),
         local_atoms: Arc::new([]),
         param_drops: roots.into(),
+        comptime_param_types: Arc::new([]),
         borrow_slots: Arc::new([]),
         num_locals: 0,
         num_param_slots: 0,
@@ -2650,6 +2658,7 @@ mod tests {
             strings: Arc::new([]),
             local_atoms: Arc::new([]),
             param_drops: Arc::new([]),
+            comptime_param_types: Arc::new([]),
             borrow_slots: Arc::new([]),
             num_locals: 0,
             num_param_slots: 0,
