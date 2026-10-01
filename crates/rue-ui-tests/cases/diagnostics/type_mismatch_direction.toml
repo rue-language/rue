@@ -50,3 +50,115 @@ fn main() -> i32 { f(); 0 }
 """
 compile_fail = true
 error_contains = ["expected [i32; 3], found bool"]
+
+# A literal that cannot take the type its context expects is the found side:
+# the literal's own type (`{integer}`, or `comptime_float` for a float
+# literal) is what was found. The literal's variable is bound by the unifier
+# from either side of a constraint, and these used to name the literal as
+# expected wherever it was the value (RUE-2566).
+[[case]]
+name = "float_literal_at_an_integer_local"
+source = """
+fn main() -> i32 {
+    let y: i64 = 1.5;
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0206", "expected i64, found comptime_float", "test.rue:2:5"]
+
+[[case]]
+name = "float_literal_at_an_integer_field"
+source = """
+struct P { w: i64 }
+fn main() -> i32 {
+    let mut p = P { w: 1 };
+    p.w = 1.5;
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0206", "expected i64, found comptime_float", "test.rue:4:11"]
+
+[[case]]
+name = "float_literal_at_an_integer_accessor_place"
+source = """
+struct P {
+    w: i64,
+
+    fn wr(inout self) -> inout i64 {
+        yield self.w;
+    }
+}
+fn main() -> i32 {
+    let mut p = P { w: 1 };
+    p.wr() = 1.5;
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0206", "expected i64, found comptime_float", "test.rue:10:14"]
+
+[[case]]
+name = "float_literal_element_at_an_integer_array"
+source = """
+fn main() -> i32 {
+    let a: [i32; 2] = [1.5, 2];
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0206", "expected i32, found comptime_float"]
+
+[[case]]
+name = "integer_literal_at_a_bool_local"
+source = """
+fn main() -> i32 {
+    let b: bool = 5;
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0206", "expected bool, found {integer}"]
+
+# The literal's variable once took the array type silently, so the literal
+# itself was typed `[i32; 2]` and failed later as an out-of-range literal.
+[[case]]
+name = "integer_literal_at_an_array_local"
+source = """
+fn main() -> i32 {
+    let x: [i32; 2] = 5;
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0206", "expected [i32; 2], found {integer}"]
+
+# When the literal sets the expectation, as the first arm of an `if`, the
+# other side is what was found.
+[[case]]
+name = "integer_literal_arm_sets_the_expectation"
+source = """
+fn main() -> i32 {
+    let c = true;
+    let x = if c { 5 } else { false };
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0206", "expected integer type, found bool", "test.rue:3:31"]
+
+# A local assignment points at the value, as a field or accessor-place
+# assignment does.
+[[case]]
+name = "local_assignment_mismatch_points_at_the_value"
+source = """
+fn main() -> i32 {
+    let mut w: i32 = 0;
+    let x: bool = true;
+    w = x;
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0206", "expected i32, found bool", "test.rue:4:9"]
