@@ -1449,7 +1449,8 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
     /// a type or another non-integer binding is the host's array-length
     /// diagnostic. Neither may fall through to a same-named `const`, which
     /// the map-based resolver would otherwise reach (spec 7.1:32, 7.1:33,
-    /// RUE-2446). An unbound name is left to the resolver.
+    /// RUE-2446). An unbound name and an integer binding are left to the
+    /// resolver.
     fn check_named_array_lengths(
         &mut self,
         program: &H::ProgramKey,
@@ -1470,16 +1471,23 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 },
                 _ => None,
             };
-            if !arena.visit_child_references(reference, |child| pending.push(child)) {
-                return ComptimeOutcome::RuntimeDependent;
-            }
+            // Malformed syntax is the resolver's to report; this pass only
+            // classifies the lengths it can read.
+            arena.visit_child_references(reference, |child| pending.push(child));
             let Some(symbol) = length_symbol else {
                 continue;
             };
             let name = self.host.name_from_symbol(program, symbol.into());
             let binding = Self::classify_array_length_binding(env, &name);
-            if matches!(binding, ComptimeArrayLengthBinding::Unbound) {
-                continue;
+            // An unbound name and an integer binding are the resolver's own
+            // to convert, with its own diagnostics for a negative or
+            // oversized value.
+            match &binding {
+                ComptimeArrayLengthBinding::Unbound => continue,
+                ComptimeArrayLengthBinding::LocalValue(value) if value.as_integer().is_some() => {
+                    continue;
+                }
+                _ => {}
             }
             let site = self.diagnostic_site(span);
             outcome_value!(self.host.resolve_named_array_length(

@@ -801,7 +801,7 @@ impl<'s, 'c, H: TypeSyntaxHost> TypeSyntaxProvider<'s, 'c, H> {
                 .is_some_and(|substitutions| substitutions.contains_key(&symbol))
         {
             return Err(self.invalid_array_length(format!(
-                "'{name}' is not a compile-time integer constant here: a binding of that name in scope shadows any `const`; array lengths must be an integer literal, a `const`, or a `comptime` value parameter"
+                "'{name}' is not a compile-time constant here: a binding of that name in scope shadows any `const`; array lengths must be an integer literal, a `const`, or a `comptime` value parameter"
             )));
         }
         let value = if let Some(value) = self
@@ -888,7 +888,7 @@ impl<'s, 'c, H: TypeSyntaxHost> TypeSyntaxProvider<'s, 'c, H> {
         let symbol = self.host.type_syntax_symbol(text);
         if self.state.runtime_bindings.contains(&symbol) {
             return Err(self.invalid_array_length(format!(
-                "'{text}' is not a compile-time integer constant here: a binding of that name in scope shadows any `const`"
+                "'{text}' is not a compile-time constant here: a binding of that name in scope shadows any `const`"
             )));
         }
         if let Some(value_substitutions) = &self.state.value_substitutions
