@@ -142,6 +142,15 @@ pub struct Unifier {
     string_literal_vars: AHashSet<TypeVarId>,
     /// Concrete string types that may contextualize a literal.
     string_literal_types: AHashSet<Type>,
+    /// Joins of an integer-literal class with a float-literal class made by
+    /// the constraint being solved, not yet attributed to its span.
+    pending_literal_joins: Vec<(TypeVarId, VarSide)>,
+    /// Every integer/float literal join with its representative, the side of
+    /// the constraint the integer literal was on, and the constraint's span.
+    /// A joined class is legal only if a float context later types it
+    /// `f32`/`f64` (3.12:11), so the join is judged once solving is done;
+    /// see [`Unifier::unresolved_literal_joins`].
+    literal_joins: Vec<(TypeVarId, VarSide, Span)>,
 }
 
 impl Default for Unifier {
@@ -159,6 +168,8 @@ impl Unifier {
             float_literal_vars: AHashSet::new(),
             string_literal_vars: AHashSet::new(),
             string_literal_types: AHashSet::new(),
+            pending_literal_joins: Vec::new(),
+            literal_joins: Vec::new(),
         }
     }
 
@@ -173,6 +184,8 @@ impl Unifier {
             float_literal_vars: AHashSet::new(),
             string_literal_vars: AHashSet::new(),
             string_literal_types: AHashSet::new(),
+            pending_literal_joins: Vec::new(),
+            literal_joins: Vec::new(),
         }
     }
 
@@ -437,6 +450,71 @@ impl Unifier {
         }
     }
 
+    /// Record that binding `var` to `other` joins an integer-literal class
+    /// with a float-literal class. `side` is the constraint side `var` came
+    /// from; `other` is on the opposite one. Only a join of two classes not
+    /// already joined is recorded, so the first constraint that brought the
+    /// literals together is the one a diagnostic names.
+    fn note_literal_join(&mut self, var: TypeVarId, other: TypeVarId, side: VarSide) {
+        let var_int = self.int_literal_vars.contains(&var);
+        let var_float = self.float_literal_vars.contains(&var);
+        let other_int = self.int_literal_vars.contains(&other);
+        let other_float = self.float_literal_vars.contains(&other);
+        let int_side = match (var_int, var_float, other_int, other_float) {
+            (true, false, false, true) => side,
+            (false, true, true, false) => match side {
+                VarSide::Found => VarSide::Expected,
+                VarSide::Expected => VarSide::Found,
+            },
+            _ => return,
+        };
+        self.pending_literal_joins.push((other, int_side));
+    }
+
+    /// Attribute the literal joins the last solved constraint made to its
+    /// span.
+    fn attribute_literal_joins(&mut self, span: Span) {
+        let pending = std::mem::take(&mut self.pending_literal_joins);
+        self.literal_joins
+            .extend(pending.into_iter().map(|(rep, side)| (rep, side, span)));
+    }
+
+    /// The joins of an integer literal with a float literal that no float
+    /// context resolved.
+    ///
+    /// An integer literal takes a float type only from a contextual `f32` or
+    /// `f64` expectation (3.12:11); joined with a float literal and left
+    /// unresolved, the class would default to `i32` and the float literal
+    /// could not take it. Each such join is reported at the constraint that
+    /// made it, in that constraint's direction: "expected integer type, found
+    /// comptime_float" when the integer literal set the expectation,
+    /// "expected comptime_float, found {integer}" when the float literal did.
+    ///
+    /// The judgment needs every constraint of the body, so it belongs to the
+    /// final inference pass alone: a staged pass that sees part of a body (or
+    /// a branch comptime selection later drops) can leave a class unresolved
+    /// that the full body resolves.
+    pub(crate) fn unresolved_literal_joins(&self) -> Vec<UnificationError> {
+        self.literal_joins
+            .iter()
+            .filter(|(rep, _, _)| {
+                !matches!(
+                    self.substitution.apply(&InferType::Var(*rep)),
+                    InferType::Concrete(ty) if ty.is_float() || ty.is_error() || ty.is_never()
+                )
+            })
+            .map(|(_, int_side, span)| {
+                UnificationError::new(
+                    Self::int_literal_mismatch(
+                        InferType::Concrete(Type::COMPTIME_FLOAT),
+                        *int_side,
+                    ),
+                    *span,
+                )
+            })
+            .collect()
+    }
+
     /// Bind a type variable to a type.
     ///
     /// Performs the occurs check to prevent infinite types. `side` says which
@@ -458,6 +536,10 @@ impl Unifier {
                 var,
                 ty: ty.clone(),
             };
+        }
+
+        if let InferType::Var(other) = ty {
+            self.note_literal_join(var, *other, side);
         }
 
         // Integer-literal tracking: an integer literal can only become an
@@ -791,6 +873,7 @@ impl Unifier {
                 }
                 Constraint::Equal(lhs, rhs, span) => {
                     let result = self.unify_with(lhs, rhs, concrete_types_equal);
+                    self.attribute_literal_joins(*span);
                     if !result.is_ok() {
                         // On error, try to bind any unbound type variables to Error
                         // for recovery
@@ -811,6 +894,7 @@ impl Unifier {
                 // `comptime_float` (spec 3.12:3).
                 Constraint::ContextualEqual(lhs, rhs, span) => {
                     let result = self.unify_contextual(lhs, rhs, concrete_types_equal);
+                    self.attribute_literal_joins(*span);
                     if !result.is_ok() {
                         self.recover_from_error(lhs, rhs);
                         errors.push(UnificationError::new(result, *span));
@@ -896,6 +980,7 @@ impl Unifier {
                 } else {
                     self.unify_with(actual, expected, concrete_types_equal)
                 };
+                self.attribute_literal_joins(constraint.span());
                 if !result.is_ok() {
                     self.recover_from_error(actual, expected);
                     errors.push(UnificationError::new(result, constraint.span()));
