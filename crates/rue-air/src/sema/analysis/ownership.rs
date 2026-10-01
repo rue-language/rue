@@ -1625,9 +1625,29 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             return Err(self.type_mismatch_error(Type::new_struct(struct_id), receiver_ty, span));
         }
         if info.returns_inout && !receiver_trace.is_root_mutable {
+            // A receiver reached through a shared (`-> borrow`) accessor
+            // result is not mutable, but the shared loan is not a `borrow`
+            // parameter. As for an `inout self` method or an `inout`
+            // argument through that result, the root binding's own
+            // mutability is checked first (E0428 for a `borrow` parameter,
+            // E0203 for an immutable binding); a mutable root reaches the
+            // accessor-loan conflict (spec 6.6:10, E0259).
+            let (root_mutable, root_borrow_param) = if receiver_trace.via_accessor {
+                Self::root_binding_mutability(root, ctx).unwrap_or((false, true))
+            } else {
+                (false, receiver_trace.is_borrow_param)
+            };
+            if root_mutable {
+                return Err(self.inout_self_accessor_through_shared_accessor_result_error(
+                    root,
+                    receiver_span,
+                    span,
+                    ctx,
+                ));
+            }
             let root_name = self.body_interner().resolve(&root).to_string();
             return Err(CompileError::new(
-                if receiver_trace.is_borrow_param {
+                if root_borrow_param {
                     ErrorKind::MutateBorrowedValue {
                         variable: root_name,
                     }
@@ -7614,27 +7634,78 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             "a `-> borrow` accessor result is a shared place; pass it `borrow`, or call an \
              `-> inout` accessor to mutate through it",
         );
+        Err(Self::label_own_shared_accessor_loan(error, root, span, ctx))
+    }
+
+    /// The error for an `inout self` accessor called on a place reached
+    /// through a shared (`-> borrow`) accessor result, such as
+    /// `a.pref().pmut()` (spec 6.6:10, E0259). The `inout self` receiver
+    /// would mutate through the shared loan, exactly like an `inout self`
+    /// method on that result (`a.pref().set()`), so it reports the same
+    /// accessor-loan conflict rather than treating the shared result as a
+    /// `borrow` parameter (E0428). `receiver_span` covers the receiver, whose
+    /// own shared loan is labelled when it is still in the ledger.
+    fn inout_self_accessor_through_shared_accessor_result_error(
+        &self,
+        root: Spur,
+        receiver_span: Span,
+        span: Span,
+        ctx: &AnalysisContext,
+    ) -> CompileError {
+        let error = CompileError::new(
+            ErrorKind::AccessorLoanConflict {
+                variable: self.body_interner().resolve(&root).to_string(),
+                conflict: "as an `inout self` receiver",
+            },
+            span,
+        );
+        Self::label_own_shared_accessor_loan(error, root, receiver_span, ctx)
+    }
+
+    /// The mutability of the binding `root` names, as a place trace rooted
+    /// at it records it: `(is_root_mutable, is_borrow_param)`. Locals shadow
+    /// parameters (spec 5.1:10). `None` when `root` names neither.
+    fn root_binding_mutability(root: Spur, ctx: &AnalysisContext) -> Option<(bool, bool)> {
+        if let Some(local) = ctx.locals.get(&root) {
+            return Some((local.is_mut, false));
+        }
+        ctx.param(root).map(|param_info| {
+            (
+                matches!(param_info.mode, RirParamMode::Inout) || param_info.is_mut,
+                matches!(param_info.mode, RirParamMode::Borrow),
+            )
+        })
+    }
+
+    /// Label `error` with the shared accessor loan on `root` taken inside
+    /// `within`, if that loan is still in the expression ledger. Only a loan
+    /// inside `within` is the use's own: a sibling shared result on the same
+    /// root is legal and must not be labelled.
+    fn label_own_shared_accessor_loan(
+        error: CompileError,
+        root: Spur,
+        within: Span,
+        ctx: &AnalysisContext,
+    ) -> CompileError {
         let loan_span = Self::bound_ledger_root(root, ctx).and_then(|key| {
             ctx.ownership
                 .expression_loans
                 .iter()
                 .find(|(r, loan_span, kind)| {
-                    // Only the argument's own loan: a sibling shared result
-                    // on the same root is legal and must not be labelled.
                     *r == key
                         && *kind == CallLoanKind::Borrow
-                        && loan_span.file_id == span.file_id
-                        && loan_span.start >= span.start
-                        && loan_span.end <= span.end
+                        && loan_span.file_id == within.file_id
+                        && loan_span.start >= within.start
+                        && loan_span.end <= within.end
                 })
                 .map(|(_, loan_span, _)| *loan_span)
         });
-        Err(match loan_span {
+        match loan_span {
             Some(loan_span) => {
                 error.with_label("accessor result borrows the value here", loan_span)
             }
             None => error,
-        })
+        }
     }
 
     /// The ledger identity of the binding `name` resolves to here: the
