@@ -68,7 +68,7 @@ pub use inference::{
 };
 pub use inst::{
     AIR_PAYLOAD_FAMILY_NAMES, Air, AirArgMode, AirArrayElements, AirBlockStatements, AirBuildError,
-    AirBuildErrorKind, AirCallArg, AirCallArgs, AirConstValueWords, AirDisplay, AirEditor,
+    AirBuildErrorKind, AirCallArg, AirCallArgs, AirCalleeParam, AirCalleeResolver, AirConstValueWords, AirDisplay, AirEditor,
     AirEnumPayload, AirInst, AirInstData, AirIntrinsicArgs, AirMatchArms, AirOperand, AirParamMode,
     AirPattern, AirPayloadError, AirPayloadStorageStats, AirPlace, AirPlaceBase, AirPlaceRef,
     AirProjection, AirRef, AirSourceOrder, AirStructFields, AirTypeArgs, AirValidationContext,
