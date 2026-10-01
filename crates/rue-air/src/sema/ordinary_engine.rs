@@ -3259,6 +3259,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             infer_ctx,
             accessor_trailing_yield: None,
             accessor_call_insts: AHashMap::new(),
+            linear_pattern_temporaries: AHashSet::new(),
             accessor_place_refs: AHashMap::new(),
             inline_resolved_types: Vec::new(),
             place_aliases: AHashMap::new(),

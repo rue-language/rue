@@ -4088,6 +4088,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         allow_unused: true,
                     },
                 );
+                self.record_linear_pattern_temporary(local, *ty, ctx);
                 return Ok(vec![storage_live.as_u32(), alloc.as_u32()]);
             }
         };

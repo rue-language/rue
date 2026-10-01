@@ -987,6 +987,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             .values()
             .collect();
         self.check_struct_pattern_fields(struct_id, fields.into_iter(), span)?;
+        self.record_linear_pattern_temporary(local, head, ctx);
 
         let air_ref = air.add_inst(AirInst {
             data: AirInstData::UnitConst,
