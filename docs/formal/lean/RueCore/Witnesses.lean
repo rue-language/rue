@@ -343,8 +343,8 @@ where §6 has no rule; the rest exercise drops, `loop`, `break`, `match` and
 /-- One affine struct with a destructor, `S`, and an affine enum
 `E { A(S), B }` (helper). -/
 def demoDecls : Decls :=
-  { structs := [{ attr := .none, fields := [], dtor := true, cls := .affine }],
-    enums := [{ variants := [[.struct 0], []], cls := .affine }] }
+  { structs := [{ attr := .none, fields := [], dtor := true, qual := .affine }],
+    enums := [{ variants := [[.struct 0], []], qual := .affine }] }
 
 /-- A program over `demoDecls` whose entry point returns `i32` (helper). -/
 def demoProgram (e : Expr) : Program := Program.entry demoDecls (.int .w32 .signed) e

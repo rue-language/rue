@@ -1288,9 +1288,9 @@ def genDecl (D : Decls) (s nEnums : Nat) : G StructDecl := do
   -- than an ownership one — the one thing this module is designed never to
   -- do.
   if dtor then
-    return { attr := attr, fields := fields ++ [.int .w64 .signed], dtor := dtor, cls := attr.lift base }
+    return { attr := attr, fields := fields ++ [.int .w64 .signed], dtor := dtor, qual := attr.lift base }
   else
-    return { attr := attr, fields := fields, dtor := dtor, cls := attr.lift base }
+    return { attr := attr, fields := fields, dtor := dtor, qual := attr.lift base }
 
 /-- (helper) `n` more struct declarations, built left to right so each one sees
 the ones before it, and drawn against the `nEnums` enums already in the
@@ -1368,8 +1368,8 @@ def genEnumDecl (D : Decls) (e : Nat) : G EnumDecl := do
   let variants ← (List.range nv).mapM (fun _ => do
     let a ← weighted 1 [(3, 0), (5, 1), (2, 2)]
     (List.range a).mapM (fun _ => payloadTy D.structs.length e))
-  let ed : EnumDecl := { variants := variants, cls := .copy }
-  return { ed with cls := ed.payloadJoin D }
+  let ed : EnumDecl := { variants := variants, qual := .copy }
+  return { ed with qual := ed.payloadJoin D }
 
 /-- (helper) An enum environment of `n` declarations, built left to right so
 each one sees every struct and the enums before it — which is what keeps
@@ -2330,13 +2330,13 @@ def linearChainDecls (D : Decls) : Decls × (Nat × Nat × Nat × Nat) :=
   let c := leaf + 1
   let b := c + 1
   let a := b + 1
-  let dLeaf : StructDecl := { attr := .none, fields := [.int .w64 .signed], dtor := true, cls := .affine }
+  let dLeaf : StructDecl := { attr := .none, fields := [.int .w64 .signed], dtor := true, qual := .affine }
   let dC : StructDecl :=
-    { attr := .linear, fields := [.int .w64 .signed, .struct leaf], dtor := false, cls := .linear }
+    { attr := .linear, fields := [.int .w64 .signed, .struct leaf], dtor := false, qual := .linear }
   let dB : StructDecl :=
-    { attr := .linear, fields := [.struct c, .struct leaf], dtor := false, cls := .linear }
+    { attr := .linear, fields := [.struct c, .struct leaf], dtor := false, qual := .linear }
   let dA : StructDecl :=
-    { attr := .linear, fields := [.struct b, .struct leaf], dtor := false, cls := .linear }
+    { attr := .linear, fields := [.struct b, .struct leaf], dtor := false, qual := .linear }
   ({ D with structs := D.structs ++ [dLeaf, dC, dB, dA] }, (leaf, c, b, a))
 
 /-- (helper) A destructor-bearing leaf value, `S_leaf { n }` (`linearChainDecls`). -/

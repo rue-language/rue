@@ -32,9 +32,9 @@ namespace RueCore.Nonvacuous.Glue
 `linear`; `E0 { K0(S0), K1 }` (helper). -/
 abbrev decls : Decls :=
   { structs :=
-              [{ attr := .none, fields := [.int .w64 .signed], dtor := true, cls := .affine },
-                { attr := .linear, fields := [.int .w64 .signed], dtor := false, cls := .linear }],
-            enums := [{ variants := [[.struct 0], []], cls := .affine }] }
+              [{ attr := .none, fields := [.int .w64 .signed], dtor := true, qual := .affine },
+                { attr := .linear, fields := [.int .w64 .signed], dtor := false, qual := .linear }],
+            enums := [{ variants := [[.struct 0], []], qual := .affine }] }
 
 /-- The `dtor` witness's body (helper). -/
 abbrev bodyDtor : Expr :=

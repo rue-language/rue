@@ -76,11 +76,11 @@ abbrev max64 : Int := intMax .w64 .signed
 
 /-- `S0`: `@copy struct { x0: i64 }`. Qualifier `Copy`; a `@copy` type declares no
 destructor, so its drops are silent and its field is readable. -/
-def dCopy : StructDecl := { attr := .copy, fields := [tI64], dtor := false, cls := .copy }
+def dCopy : StructDecl := { attr := .copy, fields := [tI64], dtor := false, qual := .copy }
 
 /-- `S1`: `struct { x0: i64 }` with a destructor. Qualifier `Affine`, and the
 destructor is what makes each of its drops observable. -/
-def dAffine : StructDecl := { attr := .none, fields := [tI64], dtor := true, cls := .affine }
+def dAffine : StructDecl := { attr := .none, fields := [tI64], dtor := true, qual := .affine }
 
 /-- `S2`: `linear struct { x0: i64 }`, no destructor. Qualifier `Linear`, drops
 silent. It is *declared* linear, so a projection out of it selects §4.2's
@@ -89,53 +89,53 @@ the whole value for the leaf; the obligation is otherwise discharged by a move
 of the whole value or by `@drop`. This is a fixture declaration and not that
 rule's image, so it carries the section pointer rather than the label. The
 destructure cases have their own declarations (`destrDecls`, below). -/
-def dLinear : StructDecl := { attr := .linear, fields := [tI64], dtor := false, cls := .linear }
+def dLinear : StructDecl := { attr := .linear, fields := [tI64], dtor := false, qual := .linear }
 
 /-- `S3`: `linear struct { x0: i64 }` with a destructor. Qualifier `Linear`, drops
 observable; nothing may be moved out of it (`3.9:34`), so it is discharged by
 `@drop` or by a move of the whole value. -/
 def dLinearDtor : StructDecl :=
-  { attr := .linear, fields := [tI64], dtor := true, cls := .linear }
+  { attr := .linear, fields := [tI64], dtor := true, qual := .linear }
 
 /-- `S4`: `struct { x0: i64, x1: S3 }`, no attribute and no destructor. Its
 qualifier is `Linear` *through a field* — §3's join, `3.8:58`'s infectiousness —
 which is the shape the linear-carrying-struct cases are about. -/
 def dCarry : StructDecl :=
-  { attr := .none, fields := [tI64, .struct 3], dtor := false, cls := .linear }
+  { attr := .none, fields := [tI64, .struct 3], dtor := false, qual := .linear }
 
 /-- `S5`: `struct { x0: i64, x1: S1 }` with a destructor. Qualifier `Affine`;
 dropping it runs its own destructor first and then its fields in declaration
 order (§6.11), so it is the nesting case. -/
 def dOuter : StructDecl :=
-  { attr := .none, fields := [tI64, .struct 1], dtor := true, cls := .affine }
+  { attr := .none, fields := [tI64, .struct 1], dtor := true, qual := .affine }
 
 /-- `S6`: `@copy struct { x0: i64, x1: i64 }`. Qualifier `Copy`, two fields, so a
 use of it copies and a projection of either field is a `Copy` read that leaves
 the base `Owned`. -/
 def dPair : StructDecl :=
-  { attr := .copy, fields := [tI64, tI64], dtor := false, cls := .copy }
+  { attr := .copy, fields := [tI64, tI64], dtor := false, qual := .copy }
 
 /-- `S7`: `struct { x0: S1, x1: S1 }`, no destructor. Qualifier `Affine`; dropping
 it drops both fields in declaration order (§6.11) and nothing else. -/
 def dTwoAffine : StructDecl :=
-  { attr := .none, fields := [.struct 1, .struct 1], dtor := false, cls := .affine }
+  { attr := .none, fields := [.struct 1, .struct 1], dtor := false, qual := .affine }
 
 /-- `S8`: `struct { x0: S1, x1: i64 }`, no destructor. Qualifier `Affine`; its
 first field is droppable and its second is `Copy`, so it is the shape a partial
 move leaves a readable sibling in (`3.8:53` reads it through the moved-out part). -/
 def dAffineInt : StructDecl :=
-  { attr := .none, fields := [.struct 1, tI64], dtor := false, cls := .affine }
+  { attr := .none, fields := [.struct 1, tI64], dtor := false, qual := .affine }
 
 /-- `S9`: `struct { x0: S7, x1: i64 }`, no destructor. Qualifier `Affine`; it
 nests `S7`, so a path into it is two field steps deep. -/
 def dNested : StructDecl :=
-  { attr := .none, fields := [.struct 7, tI64], dtor := false, cls := .affine }
+  { attr := .none, fields := [.struct 7, tI64], dtor := false, qual := .affine }
 
 /-- `S10`: `struct { x0: S3, x1: S1 }`, no destructor. Qualifier `Linear` through
 its first field; its second is affine and destructor-bearing, so the two halves
 of §5.6's residual obligation are separable at a path. -/
 def dCarryAffine : StructDecl :=
-  { attr := .none, fields := [.struct 3, .struct 1], dtor := false, cls := .linear }
+  { attr := .none, fields := [.struct 3, .struct 1], dtor := false, qual := .linear }
 
 /-- The fixture environment: every field type names an earlier declaration, so
 `WfStructs` holds (checked below) and §3's qualifier assignment is the one
@@ -576,7 +576,7 @@ one field step down — which is where (Assign)'s type-keyed premise is tested
 below a root. Held out of `structEnv` so that only the one case that needs it
 prints it. -/
 def dNestCarry : StructDecl :=
-  { attr := .none, fields := [.struct 10, tI64], dtor := false, cls := .linear }
+  { attr := .none, fields := [.struct 10, tI64], dtor := false, qual := .linear }
 
 /-- `S11`'s index in `structEnv ++ [dNestCarry]`. -/
 def sNestCarry : Nat := 11
@@ -660,7 +660,7 @@ is `Copy` because `S6` is, and an attribute-less declaration is `Affine`
 otherwise. Held out of `structEnv` so only the case that needs it prints
 it. -/
 def dArrHolder : StructDecl :=
-  { attr := .none, fields := [.array (.struct sPair) 2], dtor := false, cls := .affine }
+  { attr := .none, fields := [.array (.struct sPair) 2], dtor := false, qual := .affine }
 
 /-- `S11`'s index in `structEnv ++ [dArrHolder]`. -/
 def sArrHolder : Nat := 11
@@ -856,7 +856,7 @@ struct field. Held out of `structEnv` alongside `dArrHolder`, which holds a
 `Copy` element array instead; this one is what makes an element move through a
 projection expressible at all. -/
 def dArrHolderA : StructDecl :=
-  { attr := .none, fields := [.array (.struct sAffine) 2], dtor := false, cls := .affine }
+  { attr := .none, fields := [.array (.struct sAffine) 2], dtor := false, qual := .affine }
 
 /-- `S11'`'s index in `structEnv ++ [dArrHolderA]`. -/
 def sArrHolderA : Nat := 11
@@ -869,12 +869,12 @@ def arrHolderAProg (T : Ty) (e : Expr) : Program :=
 so `h.arr[0].x0` selects through it and the declared-linear destructure
 consumes the *element* (`3.8:33`). -/
 def dDeclLinA : StructDecl :=
-  { attr := .linear, fields := [.struct sAffine], dtor := false, cls := .linear }
+  { attr := .linear, fields := [.struct sAffine], dtor := false, qual := .linear }
 
 /-- `S12''`: `struct { arr: [S11''; 2] }`, no attribute: `Linear` by infection,
 and the struct root an array of declared-linear elements is reached through. -/
 def dArrOfDeclLin : StructDecl :=
-  { attr := .none, fields := [.array (.struct 11) 2], dtor := false, cls := .linear }
+  { attr := .none, fields := [.array (.struct 11) 2], dtor := false, qual := .linear }
 
 /-- A program over the fixture declarations plus `S11''` and `S12''`. -/
 def declLinArrProg (T : Ty) (e : Expr) : Program :=
@@ -1141,7 +1141,7 @@ def arrayElemSelfAssign : Expr :=
 /-- `H { x0: i8, x1: [i64; 0] }`: a struct holding a zero-length array field,
 for RUE-2345's case. -/
 def dZeroArrHolder : StructDecl :=
-  { attr := .none, fields := [.int .w8 .signed, .array tI64 0], dtor := false, cls := .affine }
+  { attr := .none, fields := [.int .w8 .signed, .array tI64 0], dtor := false, qual := .affine }
 
 /-- **The RUE-2345 case**: a dynamic-index read from a zero-length array
 **field**, `h.x1[i]` at `i = 0`. Every index into `[i64; 0]` is out of bounds,
@@ -1635,7 +1635,7 @@ sibling, so the field `h.x0` can be moved out while `h` stays partially owned
 (helper). -/
 def dArrHolderAI : StructDecl :=
   { attr := .none, fields := [.array (.struct sAffineInt) 2, tI64], dtor := false,
-    cls := .affine }
+    qual := .affine }
 
 /-- **A write below a dynamic index after the array field moved**
 (review probe u8, RUE-2344). `let t = h.x0; @drop(t)` moves the array out of
@@ -1893,35 +1893,35 @@ states and the fact probe e11 pins against the compiler (E0406). -/
 
 /-- `E0`: `enum { K0(S1), K1 }`. Qualifier `Affine` through `S1`, whose destructor
 is what makes a payload's drop observable. -/
-def eAffine : EnumDecl := { variants := [[.struct 1], []], cls := .affine }
+def eAffine : EnumDecl := { variants := [[.struct 1], []], qual := .affine }
 
 /-- `E1`: `enum { K0(S3), K1 }`. Qualifier `Linear` through `S3`, a declared-linear
 payload with a destructor — the must-consume enum. -/
-def eLinear : EnumDecl := { variants := [[.struct 3], []], cls := .linear }
+def eLinear : EnumDecl := { variants := [[.struct 3], []], qual := .linear }
 
 /-- `E2`: `enum { K0(S1, S1), K1 }`. Two payload components, which is what pins
 the arm's newest-first drop order. -/
-def ePair : EnumDecl := { variants := [[.struct 1, .struct 1], []], cls := .affine }
+def ePair : EnumDecl := { variants := [[.struct 1, .struct 1], []], qual := .affine }
 
 /-- `E3`: `enum { K0, K1 }`, discriminant-only. The empty join is `Copy`
 (`6.3:19`, `3.8:2`), so a value of it may be matched any number of times. -/
-def eTag : EnumDecl := { variants := [[], []], cls := .copy }
+def eTag : EnumDecl := { variants := [[], []], qual := .copy }
 
 /-- `E4`: `enum { K0(i64), K1 }`. A `Copy` payload, so the enum is `Copy` too
 and its payload binding drops nothing at the arm's end. -/
-def eInt : EnumDecl := { variants := [[tI64], []], cls := .copy }
+def eInt : EnumDecl := { variants := [[tI64], []], qual := .copy }
 
 /-- `E5`: `enum { K0(S1, S3), K1 }`. An `Affine` payload component beside a
 declared-`linear` one, which is what lets a single arm move the first out and
 `@drop` the second. `qual(E5)` is `Linear` by `6.3:19`'s join over every
 component of every variant, so the value itself must be consumed. -/
-def eMixed : EnumDecl := { variants := [[.struct 1, .struct 3], []], cls := .linear }
+def eMixed : EnumDecl := { variants := [[.struct 1, .struct 3], []], qual := .linear }
 
 /-- `S11`: `struct { x0: E0, x1: S1 }`, no destructor. Qualifier `Affine`; it is
 what makes a `match` scrutinee a **projection**, so the partial move the match
 takes is one field of a struct whose sibling still drops at scope exit. -/
 def dHolder : StructDecl :=
-  { attr := .none, fields := [.enum 0, .struct 1], dtor := false, cls := .affine }
+  { attr := .none, fields := [.enum 0, .struct 1], dtor := false, qual := .affine }
 
 /-- The declaration environment the enum cases run in: the fixture structs plus
 `S11`, and the five enums above. -/
@@ -2191,75 +2191,75 @@ destructor-bearing affine one, which is the pair that makes both halves of a
 destructure observable: select `x0` and `x1` drops, select `x1` and nothing
 does. -/
 def dDestrPair : StructDecl :=
-  { attr := .linear, fields := [tI64, .struct 1], dtor := false, cls := .linear }
+  { attr := .linear, fields := [tI64, .struct 1], dtor := false, qual := .linear }
 
 /-- `S12`: `struct { x0: S11, x1: S1 }`, no attribute. `Linear` **by
 infection** through `S11`, so a projection through it is not a destructure: the
 plan's `d` is the `S11` field, and the `S1` sibling of the binding survives to
 scope exit (probe d4). -/
 def dDestrHolder : StructDecl :=
-  { attr := .none, fields := [.struct 11, .struct 1], dtor := false, cls := .linear }
+  { attr := .none, fields := [.struct 11, .struct 1], dtor := false, qual := .linear }
 
 /-- `S13`: `linear struct { x0: S11, x1: S1 }`. Two declared-`linear` levels,
 which is where §4.2's "smallest (innermost) one is destructured" has an
 instance (probes d5f, d5b). -/
 def dDestrOuter : StructDecl :=
-  { attr := .linear, fields := [.struct 11, .struct 1], dtor := false, cls := .linear }
+  { attr := .linear, fields := [.struct 11, .struct 1], dtor := false, qual := .linear }
 
 /-- `S14`: `linear struct { x0: S1, x1: S1 }`. Two droppable fields, so a
 `@drop` at the second one shows the residue's drop and the leaf's in the order
 §6.3 fixes (probe d6c). -/
 def dDestrTwoAff : StructDecl :=
-  { attr := .linear, fields := [.struct 1, .struct 1], dtor := false, cls := .linear }
+  { attr := .linear, fields := [.struct 1, .struct 1], dtor := false, qual := .linear }
 
 /-- `S15`: `linear struct { x0: S1, x1: i64, x2: S1 }`. A droppable field on
 each side of the selected leaf, which pins the residue's declaration order
 (probe d13). -/
 def dDestrThree : StructDecl :=
-  { attr := .linear, fields := [.struct 1, tI64, .struct 1], dtor := false, cls := .linear }
+  { attr := .linear, fields := [.struct 1, tI64, .struct 1], dtor := false, qual := .linear }
 
 /-- `S16`: `linear struct { x0: S8, x1: S1 }`. The selected path runs through
 the plain struct `S8`, so the residue traversal recurses before it reaches the
 later sibling (probe d14). -/
 def dDestrNested : StructDecl :=
-  { attr := .linear, fields := [.struct 8, .struct 1], dtor := false, cls := .linear }
+  { attr := .linear, fields := [.struct 8, .struct 1], dtor := false, qual := .linear }
 
 /-- `S17`: `linear struct { x0: i64, x1: S2 }`. The residue is a declared-linear
 field, which `¬ linear-residue(S, π_s)` refuses (`3.8:60`, E0474 — probe d3). -/
 def dDestrLinRes : StructDecl :=
-  { attr := .linear, fields := [tI64, .struct 2], dtor := false, cls := .linear }
+  { attr := .linear, fields := [tI64, .struct 2], dtor := false, qual := .linear }
 
 /-- `S18`: `linear struct { x0: i64, x1: S1 }` **with a destructor**. `3.9:34`
 forbids the destructure at every enclosing value, `d` included, because the
 destructor would never run at all (E0456 — probe d7). Its field join is
 `Affine`, so `3.9:44` permits the declaration. -/
 def dDestrDtor : StructDecl :=
-  { attr := .linear, fields := [tI64, .struct 1], dtor := true, cls := .linear }
+  { attr := .linear, fields := [tI64, .struct 1], dtor := true, qual := .linear }
 
 /-- `S19`: `struct { x0: i64, x1: S2 }`, no attribute. `Linear` by infection,
 and the *plain* struct step the selected path passes through in `S20` — which
 is where `linear-residue`'s recursion has to look (probe d22). -/
 def dDestrNestLinM : StructDecl :=
-  { attr := .none, fields := [tI64, .struct 2], dtor := false, cls := .linear }
+  { attr := .none, fields := [tI64, .struct 2], dtor := false, qual := .linear }
 
 /-- `S20`: `linear struct { x0: S19, x1: S1 }`. Selecting `x0.x0` retains
 `x0.x1`, a declared-linear place one step *below* the selected field, so the
 residue test must recurse to find it (`3.8:60`, "checked recursively through
 nested fields" — probe d22). -/
 def dDestrNestLin : StructDecl :=
-  { attr := .linear, fields := [.struct 19, .struct 1], dtor := false, cls := .linear }
+  { attr := .linear, fields := [.struct 19, .struct 1], dtor := false, qual := .linear }
 
 /-- `S21`: `linear struct { arr: [S1; 2], v: i64 }`. Selecting `v` retains
 `arr`, an **array** of affine elements: a retained place like any other, which
 §6.11's array rule destroys elements-ascending at the access (probe d9). -/
 def dDestrArr : StructDecl :=
-  { attr := .linear, fields := [.array (.struct 1) 2, tI64], dtor := false, cls := .linear }
+  { attr := .linear, fields := [.array (.struct 1) 2, tI64], dtor := false, qual := .linear }
 
 /-- `S22`: `linear struct { arr: [S1; 2], v: S1 }` — the declared-`linear`
 struct probe d9b selects *through*, at `x.arr[0]`, which RUE-2327 admits
 (`destructureThroughIndex`). -/
 def dDestrArrIdx : StructDecl :=
-  { attr := .linear, fields := [.array (.struct 1) 2, .struct 1], dtor := false, cls := .linear }
+  { attr := .linear, fields := [.array (.struct 1) 2, .struct 1], dtor := false, qual := .linear }
 
 /-- The declaration environment the destructure cases run in: the fixture
 structs, then the twelve above. -/
@@ -3281,28 +3281,28 @@ example : checkProgram (prog tI64
 /-- A declaration whose recorded qualifier disagrees with §3's join is rejected by
 the same pass: `qual(S)` is not a free parameter of the syntax. -/
 example : checkStructs (Decls.ofStructs
-    [{ attr := .none, fields := [tI64], dtor := false, cls := .copy }]) = false := by rfl
+    [{ attr := .none, fields := [tI64], dtor := false, qual := .copy }]) = false := by rfl
 
 /-- `3.8:18` and `3.9:31`: a `@copy` declaration whose field join is not
 `Copy`, or which declares a destructor, is ill-formed. -/
 example : checkStructs (Decls.ofStructs (structEnv ++
-    [{ attr := .copy, fields := [.struct 1], dtor := false, cls := .copy }])) = false := by rfl
+    [{ attr := .copy, fields := [.struct 1], dtor := false, qual := .copy }])) = false := by rfl
 example : checkStructs (Decls.ofStructs
-    [{ attr := .copy, fields := [tI64], dtor := true, cls := .copy }]) = false := by rfl
+    [{ attr := .copy, fields := [tI64], dtor := true, qual := .copy }]) = false := by rfl
 
 /-- `3.9:44` (E0462): a declaration whose field carries a linear value may not
 declare a destructor — `3.9:34` forbids moving the field out, so the field's
 obligation could only ever be met by the glue that runs after the destructor.
 A *declared*-linear struct with no linear field may have one (`S3` above). -/
 example : checkStructs (Decls.ofStructs (structEnv ++
-    [{ attr := .none, fields := [.struct 2], dtor := true, cls := .linear }])) = false := by rfl
+    [{ attr := .none, fields := [.struct 2], dtor := true, qual := .linear }])) = false := by rfl
 
 /-- **RUE-2486**: the `@copy`-struct-with-a-destructor declaration above
 (`3.9:31`, E0457), wrapped as a whole program whose `main` never uses it.
 `checkDecls` checks every declaration whether or not anything refers to it,
 so `checkProgram` refuses the program on the declaration alone; there is no
 dynamics to compare, since `main` never runs the struct at all. -/
-def dCopyDtor : StructDecl := { attr := .copy, fields := [tI64], dtor := true, cls := .copy }
+def dCopyDtor : StructDecl := { attr := .copy, fields := [tI64], dtor := true, qual := .copy }
 
 def copyStructDtorProgram : Program :=
   { decls := Decls.ofStructs (structEnv ++ [dCopyDtor]),
@@ -3314,7 +3314,7 @@ example : checkProgram copyStructDtorProgram = false := by rfl
 (`3.9:44`, E0462), wrapped the same way: `main` never uses the struct, and
 `checkDecls` refuses the declaration on its own. -/
 def dDtorLinearField : StructDecl :=
-  { attr := .none, fields := [.struct sLinear], dtor := true, cls := .linear }
+  { attr := .none, fields := [.struct sLinear], dtor := true, qual := .linear }
 
 def dtorLinearFieldProgram : Program :=
   { decls := Decls.ofStructs (structEnv ++ [dDtorLinearField]),
@@ -3358,8 +3358,8 @@ equation fails, so `checkStructs` rejects it (`WfStructs`), and it is what the
 second associativity counterexample is built on. -/
 def joinAssocBadDecls : Decls :=
   Decls.ofStructs
-    [ { attr := .linear, fields := [], dtor := false, cls := .linear },
-      { attr := .none, fields := [.struct 0], dtor := false, cls := .affine } ]
+    [ { attr := .linear, fields := [], dtor := false, qual := .linear },
+      { attr := .none, fields := [.struct 0], dtor := false, qual := .affine } ]
 
 example : checkStructs joinAssocBadDecls = false := by rfl
 
@@ -3398,14 +3398,14 @@ infinite size (contains itself by value: S -> E -> S)".
 /-- The cross-layer cycle with `Affine` recorded in both layers; §3's two qualifier
 equations hold of it. -/
 def cycAffine : Decls :=
-  { structs := [{ attr := .none, fields := [Ty.enum 0], dtor := false, cls := .affine }],
-    enums := [{ variants := [[Ty.struct 0], []], cls := .affine }] }
+  { structs := [{ attr := .none, fields := [Ty.enum 0], dtor := false, qual := .affine }],
+    enums := [{ variants := [[Ty.struct 0], []], qual := .affine }] }
 
 /-- The same shapes with `Linear` recorded in both layers; §3's two qualifier
 equations hold of this one too, and it gives `qual(S)` a different value. -/
 def cycLinear : Decls :=
-  { structs := [{ attr := .none, fields := [Ty.enum 0], dtor := false, cls := .linear }],
-    enums := [{ variants := [[Ty.struct 0], []], cls := .linear }] }
+  { structs := [{ attr := .none, fields := [Ty.enum 0], dtor := false, qual := .linear }],
+    enums := [{ variants := [[Ty.struct 0], []], qual := .linear }] }
 
 example : checkStructs cycAffine = true ∧ checkEnums cycAffine = true := ⟨by rfl, by rfl⟩
 example : checkStructs cycLinear = true ∧ checkEnums cycLinear = true := ⟨by rfl, by rfl⟩
@@ -3422,9 +3422,9 @@ example : checkDecls cycLinear = false := by rfl
 `Affine` as readily as by `Linear`, so the per-layer join check accepts it and
 only `3.0:5` refuses it. -/
 example : checkStructs (Decls.ofStructs
-    [{ attr := .none, fields := [.struct 0], dtor := false, cls := .affine }]) = true := by rfl
+    [{ attr := .none, fields := [.struct 0], dtor := false, qual := .affine }]) = true := by rfl
 example : checkDecls (Decls.ofStructs
-    [{ attr := .none, fields := [.struct 0], dtor := false, cls := .affine }]) = false := by rfl
+    [{ attr := .none, fields := [.struct 0], dtor := false, qual := .affine }]) = false := by rfl
 
 /-- The same rule **through an array element**. `3.0:5` names array elements
 beside struct fields and enum payloads, and `[S; 1]` occupies its element's
@@ -3435,10 +3435,10 @@ exactly as `struct S { x0: S }` does — the compiler reports E0483 for both
 ones; without that peel the per-layer join check would accept this shape and
 `3.0:5` would not refuse it. -/
 example : checkStructs (Decls.ofStructs
-    [{ attr := .none, fields := [.array (.struct 0) 1], dtor := false, cls := .affine }])
+    [{ attr := .none, fields := [.array (.struct 0) 1], dtor := false, qual := .affine }])
     = true := by rfl
 example : checkDecls (Decls.ofStructs
-    [{ attr := .none, fields := [.array (.struct 0) 1], dtor := false, cls := .affine }])
+    [{ attr := .none, fields := [.array (.struct 0) 1], dtor := false, qual := .affine }])
     = false := by rfl
 
 /-- And through an array element **across the two layers**, which is the joint
@@ -3446,16 +3446,16 @@ rule's own shape: `struct S { x0: [E; 2] }` / `enum E { K0(S), K1 }`, E0483
 "contains itself by value: S -> E -> S" (`rev2322/p/cyc2.rue`). -/
 example : checkStructs
     { structs := [{ attr := .none, fields := [.array (.enum 0) 2], dtor := false,
-                    cls := .affine }],
-      enums := [{ variants := [[Ty.struct 0], []], cls := .affine }] } = true := by rfl
+                    qual := .affine }],
+      enums := [{ variants := [[Ty.struct 0], []], qual := .affine }] } = true := by rfl
 example : checkEnums
     { structs := [{ attr := .none, fields := [.array (.enum 0) 2], dtor := false,
-                    cls := .affine }],
-      enums := [{ variants := [[Ty.struct 0], []], cls := .affine }] } = true := by rfl
+                    qual := .affine }],
+      enums := [{ variants := [[Ty.struct 0], []], qual := .affine }] } = true := by rfl
 example : checkDecls
     { structs := [{ attr := .none, fields := [.array (.enum 0) 2], dtor := false,
-                    cls := .affine }],
-      enums := [{ variants := [[Ty.struct 0], []], cls := .affine }] } = false := by rfl
+                    qual := .affine }],
+      enums := [{ variants := [[Ty.struct 0], []], qual := .affine }] } = false := by rfl
 
 /-!
 ## Refusals and traps, kernel-checked
@@ -4148,7 +4148,7 @@ over `S13` (itself over `S11`), the shape RUE-2335's root check needs: after
 `y.x0.x0.x0` destructures the innermost level, a use of `y.x0` destructures the
 root `y`, which is no longer fully owned. -/
 def dDestrTriple : StructDecl :=
-  { attr := .linear, fields := [.struct 13, .struct 1], dtor := false, cls := .linear }
+  { attr := .linear, fields := [.struct 13, .struct 1], dtor := false, qual := .linear }
 
 /-- `S23`'s index in `destrDecls.structs ++ [dDestrTriple]`. -/
 def sDestrTriple : Nat := 23
