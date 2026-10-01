@@ -5208,3 +5208,220 @@ fn main() -> i32 {
 """
 exit_code = 0
 expected_stdout = "7\n3\n3\n8\n12\n4\n4\n13\n1\n2\n2\n1\n10\n5\n11\n6\n11\n5\n6\n21\n20\n99\n"
+
+[[case]]
+name = "zero_width_locals_keep_their_own_drop_state_near_misses_o2"
+spec = ["3.9:38"]
+description = "At -O2, the same conditional drops with no zero-width temporary or a sized one, and zero-width locals with no conditional drop after them, drop each value once (RUE-2453)"
+source = """
+struct S { v: i64 }
+drop fn S(self) { @dbg(self.v); }
+struct Z {}
+drop fn Z(self) { @dbg(99); }
+struct P { a: S, b: S }
+
+fn param_without_temporary(c: bool, x: S) {
+    if c { @drop(x); } else { () };
+    @dbg(3);
+}
+
+fn sized_temporary_before_param_drop(c: bool, x: S) {
+    { let a: [i64; 1] = [0]; a };
+    if c { @drop(x); } else { () };
+    @dbg(4);
+}
+
+fn binding_without_temporary(c: bool) {
+    let r = S { v: 1 };
+    if c { @drop(r); } else { () };
+    @dbg(2);
+}
+
+fn field_move_without_temporary(c: bool) {
+    let p = P { a: S { v: 5 }, b: S { v: 6 } };
+    if c { let t = p.a; @dbg(10); @drop(t); } else { () };
+    @dbg(11);
+}
+
+fn zero_width_locals_without_a_conditional_drop() {
+    { let a: [i64; 0] = []; a };
+    let u: () = ();
+    let z = Z {};
+    let r = S { v: 20 };
+    let e: [S; 0] = [];
+    @dbg(21);
+}   // r (20), then z (99), each once
+
+fn main() -> i32 {
+    param_without_temporary(true, S { v: 7 });
+    param_without_temporary(false, S { v: 8 });
+    sized_temporary_before_param_drop(true, S { v: 12 });
+    sized_temporary_before_param_drop(false, S { v: 13 });
+    binding_without_temporary(true);
+    binding_without_temporary(false);
+    field_move_without_temporary(true);
+    field_move_without_temporary(false);
+    zero_width_locals_without_a_conditional_drop();
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "7\n3\n3\n8\n12\n4\n4\n13\n1\n2\n2\n1\n10\n5\n11\n6\n11\n5\n6\n21\n20\n99\n"
+opt_level = 2
+
+[[case]]
+name = "zero_width_locals_keep_their_own_drop_state_near_misses_o3"
+spec = ["3.9:38"]
+description = "At -O3, the same conditional drops with no zero-width temporary or a sized one, and zero-width locals with no conditional drop after them, drop each value once (RUE-2453)"
+source = """
+struct S { v: i64 }
+drop fn S(self) { @dbg(self.v); }
+struct Z {}
+drop fn Z(self) { @dbg(99); }
+struct P { a: S, b: S }
+
+fn param_without_temporary(c: bool, x: S) {
+    if c { @drop(x); } else { () };
+    @dbg(3);
+}
+
+fn sized_temporary_before_param_drop(c: bool, x: S) {
+    { let a: [i64; 1] = [0]; a };
+    if c { @drop(x); } else { () };
+    @dbg(4);
+}
+
+fn binding_without_temporary(c: bool) {
+    let r = S { v: 1 };
+    if c { @drop(r); } else { () };
+    @dbg(2);
+}
+
+fn field_move_without_temporary(c: bool) {
+    let p = P { a: S { v: 5 }, b: S { v: 6 } };
+    if c { let t = p.a; @dbg(10); @drop(t); } else { () };
+    @dbg(11);
+}
+
+fn zero_width_locals_without_a_conditional_drop() {
+    { let a: [i64; 0] = []; a };
+    let u: () = ();
+    let z = Z {};
+    let r = S { v: 20 };
+    let e: [S; 0] = [];
+    @dbg(21);
+}   // r (20), then z (99), each once
+
+fn main() -> i32 {
+    param_without_temporary(true, S { v: 7 });
+    param_without_temporary(false, S { v: 8 });
+    sized_temporary_before_param_drop(true, S { v: 12 });
+    sized_temporary_before_param_drop(false, S { v: 13 });
+    binding_without_temporary(true);
+    binding_without_temporary(false);
+    field_move_without_temporary(true);
+    field_move_without_temporary(false);
+    zero_width_locals_without_a_conditional_drop();
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "7\n3\n3\n8\n12\n4\n4\n13\n1\n2\n2\n1\n10\n5\n11\n6\n11\n5\n6\n21\n20\n99\n"
+opt_level = 3
+
+[[case]]
+name = "zero_width_locals_for_loop_element_binding"
+spec = ["3.9:38"]
+description = "A for loop over zero-width elements with a conditionally dropped sized local in the body drops each value once and reports no false move out of the borrowed element (RUE-2453)"
+source = """
+struct S { v: i64 }
+drop fn S(self) { @dbg(self.v); }
+struct Z {}
+drop fn Z(self) { @dbg(99); }
+fn f(c: bool) {
+    for z in [Z {}, Z {}] {
+        let r = S { v: 1 };
+        if c { @drop(r); } else { () };
+        @dbg(5);
+    }
+    @dbg(2);
+}
+
+fn main() -> i32 { f(true); f(false); 0 }
+"""
+exit_code = 0
+expected_stdout = "1\n5\n1\n5\n99\n99\n2\n5\n1\n5\n1\n99\n99\n2\n"
+
+[[case]]
+name = "zero_width_locals_match_payload_binding"
+spec = ["3.9:38"]
+description = "A zero-width enum payload binding beside a sized arm local drops each value once, whichever is conditionally dropped (RUE-2453)"
+source = """
+struct S { v: i64 }
+drop fn S(self) { @dbg(self.v); }
+struct Z {}
+drop fn Z(self) { @dbg(99); }
+enum W { A(Z), B }
+
+fn f(w: W, c: bool) {
+    match w {
+        W.A(z) => { let r = S { v: 1 }; if c { @drop(z); } else { () }; @dbg(3); },
+        W.B => { @dbg(4); },
+    }
+    @dbg(2);
+}
+
+fn main() -> i32 { f(W.A(Z {}), true); f(W.A(Z {}), false); f(W.B, true); 0 }
+"""
+exit_code = 0
+expected_stdout = "99\n3\n1\n2\n3\n1\n99\n2\n4\n2\n"
+
+[[case]]
+name = "zero_width_locals_declared_in_a_loop"
+spec = ["3.9:38"]
+description = "A zero-width local and a sized local declared inside a loop body drop each value once on every iteration (RUE-2453)"
+source = """
+struct S { v: i64 }
+drop fn S(self) { @dbg(self.v); }
+struct Z {}
+drop fn Z(self) { @dbg(99); }
+fn f(n: i64) {
+    let mut i = 0;
+    while i < n {
+        let z = Z {};
+        let r = S { v: i };
+        if i % 2 == 0 { @drop(z); } else { @drop(r); };
+        i = i + 1;
+    }
+    @dbg(2);
+}
+
+fn main() -> i32 { f(4); 0 }
+"""
+exit_code = 0
+expected_stdout = "99\n0\n1\n99\n99\n2\n3\n99\n2\n"
+
+[[case]]
+name = "zero_width_locals_in_a_let_struct_pattern"
+spec = ["3.9:38"]
+preview = "struct_patterns"
+preview_should_pass = true
+description = "A zero-width field and a sized field bound by a let struct pattern drop each value once, whichever is conditionally dropped (RUE-2453)"
+source = """
+struct S { v: i64 }
+drop fn S(self) { @dbg(self.v); }
+struct Z {}
+drop fn Z(self) { @dbg(99); }
+struct PZ { z: Z, s: S }
+
+fn f(c: bool, d: bool) {
+    let PZ { z, s } = PZ { z: Z {}, s: S { v: 1 } };
+    if c { @drop(z); } else { () };
+    if d { @drop(s); } else { () };
+    @dbg(2);
+}
+
+fn main() -> i32 { f(true, false); f(false, true); f(true, true); f(false, false); 0 }
+"""
+exit_code = 0
+expected_stdout = "99\n2\n1\n1\n2\n99\n99\n1\n2\n2\n1\n99\n"
