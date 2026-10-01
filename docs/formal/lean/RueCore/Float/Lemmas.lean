@@ -7,7 +7,7 @@ public import RueCore.Float
 /-!
 # RueCore.Float.Lemmas — `Float.exactOps` satisfies the laws (layer L2)
 
-`FloatLaws` (`Float.lean`) is a `FloatSig` together with the laws §7:16's
+`FloatLaws` (`Float.lean`) is a `FloatSig` together with the laws core:7:16's
 "totality of the float operations" lemma names, and 19 of the spine's
 statements quantify over one. Were the laws jointly unsatisfiable, those
 statements would hold vacuously (RUE-2469). This module proves every law of
@@ -174,7 +174,7 @@ theorem roundTail_wf {w : FloatWidth} {neg : Bool} {m : Nat} {e : Int}
   · rw [if_neg heq]
     exact hlast m e (by omega) he
 
-/-- **`rnd_w` lands in `𝔽_w`** (§2, §7:16's "`rnd_w` is total into `𝔽_w`"):
+/-- **`rnd_w` lands in `𝔽_w`** (§2, core:7:16's "`rnd_w` is total into `𝔽_w`"):
 `roundRat` of any rational with a non-zero denominator is a datum of the
 width. -/
 theorem roundRat_wf (w : FloatWidth) (neg : Bool) (num : Nat) {den : Nat} (hd : den ≠ 0) :
@@ -372,7 +372,7 @@ theorem ite_succ_le (c : Prop) [Decidable c] (x : Nat) : (if c then x + 1 else x
   · exact Nat.le_refl _
   · exact Nat.le_succ _
 
-/-- **Closure of `@sqrt`** (`3.12:35`, §7:16's "each `⊙_w` of §6.4 is total on `𝔽_w`") for `exactOps`: `FloatLaws.sqrt_wf`. -/
+/-- **Closure of `@sqrt`** (`3.12:35`, core:7:16's "each `⊙_w` of §6.4 is total on `𝔽_w`") for `exactOps`: `FloatLaws.sqrt_wf`. -/
 theorem sqrt_wf (σ : Bool) (w : FloatWidth) (f : FloatDatum) (hf : f.Wf w) :
     (sqrtD σ w f).Wf w := by
   cases f with
@@ -588,7 +588,7 @@ theorem canon_of_wf {w : FloatWidth} {n : Bool} {s : Nat} {e : Int}
     (h : (FloatDatum.num n s e).Wf w) : (s = 0 ∧ e = 0) ∨ s % 2 = 1 :=
   h.imp id (·.1)
 
-/-- **`@total_cmp` is `0` exactly on the same datum**, for well-formed data: §6.4:26's "`k = 0` holds exactly when the two operands are the same datum". This is where canonicity is used — `±0` are distinct data of distinct rank, the two NaNs likewise, and a finite datum has one significand/exponent pair. -/
+/-- **`@total_cmp` is `0` exactly on the same datum**, for well-formed data: core:6.4:26's "`k = 0` holds exactly when the two operands are the same datum". This is where canonicity is used — `±0` are distinct data of distinct rank, the two NaNs likewise, and a finite datum has one significand/exponent pair. -/
 theorem totalCmp_eq_zero_iff {w : FloatWidth} {a b : FloatDatum} (ha : a.Wf w) (hb : b.Wf w) :
     a.totalCmp b = 0 ↔ a = b := by
   refine ⟨fun h => ?_, fun h => h ▸ totalCmp_self a⟩

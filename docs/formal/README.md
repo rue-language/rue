@@ -122,16 +122,17 @@ replace it; it *grounds* it. Concretely:
   shows to be ill-defined or not worth their complexity. Pre-1.0, simplification
   is a feature. Such proposals are filed to Backlog for a maintainer decision,
   never enacted unilaterally.
-- The calculus's own §5, §6 and §7 paragraphs are cited by id, with the
-  `§` that keeps them apart from the prose spec's ids: `§5.3:4` is
-  the fourth paragraph of the calculus's §5.3, where `5.3:4` would be a
-  prose-spec paragraph. The ids are append-only, as the spec's are: a
-  paragraph inserted mid-section takes a letter suffix after the number it
-  follows (`4a` after `4`), and a deleted id is retired, not reused, so a
-  citation cannot silently move to a different paragraph. The Lean doc-comments and
-  the hand-written documents here cite them, and
-  `scripts/validate-lean-xref-index.py` fails on an id `01-core-calculus.md`
-  does not declare.
+- The calculus's own §5, §6 and §7 paragraphs are cited by id, written
+  `core:X.Y:Z`; the `core:` prefix keeps them apart from the prose spec's ids,
+  written `X.Y:Z` here and `§X.Y:Z` in the spec's own prose: `core:5.3:4` is
+  the fourth paragraph of the calculus's §5.3, where `5.3:4` is a prose-spec
+  paragraph, and `§5.3` alone cites the calculus's section. The ids are
+  append-only, as the spec's are: a paragraph inserted mid-section takes a
+  letter suffix after the number it follows (`4a` after `4`), and a deleted id
+  is retired, not reused, so a citation cannot silently move to a different
+  paragraph. The Lean doc-comments and the hand-written documents here cite
+  them, and `scripts/validate-lean-xref-index.py` fails on an id
+  `01-core-calculus.md` does not declare.
 
 ---
 

@@ -266,7 +266,7 @@ prefix of it is `MovedOut`).
 
 * `owned` — this path and every path under it is `Owned`.
 * `movedOut` — this path is `MovedOut`; every path strictly under it is absent,
-  which is what (Use-Move) §5.1:1's "every path strictly under `p` removed" does.
+  which is what (Use-Move) core:5.1:1's "every path strictly under `p` removed" does.
 * `fields ts` — this path is `Owned` and its fields carry the states `ts`,
   which is the state a **partial move** leaves (`3.8:22`). A field beyond
   `ts`'s length is `owned`, so a partial move records only the fields it
@@ -396,7 +396,7 @@ part of an infectious carrier and letting the rest drop is legal.
 **The array clause and §5.6's second disjunct.** An array's node carries no
 obligation of its own — it declares no attribute, and `3.8:74` makes a
 zero-length one vacuous — so the obligation is the disjunction over its `n`
-elements, each at the element type (`3.8:71`, §5.3:7's "the element type for an
+elements, each at the element type (`3.8:71`, core:5.3:7's "the element type for an
 array of nonzero length"). §5.6 writes that clause with a second disjunct,
 "(untracked residue carries linear)", for the elements the tracked list does
 not reach. It is not absent here: `residualLinearFields`' `[], Ts` base case
@@ -897,7 +897,7 @@ concludes at `⊥`.
 Rule names cite the calculus: `useCopy`/`useMove` are (Use-Copy)/(Use-Move)
 (§5.1) and `useDeclared` is (Use-Declared-Linear-Destructure) §5.1, the
 declared-linear destructure §4.2 selects by the `Declared(d, π_s)` plan, with
-`dropDeclared` its `@drop` half (§5.1:5's "read the same way"); `binop` is
+`dropDeclared` its `@drop` half (core:5.1:5's "read the same way"); `binop` is
 (Arith) and (Ord) at once, `neg`/`notOp`/`bitnot` are
 (Neg)/(Not)/(BitNot), `intCast` is (Int-Cast) and `dbg` is (Dbg), all §5.8;
 `dropCopy`/`dropRes` are (@Drop-Copy)/(@Drop) (§5.3); `mkStruct` is
@@ -1041,7 +1041,7 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Out → Prop wh
   Both operands share **one** `float(w)`: `3.12:13` gives no implicit
   widening, so an `f32`/`f64` mix has no derivation, and `3.12:14` relates no
   float operand to an integer one — the only bridges are the intrinsics.
-  `BinOp.floatAdmits` is §5.8:15's "rejected on floats by the absence of a rule" for `%`
+  `BinOp.floatAdmits` is core:5.8:15's "rejected on floats by the absence of a rule" for `%`
   (`3.12:25`) and for the bitwise and shift operators, written as a side
   condition because one constructor stands for the three rule groups. -/
   | floatBinop {Γ Γ₁ Ω₂ Δ₁ op e₁ e₂ w} :
@@ -1163,7 +1163,7 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Out → Prop wh
   the compiler reports as E0205 (`3.8:5`).
 
   Exhaustiveness is the arm list's **shape**: `arms.length =
-  ed.variants.length`, with arm `j` the arm for variant `j`, so §5.5:4's "exactly
+  ed.variants.length`, with arm `j` the arm for variant `j`, so core:5.5:4's "exactly
   the variants K1..Kn" needs no coverage search and no ordering side condition
   (`4.7:9`, `4.7:10`'s enum clause; the wildcard, the repeated pattern and the
   first-match order are elaboration obligations §5.5 states). Progress rests on
@@ -1515,7 +1515,7 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Out → Prop wh
 
   One **deviation** (N3): `Owned-Base` is demanded on the *input context* as
   well as the post-RHS one, so this rule is one premise stricter than §5.2,
-  which states neither (U4 reads §5.1:6's "in any context" side condition for the
+  which states neither (U4 reads core:5.1:6's "in any context" side condition for the
   post-RHS lookup). Nothing a program can observe turns on it: only an RHS that
   reinitialises the target's own moved-out prefix could make the input
   lookup fail where the post-RHS one succeeds. -/

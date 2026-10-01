@@ -30,7 +30,7 @@ HOL-IMP names them (`big_to_small`, `small_to_big`).
 namespace RueCore.Spec
 
 /-- **The big-to-small direction, `eval` to `Step`**: the interpreter-to-small-step direction of
-the semantic equivalence (§7:3's semantic-equivalence sentence; ADR-0097). For a
+the semantic equivalence (core:7:3's semantic-equivalence sentence; ADR-0097). For a
 checked program, `run` is never refused, and its values and panics are reached
 by `→*` from `Config.init` with the same store and trace. -/
 def eval_big_to_small_stmt : Prop :=
@@ -42,7 +42,7 @@ def eval_big_to_small_stmt : Prop :=
       Steps M.toFloatSig P Config.init (.panic k tr))
 
 /-- **`run` is simulated by `Step`, on every program** (§6.12): the same, with
-no typing hypothesis (§7:3's semantic-equivalence sentence). -/
+no typing hypothesis (core:7:3's semantic-equivalence sentence). -/
 def run_sim_stmt : Prop :=
   ∀ (M : FloatSig) (P : Program) (fuel : Nat),
     (∀ H v tr, run M P fuel = .ok H v tr →
@@ -50,7 +50,7 @@ def run_sim_stmt : Prop :=
     (∀ k tr, run M P fuel = .panic k tr → Steps M P Config.init (.panic k tr))
 
 /-- **The small-to-big direction, `Step` to `eval`, modulo fuel**: the small-step-to-interpreter
-direction of the semantic equivalence (§7:3's semantic-equivalence sentence).
+direction of the semantic equivalence (core:7:3's semantic-equivalence sentence).
 For a checked program, a value or panic `→*` reaches is `run`'s answer at
 every large enough fuel. -/
 def eval_small_to_big_stmt : Prop :=
@@ -61,7 +61,7 @@ def eval_small_to_big_stmt : Prop :=
       ∃ n, ∀ fuel, n < fuel → run M.toFloatSig P fuel = .panic κ tr)
 
 /-- **Completeness on every program** (§6.12): the same, up to a refusal of
-`run`'s (RUE-2314; §7:3's semantic-equivalence sentence). With no typing
+`run`'s (RUE-2314; core:7:3's semantic-equivalence sentence). With no typing
 hypothesis the escape is wide: a `run` that is `.refused` past some fuel
 satisfies it, whatever `→*` reaches. -/
 def run_small_to_big_stmt : Prop :=
@@ -71,7 +71,7 @@ def run_small_to_big_stmt : Prop :=
     (∀ κ tr, Steps M P Config.init (.panic κ tr) →
       ∃ n, ∀ fuel, n < fuel → run M P fuel = .panic κ tr ∨ ∃ w, run M P fuel = .refused w)
 
-/-- **Never refused iff never stuck** (§7:3 "Type safety"). For a checked program,
+/-- **Never refused iff never stuck** (core:7:3 "Type safety"). For a checked program,
 `run` is never refused iff no reachable configuration is stuck. Under `ProgramTyped` both
 sides hold outright, so the equivalence adds nothing; cite
 `step_never_stuck_of_run` (R5 of `REDTEAM-LOG.md`). -/
@@ -80,7 +80,7 @@ def never_refused_iff_stmt : Prop :=
     (∀ fuel w, run M.toFloatSig P fuel ≠ .refused w) ↔
       ∀ C, Steps M.toFloatSig P Config.init C → C.Terminal ∨ ∃ C', Step M.toFloatSig P C C'
 
-/-- **`eval` never refused, so `Step` never stuck, on every program** (§7:3 "Type
+/-- **`eval` never refused, so `Step` never stuck, on every program** (core:7:3 "Type
 safety": "it either reduces, halts with a value, or halts with one of the
 defined panics"). -/
 def step_never_stuck_of_run_stmt : Prop :=
@@ -88,14 +88,14 @@ def step_never_stuck_of_run_stmt : Prop :=
     ∀ C, Steps M P Config.init C → C.Terminal ∨ ∃ C', Step M P C C'
 
 /-- **A stuck `Step` run is a refusal of `run`** (§6), at every large enough
-fuel, perhaps with another `Refusal`: the stuck case of §7:3's
+fuel, perhaps with another `Refusal`: the stuck case of core:7:3's
 semantic-equivalence sentence. -/
 def run_refused_of_step_stuck_stmt : Prop :=
   ∀ (M : FloatSig) (P : Program) {C : Config} {w : Refusal}
     (_ : Steps M P Config.init C) (_ : C.Stuck M P w),
     ∃ n, ∀ fuel, n < fuel → ∃ w', run M P fuel = .refused w'
 
-/-- **Divergence is exhaustion at every fuel** (§7:3 "Type safety"; §6.12): for a
+/-- **Divergence is exhaustion at every fuel** (core:7:3 "Type safety"; §6.12): for a
 checked program, `run` is `outOfFuel` at every fuel iff `Step` has runs of
 every length from `Config.init`. -/
 def eval_diverges_iff_stmt : Prop :=

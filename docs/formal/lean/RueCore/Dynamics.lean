@@ -595,12 +595,12 @@ deriving DecidableEq, Repr
 /-- The named memory violations: the machine's refusals. §7's decomposed
 memory-safety bullets each forbid one of these. -/
 inductive Refusal where
-  /-- Reading a `⊘` cell (§7:4: no use-after-move). -/
+  /-- Reading a `⊘` cell (core:7:4: no use-after-move). -/
   | useAfterMove
-  /-- Touching a `†` cell (§7:6: no use-after-drop). -/
+  /-- Touching a `†` cell (core:7:6: no use-after-drop). -/
   | useAfterDrop
   /-- A scope exit — at a `let`'s end (§6.7) or on an activation record's unwind (§6.9) —
-  reaching a live linear value (§7:8: consumed exactly once; §5.6); or a
+  reaching a live linear value (core:7:8: consumed exactly once; §5.6); or a
   declared-linear destructure whose residue holds one, which §5.1's
   `¬ linear-residue(S, π_s)` premise forbids (`3.8:60`, E0474) and which §6.3
   therefore leaves unchecked. -/
@@ -617,7 +617,7 @@ inductive Refusal where
   | typeConfusion
   /-- An owned value under a `Copy` node (§3: a `Copy` type's fields, payloads
   and elements are `Copy`, `3.8:18`, `6.3:19`) — the shape a copy would
-  duplicate an owner through, which §7's no-double-free bullet (§7:5) forbids. The
+  duplicate an owner through, which §7's no-double-free bullet (core:7:5) forbids. The
   Copy-containment monitor (`Contents.copyContained`) refuses it where it could be
   built: at aggregate introduction and at an assignment (RUE-2323). -/
   | ownedUnderCopy
@@ -984,7 +984,7 @@ def Contents.splitResidue (D : Decls) :
 
 /-- `split`'s step over one node's stored members — a declaration's fields, or
 an array's elements: retain the members before the selected slot, recurse into
-it, and retain the members after — which is §5.1:3's "visit fields in declaration
+it, and retain the members after — which is core:5.1:3's "visit fields in declaration
 order" (and its ascending-index order at an array) written as a structural
 recursion rather than as a `take`/`drop` (helper). -/
 def Contents.splitFields (D : Decls) :

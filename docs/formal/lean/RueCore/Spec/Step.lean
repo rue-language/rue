@@ -52,7 +52,7 @@ def step_stuck_isStuckState_stmt : Prop :=
   ∀ {M : FloatSig} {P : Program} {C : Config} {w : Refusal}
     (_ : C.Stuck M P w), w.isStuckState = true
 
-/-- **Progress over `Step`** (§7:3 "Type safety": "does not get stuck"). For a
+/-- **Progress over `Step`** (core:7:3 "Type safety": "does not get stuck"). For a
 checked program, every `C` with `Config.init →* C` is terminal or has a step
 `C → C'`. This is not the one-step progress lemma over a typed configuration
 (no configuration typing is defined, RUE-2423) but its consequence along every
@@ -61,7 +61,7 @@ def step_progress_stmt : Prop :=
   ∀ (M : FloatLaws) {P : Program} (_ : ProgramTyped P),
     ∀ C, Steps M.toFloatSig P Config.init C → C.Terminal ∨ ∃ C', Step M.toFloatSig P C C'
 
-/-- **The invariant `SafeAt` along every run** (§7:3 "Type safety"; *not* its
+/-- **The invariant `SafeAt` along every run** (core:7:3 "Type safety"; *not* its
 sentence "types are preserved under reduction"). For a checked program, every
 `C` with `Config.init →* C` is `SafeAt` the entry type: nothing reachable from
 it is stuck, and every value it halts with has that type.
@@ -76,7 +76,7 @@ def step_safeAt_stmt : Prop :=
     ∃ fd, P.fns[0]? = some fd ∧
       ∀ C, Steps M.toFloatSig P Config.init C → C.SafeAt M.toFloatSig P fd.ret
 
-/-- **Type safety over `Step`, per horizon** (§7:3 "Type safety"; §6.12). For a
+/-- **Type safety over `Step`, per horizon** (core:7:3 "Type safety"; §6.12). For a
 checked program and every `n`, `Config.init →ⁿ D` for some `D`, or
 `Config.init →* ✓` with a value of the entry type, or `Config.init →* ↯κ`:
 Wright & Felleisen's form (diverge, or a typed value), per horizon and with a
@@ -89,7 +89,7 @@ def step_type_safety_stmt : Prop :=
         HasTy P.decls v fd.ret) ∨
       (∃ κ tr, Steps M.toFloatSig P Config.init (.panic κ tr))
 
-/-- **No use-after-drop over `Step`, on every program** (§7:6 "No use-after-drop /
+/-- **No use-after-drop over `Step`, on every program** (core:7:6 "No use-after-drop /
 no leak of drops"; §6.1's tombstoned cell; RUE-2496). No configuration reachable
 from `Config.init` is stuck on a tombstoned (`†`) cell, whether or not the
 program is checked. The hypothesis that the configuration is reached is
