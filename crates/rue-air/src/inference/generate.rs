@@ -3165,8 +3165,9 @@ impl<'a> ConstraintGenerator<'a> {
                 // same way the call-head path does (RUE-599); a head sema
                 // could not reduce falls through to the error path below and
                 // sema diagnoses it. Module-qualified literals
-                // (`m.Point { ... }`) resolve in the module's defining file,
-                // matching sema. Unqualified literals delegate their
+                // (`m.Point { ... }`) resolve in the module's defining file
+                // over sema's member order, so a type-valued `const` member
+                // heads a literal as a declaration does. Unqualified literals delegate their
                 // substitution/alias/declaration/builtin precedence to the
                 // shared nominal selector below.
                 let struct_ty = if let Some(head) = ctor_head {
@@ -3182,7 +3183,8 @@ impl<'a> ConstraintGenerator<'a> {
                     };
                     module_id
                         .and_then(|module_id| self.module_file_id(module_id))
-                        .and_then(|file_id| self.struct_type_by_file((file_id, *type_name)))
+                        .and_then(|file_id| self.nominal_type_in_module_file(file_id, type_name))
+                        .filter(|ty| ty.as_struct().is_some())
                 } else {
                     self.struct_type_for(type_name, span.file_id)
                 };
@@ -4686,6 +4688,16 @@ impl<'a> ConstraintGenerator<'a> {
         ctx: &ConstraintContext,
     ) -> Option<Type> {
         let file_id = self.module_member_file(module, ctx)?;
+        self.nominal_type_in_module_file(file_id, type_name)
+    }
+
+    /// The type `Name` names as a member of the module defined in `file_id`,
+    /// in [`select_module_nominal`]'s order. A module-qualified struct
+    /// literal (`m.B { ... }`) selects its head here too, so a `pub const B =
+    /// struct { ... }` member types the literal as a declared `pub struct`
+    /// member does; without the alias tier the literal inferred `<error>`
+    /// and an enclosing array literal collapsed to E0903 (RUE-2580).
+    fn nominal_type_in_module_file(&self, file_id: FileId, type_name: &Spur) -> Option<Type> {
         select_module_nominal(
             || self.struct_type_by_file((file_id, *type_name)),
             || self.enum_type_by_file((file_id, *type_name)),
