@@ -567,8 +567,8 @@ define_error_codes! {
         }],
     };
     ASSIGN_TO_IMMUTABLE = 203 => {
-        explanation: "Rue rejected an assignment because its target belongs to a binding that was not declared mutable.",
-        likely_cause: "A variable, array, or struct value was introduced with `let` and later used as an assignment target. Bind it with `let mut` when mutation is intended.",
+        explanation: "Rue rejected a write because the place written belongs to a binding that was not declared mutable: an assignment target, an `inout` argument, or the receiver of an `inout self` method.",
+        likely_cause: "A variable, array, or struct value was introduced with `let` (or is a by-value parameter) and later assigned to, passed `inout`, or used as an `inout self` receiver. Bind it with `let mut` when mutation is intended.",
         examples: [
             ErrorCodeExample {
                 title: "Assignment to an immutable binding",

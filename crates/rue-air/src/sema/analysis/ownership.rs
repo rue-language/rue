@@ -7316,10 +7316,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     ///
     /// An `inout` argument is a write to the caller's place, so it carries the
     /// same mut-binding requirement an assignment to that place carries, and
-    /// reports the same code (E0203, 5.2:3), worded for the `inout` argument. `let`, `for`, and `match`
-    /// bindings all reach this through `ctx.locals`, and locals shadow
-    /// parameters (RUE-278), so a `let mut` rebinding a parameter name is the
-    /// binding that later uses see.
+    /// reports the same code (E0203, 5.2:3), worded for the `inout`
+    /// argument. `let`, `for`, and `match` bindings all reach this through
+    /// `ctx.locals`, and locals shadow parameters (RUE-278), so a `let mut`
+    /// rebinding a parameter name is the binding that later uses see.
     ///
     /// Roots that are not locals are governed elsewhere and are deliberately
     /// left alone here: a name that binds nothing is a non-lvalue (E0425), a
@@ -8669,6 +8669,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 // assignment to that place and an `inout self` receiver carry
                 // (spec 6.1:43, RUE-2054, RUE-2079).
                 if arg.is_inout() {
+                    // Anything but a bare variable is a place under the
+                    // root (a field, element or accessor result).
                     let projected = !matches!(
                         self.body_rir_ref().get(arg.value).data,
                         InstData::VarRef { .. }
