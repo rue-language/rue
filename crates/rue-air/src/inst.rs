@@ -1551,9 +1551,12 @@ pub struct Air {
     /// The value is substituted into the body, so the parameter has no drop
     /// entry and, when the body never reads it as a runtime value, no `Param`
     /// instruction either; but the caller still materializes the argument into
-    /// the slot. This record is presentation only: `--emit abi` reads it to
-    /// name the parameter's type. Drop elaboration, slot grouping, and code
-    /// generation never consult it.
+    /// the slot. This record is the callee's type source for those slots:
+    /// [`crate::occupying_body_parameter_types`] reads it, so slot grouping
+    /// and classification place the parameter as the caller does (RUE-2563:
+    /// without it an unread comptime `f64`, array or struct was read as
+    /// untyped general-purpose slots), and `--emit abi` names it. Drop
+    /// elaboration never consults it: a comptime parameter is never dropped.
     comptime_param_types: Vec<(u32, Type)>,
     /// Local slots that hold a non-owning *borrow* value and so must NOT be
     /// dropped at scope exit. Currently the element binder of a `for` loop
@@ -3528,7 +3531,8 @@ impl Air {
     }
 
     /// Comptime value parameters that occupy an ABI slot: (first ABI slot,
-    /// type). Presentation only; see `comptime_param_types`.
+    /// type). The callee-side type source for their slots; see
+    /// `comptime_param_types`.
     #[inline]
     pub fn comptime_param_types(&self) -> &[(u32, Type)] {
         &self.comptime_param_types

@@ -247,7 +247,7 @@ pub struct SourceParamAbi {
     /// The parameter's source type, or `None` when the parameter is one
     /// register-width slot the convention needs no type for: a by-reference
     /// pointer, whose pointee the convention never consults; or a slot no
-    /// `Param` instruction or drop entry names. A typeless descriptor always
+    /// `Param` instruction, drop entry or comptime parameter record names. A typeless descriptor always
     /// has `slot_count == 1`, so every parameter is one value the convention
     /// places as a whole.
     ///

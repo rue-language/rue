@@ -1025,8 +1025,10 @@ pub struct SemanticBody<K, M> {
     pub local_atoms: Arc<[crate::SemanticBodyLocalAtom<K, M>]>,
     pub param_drops: Arc<[(u32, SemanticImportType<K, M>)]>,
     /// The type of each comptime value parameter that occupies an ABI slot,
-    /// keyed by its first slot in ascending order. Presentation only: it names
-    /// a parameter the body substituted away and never reads (`--emit abi`).
+    /// keyed by its first slot in ascending order. It types the slots of a
+    /// parameter the body substituted away, which the caller still fills, so
+    /// the callee classifies them as the caller does (RUE-2563); drop
+    /// elaboration never reads it.
     pub comptime_param_types: Arc<[(u32, SemanticImportType<K, M>)]>,
     pub borrow_slots: Arc<[u32]>,
     pub num_locals: u32,

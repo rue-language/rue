@@ -1750,3 +1750,31 @@ fn mid(a: i32, comptime N: f64, b: i32) -> i32 { if N > 1.0 { a + b } else { 0 }
 fn main() -> i32 { pick(1.5, 3, 4.0) + mid(5, 2.0, 6) }
 """
 exit_code = 18
+
+[[case]]
+name = "comptime_aggregate_parameters_before_runtime_arguments"
+spec = ["4.14:5"]
+description = "Unread comptime array and Copy struct parameters (all-integer, all-float, over 16 bytes) are placed by the callee as the caller passes them, so the runtime arguments after them arrive intact (RUE-2563)"
+source = """
+@copy struct Q { a: f64, b: f64 }
+@copy struct I { a: i64, b: i64, c: i64 }
+fn arr(comptime A: [i32; 2], b: i32) -> i32 { b }
+fn hfa(comptime S: Q, b: i32, c: f64) -> i32 { b + @float_to_int(c) }
+fn big(comptime S: I, b: i32) -> i32 { b }
+fn main() -> i32 {
+    arr([1, 2], 5) + hfa(Q { a: 1.0, b: 2.0 }, 6, 4.0) + big(I { a: 1, b: 2, c: 3 }, 7)
+}
+"""
+exit_code = 22
+
+[[case]]
+name = "comptime_float_parameter_among_spilled_float_arguments"
+spec = ["4.14:5"]
+description = "A comptime f64 between runtime f64 arguments that overflow the float argument registers keeps every runtime argument in place (RUE-2563)"
+source = """
+fn f(a: f64, b: f64, c: f64, d: f64, e: f64, g: f64, h: f64, comptime N: f64, i: f64, j: f64, k: i32) -> i32 {
+    @float_to_int(a + b + c + d + e + g + h + i + j) + k
+}
+fn main() -> i32 { f(1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 100.0, 8.0, 9.0, 10) }
+"""
+exit_code = 55
