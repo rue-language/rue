@@ -1382,7 +1382,7 @@ namespace RueCore
 
 open Tombstone
 
-/-- **No use-after-drop, on every program** (§7:6 "No use-after-drop / no leak
+/-- **No use-after-drop, on every program** (core:7:6 "No use-after-drop / no leak
 of drops", "never read afterward"; §6.9): `run` never refuses with
 `useAfterDrop`, checked or not. -/
 theorem run_no_use_after_drop (M : FloatSig) (P : Program) (fuel : Nat) :

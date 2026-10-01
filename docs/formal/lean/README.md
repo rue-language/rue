@@ -687,7 +687,7 @@ a slice author writes:
 
 - Every top-level declaration in a rule-bearing module (every module except
   those marked below) has a `/-- ... -/` doc-comment that cites what it
-  mechanizes, in one or more of three spellings the script recognizes:
+  mechanizes, in one or more of four spellings the script recognizes:
   - a rule label exactly as the calculus writes it, in parentheses:
     `(Use-Move)`, `(D-Let)`, `(@Drop-Copy)`. The label must exist in
     `../01-core-calculus.md` §5 or §6 (the script inventories the labels at
@@ -698,14 +698,16 @@ a slice author writes:
     `(Not)` or `(Panic)`, counts as a citation;
   - a calculus section: `§5.5`, `§6.7`. Write each section; a range such as
     `§5.1–§5.3` is read as its two endpoints only;
-  - a paragraph of the calculus's §5–§7: `§5.3:4`, `§6.13.3:5`, `§7:3`, the
-    id the calculus prints at the paragraph's start (RUE-2511). It also
-    counts as citing its section, and the gate fails on an id the calculus
-    does not declare, or one written malformed (a `.`-numbered tail after
-    the paragraph number, which no id has), anywhere in a text file under
-    `docs/formal`: Lean strings and `--` comments, `explain/*.txt` and the
-    Markdown documents included, and at both ends of a range such as
-    `§6.4:3–9`;
+  - a paragraph of the calculus's §5–§7: `core:5.3:4`, `core:6.13.3:5`,
+    `core:7:3`, the id the calculus prints at the paragraph's start
+    (RUE-2511), written with the `core:` prefix so that it never reads as a
+    prose-specification paragraph (RUE-2524). It also counts as citing its
+    section, and the gate fails on an id the calculus does not declare, or one
+    written malformed (a section with no paragraph number, or a `.`-numbered
+    tail after the paragraph number, which no id has), anywhere in a text file
+    under `docs/formal`: Lean strings and `--` comments, `explain/*.txt` and
+    the Markdown documents included, and at both ends of a range such as
+    `core:6.4:3–9`;
   - a prose-specification paragraph: `3.8:73`.
 
   Citations count only inside `/-- … -/` and `/-! … -/` comments, including

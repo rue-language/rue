@@ -923,7 +923,7 @@ theorem evalFintrin_float_res {D : Decls} (M : FloatLaws) (k : FloatIntrin)
 
 /-! ## The store–Σ agreement invariant, path by path
 
-`StoreTyping` is §7:4's "Σ faithfully tracks the store's initialization". With Σ
+`StoreTyping` is core:7:4's "Σ faithfully tracks the store's initialization". With Σ
 keyed by path (`OwnSt`, `Statics.lean`) and a cell holding a tree with `⊘` at
 any node (`Contents`, `Dynamics.lean`), the per-cell clause becomes a
 **recursive** relation between the two trees and the binding's declared type.
@@ -4334,11 +4334,11 @@ theorem no_refusal (M : FloatLaws) {P : Program} (h : ProgramTyped P) (fuel : Na
   · rw [h₂]; simp
   · rw [h₃]; simp
 
-/-- §7:4 "No use-after-move": the machine never reads a `⊘` cell. -/
+/-- core:7:4 "No use-after-move": the machine never reads a `⊘` cell. -/
 theorem no_use_after_move (M : FloatLaws) {P : Program} (h : ProgramTyped P) (fuel : Nat) :
     run M.toFloatSig P fuel ≠ .refused .useAfterMove := no_refusal M h fuel _
 
-/-- §7:6 "No use-after-drop": the machine never touches a tombstoned (`†`) cell.
+/-- core:7:6 "No use-after-drop": the machine never touches a tombstoned (`†`) cell.
 Here it is `no_refusal` at one tag, over checked programs, but typing is not
 what makes it true: `run_no_use_after_drop` (`Tombstone.lean`, RUE-2496) proves
 it for every program. `run-all-scope-drops` (§6.9) walks the activation record's drop
@@ -4351,7 +4351,7 @@ cells `StoreTyping` says are live or moved out and pairwise distinct). -/
 theorem no_use_after_drop (M : FloatLaws) {P : Program} (h : ProgramTyped P) (fuel : Nat) :
     run M.toFloatSig P fuel ≠ .refused .useAfterDrop := no_refusal M h fuel _
 
-/-- §7:8 "Linear values are consumed exactly once", leak half: neither a scope
+/-- core:7:8 "Linear values are consumed exactly once", leak half: neither a scope
 exit (§6.7) nor an activation record unwind (§6.9) ever sees a live linear value. -/
 theorem no_linear_leak (M : FloatLaws) {P : Program} (h : ProgramTyped P) (fuel : Nat) :
     run M.toFloatSig P fuel ≠ .refused .linearLeak := no_refusal M h fuel _

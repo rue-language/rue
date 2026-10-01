@@ -2012,7 +2012,7 @@ def enumArmLeaksPayload : Expr :=
 
 /-- **Probe e3b.** The same arm with the payload discharged: accepted, and the
 `@drop` runs the payload's destructor (`1`) before the value (`5`). Consuming the
-payload is what discharges the *enum's* obligation too — §7:8's "consuming it
+payload is what discharges the *enum's* obligation too — core:7:8's "consuming it
 by a `match` that binds and consumes the linear payload discharges the
 obligation (§5.5)". -/
 def enumArmDropsPayload : Expr :=
@@ -2703,7 +2703,7 @@ nested `return` and exits with `5`, after the `@dbg` line `1`. -/
 def returnBottom : Program :=
   scalarProg tI64 (seq (dbg (lit 1)) (ret (ret (lit 5))))
 
-/-- (Call-Bottom) §5.8:27, `f1`'s sole argument: it diverges by `return` before
+/-- (Call-Bottom) core:5.8:27, `f1`'s sole argument: it diverges by `return` before
 the call is reached, so `f1`'s activation record is never pushed and its body never
 runs. The mechanization has no separate (Call-Bottom) conclusion for the
 call itself — `Typed.call` always concludes at `fd.ret` (`Statics.lean`'s

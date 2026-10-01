@@ -20,7 +20,7 @@ it realizes, and says where the reading is narrower than the paragraph.
 
 namespace RueCore.Spec
 
-/-- **Type safety over `eval`** (§7:3 "Type safety", in the interpreter form it
+/-- **Type safety over `eval`** (core:7:3 "Type safety", in the interpreter form it
 names). A typed expression of a well-formed program, run at any fuel from a
 activation record and store agreeing with its context, ends in `EvalOk`: a well-typed
 value, an unwinding `return` or `break` §5.3's `Ω` allows, a defined panic,
@@ -31,7 +31,7 @@ def soundness_stmt : Prop :=
       ∀ {φ : Activation} {H : Store}, ActivationTyping P.decls Γ φ H →
         EvalOk P.decls T R Ω.norm Ω.brk φ H (eval M.toFloatSig fuel P H φ e)
 
-/-- **Program safety** (§7:3 "Type safety"). A well-formed program whose entry
+/-- **Program safety** (core:7:3 "Type safety"). A well-formed program whose entry
 point (`P.fns[0]?`) takes no parameters, run at any fuel, exhausts it,
 panics, or returns a value of its entry point's type. The entry point's
 return type is not restricted: §2's grammar fixes `fn main() -> i32 | unit`,
@@ -44,8 +44,8 @@ def run_safe_stmt : Prop :=
     run M.toFloatSig P fuel = .outOfFuel ∨ (∃ k tr, run M.toFloatSig P fuel = .panic k tr) ∨
       (∃ H v tr, run M.toFloatSig P fuel = .ok H v tr ∧ HasTy P.decls v fd.ret)
 
-/-- **No refusal of any kind** (§7:3's "does not get stuck" and §7's
-memory-safety bullets, §7:4, §7:5, §7:6 and §7:8). A checked program's run is never `.refused`. Narrower than the bullets: a value built for
+/-- **No refusal of any kind** (core:7:3's "does not get stuck" and §7's
+memory-safety bullets, core:7:4, core:7:5, core:7:6 and core:7:8). A checked program's run is never `.refused`. Narrower than the bullets: a value built for
 a sibling operand that a later one abandons by `return` or `break` is dropped
 by nobody (RUE-2316), and a `@panic` runs no drop (§5.7's `⊥_panic`). Like
 every "never `.refused`" statement, it holds because `eval`'s checks and
@@ -55,7 +55,7 @@ def no_refusal_stmt : Prop :=
   ∀ (M : FloatLaws) {P : Program} (_ : ProgramTyped P) (fuel : Nat) (w : Refusal),
     run M.toFloatSig P fuel ≠ .refused w
 
-/-- **No use-after-move** (§7:4 "No use-after-move"): `run` never refuses with
+/-- **No use-after-move** (core:7:4 "No use-after-move"): `run` never refuses with
 `useAfterMove`, the tag `eval` raises when it reads a `⊘`. It is
 `no_refusal` at one tag, so it says no read of a moved-out place happens
 only as far as `eval` checks every read and labels it so: what it rules out is
@@ -64,7 +64,7 @@ def no_use_after_move_stmt : Prop :=
   ∀ (M : FloatLaws) {P : Program} (_ : ProgramTyped P) (fuel : Nat),
     run M.toFloatSig P fuel ≠ .refused .useAfterMove
 
-/-- **No use-after-drop** (§7:6 "No use-after-drop / no leak of drops", "never
+/-- **No use-after-drop** (core:7:6 "No use-after-drop / no leak of drops", "never
 read afterward"): `run` never refuses with `useAfterDrop`, the tag `eval`
 raises when it reaches a tombstoned cell. It is `no_refusal` at one tag, so it
 says no tombstoned cell is accessed only as far as `eval` checks every access
@@ -79,7 +79,7 @@ def no_use_after_drop_stmt : Prop :=
   ∀ (M : FloatLaws) {P : Program} (_ : ProgramTyped P) (fuel : Nat),
     run M.toFloatSig P fuel ≠ .refused .useAfterDrop
 
-/-- **No use-after-drop, on every program** (§7:6 "No use-after-drop / no leak
+/-- **No use-after-drop, on every program** (core:7:6 "No use-after-drop / no leak
 of drops", "never read afterward"; RUE-2496): `run` never refuses with
 `useAfterDrop`, at any fuel and any float operations (not only a `FloatLaws`), **whether or not the program is
 checked**. The property is structural rather than a corollary of typing: a
@@ -93,7 +93,7 @@ names a cell already tombstoned, `eval` does refuse (`Sharp.tombstoned_cell`). L
 def run_no_use_after_drop_stmt : Prop :=
   ∀ (M : FloatSig) (P : Program) (fuel : Nat), run M P fuel ≠ .refused .useAfterDrop
 
-/-- **No linear leak** (§7:8 "Linear values are consumed exactly once", §5.6): no
+/-- **No linear leak** (core:7:8 "Linear values are consumed exactly once", §5.6): no
 scope exit, activation record pop or scope unwind meets a live linear binding. Narrower
 than the bullet:
 - a linear value built for a sibling operand, which a later operand abandons
@@ -108,13 +108,13 @@ def no_linear_leak_stmt : Prop :=
   ∀ (M : FloatLaws) {P : Program} (_ : ProgramTyped P) (fuel : Nat),
     run M.toFloatSig P fuel ≠ .refused .linearLeak
 
-/-- **No linear overwrite** (§7:8, the same bullet, `3.8:77`): no assignment drops
+/-- **No linear overwrite** (core:7:8, the same bullet, `3.8:77`): no assignment drops
 a live linear value. -/
 def no_linear_overwrite_stmt : Prop :=
   ∀ (M : FloatLaws) {P : Program} (_ : ProgramTyped P) (fuel : Nat),
     run M.toFloatSig P fuel ≠ .refused .linearOverwrite
 
-/-- **No linear discard** (§7:8, the same bullet, `3.8:64`): no sequence discards
+/-- **No linear discard** (core:7:8, the same bullet, `3.8:64`): no sequence discards
 a linear value. The three linear statements hold because `eval`'s monitors
 never fire; what they rule out is what those monitors watch (R3 of
 `REDTEAM-LOG.md`). -/

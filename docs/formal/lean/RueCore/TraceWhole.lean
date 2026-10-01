@@ -8,7 +8,7 @@ public import RueCore.TracePrefix
 /-!
 # RueCore.TraceWhole — every owned value of a run ends exactly once (§7)
 
-`drop_exactly_once` and `rest_exactly_once` (`TraceExact.lean`) state §7:6's
+`drop_exactly_once` and `rest_exactly_once` (`TraceExact.lean`) state core:7:6's
 "no leak of drops" per evaluation and per form. Composed over a whole run they
 are only an argument: at `run` both are vacuous (the run starts from the
 empty store and the entry call's lead is empty), applying them at every
@@ -1532,7 +1532,7 @@ theorem run_final_le (M : FloatSig) (P : Program) (fuel : Nat) {H : Store} {v : 
   simp only [freedIds]
   omega
 
-/-- **Every owned value of a terminating run ends exactly once** (§7:6 "No
+/-- **Every owned value of a terminating run ends exactly once** (core:7:6 "No
 use-after-drop / no leak of drops", over a whole program; RUE-2478). For a
 checked program whose functions are all `pendingSafe` (RUE-2316), take any
 configuration `C` §6's relation reaches from `Config.init` and any owned
