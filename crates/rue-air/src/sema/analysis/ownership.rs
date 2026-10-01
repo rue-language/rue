@@ -7642,7 +7642,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         self.reject_accessor_shared_loan_conflict(root, "by a shared read", span, ctx)?;
         // A projected chain re-enters here at each level (`a.p.c`, `a.p`,
         // `a`); `record_completed_shared_use` keeps one record per root.
-        self.record_completed_shared_use(root, span, ctx)
+        self.record_completed_shared_use(root, span, ctx);
+        Ok(())
     }
 
     /// Remember a shared use of `root` -- a borrowed place, or a `borrow`
@@ -7653,14 +7654,18 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// `byref_arg_root`, which keeps the value path from recording them.
     ///
     /// One record per root and full expression is enough, since the ledger
-    /// is only ever searched for the root.
+    /// is only ever searched for the root. A name that is no runtime binding
+    /// (a promoted constant, `take(borrow LIMIT)`) owns no storage an accessor
+    /// could loan, so it is not recorded.
     pub(crate) fn record_completed_shared_use(
         &self,
         root: Spur,
         span: Span,
         ctx: &mut AnalysisContext,
-    ) -> CompileResult<()> {
-        let key = Self::ledger_root(root, span, ctx)?;
+    ) {
+        let Some(key) = Self::bound_ledger_root(root, ctx) else {
+            return;
+        };
         if !ctx
             .ownership
             .expression_shared_reads
@@ -7669,7 +7674,6 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         {
             ctx.ownership.expression_shared_reads.push((key, span));
         }
-        Ok(())
     }
 
     /// Check the completed-use ledgers that a nested full-expression boundary
@@ -8309,7 +8313,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 if arg.is_inout() {
                     self.record_completed_exclusive_use(root, arg_span, ctx)?;
                 } else if arg.is_borrow() {
-                    self.record_completed_shared_use(root, arg_span, ctx)?;
+                    self.record_completed_shared_use(root, arg_span, ctx);
                 }
             }
         }
