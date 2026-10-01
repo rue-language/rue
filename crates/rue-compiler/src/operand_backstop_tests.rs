@@ -185,12 +185,12 @@ const BOX_MISMATCH: &str = "type mismatch: expected Box(i32), found Box(i64)";
 
 // --- The switch itself -----------------------------------------------------
 
-/// The switch reaches inference. A comparison names its types in the order
-/// of whoever rejects it: inference unifies the right operand's fact into the
-/// left's (`expected Box(i64), found Box(i32)`), while the backstop holds the
-/// right operand to the left's type (`expected Box(i32), found Box(i64)`).
-/// Were the switch inert, every rejection below could be inference's and
-/// prove nothing about the backstop.
+/// The switch reaches inference. Both inference and the backstop hold the
+/// right operand to the left's type (`expected Box(i32), found Box(i64)`,
+/// RUE-2582), but they report at different places: inference at the whole
+/// comparison, the backstop at the right operand. Were the switch inert,
+/// every rejection below could be inference's and prove nothing about the
+/// backstop.
 #[test]
 fn withholding_the_fact_hands_the_comparison_to_the_backstop() {
     let main = r#"
@@ -200,18 +200,29 @@ fn main() -> i32 {
     if (q == @import("lib.rue").Box(i64) { v: 7 }) { 1 } else { 0 }
 }
 "#;
+    let comparison_start = main.find("q ==").expect("comparison") as u32;
+    let right_operand_start = main.find("@import(\"lib.rue\").Box(i64)").expect("operand") as u32;
     let inferred = frontend(main, false).expect_err("inference rejects the mismatch");
     let inferred = inferred.first().expect("one diagnostic");
     assert_eq!(inferred.kind.code().to_string(), "E0206");
     assert!(
-        inferred
-            .kind
-            .to_string()
-            .contains("expected Box(i64), found Box(i32)"),
+        inferred.kind.to_string().contains(BOX_MISMATCH),
         "inference's orientation: {}",
         inferred.kind
     );
+    assert_eq!(
+        inferred.span().map(|span| span.start),
+        Some(comparison_start),
+        "inference reports at the whole comparison"
+    );
     assert_backstop_rejects("struct equality", main, "E0206", BOX_MISMATCH);
+    let withheld = frontend(main, true).expect_err("the backstop rejects the mismatch");
+    let withheld = withheld.first().expect("one diagnostic");
+    assert_eq!(
+        withheld.span().map(|span| span.start),
+        Some(right_operand_start),
+        "the backstop reports at the right operand"
+    );
 }
 
 // --- Slots: require_slot_type ----------------------------------------------
