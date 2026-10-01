@@ -1296,6 +1296,21 @@ fn addressable_value_plan<A: ValueLowerAdapter>(
             slot: ctx.frame_slot(*slot),
             low_shift: ctx.type_slot_count(inst.ty).saturating_sub(1),
         }),
+        // A zero-sized by-value parameter has no frame home to address: its
+        // index is its key past the ABI range (RUE-2534). As a place it takes
+        // the canonical zero-sized address every storage-less place does.
+        CfgInstData::Param { index }
+            if !ctx.cfg.is_param_by_ref(*index) && ctx.type_slot_count(inst.ty) == 0 =>
+        {
+            Some(ByRefAddressPlan::Place(PlacePlan {
+                base: PlaceBasePlan::Param {
+                    slot: *index,
+                    by_ref: false,
+                },
+                base_type: inst.ty,
+                projections: Vec::new(),
+            }))
+        }
         CfgInstData::Param { index } => Some(ByRefAddressPlan::Parameter {
             slot: *index,
             by_ref: ctx.cfg.is_param_by_ref(*index),
