@@ -3064,11 +3064,14 @@ impl<'a> ConstraintGenerator<'a> {
                     if self.was_canceled() {
                         break;
                     }
-                    // Patterns constrain the scrutinee type
+                    // Patterns constrain the scrutinee type. The scrutinee
+                    // sets the expectation and the pattern is what was found,
+                    // so `match 1 { true => .. }` blames the pattern as
+                    // "expected integer type, found bool" (RUE-133).
                     let pattern_ty = self.pattern_type(&pattern, ctx);
                     self.add_constraint(Constraint::equal(
-                        scrutinee_info.ty.clone(),
                         pattern_ty,
+                        scrutinee_info.ty.clone(),
                         pattern.span(),
                     ));
 
