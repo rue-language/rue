@@ -3390,7 +3390,7 @@ error_contains = ["[E0206]", "expected [i32; 2], found [!; 2]"]
 
 [[case]]
 name = "diverging_array_accessor_place_assignment"
-spec = ["3.4:3", "7.1:2", "5.2:2"]
+spec = ["3.4:3", "7.1:2", "5.2:2", "6.6:15"]
 description = "RUE-2554: an exclusive accessor place accepts `[return 5; 2]` at its `[i32; 2]` type"
 source = """
 struct P {
@@ -3407,7 +3407,7 @@ exit_code = 5
 
 [[case]]
 name = "diverging_array_continuing_ptr_read_accessor_place_rejected"
-spec = ["3.4:3", "7.1:2", "5.2:2"]
+spec = ["3.4:3", "7.1:2", "5.2:2", "6.6:15"]
 description = "RUE-2554: an exclusive accessor place rejects a continuing `[!; 2]` value, as a local, field or element place does"
 source = """
 struct P {
@@ -3427,6 +3427,63 @@ fn main() -> i32 {
 """
 compile_fail = true
 error_contains = ["[E0206]", "expected [i32; 2], found [!; 2]"]
+
+[[case]]
+name = "diverging_array_empty_never_binding_accessor_place_rejected"
+spec = ["3.4:3", "7.1:2", "5.2:2", "6.6:15"]
+description = "RUE-2554: a continuing `[!; 0]` binding is not a `[i32; 0]` accessor place value, as at a local, field or element place"
+source = """
+struct P {
+    z: [i32; 0],
+    fn zr(inout self) -> inout [i32; 0] { yield self.z; }
+}
+fn main() -> i32 {
+    let w: [!; 0] = [];
+    let mut p = P { z: [] };
+    p.zr() = w;
+    0
+}
+"""
+compile_fail = true
+error_contains = ["[E0206]", "expected [i32; 0], found [!; 0]"]
+
+[[case]]
+name = "diverging_array_i32_binding_at_never_accessor_place_rejected"
+spec = ["3.4:3", "7.1:2", "5.2:2", "6.6:15"]
+description = "RUE-2554: a `[i32; 0]` binding is not a `[!; 0]` accessor place value"
+source = """
+struct NA {
+    z: [!; 0],
+    fn zr(inout self) -> inout [!; 0] { yield self.z; }
+}
+fn main() -> i32 {
+    let w: [i32; 0] = [];
+    let mut n = NA { z: [] };
+    n.zr() = w;
+    0
+}
+"""
+compile_fail = true
+error_contains = ["[E0206]"]
+
+[[case]]
+name = "diverging_array_assert_eq_and_assert_ne_operands"
+spec = ["3.4:3", "7.1:2", "4.13:5f"]
+description = "RUE-2554: `[return 5; 2]` is a `[i32; 2]` operand of `@assert_eq` and `@assert_ne` that never completes"
+source = """
+fn eq() -> i32 {
+    let a: [i32; 2] = [1, 2];
+    @assert_eq(a, [return 5; 2]);
+    0
+}
+fn ne() -> i32 {
+    let a: [i32; 2] = [1, 2];
+    @assert_ne([return 6; 2], a);
+    0
+}
+fn main() -> i32 { eq() + ne() }
+"""
+exit_code = 11
 
 [[case]]
 name = "array_repeat_non_copy_element_error"
