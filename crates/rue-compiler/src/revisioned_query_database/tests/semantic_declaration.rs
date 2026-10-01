@@ -2547,7 +2547,10 @@ fn live_type_provider_array_length_adapter_preserves_integer_boundaries_without_
         Err(rue_air::SemanticProviderError::Failure(Failure::Resolution(ref reason)))
             if reason.as_ref() == "comptime value parameter `DEFERRED_I` has no value outside a call site"
     ));
-    assert!(provider_deferred_read, "a deferred length read must be recorded");
+    assert!(
+        provider_deferred_read,
+        "a deferred length read must be recorded"
+    );
     assert!(matches!(
         deferred_bool,
         Err(rue_air::SemanticProviderError::Failure(Failure::Diagnostic(
