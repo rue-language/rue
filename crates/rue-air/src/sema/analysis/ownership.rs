@@ -7503,6 +7503,54 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         }
     }
 
+    /// Reject an `inout` argument whose place is reached through a shared
+    /// (`-> borrow`) accessor result (spec 6.6:8, 6.6:10, E0259).
+    ///
+    /// `arg` has already been analyzed, so an accessor place chain has its
+    /// rebased trace cached in `accessor_place_refs`; the cached mutability is
+    /// the kind of the loan granting the place -- the accessor nearest the
+    /// use, whatever the chain's root. Passing an exclusive (`-> inout`)
+    /// result `inout` uses that result's own loan; passing a shared result
+    /// `inout` would write through a shared loan, exactly like assigning
+    /// through it or calling an `inout self` method on it. Unlike a fresh
+    /// exclusive use of the root, this is rejected whether or not the shared
+    /// loan is still in the ledger, so a mutable root does not make it legal.
+    pub(crate) fn reject_inout_arg_through_shared_accessor_result(
+        &self,
+        arg: InstRef,
+        span: Span,
+        ctx: &AnalysisContext,
+    ) -> CompileResult<()> {
+        let Some(&(_, root, _, exclusive, _)) = ctx.accessor_place_refs.get(&arg) else {
+            return Ok(());
+        };
+        if exclusive {
+            return Ok(());
+        }
+        let error = CompileError::new(
+            ErrorKind::AccessorLoanConflict {
+                variable: self.body_interner().resolve(&root).to_string(),
+                conflict: "as an `inout` argument",
+            },
+            span,
+        )
+        .with_help(
+            "a `-> borrow` accessor result is a shared place; pass it `borrow`, or call an \
+             `-> inout` accessor to mutate through it",
+        );
+        let loan_span = Self::bound_ledger_root(root, ctx).and_then(|key| {
+            ctx.ownership
+                .expression_loans
+                .iter()
+                .find(|(r, _, kind)| *r == key && *kind == CallLoanKind::Borrow)
+                .map(|(_, loan_span, _)| *loan_span)
+        });
+        Err(match loan_span {
+            Some(loan_span) => error.with_label("accessor result borrows the value here", loan_span),
+            None => error,
+        })
+    }
+
     /// The ledger identity of the binding `name` resolves to here: the
     /// visible local's slot, or the parameter's name (see [`LedgerRoot`]).
     ///
@@ -8528,6 +8576,13 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     arg.is_inout(),
                     self.body_rir_ref().get(arg.value).span,
                 )?;
+                if arg.is_inout() {
+                    self.reject_inout_arg_through_shared_accessor_result(
+                        arg.value,
+                        self.body_rir_ref().get(arg.value).span,
+                        ctx,
+                    )?;
+                }
             }
             // Two-types model (ADR-0043, RUE-386): an `inout str` parameter is
             // an *exclusive* view and requires local provenance — a first-class
