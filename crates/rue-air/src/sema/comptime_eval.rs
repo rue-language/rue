@@ -2261,7 +2261,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let inline_heads = self.inline_ctor_head_candidates(body, &mut attribution)?;
         let mut discovered = PrecomputedTypeLocals::default();
         let mut eval_types: AHashMap<Spur, Type> = type_subst.cloned().unwrap_or_default();
-        let eval_values: AHashMap<Spur, ConstValue> = value_subst.cloned().unwrap_or_default();
+        let mut eval_values: AHashMap<Spur, ConstValue> = value_subst.cloned().unwrap_or_default();
         let mut runtime_bindings: AHashSet<Spur> = runtime_params.iter().copied().collect();
         let mut root_frame = Vec::new();
         let mut local_modules = LocalModuleScope::default();
@@ -2270,10 +2270,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             &inline_heads,
             &mut discovered,
             &mut eval_types,
-            &eval_values,
+            &mut eval_values,
             &mut runtime_bindings,
             &mut local_modules,
             &mut root_frame,
+            false,
             &mut attribution,
         )?;
         Ok((discovered, attribution))
@@ -2364,10 +2365,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         inline_heads: &AHashSet<InstRef>,
         discovered: &mut PrecomputedTypeLocals,
         eval_types: &mut AHashMap<Spur, Type>,
-        eval_values: &AHashMap<Spur, ConstValue>,
+        eval_values: &mut AHashMap<Spur, ConstValue>,
         runtime_bindings: &mut AHashSet<Spur>,
         local_modules: &mut LocalModuleScope,
-        frame: &mut Vec<(Spur, Option<Type>, bool)>,
+        frame: &mut Vec<WalkFrameEntry>,
+        in_comptime: bool,
         attribution: &mut ComptimePrecomputeAttribution,
     ) -> CompileResult<()> {
         self.check_canceled()?;
@@ -2416,14 +2418,19 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         runtime_bindings,
                         local_modules,
                         &mut inner_frame,
+                        in_comptime,
                         attribution,
                     )?;
                 }
-                for (name, old_type, was_runtime) in inner_frame.into_iter().rev() {
+                for (name, old_type, was_runtime, old_value) in inner_frame.into_iter().rev() {
                     local_modules.unbind(name);
                     match old_type {
                         Some(ty) => eval_types.insert(name, ty),
                         None => eval_types.remove(&name),
+                    };
+                    match old_value {
+                        Some(value) => eval_values.insert(name, value),
+                        None => eval_values.remove(&name),
                     };
                     if was_runtime {
                         runtime_bindings.insert(name);
@@ -2473,6 +2480,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     runtime_bindings,
                     local_modules,
                     frame,
+                    in_comptime,
                     attribution,
                 )?;
                 if let Some(name) = name {
@@ -2481,7 +2489,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         let module = Type::new_module(module);
                         let old_type = eval_types.insert(name, module);
                         let was_runtime = runtime_bindings.remove(&name);
-                        frame.push((name, old_type, was_runtime));
+                        let old_value = eval_values.remove(&name);
+                        frame.push((name, old_type, was_runtime, old_value));
                         return Ok(());
                     }
                     let alias = if initializer_may_evaluate_to_type_with_bindings(
@@ -2513,16 +2522,49 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         }
                         None
                     };
+                    // A `let` of a `comptime` block is a compile-time value
+                    // the block's later annotations and lengths read (spec
+                    // 4.14:27); evaluate it as the block will, so a length
+                    // naming it resolves at its value rather than at a
+                    // shadowed `const` or not at all (RUE-2446).
+                    let comptime_value = if alias.is_none() && in_comptime {
+                        self.try_eval_comptime_local_init(
+                            init,
+                            eval_types,
+                            eval_values,
+                            runtime_bindings,
+                        )
+                    } else {
+                        None
+                    };
                     let old_type = eval_types.remove(&name);
                     let was_runtime = runtime_bindings.remove(&name);
-                    frame.push((name, old_type, was_runtime));
+                    let old_value = eval_values.remove(&name);
+                    frame.push((name, old_type, was_runtime, old_value));
                     if let Some(ty) = alias {
                         discovered.aliases.insert(inst_ref, ty);
                         eval_types.insert(name, ty);
+                    } else if let Some(value) = comptime_value {
+                        eval_values.insert(name, value);
                     } else {
                         runtime_bindings.insert(name);
                     }
                 }
+            }
+            InstData::Comptime { expr } => {
+                let expr = *expr;
+                self.walk_comptime_type_locals(
+                    expr,
+                    inline_heads,
+                    discovered,
+                    eval_types,
+                    eval_values,
+                    runtime_bindings,
+                    local_modules,
+                    frame,
+                    true,
+                    attribution,
+                )?;
             }
             // Each declaration body has its own inference pass and lexical
             // environment; it must not inherit this body's local annotations.
@@ -2545,6 +2587,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         runtime_bindings,
                         local_modules,
                         frame,
+                        in_comptime,
                         attribution,
                     )?;
                 }
@@ -2558,6 +2601,26 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// `FixedBuffer(8)` — mirroring `analyze_call`'s implicit-comptime gate)
     /// and direct type expressions (`let P = Q;`, `let P = struct { .. };`).
     /// Returns `None` for anything else.
+    /// Evaluate the initializer of a `comptime` block's `let` as the
+    /// compile-time value the block binds, if it reduces to one that is not
+    /// a type (a type is an alias, above).
+    fn try_eval_comptime_local_init(
+        &mut self,
+        init: InstRef,
+        eval_types: &AHashMap<Spur, Type>,
+        eval_values: &AHashMap<Spur, ConstValue>,
+        runtime_bindings: &AHashSet<Spur>,
+    ) -> Option<ConstValue> {
+        let mut env = ComptimeEnv::with_subst(eval_types, eval_values);
+        env.canonical_identity = self.active_anonymous_producer().cloned();
+        env.runtime_local_names = runtime_bindings.clone();
+        env.defining_file = Some(self.body_rir_ref().get(init).span.file_id);
+        match self.eval_const_expr(init, &mut env).ok().flatten() {
+            Some(ConstValue::Type(_)) | None => None,
+            Some(value) => Some(value),
+        }
+    }
+
     fn try_eval_type_alias_init(
         &mut self,
         init: InstRef,
@@ -2579,6 +2642,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         }
     }
 }
+
+/// One binding the pre-inference walk saved to restore when its block ends:
+/// the name, its shadowed alias, whether it was a runtime binding, and its
+/// shadowed compile-time value.
+type WalkFrameEntry = (Spur, Option<Type>, bool, Option<ConstValue>);
 
 /// The `let` bindings a body's pre-inference walk resolved, keyed by the
 /// binding's `Alloc` instruction (see `precompute_comptime_type_locals`).

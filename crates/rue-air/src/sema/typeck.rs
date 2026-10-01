@@ -800,9 +800,7 @@ impl<'s, 'c, H: TypeSyntaxHost> TypeSyntaxProvider<'s, 'c, H> {
                 .as_ref()
                 .is_some_and(|substitutions| substitutions.contains_key(&symbol))
         {
-            return Err(self.invalid_array_length(format!(
-                "'{name}' is not a compile-time constant here: a binding of that name in scope shadows any `const`; array lengths must be an integer literal, a `const`, or a `comptime` value parameter"
-            )));
+            return Err(self.shadowed_array_length(name, symbol));
         }
         let value = if let Some(value) = self
             .state
@@ -840,6 +838,29 @@ impl<'s, 'c, H: TypeSyntaxHost> TypeSyntaxProvider<'s, 'c, H> {
                 Err(self.invalid_array_length(format!("array length '{name}' is not an integer")))
             }
         }
+    }
+
+    /// A length naming a binding in scope that is not a compile-time
+    /// integer. The reason names the shadowing only when a same-named
+    /// `const` exists for it to hide; otherwise it is the ordinary
+    /// not-a-constant diagnostic (RUE-2446).
+    fn shadowed_array_length(&self, name: &str, symbol: Spur) -> CompileError {
+        let root_file = self.state.root_authority.file();
+        if self
+            .host
+            .type_syntax_value_const(root_file, symbol)
+            .is_some()
+        {
+            return self.invalid_array_length(format!(
+                "'{name}' is not a compile-time constant here: a binding of that name in scope shadows the `const` `{name}`; array lengths must be an integer literal, a `const`, or a `comptime` value parameter"
+            ));
+        }
+        let hint = self
+            .host
+            .type_syntax_out_of_scope_const_hint(symbol, root_file);
+        self.invalid_array_length(format!(
+            "'{name}' is not a compile-time constant; array lengths must be an integer literal, a `const`, or a `comptime` value parameter{hint}"
+        ))
     }
 
     fn invalid_array_length(&self, reason: String) -> CompileError {
@@ -887,9 +908,7 @@ impl<'s, 'c, H: TypeSyntaxHost> TypeSyntaxProvider<'s, 'c, H> {
         }
         let symbol = self.host.type_syntax_symbol(text);
         if self.state.runtime_bindings.contains(&symbol) {
-            return Err(self.invalid_array_length(format!(
-                "'{text}' is not a compile-time constant here: a binding of that name in scope shadows any `const`"
-            )));
+            return Err(self.shadowed_array_length(text, symbol));
         }
         if let Some(value_substitutions) = &self.state.value_substitutions
             && let Some(value) = value_substitutions.get(&symbol)
