@@ -8,8 +8,10 @@
 # cleanup round, so these valid programs exhausted the bound: a panic in a
 # debug compiler, an under-optimized graph in a release one. The sparse
 # constant driver now carries the chain through branches, join parameters,
-# dead writes, dead loops, and identities in one run, so each site settles in a
-# fixed number of rounds whatever the chain's length.
+# dead writes, dead loops, and identities in one run, so the ControlFlow and
+# Forwarding sites settle in a fixed number of rounds whatever the chain's
+# length. The last case reaches the bound at the O3 Unrolling site, which is
+# not structurally bounded and publishes its graph at the bound instead.
 #
 # Every case is `differential_opt`: it must compile and give the pinned output
 # at -O0, -O1, -O2, and -O3.
@@ -788,5 +790,131 @@ fn main() -> i32 {
 }
 """ }]
 stdout = """1
+"""
+exit_code = 0
+
+# CSE-exposed equalities at the O3 Unrolling site: `a_k = x * (d_{k-1} + 3)`
+# equals `b_k = x * 3` only once `d_{k-1}` folds to zero, and only CSE (not
+# constopt) proves it, so each link costs one Unrolling round; the unrolled
+# loop turns that site's forwarding and CSE revisits on. 63 links reach the
+# bound. That site is not structurally bounded, so it publishes the graph it
+# has at the bound instead of failing the compile.
+[[case]]
+name = "cse_exposed_equality_chain"
+differential_opt = true
+files = [{ path = "main.rue", source = """
+fn g(x: i64) -> i64 {
+    let mut s: i64 = 0; let mut i: i64 = 0;
+    while i < 4 { s = s + i; i = i + 1; }
+    let d0 = x - x;
+    let a1 = x * (d0 + 3); let b1 = x * 3; let d1 = a1 - b1;
+    let a2 = x * (d1 + 3); let b2 = x * 3; let d2 = a2 - b2;
+    let a3 = x * (d2 + 3); let b3 = x * 3; let d3 = a3 - b3;
+    let a4 = x * (d3 + 3); let b4 = x * 3; let d4 = a4 - b4;
+    let a5 = x * (d4 + 3); let b5 = x * 3; let d5 = a5 - b5;
+    let a6 = x * (d5 + 3); let b6 = x * 3; let d6 = a6 - b6;
+    let a7 = x * (d6 + 3); let b7 = x * 3; let d7 = a7 - b7;
+    let a8 = x * (d7 + 3); let b8 = x * 3; let d8 = a8 - b8;
+    let a9 = x * (d8 + 3); let b9 = x * 3; let d9 = a9 - b9;
+    let a10 = x * (d9 + 3); let b10 = x * 3; let d10 = a10 - b10;
+    let a11 = x * (d10 + 3); let b11 = x * 3; let d11 = a11 - b11;
+    let a12 = x * (d11 + 3); let b12 = x * 3; let d12 = a12 - b12;
+    let a13 = x * (d12 + 3); let b13 = x * 3; let d13 = a13 - b13;
+    let a14 = x * (d13 + 3); let b14 = x * 3; let d14 = a14 - b14;
+    let a15 = x * (d14 + 3); let b15 = x * 3; let d15 = a15 - b15;
+    let a16 = x * (d15 + 3); let b16 = x * 3; let d16 = a16 - b16;
+    let a17 = x * (d16 + 3); let b17 = x * 3; let d17 = a17 - b17;
+    let a18 = x * (d17 + 3); let b18 = x * 3; let d18 = a18 - b18;
+    let a19 = x * (d18 + 3); let b19 = x * 3; let d19 = a19 - b19;
+    let a20 = x * (d19 + 3); let b20 = x * 3; let d20 = a20 - b20;
+    let a21 = x * (d20 + 3); let b21 = x * 3; let d21 = a21 - b21;
+    let a22 = x * (d21 + 3); let b22 = x * 3; let d22 = a22 - b22;
+    let a23 = x * (d22 + 3); let b23 = x * 3; let d23 = a23 - b23;
+    let a24 = x * (d23 + 3); let b24 = x * 3; let d24 = a24 - b24;
+    let a25 = x * (d24 + 3); let b25 = x * 3; let d25 = a25 - b25;
+    let a26 = x * (d25 + 3); let b26 = x * 3; let d26 = a26 - b26;
+    let a27 = x * (d26 + 3); let b27 = x * 3; let d27 = a27 - b27;
+    let a28 = x * (d27 + 3); let b28 = x * 3; let d28 = a28 - b28;
+    let a29 = x * (d28 + 3); let b29 = x * 3; let d29 = a29 - b29;
+    let a30 = x * (d29 + 3); let b30 = x * 3; let d30 = a30 - b30;
+    let a31 = x * (d30 + 3); let b31 = x * 3; let d31 = a31 - b31;
+    let a32 = x * (d31 + 3); let b32 = x * 3; let d32 = a32 - b32;
+    let a33 = x * (d32 + 3); let b33 = x * 3; let d33 = a33 - b33;
+    let a34 = x * (d33 + 3); let b34 = x * 3; let d34 = a34 - b34;
+    let a35 = x * (d34 + 3); let b35 = x * 3; let d35 = a35 - b35;
+    let a36 = x * (d35 + 3); let b36 = x * 3; let d36 = a36 - b36;
+    let a37 = x * (d36 + 3); let b37 = x * 3; let d37 = a37 - b37;
+    let a38 = x * (d37 + 3); let b38 = x * 3; let d38 = a38 - b38;
+    let a39 = x * (d38 + 3); let b39 = x * 3; let d39 = a39 - b39;
+    let a40 = x * (d39 + 3); let b40 = x * 3; let d40 = a40 - b40;
+    let a41 = x * (d40 + 3); let b41 = x * 3; let d41 = a41 - b41;
+    let a42 = x * (d41 + 3); let b42 = x * 3; let d42 = a42 - b42;
+    let a43 = x * (d42 + 3); let b43 = x * 3; let d43 = a43 - b43;
+    let a44 = x * (d43 + 3); let b44 = x * 3; let d44 = a44 - b44;
+    let a45 = x * (d44 + 3); let b45 = x * 3; let d45 = a45 - b45;
+    let a46 = x * (d45 + 3); let b46 = x * 3; let d46 = a46 - b46;
+    let a47 = x * (d46 + 3); let b47 = x * 3; let d47 = a47 - b47;
+    let a48 = x * (d47 + 3); let b48 = x * 3; let d48 = a48 - b48;
+    let a49 = x * (d48 + 3); let b49 = x * 3; let d49 = a49 - b49;
+    let a50 = x * (d49 + 3); let b50 = x * 3; let d50 = a50 - b50;
+    let a51 = x * (d50 + 3); let b51 = x * 3; let d51 = a51 - b51;
+    let a52 = x * (d51 + 3); let b52 = x * 3; let d52 = a52 - b52;
+    let a53 = x * (d52 + 3); let b53 = x * 3; let d53 = a53 - b53;
+    let a54 = x * (d53 + 3); let b54 = x * 3; let d54 = a54 - b54;
+    let a55 = x * (d54 + 3); let b55 = x * 3; let d55 = a55 - b55;
+    let a56 = x * (d55 + 3); let b56 = x * 3; let d56 = a56 - b56;
+    let a57 = x * (d56 + 3); let b57 = x * 3; let d57 = a57 - b57;
+    let a58 = x * (d57 + 3); let b58 = x * 3; let d58 = a58 - b58;
+    let a59 = x * (d58 + 3); let b59 = x * 3; let d59 = a59 - b59;
+    let a60 = x * (d59 + 3); let b60 = x * 3; let d60 = a60 - b60;
+    let a61 = x * (d60 + 3); let b61 = x * 3; let d61 = a61 - b61;
+    let a62 = x * (d61 + 3); let b62 = x * 3; let d62 = a62 - b62;
+    let a63 = x * (d62 + 3); let b63 = x * 3; let d63 = a63 - b63;
+    let a64 = x * (d63 + 3); let b64 = x * 3; let d64 = a64 - b64;
+    let a65 = x * (d64 + 3); let b65 = x * 3; let d65 = a65 - b65;
+    let a66 = x * (d65 + 3); let b66 = x * 3; let d66 = a66 - b66;
+    let a67 = x * (d66 + 3); let b67 = x * 3; let d67 = a67 - b67;
+    let a68 = x * (d67 + 3); let b68 = x * 3; let d68 = a68 - b68;
+    let a69 = x * (d68 + 3); let b69 = x * 3; let d69 = a69 - b69;
+    let a70 = x * (d69 + 3); let b70 = x * 3; let d70 = a70 - b70;
+    let a71 = x * (d70 + 3); let b71 = x * 3; let d71 = a71 - b71;
+    let a72 = x * (d71 + 3); let b72 = x * 3; let d72 = a72 - b72;
+    let a73 = x * (d72 + 3); let b73 = x * 3; let d73 = a73 - b73;
+    let a74 = x * (d73 + 3); let b74 = x * 3; let d74 = a74 - b74;
+    let a75 = x * (d74 + 3); let b75 = x * 3; let d75 = a75 - b75;
+    let a76 = x * (d75 + 3); let b76 = x * 3; let d76 = a76 - b76;
+    let a77 = x * (d76 + 3); let b77 = x * 3; let d77 = a77 - b77;
+    let a78 = x * (d77 + 3); let b78 = x * 3; let d78 = a78 - b78;
+    let a79 = x * (d78 + 3); let b79 = x * 3; let d79 = a79 - b79;
+    let a80 = x * (d79 + 3); let b80 = x * 3; let d80 = a80 - b80;
+    let a81 = x * (d80 + 3); let b81 = x * 3; let d81 = a81 - b81;
+    let a82 = x * (d81 + 3); let b82 = x * 3; let d82 = a82 - b82;
+    let a83 = x * (d82 + 3); let b83 = x * 3; let d83 = a83 - b83;
+    let a84 = x * (d83 + 3); let b84 = x * 3; let d84 = a84 - b84;
+    let a85 = x * (d84 + 3); let b85 = x * 3; let d85 = a85 - b85;
+    let a86 = x * (d85 + 3); let b86 = x * 3; let d86 = a86 - b86;
+    let a87 = x * (d86 + 3); let b87 = x * 3; let d87 = a87 - b87;
+    let a88 = x * (d87 + 3); let b88 = x * 3; let d88 = a88 - b88;
+    let a89 = x * (d88 + 3); let b89 = x * 3; let d89 = a89 - b89;
+    let a90 = x * (d89 + 3); let b90 = x * 3; let d90 = a90 - b90;
+    let a91 = x * (d90 + 3); let b91 = x * 3; let d91 = a91 - b91;
+    let a92 = x * (d91 + 3); let b92 = x * 3; let d92 = a92 - b92;
+    let a93 = x * (d92 + 3); let b93 = x * 3; let d93 = a93 - b93;
+    let a94 = x * (d93 + 3); let b94 = x * 3; let d94 = a94 - b94;
+    let a95 = x * (d94 + 3); let b95 = x * 3; let d95 = a95 - b95;
+    let a96 = x * (d95 + 3); let b96 = x * 3; let d96 = a96 - b96;
+    let a97 = x * (d96 + 3); let b97 = x * 3; let d97 = a97 - b97;
+    let a98 = x * (d97 + 3); let b98 = x * 3; let d98 = a98 - b98;
+    let a99 = x * (d98 + 3); let b99 = x * 3; let d99 = a99 - b99;
+    let a100 = x * (d99 + 3); let b100 = x * 3; let d100 = a100 - b100;
+    d100 + s
+}
+fn main() -> i32 {
+    let n: i64 = @intCast(@arg_count());
+    @dbg(g(n));
+    0
+}
+""" }]
+stdout = """6
 """
 exit_code = 0
