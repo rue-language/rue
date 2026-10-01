@@ -4698,4 +4698,223 @@ mod tests {
             Err(CfgInlineError::RuntimeCall { .. })
         ));
     }
+
+    /// A program whose pool holds the builtin `str` view and a builtin
+    /// `Str(8)`, both `{ptr, len}`. Returns `(str, Str(8), str's id)`.
+    fn str_view_program() -> (Program, Type, Type, StructId) {
+        let interner = ThreadedRodeo::new();
+        let type_pool = TypeInternPool::new();
+        let view = |name: &str| StructDef {
+            name: name.into(),
+            fields: vec![
+                StructField {
+                    name: "ptr".into(),
+                    ty: Type::U64,
+                },
+                StructField {
+                    name: "len".into(),
+                    ty: Type::U64,
+                },
+            ],
+            is_copy: true,
+            is_linear: false,
+            declared_linear: false,
+            destructor: None,
+            is_builtin: true,
+            is_pub: true,
+            file_id: FileId::DEFAULT,
+        };
+        let (str_id, _) = type_pool.register_struct(interner.get_or_intern("str"), view("str"));
+        let (fixed_id, _) =
+            type_pool.register_struct(interner.get_or_intern("Str(8)"), view("Str(8)"));
+        let pool = type_pool.freeze();
+        assert_eq!(
+            pool.text_view_kind(fixed_id),
+            Some(rue_air::TextViewKind::StrFixed(8))
+        );
+        (
+            Program::new(pool, interner),
+            Type::new_struct(str_id),
+            Type::new_struct(fixed_id),
+            str_id,
+        )
+    }
+
+    /// `fn caller() -> u64 { let mut f: Str(8) = ..; len(inout f) }`, with
+    /// the `inout str` argument loaded from the `Str(8)` slot as sema lowers
+    /// it.
+    fn str_view_caller(interner: &ThreadedRodeo, fixed_ty: Type) -> Cfg {
+        let mut cfg = Cfg::new(Type::U64, 2, 0, "caller".to_string(), Vec::<bool>::new());
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        let marker = |data| inst(data, Type::UNIT);
+        cfg.append_inst(
+            entry,
+            marker(CfgInstData::StorageLive {
+                slot: 0,
+                local_ty: fixed_ty,
+            }),
+        );
+        let init = cfg.append_inst(entry, inst(CfgInstData::StringConst(0), fixed_ty));
+        cfg.append_inst(entry, marker(CfgInstData::Alloc { slot: 0, init }));
+        let argument = cfg.append_inst(entry, inst(CfgInstData::Load { slot: 0 }, fixed_ty));
+        let result = cfg
+            .append_call(
+                entry,
+                None,
+                interner.get_or_intern("len"),
+                [CfgCallArg {
+                    value: argument,
+                    mode: CfgArgMode::Inout,
+                }],
+                Type::U64,
+                Span::new(0, 0),
+            )
+            .unwrap();
+        cfg.append_inst(
+            entry,
+            marker(CfgInstData::StorageDead {
+                slot: 0,
+                local_ty: fixed_ty,
+            }),
+        );
+        cfg.set_return(entry, Some(result));
+        cfg
+    }
+
+    #[test]
+    fn inout_str_view_of_a_fixed_str_place_reads_it_through_the_coercing_place_read() {
+        // `fn len(inout a: str) -> u64 { let t = a; t.len }`, as sema lowers
+        // it: the whole view is read and copied into a callee local. Spliced
+        // as a `Load` of the caller's `Str(8)` slot at type `str`, the read
+        // named storage nothing opened, and the batch verifier rejected the
+        // splice (RUE-2564).
+        let (mut program, str_ty, fixed_ty, str_id) = str_view_program();
+        let edit_pool = program.type_pool.clone();
+        program.add("len", |_| {
+            let mut cfg = Cfg::new(
+                Type::U64,
+                2,
+                1,
+                "len".to_string(),
+                ParamSlotModes::new(vec![true], vec![true]),
+            );
+            let entry = cfg.new_block();
+            cfg.entry = entry;
+            cfg.append_inst(
+                entry,
+                inst(
+                    CfgInstData::StorageLive {
+                        slot: 0,
+                        local_ty: str_ty,
+                    },
+                    Type::UNIT,
+                ),
+            );
+            let view = cfg.append_inst(entry, inst(CfgInstData::Param { index: 0 }, str_ty));
+            cfg.append_inst(
+                entry,
+                inst(
+                    CfgInstData::Alloc {
+                        slot: 0,
+                        init: view,
+                    },
+                    Type::UNIT,
+                ),
+            );
+            let len = cfg
+                .append_place_read(
+                    &edit_pool,
+                    entry,
+                    PlaceBase::Local(0),
+                    str_ty,
+                    [Projection::Field {
+                        struct_id: str_id,
+                        field_index: 1,
+                    }],
+                    Type::U64,
+                    Span::new(0, 0),
+                )
+                .unwrap();
+            cfg.append_inst(
+                entry,
+                inst(
+                    CfgInstData::StorageDead {
+                        slot: 0,
+                        local_ty: str_ty,
+                    },
+                    Type::UNIT,
+                ),
+            );
+            cfg.set_return(entry, Some(len));
+            cfg
+        });
+        program.add("caller", |interner| str_view_caller(interner, fixed_ty));
+
+        let inlined = program.inline("caller", "len");
+        assert!(
+            attached_values(&inlined).any(|value| {
+                let inst = inlined.get_inst(value);
+                matches!(
+                    &inst.data,
+                    CfgInstData::PlaceRead { place }
+                        if place.base == PlaceBase::Local(0)
+                            && place.base_type == fixed_ty
+                            && inlined.get_place_projections(place).is_empty()
+                ) && inst.ty == str_ty
+            }),
+            "the view read must be a coercing place read of the Str(8) slot"
+        );
+        assert!(
+            !attached_values(&inlined).any(|value| {
+                let inst = inlined.get_inst(value);
+                matches!(inst.data, CfgInstData::Load { slot: 0 }) && inst.ty == str_ty
+            }),
+            "no load may read the Str(8) slot at the view type"
+        );
+        assert_all_blocks_terminated(&inlined);
+    }
+
+    #[test]
+    fn inout_str_view_of_a_fixed_str_place_projected_by_the_callee_is_not_inlineable() {
+        // `fn len(inout a: str) -> u64 { a.len }` read through a
+        // parameter-rooted projection of the view: composed onto the
+        // caller's `Str(8)` slot, the `str` field projection would name the
+        // wrong container, so the preflight keeps the call.
+        let (mut program, str_ty, fixed_ty, str_id) = str_view_program();
+        let edit_pool = program.type_pool.clone();
+        program.add("len", |_| {
+            let mut cfg = Cfg::new(
+                Type::U64,
+                0,
+                1,
+                "len".to_string(),
+                ParamSlotModes::new(vec![true], vec![true]),
+            );
+            let entry = cfg.new_block();
+            cfg.entry = entry;
+            let len = cfg
+                .append_place_read(
+                    &edit_pool,
+                    entry,
+                    PlaceBase::Param(0),
+                    str_ty,
+                    [Projection::Field {
+                        struct_id: str_id,
+                        field_index: 1,
+                    }],
+                    Type::U64,
+                    Span::new(0, 0),
+                )
+                .unwrap();
+            cfg.set_return(entry, Some(len));
+            cfg
+        });
+        program.add("caller", |interner| str_view_caller(interner, fixed_ty));
+
+        assert!(matches!(
+            program.try_inline("caller", "len"),
+            Err(CfgInlineError::ByRefArgumentViewAccess { arg_index: 0 })
+        ));
+    }
 }
