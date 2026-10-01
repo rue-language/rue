@@ -89,7 +89,7 @@ fn main() -> i32 {
 compile_fail = true
 error_contains = [
     "[E0203]",
-    "cannot assign to immutable variable 'v'",
+    "cannot pass immutable variable 'v' as `inout`",
     "variable declared as immutable here",
     "an `inout` argument writes to the caller's place; make the binding mutable: `let mut v = ...`",
 ]
@@ -111,7 +111,7 @@ fn main() -> i32 {
 compile_fail = true
 error_contains = [
     "[E0203]",
-    "cannot assign to immutable variable 'x'",
+    "cannot pass immutable variable 'x' as `inout`",
     "an `inout` argument writes to the caller's place; make the binding mutable: `let mut x = ...`",
 ]
 
@@ -131,7 +131,7 @@ fn main() -> i32 { takes(41) }
 compile_fail = true
 error_contains = [
     "[E0203]",
-    "cannot assign to immutable variable 'n'",
+    "cannot pass immutable variable 'n' as `inout`",
     "copy the parameter into a mutable binding first: `let mut n = n;`, or make the parameter `inout n: i32`",
 ]
 
@@ -150,6 +150,6 @@ fn main() -> i32 { C { v: 41 }.bump_self() }
 compile_fail = true
 error_contains = [
     "[E0203]",
-    "cannot assign to immutable variable 'self'",
+    "cannot pass immutable variable 'self' as `inout`",
     "declare the receiver `mut self` to mutate the callee's copy, or `inout self` to write back to the caller",
 ]

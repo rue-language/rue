@@ -3491,6 +3491,16 @@ pub enum ErrorKind {
     UndefinedFunction(String),
     #[error("cannot assign to immutable variable '{0}'")]
     AssignToImmutable(String),
+    /// An `inout` argument whose root is an immutable binding (spec 6.1:43).
+    /// Nothing is assigned at the call, so the message names the `inout`
+    /// argument rather than an assignment (RUE-2533). `projected` is set when
+    /// the argument is a place under the binding (a field, element or
+    /// accessor result) rather than the binding itself.
+    #[error(
+        "cannot pass {}immutable variable '{variable}' as `inout`",
+        if *projected { "a place under " } else { "" }
+    )]
+    InoutArgOfImmutable { variable: String, projected: bool },
     #[error("unknown type '{0}'")]
     UnknownType(String),
     /// An array length `[T; N]` where `N` is not a usable compile-time
@@ -4484,7 +4494,9 @@ impl ErrorKind {
             ErrorKind::InvalidMainSignature { .. } => ErrorCode::INVALID_MAIN_SIGNATURE,
             ErrorKind::UndefinedVariable(_) => ErrorCode::UNDEFINED_VARIABLE,
             ErrorKind::UndefinedFunction(_) => ErrorCode::UNDEFINED_FUNCTION,
-            ErrorKind::AssignToImmutable(_) => ErrorCode::ASSIGN_TO_IMMUTABLE,
+            ErrorKind::AssignToImmutable(_) | ErrorKind::InoutArgOfImmutable { .. } => {
+                ErrorCode::ASSIGN_TO_IMMUTABLE
+            }
             ErrorKind::UnknownType(_) => ErrorCode::UNKNOWN_TYPE,
             ErrorKind::InvalidArrayLength { .. } => ErrorCode::INVALID_ARRAY_LENGTH,
             ErrorKind::UseAfterMove(_) => ErrorCode::USE_AFTER_MOVE,

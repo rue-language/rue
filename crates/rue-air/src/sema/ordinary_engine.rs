@@ -557,6 +557,7 @@ pub(crate) trait AnalysisLedgers {
             ErrorKind::UndefinedVariable(_)
                 | ErrorKind::UndefinedFunction(_)
                 | ErrorKind::AssignToImmutable(_)
+                | ErrorKind::InoutArgOfImmutable { .. }
                 | ErrorKind::UnknownType(_)
                 | ErrorKind::TypeMismatch { .. }
                 | ErrorKind::WrongArgumentCount { .. }
