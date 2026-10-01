@@ -7542,7 +7542,15 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             ctx.ownership
                 .expression_loans
                 .iter()
-                .find(|(r, _, kind)| *r == key && *kind == CallLoanKind::Borrow)
+                .find(|(r, loan_span, kind)| {
+                    // Only the argument's own loan: a sibling shared result
+                    // on the same root is legal and must not be labelled.
+                    *r == key
+                        && *kind == CallLoanKind::Borrow
+                        && loan_span.file_id == span.file_id
+                        && loan_span.start >= span.start
+                        && loan_span.end <= span.end
+                })
                 .map(|(_, loan_span, _)| *loan_span)
         });
         Err(match loan_span {

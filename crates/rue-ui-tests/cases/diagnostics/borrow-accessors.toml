@@ -150,3 +150,61 @@ fn main() -> i32 { 0 }
 """
 compile_fail = true
 error_contains = ["E0254", "second `yield`"]
+
+[[case]]
+name = "inout_argument_from_shared_accessor_result_names_label_and_help"
+description = "Passing a shared accessor result `inout` is E0259; the label marks the argument's own accessor result and the help names both repairs (RUE-2371)."
+source = """
+struct P { c: i64 }
+struct Acc {
+    p: P,
+
+    fn pref(borrow self) -> borrow P { yield self.p; }
+}
+fn setp(inout p: P) { p.c = 66; }
+fn main() -> i32 {
+    let mut a = Acc { p: P { c: 1 } };
+    setp(inout a.pref());
+    @intCast(a.p.c)
+}
+"""
+compile_fail = true
+error_contains = [
+    "[E0259]",
+    "cannot use 'a' as an `inout` argument while an accessor result borrows it in the same expression",
+    "10:16",
+    "info: accessor result borrows the value here",
+    "a `-> borrow` accessor result is a shared place; pass it `borrow`, or call an `-> inout` accessor to mutate through it",
+]
+
+[[case]]
+name = "inout_argument_label_skips_sibling_shared_accessor_result"
+description = "With a legal sibling shared result on the same root, the label marks the `inout` argument's own accessor result, not the first shared loan (RUE-2371)."
+source = """
+struct P { c: i64 }
+struct Acc {
+    p: P,
+    ps: [P; 2],
+
+    fn pref(borrow self) -> borrow P { yield self.p; }
+    fn at(borrow self, i: u64) -> borrow P { yield self.ps[i]; }
+}
+fn f(x: i64, inout p: P) { p.c = x; }
+fn main() -> i32 {
+    let mut a = Acc { p: P { c: 1 }, ps: [P { c: 3 }, P { c: 5 }] };
+    f(a.at(0).c, inout a.pref());
+    @intCast(a.p.c)
+}
+"""
+compile_fail = true
+error_contains = [
+    "[E0259]",
+    "cannot use 'a' as an `inout` argument while an accessor result borrows it in the same expression",
+    "12:24",
+    """
+12 |     f(a.at(0).c, inout a.pref());
+   |                        --------
+   |                        |
+   |                        info: accessor result borrows the value here""",
+    "a `-> borrow` accessor result is a shared place; pass it `borrow`, or call an `-> inout` accessor to mutate through it",
+]
