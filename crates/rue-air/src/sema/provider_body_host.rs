@@ -3200,6 +3200,22 @@ where
             TypeKind::PtrMut(id) => T::PtrMut(Arc::new(
                 self.local_slice_element(self.type_pool.ptr_mut_def(id))?,
             )),
+            // An inner slice view (`[[Self]]`) is a builtin struct over an
+            // element that may itself be the struct still being produced.
+            TypeKind::Struct(id)
+                if self.type_pool.text_view_kind(id) == Some(crate::types::TextViewKind::Slice) =>
+            {
+                let def = self.type_pool.struct_def(id);
+                let TypeKind::PtrConst(pointer) = def.fields.first()?.ty.kind() else {
+                    return None;
+                };
+                T::Slice {
+                    element: Arc::new(
+                        self.local_slice_element(self.type_pool.ptr_const_def(pointer))?,
+                    ),
+                    name: Arc::from(&*def.name),
+                }
+            }
             _ => self
                 .durable_type_from_concrete(element)?
                 .try_map_identities::<String, String, std::convert::Infallible>(

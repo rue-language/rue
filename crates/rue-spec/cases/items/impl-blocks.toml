@@ -1018,3 +1018,15 @@ fn main() -> i32 {
 }
 """
 exit_code = 104
+
+[[case]]
+name = "anonymous_struct_method_nested_slice_of_self_parameter"
+spec = ["6.4:18"]
+description = "`Self` names the anonymous struct inside a nested slice parameter type `[[Self]]`, as `[[N]]` does for a named struct (RUE-2579)"
+source = """
+fn Cell(comptime T: type) -> type {
+    struct { v: T, fn deep(self, borrow s: [[Self]]) -> T { s[0][0].v + self.v } }
+}
+fn main() -> i32 { let S = Cell(i64); @intCast(S { v: 42 }.v) }
+"""
+exit_code = 42
