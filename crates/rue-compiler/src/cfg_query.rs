@@ -3202,10 +3202,17 @@ pub(crate) fn apply_general_inlining(
         ) {
             Ok(result) => result,
             Err(error) => {
-                output[index] = internal_failure(
-                    format!("general inline reoptimization failed: {error:?}"),
-                    record.body_span,
-                );
+                // Classified like the O3 path's optimization failure: an
+                // implementation limit stays E1401, and everything else is an
+                // internal error rendered with its Display text.
+                output[index] = CfgValue::Failure {
+                    errors: crate::CompileError::new(
+                        error.error_kind("general inline reoptimization failed"),
+                        record.body_span,
+                    )
+                    .into(),
+                    body_span: record.body_span,
+                };
                 continue;
             }
         };
