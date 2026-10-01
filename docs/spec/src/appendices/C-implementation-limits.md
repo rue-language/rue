@@ -71,6 +71,10 @@ The cumulative storage for one function is limited to 2,147,483,632 bytes: the
 largest 16-byte-aligned value within that same signed displacement range.
 Locals, parameter homes, hidden return storage, register-allocation spills, and
 the simultaneous outgoing call area all count toward this checked budget.
+Each zero-width local or temporary also counts one 8-byte cell toward the
+budget, because it has a slot of its own, although a zero-sized value still
+occupies no storage of its own (3.0:2); a function that sits right at the edge
+can therefore be rejected by the cells such locals add.
 Exceeding it is rejected with diagnostic E0907.
 
 ## Identifier Limits
