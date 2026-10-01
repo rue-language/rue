@@ -366,9 +366,29 @@ pub struct AbiFunctionReport {
 
 fn type_text(type_pool: &FrozenTypeInternPool, ty: Option<Type>) -> String {
     match ty {
-        Some(ty) => rue_air::drop_glue_names::type_name(ty, type_pool),
+        Some(ty) => slice_view_text(type_pool, ty)
+            .unwrap_or_else(|| rue_air::drop_glue_names::type_name(ty, type_pool)),
         None => "?".to_owned(),
     }
+}
+
+/// A slice view spelled from its element, `[` element `]`. A view's own
+/// struct name is its identity, which for a named or anonymous element
+/// carries a definition digest (RUE-2571); the report shows the element the
+/// way it shows that type by value instead.
+fn slice_view_text(type_pool: &FrozenTypeInternPool, ty: Type) -> Option<String> {
+    let rue_air::TypeKind::Struct(id) = ty.kind() else {
+        return None;
+    };
+    if type_pool.text_view_kind(id) != Some(rue_air::TextViewKind::Slice) {
+        return None;
+    }
+    let rue_air::TypeKind::PtrConst(pointer) = type_pool.struct_def(id).fields.first()?.ty.kind()
+    else {
+        return None;
+    };
+    let element = type_pool.ptr_const_def(pointer);
+    Some(format!("[{}]", type_text(type_pool, Some(element))))
 }
 
 /// The parameter grouping this report walks.

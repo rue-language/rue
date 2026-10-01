@@ -241,6 +241,9 @@ fn slice_view_element_spelling(element: &crate::SemanticImportType<String, Strin
             "module#{}",
             crate::stable_digest::stable_content_digest_component(module)
         ),
+        // Only a generic signature's scratch pool, where every parameter is
+        // `comptime type`, spells one; two signatures' `[T]` sharing
+        // `[$0]` there is harmless (RUE-2571).
         T::GenericParameter(index) => format!("${index}"),
     }
 }
