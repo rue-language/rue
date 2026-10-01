@@ -1629,7 +1629,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             .function_signature_root_file(function)
             .unwrap_or(function.file_id);
         if let Some(syntax) = self.storage.function_return_type_syntax(function) {
-            return self
+            let return_type = self
                 .storage
                 .resolve_structured_type_syntax(StructuredTypeSyntaxRequest {
                     syntax: &syntax,
@@ -1645,7 +1645,15 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
                         failure,
                         span,
                     )
-                });
+                })?;
+            // A return type that depends on a comptime argument is concrete
+            // only here, so the declaration's slice-return rule (ADR-0043)
+            // is checked here too: `-> Wrap([i64], N)` is E0487 at the call
+            // that makes it `[i64]` (RUE-2435).
+            if self.type_contains_slice(return_type) {
+                return Err(CompileError::new(ErrorKind::SliceReturnNotAllowed, span));
+            }
+            return Ok(return_type);
         }
         Err(CompileError::new(
             ErrorKind::InternalError(
@@ -1653,6 +1661,23 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             ),
             span,
         ))
+    }
+
+    /// Whether `ty` is a slice view, or an array or pointer whose element is
+    /// one: the shapes a declared return type may not have (ADR-0043).
+    fn type_contains_slice(&self, ty: Type) -> bool {
+        use crate::types::TypeKind;
+        match ty.kind() {
+            TypeKind::Struct(id) => {
+                self.body_type_pool().text_view_kind(id) == Some(crate::types::TextViewKind::Slice)
+            }
+            TypeKind::Array(id) => self.type_contains_slice(self.body_type_pool().array_def(id).0),
+            TypeKind::PtrConst(id) => {
+                self.type_contains_slice(self.body_type_pool().ptr_const_def(id))
+            }
+            TypeKind::PtrMut(id) => self.type_contains_slice(self.body_type_pool().ptr_mut_def(id)),
+            _ => false,
+        }
     }
     pub(crate) fn resolve_array_length(
         &mut self,

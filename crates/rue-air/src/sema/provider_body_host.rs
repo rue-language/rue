@@ -3183,6 +3183,25 @@ where
                     result: Arc::new(self.durable_type_from_concrete(def.result)?),
                 }
             }
+            // A slice view is a generated struct with no builtin-registry
+            // entry, so its durable form is the structural `Slice`, which
+            // materializes back to the same generated struct. As a builtin
+            // nominal it could not be materialized, and a type constructor
+            // given or returning `[T]` never reduced (RUE-2435).
+            TypeKind::Struct(id)
+                if self.type_pool.text_view_kind(id) == Some(crate::types::TextViewKind::Slice) =>
+            {
+                let def = self.type_pool.struct_def(id);
+                let TypeKind::PtrConst(pointer) = def.fields.first()?.ty.kind() else {
+                    return None;
+                };
+                T::Slice {
+                    element: Arc::new(
+                        self.durable_type_from_concrete(self.type_pool.ptr_const_def(pointer))?,
+                    ),
+                    name: def.name.clone(),
+                }
+            }
             TypeKind::Struct(_) | TypeKind::Enum(_) => {
                 if let Some(identity) = self.durable_anonymous_types.get(&ty).cloned() {
                     T::AnonymousNominal(identity)
