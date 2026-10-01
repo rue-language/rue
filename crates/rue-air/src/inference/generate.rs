@@ -2118,8 +2118,17 @@ impl<'a> ConstraintGenerator<'a> {
                 continues &= place_info.continues && value_info.continues;
                 // A value that does not continue is still typed at the place,
                 // as at a local (RUE-2538); only a value typed `!` is skipped.
+                //
+                // The value flows into the place exactly as into a field: the
+                // place type is the expected side and the error points at the
+                // value, so a mismatch reads "expected <place>, found <value>"
+                // as a local or field assignment does (RUE-2560).
                 if !Self::is_never_concrete(&value_info.ty) {
-                    self.add_constraint(Constraint::equal(place_info.ty, value_info.ty, span));
+                    self.add_constraint(Constraint::contextual(
+                        value_info.ty,
+                        place_info.ty,
+                        value_info.span,
+                    ));
                 }
                 InferType::Concrete(Type::UNIT)
             }

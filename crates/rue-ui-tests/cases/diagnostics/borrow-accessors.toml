@@ -339,3 +339,135 @@ error_contains = [
     "cannot use immutable variable 'self' as an `inout self` receiver",
     "declare the receiver `mut self` to mutate the callee's copy, or `inout self` to write back to the caller",
 ]
+
+# An accessor-place assignment is checked as the value flowing into the place,
+# exactly as a field or local assignment: the place type is expected, the
+# value's type is found, and the error points at the value (RUE-2560).
+[[case]]
+name = "accessor_place_assignment_expects_the_place_type"
+description = "Assigning a `bool` to an `inout [i32; 2]` accessor place reports the place type as expected, at the value."
+source = """
+struct P {
+    x: [i32; 2],
+
+    fn xr(inout self) -> inout [i32; 2] {
+        yield self.x;
+    }
+}
+fn main() -> i32 {
+    let mut p = P { x: [1, 2] };
+    p.xr() = true;
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0206", "expected [i32; 2], found bool", "test.rue:10:14"]
+
+[[case]]
+name = "accessor_place_assignment_of_a_narrower_integer"
+description = "An `i32` value into an `inout i64` accessor place is \"expected i64, found i32\", as for the field it yields."
+source = """
+struct P {
+    w: i64,
+
+    fn wr(inout self) -> inout i64 {
+        yield self.w;
+    }
+}
+fn main() -> i32 {
+    let mut p = P { w: 1 };
+    let x: i32 = 3;
+    p.wr() = x;
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0206", "expected i64, found i32", "test.rue:11:14"]
+
+[[case]]
+name = "accessor_place_compound_assignment_of_a_narrower_integer"
+description = "Compound assignment through an `inout i64` accessor place reports the place type as expected."
+source = """
+struct P {
+    w: i64,
+
+    fn wr(inout self) -> inout i64 {
+        yield self.w;
+    }
+}
+fn main() -> i32 {
+    let mut p = P { w: 1 };
+    let x: i32 = 3;
+    p.wr() += x;
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0206", "expected i64, found i32", "test.rue:11:15"]
+
+[[case]]
+name = "accessor_place_assignment_of_a_buffer_to_a_str_place"
+description = "A `StrBuf` into an `inout str` accessor place is \"expected str, found StrBuf\", as for a `str` field."
+source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+struct P {
+    s: str,
+
+    fn str_r(inout self) -> inout str {
+        yield self.s;
+    }
+}
+fn main() -> i32 {
+    let mut p = P { s: "a" };
+    let buf: StrBuf = "xy";
+    p.str_r() = buf;
+    0
+}
+"""
+compile_fail = true
+real_std = true
+error_contains = ["E0206", "expected str, found StrBuf", "test.rue:14:17"]
+
+[[case]]
+name = "projected_accessor_place_assignment_expects_the_projection_type"
+description = "Element and field projections of an accessor place report the projected type as expected, at the value."
+source = """
+struct P {
+    x: [i32; 2],
+
+    fn xr(inout self) -> inout [i32; 2] {
+        yield self.x;
+    }
+}
+fn main() -> i32 {
+    let mut p = P { x: [1, 2] };
+    p.xr()[0] = true;
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0206", "expected i32, found bool", "test.rue:10:17"]
+
+[[case]]
+name = "field_of_accessor_place_assignment_expects_the_field_type"
+description = "A field of an accessor place reports the field type as expected, at the value."
+source = """
+struct Q { v: i64 }
+struct P {
+    q: Q,
+
+    fn qr(inout self) -> inout Q {
+        yield self.q;
+    }
+}
+fn main() -> i32 {
+    let mut p = P { q: Q { v: 2 } };
+    let x: i32 = 3;
+    p.qr().v = x;
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0206", "expected i64, found i32", "test.rue:12:16"]
