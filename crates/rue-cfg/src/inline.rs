@@ -671,6 +671,10 @@ pub fn splice_call_in_block_in_place(
             if type_pool.type_needs_drop(arg_ty) {
                 dst.mark_ownership_boundary(slot);
             }
+            // A zero-width parameter's key lies past the per-slot facts, so
+            // this reads false for it even when the callee takes its address
+            // (`@raw`): it has no storage to escape, and the materialized slot
+            // holds no byte a later access could observe through the pointer.
             if callee.is_param_address_taken(param.start_slot) {
                 // The callee took the parameter's address; the escape fact
                 // must carry to the materialized slot (RUE-521).
@@ -1000,15 +1004,24 @@ fn substitute_accessor_places(
 /// when present, else from the synthetic one-slot-per-parameter contract used
 /// by directly constructed CFGs (see `Cfg::source_param_abi`). Neither lists a
 /// zero-width by-value parameter: it has no ABI slot, yet the call still
-/// carries its argument. Such a parameter is keyed past the end of the
-/// callee's ABI range, at `num_params` plus its position among the zero-width
-/// by-value parameters (RUE-2534), and that key is what the callee's `Param`
-/// reads, parameter places and exit drop name. The call argument identifies
-/// it the way code generation omits it from the native call: passed by value
-/// with a type of no ABI slots.
+/// carries its argument. Sema keys such a parameter past the end of the
+/// callee's ABI range, at `num_params` plus its position among the keyed
+/// parameters (RUE-2534), and the callee's `Param` reads, parameter places
+/// and exit drop name that key.
 ///
-/// A call whose arguments do not cover the callee's occupying parameters
-/// exactly is an arity mismatch.
+/// The CFG does not record which arguments are keyed, so this mapping treats
+/// every zero-width argument passed by value as the next keyed parameter: the
+/// rule code generation uses to omit an argument from the native call. Sema
+/// keys only the zero-width parameters that are not `comptime`, so the two
+/// agree exactly when the callee has no zero-width `comptime` value
+/// parameter. An accessor cannot declare a `comptime` parameter (E0260); the
+/// general inliner checks the agreement against the callee's keys before it
+/// splices.
+///
+/// A call that passes exactly one argument per occupying parameter has no
+/// zero-width argument, so it is mapped without classifying any argument. A
+/// call whose arguments do not cover the occupying parameters and the
+/// zero-width ones exactly is an arity mismatch.
 fn callee_params(
     callee: &Cfg,
     caller: &Cfg,
@@ -1016,54 +1029,49 @@ fn callee_params(
     type_pool: &FrozenTypeInternPool,
 ) -> Result<Vec<CalleeParam>, CfgInlineError> {
     let descriptors = callee.source_param_abi();
-    let occupying: Vec<CalleeParam> = if !descriptors.is_empty() {
-        descriptors
-            .iter()
-            .map(|descriptor| CalleeParam {
-                start_slot: descriptor.start_slot,
-                slot_count: descriptor.slot_count,
-            })
-            .collect()
+    let occupying_count = if descriptors.is_empty() {
+        callee.num_params() as usize
     } else {
-        (0..callee.num_params())
-            .map(|slot| CalleeParam {
-                start_slot: slot,
-                slot_count: 1,
-            })
-            .collect()
+        descriptors.len()
     };
-    let zero_width: Vec<bool> = call_args
-        .iter()
-        .map(|arg| {
-            arg.mode == CfgArgMode::Normal
-                && type_pool.abi_slot_count(caller.get_inst(arg.value).ty) == 0
-        })
-        .collect();
-    let zero_width_count = zero_width.iter().filter(|&&zero| zero).count();
-    if occupying.len() + zero_width_count != call_args.len() {
-        return Err(CfgInlineError::ArityMismatch {
-            call_args: call_args.len(),
-            callee_params: occupying.len() + zero_width_count,
-        });
+    let occupying = |index: usize| match descriptors.get(index) {
+        Some(descriptor) => CalleeParam {
+            start_slot: descriptor.start_slot,
+            slot_count: descriptor.slot_count,
+        },
+        None => CalleeParam {
+            start_slot: index as u32,
+            slot_count: 1,
+        },
+    };
+    if call_args.len() == occupying_count {
+        return Ok((0..occupying_count).map(occupying).collect());
     }
-    let mut occupying = occupying.into_iter();
-    let mut next_zero_width_key = callee.num_params();
     let mut params = Vec::with_capacity(call_args.len());
-    for zero in zero_width {
-        if zero {
+    let mut next_occupying = 0usize;
+    let mut next_zero_width_key = callee.num_params();
+    for arg in call_args {
+        let zero_width = arg.mode == CfgArgMode::Normal
+            && type_pool.abi_slot_count(caller.get_inst(arg.value).ty) == 0;
+        if zero_width {
             params.push(CalleeParam {
                 start_slot: next_zero_width_key,
                 slot_count: 0,
             });
-            next_zero_width_key =
-                next_zero_width_key
-                    .checked_add(1)
-                    .ok_or(CfgInlineError::Edit(CfgEditError::ResourceLimitExceeded {
-                        family: "inline parameters",
-                    }))?;
+            next_zero_width_key = next_zero_width_key.saturating_add(1);
         } else {
-            params.extend(occupying.next());
+            if next_occupying < occupying_count {
+                params.push(occupying(next_occupying));
+            }
+            next_occupying += 1;
         }
+    }
+    if next_occupying != occupying_count {
+        let zero_width_count = call_args.len() - next_occupying;
+        return Err(CfgInlineError::ArityMismatch {
+            call_args: call_args.len(),
+            callee_params: occupying_count + zero_width_count,
+        });
     }
     Ok(params)
 }
@@ -2207,10 +2215,10 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_occupying_argument_is_an_arity_mismatch() {
-        // `fn callee(n: i64, t: Tok) -> i64` called with only the `Tok`: the
-        // zero-width argument maps to its key, and the occupying parameter
-        // has no argument.
+    fn an_argument_past_the_occupying_parameters_is_an_arity_mismatch() {
+        // `fn callee(n: i64, t: Tok) -> i64` called with the `Tok` and two
+        // `i64`s: the zero-width argument maps to its key, and the second
+        // `i64` has no occupying parameter left.
         let (mut program, tok_ty) = zero_width_droppable_program();
         program.add("callee", |_| {
             let mut cfg = Cfg::new(Type::I64, 0, 1, "callee".to_string(), vec![false]);
@@ -2238,15 +2246,16 @@ mod tests {
                     Span::new(0, 0),
                 )
                 .unwrap();
+            let five = cfg.append_inst(entry, inst(CfgInstData::Const(5), Type::I64));
             let call = cfg
                 .append_call(
                     entry,
                     None,
                     interner.get_or_intern("callee"),
-                    [CfgCallArg {
-                        value: tok,
+                    [tok, five, five].map(|value| CfgCallArg {
+                        value,
                         mode: CfgArgMode::Normal,
-                    }],
+                    }),
                     Type::I64,
                     Span::new(0, 0),
                 )
@@ -2257,7 +2266,7 @@ mod tests {
         assert!(matches!(
             program.try_inline("caller", "callee"),
             Err(CfgInlineError::ArityMismatch {
-                call_args: 1,
+                call_args: 3,
                 callee_params: 2,
             })
         ));
