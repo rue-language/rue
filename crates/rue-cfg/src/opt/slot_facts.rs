@@ -497,6 +497,15 @@ impl LiveSlotWrites {
     /// proven dead. Pushes each slot whose counts changed onto `touched`, and
     /// returns `true` when the last unresolvable by-ref root died, which can
     /// requalify every slot.
+    ///
+    /// The plain decrements cannot underflow because retiring re-reads the
+    /// same instructions [`Self::new`] counted and classifies each exactly as
+    /// it did then. The one classification that reads another value's data
+    /// is a by-ref call argument's root (`Load`/`PlaceRead` versus anything
+    /// else), and that root keeps its data while its call is live: constopt
+    /// rewrites a `Load` only for a slot with no live partial write, and the
+    /// by-ref argument is itself a live partial write of that slot. So a
+    /// block's writes count the same when it dies as when it was counted.
     pub(super) fn retire_block(
         &mut self,
         cfg: &Cfg,
