@@ -3162,6 +3162,173 @@ compile_fail = true
 error_contains = "expected [i32; 2], found [!; 2]"
 
 [[case]]
+name = "diverging_array_ptr_write"
+spec = ["3.4:3", "7.1:2"]
+description = "RUE-2538: a diverging `[return 5; 2]` is accepted at `@ptr_write`'s `[i32; 2]` pointee"
+source = """
+fn main() -> i32 {
+    let raw: ptr mut u8 = checked { @alloc(64, 8) };
+    let addr: u64 = checked { @ptr_to_int(raw) };
+    let pi: ptr mut [i32; 2] = checked { @int_to_ptr(addr) };
+    checked { @ptr_write(pi, [return 5; 2]) };
+    0
+}
+"""
+exit_code = 5
+
+[[case]]
+name = "diverging_array_ptr_write_zero_length"
+spec = ["3.4:3", "7.1:2"]
+description = "RUE-2538: a diverging `[return 5; 0]` is accepted at `@ptr_write`'s `[i32; 0]` pointee"
+source = """
+fn main() -> i32 {
+    let raw: ptr mut u8 = checked { @alloc(64, 8) };
+    let addr: u64 = checked { @ptr_to_int(raw) };
+    let pi: ptr mut [i32; 0] = checked { @int_to_ptr(addr) };
+    checked { @ptr_write(pi, [return 5; 0]) };
+    0
+}
+"""
+exit_code = 5
+
+[[case]]
+name = "diverging_array_ptr_write_unaligned"
+spec = ["3.4:3", "7.1:2"]
+description = "RUE-2538: a diverging `[return 5; 2]` is accepted at `@ptr_write_unaligned`'s `[i32; 2]` pointee"
+source = """
+fn main() -> i32 {
+    let raw: ptr mut u8 = checked { @alloc(64, 8) };
+    let addr: u64 = checked { @ptr_to_int(raw) };
+    let pi: ptr mut [i32; 2] = checked { @int_to_ptr(addr) };
+    checked { @ptr_write_unaligned(pi, [return 5; 2]) };
+    0
+}
+"""
+exit_code = 5
+
+[[case]]
+name = "diverging_array_ptr_write_panic"
+spec = ["3.4:3", "7.1:2"]
+description = "RUE-2538: a `[@panic(..); 2]` value at `@ptr_write` panics before the write"
+source = """
+fn main() -> i32 {
+    let raw: ptr mut u8 = checked { @alloc(64, 8) };
+    let addr: u64 = checked { @ptr_to_int(raw) };
+    let pi: ptr mut [i32; 2] = checked { @int_to_ptr(addr) };
+    checked { @ptr_write(pi, [@panic("x"); 2]) };
+    0
+}
+"""
+runtime_error = "x"
+
+[[case]]
+name = "diverging_array_mixed_literal_assignment_local"
+spec = ["3.4:3", "7.1:2"]
+description = "RUE-2538: an assigned literal that does not complete is typed at the target, so its integer literal takes the target's `i64`"
+source = """
+fn main() -> i32 {
+    let mut x: [i64; 2] = [0, 0];
+    x = [return 5, 3000000000];
+    0
+}
+"""
+exit_code = 5
+
+[[case]]
+name = "diverging_array_mixed_literal_assignment_nested_local"
+spec = ["3.4:3", "7.1:2"]
+description = "RUE-2538: an assigned literal that does not complete is typed at the target, so its integer literal takes the target's `i64`"
+source = """
+fn main() -> i32 {
+    let mut x: [[i64; 1]; 2] = [[0], [0]];
+    x = [[return 5; 1], [3000000000]];
+    0
+}
+"""
+exit_code = 5
+
+[[case]]
+name = "diverging_array_mixed_literal_assignment_field"
+spec = ["3.4:3", "7.1:2"]
+description = "RUE-2538: an assigned literal that does not complete is typed at the target, so its integer literal takes the target's `i64`"
+source = """
+struct H { a: [i64; 2] }
+fn main() -> i32 {
+    let mut h = H { a: [0, 0] };
+    h.a = [return 5, 2];
+    0
+}
+"""
+exit_code = 5
+
+[[case]]
+name = "diverging_array_mixed_literal_assignment_element"
+spec = ["3.4:3", "7.1:2"]
+description = "RUE-2538: an assigned literal that does not complete is typed at the target, so its integer literal takes the target's `i64`"
+source = """
+fn main() -> i32 {
+    let mut y: [[i64; 2]; 1] = [[0, 0]];
+    y[0] = [2, return 5];
+    0
+}
+"""
+exit_code = 5
+
+[[case]]
+name = "diverging_array_mixed_literal_assignment_inout_parameter"
+spec = ["3.4:3", "7.1:2"]
+description = "RUE-2538: an assigned literal that does not complete is typed at the target, so its integer literal takes the target's `i64`"
+source = """
+fn w(inout a: [i64; 2]) { a = [return, 2]; }
+fn main() -> i32 {
+    let mut z: [i64; 2] = [5, 5];
+    w(inout z);
+    @intCast(z[0])
+}
+"""
+exit_code = 5
+
+[[case]]
+name = "diverging_array_method_argument"
+spec = ["3.4:3", "7.1:2"]
+description = "RUE-2538: a diverging array literal is accepted at a method's `[i32; 2]` parameter"
+source = """
+struct M { k: i32, fn m(borrow self, a: [i32; 2]) -> i32 { a[1] } }
+fn main() -> i32 { let m = M { k: 0 }; m.m([return 5; 2]) }
+"""
+exit_code = 5
+
+[[case]]
+name = "diverging_array_borrow_argument"
+spec = ["3.4:3", "7.1:2"]
+description = "RUE-2538: a diverging array literal is accepted at a `borrow [i32; 2]` parameter"
+source = """
+fn w(borrow a: [i32; 2]) -> i32 { a[0] }
+fn main() -> i32 { w(borrow [return 5; 2]) }
+"""
+exit_code = 5
+
+[[case]]
+name = "diverging_array_generic_struct_field"
+spec = ["3.4:3", "7.1:2"]
+description = "RUE-2538: a diverging array literal is accepted at a generic struct's `[T; 2]` field"
+source = """
+fn Bx(comptime T: type) -> type { struct { a: [T; 2] } }
+fn main() -> i32 { let h = Bx(i64) { a: [return 5; 2] }; 0 }
+"""
+exit_code = 5
+
+[[case]]
+name = "diverging_array_bare_never_element_keeps_length_check"
+spec = ["3.4:3", "7.1:2", "7.1:3"]
+description = "A bare `!` element between a `[!; 2]` and a three-element peer does not hide the length mismatch"
+source = """
+fn main() -> i32 { let y = [[return 1; 2], return 3, [1, 2, 3]]; 0 }
+"""
+compile_fail = true
+error_contains = "expected array of 2 elements, found 3 elements"
+
+[[case]]
 name = "array_repeat_non_copy_element_error"
 spec = ["7.1:38"]
 source = """
