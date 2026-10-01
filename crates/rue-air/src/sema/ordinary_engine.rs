@@ -1665,7 +1665,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
 
     /// Whether `ty` is a slice view, or an array or pointer whose element is
     /// one: the shapes a declared return type may not have (ADR-0043).
-    fn type_contains_slice(&self, ty: Type) -> bool {
+    pub(crate) fn type_contains_slice(&self, ty: Type) -> bool {
         use crate::types::TypeKind;
         match ty.kind() {
             TypeKind::Struct(id) => {
