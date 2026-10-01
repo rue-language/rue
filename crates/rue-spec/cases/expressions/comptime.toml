@@ -6082,3 +6082,211 @@ fn main() -> i32 {
 expected_stdout = "1\n99\n10\n2\n98\n99\n20\n3\n98\n99\n30\n4\n99\n40\n5\n99\n50\n6\n98\n99\n60\n"
 exit_code = 0
 opt_level = 3
+
+# =============================================================================
+# A comptime value parameter in a generic signature type (RUE-2435)
+#
+# A `comptime` value parameter written in a parameter or return type, as an
+# array length or as a type-constructor argument at any depth, is substituted
+# with each call's argument value (4.14:5, 4.14:23). Its value is unknown until
+# a call supplies one; it is never read as a placeholder such as `0`.
+# =============================================================================
+
+[[case]]
+name = "value_param_ctor_result_annotated"
+spec = ["4.14:5", "4.14:23"]
+description = "`fn buf(comptime N: i32) -> Buf(N)` called as `buf(3)` returns a `Buf(3)`, so a `Buf(3)` annotation accepts it (RUE-2435)"
+source = """
+fn Buf(comptime N: i32) -> type { struct { data: [i32; N] } }
+fn buf(comptime N: i32) -> Buf(N) { Buf(N) { data: [7; N] } }
+
+fn main() -> i32 {
+    let b: Buf(3) = buf(3);
+    b.data[0] + b.data[2] + @intCast(@size_of(Buf(3)))
+}
+"""
+exit_code = 26
+
+[[case]]
+name = "value_param_ctor_result_indexed_unannotated"
+spec = ["4.14:5", "4.14:23"]
+description = "An unannotated `buf(3)` result has three elements: indexing it at 2 is in bounds (RUE-2435)"
+source = """
+fn Buf(comptime N: i32) -> type { struct { data: [i32; N] } }
+fn buf(comptime N: i32) -> Buf(N) { Buf(N) { data: [N; N] } }
+
+fn main() -> i32 {
+    buf(3).data[2] + buf(3).data[1]
+}
+"""
+exit_code = 6
+
+[[case]]
+name = "value_param_ctor_parameter_type"
+spec = ["4.14:5", "4.14:23"]
+description = "A parameter typed `Buf(N)` for a `comptime N` takes the call's `Buf(3)` argument (RUE-2435)"
+source = """
+fn Buf(comptime N: i32) -> type { struct { data: [i32; N] } }
+fn last(comptime N: i32, b: Buf(N)) -> i32 { b.data[N - 1] }
+
+fn main() -> i32 {
+    let b = Buf(3) { data: [1, 2, 40] };
+    last(3, b) + last(2, Buf(2) { data: [0, 2] })
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "value_param_ctor_nested_shapes"
+spec = ["4.14:5", "4.14:16", "4.14:23"]
+description = "A value parameter nested in `Outer(Inner(N))`, `[Buf(N); 2]`, `Outer([i32; N])` and `[[i32; N]; 2]` is substituted at each depth (RUE-2435)"
+source = """
+fn Buf(comptime N: i32) -> type { struct { data: [i32; N] } }
+fn Outer(comptime T: type) -> type { struct { inner: T } }
+fn nested(comptime N: i32) -> Outer(Buf(N)) { Outer(Buf(N)) { inner: Buf(N) { data: [N; N] } } }
+fn pair(comptime N: i32) -> [Buf(N); 2] { [Buf(N) { data: [N; N] }; 2] }
+fn wrapped(comptime N: i32) -> Outer([i32; N]) { Outer([i32; N]) { inner: [N; N] } }
+fn grid(comptime N: i32) -> [[i32; N]; 2] { [[N; N]; 2] }
+
+fn main() -> i32 {
+    let o: Outer(Buf(3)) = nested(3);
+    let p = pair(4);
+    let w = wrapped(5);
+    let g = grid(6);
+    o.inner.data[2] + p[1].data[3] + w.inner[4] + g[1][5]
+}
+"""
+exit_code = 18
+
+[[case]]
+name = "value_param_ctor_computed_argument"
+spec = ["4.14:5", "4.14:23"]
+description = "A type-constructor argument or array length computed from a value parameter by a comptime call, `Buf(inc(N))` and `[i32; inc(N)]`, uses the call's value (RUE-2435)"
+source = """
+fn Buf(comptime N: i32) -> type { struct { data: [i32; N] } }
+fn inc(comptime N: i32) -> i32 { N + 1 }
+fn bigger(comptime N: i32) -> Buf(inc(N)) { Buf(inc(N)) { data: [1, 2, 3, 30] } }
+fn longer(comptime N: i32) -> [i32; inc(N)] { [1, 2, 3, 4] }
+
+fn main() -> i32 {
+    let b: Buf(4) = bigger(3);
+    let l: [i32; 4] = longer(3);
+    b.data[3] + l[3] + @intCast(@size_of(Buf(4)))
+}
+"""
+exit_code = 50
+
+[[case]]
+name = "value_param_ctor_two_value_parameters"
+spec = ["4.14:5", "4.14:23"]
+description = "`fn grid(comptime W: i32, comptime H: i32) -> Grid(W, H)` substitutes both values in order (RUE-2435)"
+source = """
+fn Grid(comptime W: i32, comptime H: i32) -> type { struct { cells: [[i32; W]; H] } }
+fn grid(comptime W: i32, comptime H: i32) -> Grid(W, H) { Grid(W, H) { cells: [[W; W]; H] } }
+
+fn main() -> i32 {
+    let g: Grid(2, 3) = grid(2, 3);
+    let t = grid(3, 2);
+    g.cells[2][1] + t.cells[1][2] + @intCast(@size_of(Grid(2, 3)))
+}
+"""
+exit_code = 29
+
+[[case]]
+name = "value_param_ctor_bool_parameter"
+spec = ["4.14:5", "4.14:23"]
+description = "A `comptime B: bool` type-constructor argument is the call's value, not `false` (RUE-2435)"
+source = """
+fn Pick(comptime B: bool) -> type {
+    if B { struct { yes: i32 } } else { struct { no: i32 } }
+}
+fn pick(comptime B: bool) -> Pick(B) {
+    if B { Pick(B) { yes: 40 } } else { Pick(B) { no: 2 } }
+}
+
+fn main() -> i32 {
+    pick(true).yes + pick(false).no
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "value_param_ctor_from_method"
+spec = ["4.14:5", "4.14:12", "4.14:23"]
+description = "A method of a type-constructor result returning `Buf(K)` through `buf(K)`, and a named struct's method returning `Buf(3)` through `buf(3)`, get the call's `Buf` (RUE-2435)"
+source = """
+fn Buf(comptime N: i32) -> type { struct { data: [i32; N] } }
+fn buf(comptime N: i32) -> Buf(N) { Buf(N) { data: [N; N] } }
+fn Wrap(comptime K: i32) -> type {
+    struct {
+        x: i32,
+        fn grow(self) -> Buf(K) { buf(K) }
+    }
+}
+struct Holder {
+    x: i32,
+    fn three(self) -> Buf(3) { buf(3) }
+}
+
+fn main() -> i32 {
+    let W = Wrap(4);
+    let w = W { x: 1 };
+    let h = Holder { x: 0 };
+    let t: Buf(3) = h.three();
+    w.grow().data[3] + t.data[2]
+}
+"""
+exit_code = 7
+
+[[case]]
+name = "value_param_ctor_call_sites_independent"
+spec = ["4.14:5", "4.14:23"]
+description = "Calls of one `-> Buf(N)` function at N = 2, 5 and 3 each get their own `Buf`, with no value carried from one call to another (RUE-2435)"
+source = """
+fn Buf(comptime N: i32) -> type { struct { data: [i32; N] } }
+fn buf(comptime N: i32) -> Buf(N) { Buf(N) { data: [N; N] } }
+fn len(comptime N: i32, b: Buf(N)) -> i32 { @intCast(@size_of(Buf(N)) / 4) }
+
+fn main() -> i32 {
+    let a = buf(2);
+    let b = buf(5);
+    let c: Buf(3) = buf(3);
+    @dbg(len(2, a));
+    @dbg(len(5, b));
+    @dbg(len(3, c));
+    a.data[1] + b.data[4] + c.data[2]
+}
+"""
+expected_stdout = "2\n5\n3\n"
+exit_code = 10
+
+[[case]]
+name = "value_param_ctor_result_wrong_value_rejected"
+spec = ["4.14:5", "4.14:23"]
+description = "A `buf(3)` result annotated `Buf(2)` is E0206 naming both instances (RUE-2435)"
+source = """
+fn Buf(comptime N: i32) -> type { struct { data: [i32; N] } }
+fn buf(comptime N: i32) -> Buf(N) { Buf(N) { data: [N; N] } }
+
+fn main() -> i32 {
+    let b: Buf(2) = buf(3);
+    b.data[0]
+}
+"""
+compile_fail = true
+error_contains = ["E0206", "expected Buf(2), found Buf(3)"]
+
+[[case]]
+name = "value_param_ctor_argument_wrong_value_rejected"
+spec = ["4.14:5", "4.14:23"]
+description = "A `Buf(2)` passed to a `Buf(N)` parameter at N = 3 is E0206 naming both instances (RUE-2435)"
+source = """
+fn Buf(comptime N: i32) -> type { struct { data: [i32; N] } }
+fn first(comptime N: i32, b: Buf(N)) -> i32 { b.data[0] }
+
+fn main() -> i32 {
+    first(3, Buf(2) { data: [1, 2] })
+}
+"""
+compile_fail = true
+error_contains = ["E0206", "expected Buf(3), found Buf(2)"]

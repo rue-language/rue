@@ -137,6 +137,11 @@ fn main() -> i32 {
 ```
 
 When a function has a `comptime T: type` parameter, occurrences of `T` in parameter types and return types are substituted with the concrete type at each call site.
+Occurrences of a `comptime` value parameter in parameter types and return types
+— an array length (`[i32; N]`), or an argument of a type-constructor call
+(`Buf(N)`, `Grid(W, H)`, rule 4.14:23) at any depth — are likewise substituted
+with the call's argument value, so `fn buf(comptime N: i32) -> Buf(N)` called
+as `buf(3)` returns a `Buf(3)`.
 
 {{ rule(id="4.14:5a", cat="normative") }}
 
