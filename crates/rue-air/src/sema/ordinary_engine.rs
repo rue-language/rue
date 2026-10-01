@@ -359,6 +359,11 @@ pub(crate) trait DeclarationFacts {
 
     fn trusted_try_producer(&self, ty: Type) -> Option<super::anon_structs::TrustedTryProducer>;
 
+    /// The durable source's test seam of the same name
+    /// (`DurableBodyLookupSource::withholds_inline_import_head_fact`):
+    /// `false` in every production build (RUE-2474).
+    fn withholds_inline_import_head_fact(&self) -> bool;
+
     fn resolve_canonical_import(
         &self,
         import_path: &str,
@@ -2177,6 +2182,9 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         span: Span,
     ) -> CompileResult<crate::ModuleId> {
         self.storage.resolve_canonical_import(path, span)
+    }
+    pub(crate) fn withholds_inline_import_head_fact(&self) -> bool {
+        self.storage.withholds_inline_import_head_fact()
     }
     pub(crate) fn resolve_module_binding_in_file(
         &self,

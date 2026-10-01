@@ -3072,6 +3072,11 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeTypeAlgebra for OrdinaryBodyEngine
         ty.as_module().is_some()
     }
     fn inline_import_module(&self, specifier: &Spur, span: Span) -> Option<Type> {
+        // A test build may withhold this fact to reach the RUE-2438 operand
+        // backstop behind it (RUE-2474); production sources never do.
+        if self.withholds_inline_import_head_fact() {
+            return None;
+        }
         let path = self.body_interner().resolve(specifier);
         self.resolve_canonical_import(path, span)
             .ok()

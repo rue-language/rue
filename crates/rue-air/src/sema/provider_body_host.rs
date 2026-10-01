@@ -1004,6 +1004,19 @@ pub trait DurableBodyLookupSource<K, M>: Clone {
     fn canonical_import(&self, _current: &K, _specifier: &str) -> Option<M> {
         None
     }
+    /// Whether body analysis withholds the inline-`@import` constructor-head
+    /// fact (RUE-2439) from the comptime engine, so inference types such a
+    /// head `<error>` as it did before that fix while AIR emission still
+    /// reduces it to its nominal.
+    ///
+    /// A test seam, not a language or driver option: it is the one way to
+    /// reach the analyzed-operand backstop of RUE-2438 now that inference
+    /// rejects every known probe first (RUE-2474). Every production source
+    /// keeps this default, and the compiler's source answers `true` only from
+    /// its own `#[cfg(test)]` code, so no CLI or release build can turn it on.
+    fn withholds_inline_import_head_fact(&self) -> bool {
+        false
+    }
     fn trusted_try_producer(
         &self,
         _identity: &crate::AnonymousNominalKey<K, M>,
@@ -6017,6 +6030,10 @@ where
             }
             None => None,
         }
+    }
+
+    fn withholds_inline_import_head_fact(&self) -> bool {
+        self.source.withholds_inline_import_head_fact()
     }
 
     fn resolve_canonical_import(&self, import_path: &str, span: Span) -> CompileResult<ModuleId> {
