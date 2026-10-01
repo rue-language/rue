@@ -1012,7 +1012,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         string_literal_types.dedup();
         unifier.mark_string_literal_vars(&string_literal_vars, &string_literal_types);
         let equivalence_queries = std::cell::Cell::new(0usize);
-        let errors = unifier.solve_constraints_with_projections(
+        let mut errors = unifier.solve_constraints_with_projections(
             &constraints,
             &|left, right| {
                 if left == right {
@@ -1051,6 +1051,12 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         );
         self.body_analysis_work_mut()
             .semantic_type_equivalence_queries += equivalence_queries.get();
+        // An integer literal joined with a float literal is judged once the
+        // whole body has been solved, and only by the final pass: a staged
+        // pass may lack the float context that resolves the join.
+        if errors.is_empty() && !staged {
+            errors = unifier.unresolved_literal_joins();
+        }
 
         // Convert unification errors to compile errors
         // For now, we collect the first error. In the future, we could
