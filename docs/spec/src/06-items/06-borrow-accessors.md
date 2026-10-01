@@ -128,9 +128,11 @@ Forming an address of a place under the root — `@raw(p)`,
 `@raw_mut(p)` or `@field_ptr(p)`, whatever the pointer's mutability — is a
 shared access of the root: it may coexist with shared accessor results and
 conflicts with an exclusive one in the same full expression (E0259). Passing a
-place under the root as a `borrow` argument, or calling a `borrow self` method
-on one, is likewise a shared access of the root, even when its call has
-returned before the exclusive accessor is called:
+place under the root that is not reached through an accessor result as a
+`borrow` argument, or calling a `borrow self` method on such a place, is
+likewise a shared access of the root, even when its call has returned before
+the exclusive accessor is called (a place projected from an accessor result
+uses that result's loan instead, as above):
 `use(len(borrow v), v.get_mut(i).n)` and `use(v.len(), v.get_mut(i).n)` are
 rejected like `use(v.n, v.get_mut(i).n)`. When the
 accessor result is itself re-borrowed as a `borrow` argument of the same call
