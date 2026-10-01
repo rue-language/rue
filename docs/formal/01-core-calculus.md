@@ -2027,10 +2027,11 @@ path-granular disjointness.
 
 <a id="core:6:1"></a>**[core:6:1]** This section gives the small-step operational semantics for **every** core form
 of §2. It has two executable presentations that must agree with it: the
-mechanization's definitional interpreter (`lean/`, ADR-0097), whose semantic
-equivalence with the reduction relation here `03-metatheory.md` proves in both
-directions, small-to-big modulo fuel (`RueCore.eval_big_to_small`,
-`RueCore.eval_small_to_big`), and
+mechanization's definitional interpreter (`lean/`, ADR-0097), which
+`03-metatheory.md` proves semantically equivalent to the reduction relation here
+on the programs its checker accepts: in both directions, the small-to-big one
+modulo fuel (`RueCore.eval_big_to_small`, `RueCore.eval_small_to_big`), and with
+divergence agreeing too (`RueCore.eval_diverges_iff`); and
 `crates/rue-oracle` — the executable reference
 interpreter that runs a core program and produces its exit code, its `@dbg`
 output, its panics, and its drop trace, and is differential-tested against the
@@ -3477,9 +3478,13 @@ neither claims anything about an uninhabited-parameter function such as
   defined panics. Types are preserved under reduction. The mechanization states
   this over its interpreter instead (ADR-0097): a well-typed program evaluates
   to a well-typed value, a defined panic, or exhausted fuel, never to a named
-  stuck state; the two readings meet in the semantic equivalence
-  `03-metatheory.md` proves in both directions, small-to-big modulo fuel
-  (`RueCore.eval_big_to_small`, `RueCore.eval_small_to_big`). For `match`, progress rests
+  stuck state. The two readings meet through the semantic equivalence
+  `03-metatheory.md` proves for checked programs, in both directions, the
+  small-to-big one modulo fuel (`RueCore.eval_big_to_small`,
+  `RueCore.eval_small_to_big`; divergence agrees too, `RueCore.eval_diverges_iff`).
+  It carries progress over to §6's reduction (`RueCore.step_progress`), and
+  preservation only in a semantic form, SafeAt invariance (`RueCore.step_safeAt`).
+  For `match`, progress rests
   on **exhaustiveness** (§5.5): a well-typed enum value carries one of the
   variants `K1..Kn`, and the arms cover exactly those, so some arm always
   matches — a `match` is never stuck on an uncovered tag.
