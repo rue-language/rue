@@ -2892,28 +2892,14 @@ pub(crate) fn apply_general_inlining(
         let Some(sites) = callsites.get(function) else {
             continue;
         };
-        // The caller's own record is the same for every site in this
-        // iteration, so it is resolved once rather than per site.
-        let caller_record = record_lookup.get(function).copied();
+        // CFG calls carry every source argument, a zero-width by-value one
+        // included, while the callee's ABI descriptors list only the
+        // parameters that occupy slots. The splice primitive maps the two by
+        // keying each zero-width parameter past the ABI range (RUE-2539), so
+        // such callees are eligible like any other.
         let selected = sites
             .iter()
-            .filter(|(call, callee, _)| {
-                eligible(callee)
-                    && record_lookup.get(callee).copied().is_some_and(|callee| {
-                        // CFG calls carry physical argument values. A
-                        // zero-width source parameter can therefore make
-                        // the physical count differ; the Phase-2 policy
-                        // excludes that ABI shape rather than handing it
-                        // to the source-parameter splice primitive.
-                        caller_record.is_some_and(|caller| {
-                            caller
-                                .cfg
-                                .get_call_args(&caller.cfg.get_inst(*call).data)
-                                .len()
-                                == callee.cfg.source_param_abi().len()
-                        })
-                    })
-            })
+            .filter(|(_, callee, _)| eligible(callee) && record_lookup.contains_key(callee))
             .cloned()
             .collect::<Vec<_>>();
         if selected.is_empty() {
