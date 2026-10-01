@@ -2476,7 +2476,10 @@ impl Air {
                     let place_ty = check_place(*place)?;
                     slot_agrees(place_ty, *value, "place store")?;
                 }
-                AirInstData::Store { slot, value: operand }
+                AirInstData::Store {
+                    slot,
+                    value: operand,
+                }
                 | AirInstData::Alloc {
                     slot,
                     init: operand,
@@ -6244,5 +6247,354 @@ mod tests {
             .finish(AirValidationContext::Canonical(&pool))
             .unwrap_err();
         assert!(error.reason.contains("range outside word store"));
+    }
+
+    /// Two instances of one generic nominal, `Box(i32)` and `Box(i64)`: the
+    /// RUE-2438 pair whose layouts disagree (RUE-2452).
+    struct SlotFixture {
+        pool: FrozenTypeInternPool,
+        interner: ThreadedRodeo,
+        box_i32: Type,
+        box_i64: Type,
+        diverging_array: Type,
+        empty_i32_array: Type,
+    }
+
+    fn slot_fixture() -> SlotFixture {
+        let interner = ThreadedRodeo::new();
+        let pool = TypeInternPool::new();
+        let make_box = |name: &str, ty: Type| crate::StructDef {
+            name: name.into(),
+            fields: vec![crate::StructField {
+                name: "v".into(),
+                ty,
+            }],
+            is_copy: false,
+            is_linear: false,
+            declared_linear: false,
+            destructor: None,
+            is_builtin: false,
+            is_pub: false,
+            file_id: rue_span::FileId::DEFAULT,
+        };
+        let (box_i32, _) = pool.register_struct(
+            interner.get_or_intern("Box(i32)"),
+            make_box("Box(i32)", Type::I32),
+        );
+        let (box_i64, _) = pool.register_struct(
+            interner.get_or_intern("Box(i64)"),
+            make_box("Box(i64)", Type::I64),
+        );
+        let diverging_array = Type::new_array(pool.intern_array_from_type(Type::NEVER, 0));
+        let empty_i32_array = Type::new_array(pool.intern_array_from_type(Type::I32, 0));
+        SlotFixture {
+            pool: pool.freeze(),
+            interner,
+            box_i32: Type::new_struct(box_i32),
+            box_i64: Type::new_struct(box_i64),
+            diverging_array,
+            empty_i32_array,
+        }
+    }
+
+    const NOWHERE: Span = Span::new(0, 0);
+
+    /// A value of type `ty` with no operands for the validator to inspect.
+    fn opaque_value(air: &mut Air, ty: Type) -> AirRef {
+        air.push_inst(AirInst {
+            data: AirInstData::Const(0),
+            ty,
+            span: NOWHERE,
+        })
+    }
+
+    impl SlotFixture {
+        fn validate(
+            &self,
+            air: Air,
+            callees: Option<AirCalleeResolver<'_>>,
+        ) -> Result<ValidatedAir, AirValidationError> {
+            air.finish_with_callees(
+                AirValidationContext::CanonicalWithSymbols(&self.pool, &self.interner),
+                callees,
+            )
+        }
+
+        /// `take(%0)`, where `take` declares one by-value `Box(i32)`
+        /// parameter and `%0` has type `argument`.
+        fn call_take(&self, argument: Type) -> Result<ValidatedAir, AirValidationError> {
+            let take = self.interner.get_or_intern("take");
+            let mut air = Air::new(Type::UNIT);
+            let value = opaque_value(&mut air, argument);
+            air.add_call(
+                None,
+                take,
+                &[AirCallArg {
+                    value,
+                    mode: AirArgMode::Normal,
+                }],
+                Type::UNIT,
+                NOWHERE,
+            )
+            .unwrap();
+            let box_i32 = self.box_i32;
+            let resolve = move |name: Spur| {
+                (name == take).then(|| {
+                    vec![AirCalleeParam {
+                        ty: box_i32,
+                        mode: AirArgMode::Normal,
+                    }]
+                })
+            };
+            self.validate(air, Some(&resolve))
+        }
+    }
+
+    #[test]
+    fn validation_rejects_a_call_argument_of_another_instance() {
+        let fixture = slot_fixture();
+        let error = fixture.call_take(fixture.box_i64).unwrap_err();
+        assert_eq!(error.instruction, Some(1));
+        assert!(
+            error.reason.contains(
+                "argument 0 of the call to `take` %0 has type Box(i64), but its slot has type Box(i32)"
+            ),
+            "unexpected reason: {}",
+            error.reason
+        );
+
+        // Positive controls: the declared aggregate, and a `!` operand,
+        // which never arrives.
+        assert!(fixture.call_take(fixture.box_i32).is_ok());
+        assert!(fixture.call_take(Type::NEVER).is_ok());
+    }
+
+    #[test]
+    fn validation_rejects_a_call_with_the_wrong_argument_count() {
+        let fixture = slot_fixture();
+        let take = fixture.interner.get_or_intern("take");
+        let mut air = Air::new(Type::UNIT);
+        air.add_call(None, take, &[], Type::UNIT, NOWHERE).unwrap();
+        let box_i32 = fixture.box_i32;
+        let resolve = move |_: Spur| {
+            Some(vec![AirCalleeParam {
+                ty: box_i32,
+                mode: AirArgMode::Normal,
+            }])
+        };
+        let error = fixture.validate(air, Some(&resolve)).unwrap_err();
+        assert!(
+            error
+                .reason
+                .contains("the call to `take` passes 0 arguments, but the callee declares 1"),
+            "unexpected reason: {}",
+            error.reason
+        );
+    }
+
+    #[test]
+    fn validation_leaves_unresolved_callees_unchecked() {
+        // Without a resolver (an imported body) or for a symbol the resolver
+        // cannot name (a generic or synthesized callee), there is no declared
+        // signature to compare against.
+        let fixture = slot_fixture();
+        let take = fixture.interner.get_or_intern("take");
+        let build = || {
+            let mut air = Air::new(Type::UNIT);
+            let value = opaque_value(&mut air, fixture.box_i64);
+            air.add_call(
+                None,
+                take,
+                &[AirCallArg {
+                    value,
+                    mode: AirArgMode::Normal,
+                }],
+                Type::UNIT,
+                NOWHERE,
+            )
+            .unwrap();
+            air
+        };
+        assert!(fixture.validate(build(), None).is_ok());
+        let unknown = |_: Spur| None;
+        assert!(fixture.validate(build(), Some(&unknown)).is_ok());
+    }
+
+    /// `let x: slot = value;` as sema emits it: the value, then the slot's
+    /// `StorageLive`, then the `Alloc`.
+    fn local_init(slot_ty: Type, value_ty: Type) -> Air {
+        let mut air = Air::new(Type::UNIT);
+        let value = opaque_value(&mut air, value_ty);
+        air.push_inst(AirInst {
+            data: AirInstData::StorageLive { slot: 0 },
+            ty: slot_ty,
+            span: NOWHERE,
+        });
+        air.push_inst(AirInst {
+            data: AirInstData::Alloc {
+                slot: 0,
+                init: value,
+            },
+            ty: Type::UNIT,
+            span: NOWHERE,
+        });
+        air
+    }
+
+    #[test]
+    fn validation_rejects_stores_of_another_type() {
+        let fixture = slot_fixture();
+
+        // A local's initializer.
+        let error = fixture
+            .validate(local_init(fixture.box_i32, fixture.box_i64), None)
+            .unwrap_err();
+        assert_eq!(error.instruction, Some(2));
+        assert!(
+            error.reason.contains(
+                "initializer %0 of local slot 0 has type Box(i64), but the slot has type Box(i32)"
+            ),
+            "unexpected reason: {}",
+            error.reason
+        );
+
+        // A later assignment to the local.
+        let mut air = local_init(fixture.box_i32, fixture.box_i32);
+        let value = opaque_value(&mut air, fixture.box_i64);
+        air.push_inst(AirInst {
+            data: AirInstData::Store { slot: 0, value },
+            ty: Type::UNIT,
+            span: NOWHERE,
+        });
+        let error = fixture.validate(air, None).unwrap_err();
+        assert!(
+            error.reason.contains(
+                "store %3 of local slot 0 has type Box(i64), but the slot has type Box(i32)"
+            ),
+            "unexpected reason: {}",
+            error.reason
+        );
+
+        // A field of a local.
+        let mut air = Air::new(Type::UNIT);
+        let place = air
+            .make_place(
+                AirPlaceBase::Local(0),
+                fixture.box_i32,
+                [AirProjection::Field {
+                    struct_id: fixture.box_i32.as_struct().unwrap(),
+                    field_index: 0,
+                }],
+            )
+            .unwrap();
+        let value = opaque_value(&mut air, Type::I64);
+        air.push_inst(AirInst {
+            data: AirInstData::PlaceWrite { place, value },
+            ty: Type::UNIT,
+            span: NOWHERE,
+        });
+        let error = fixture.validate(air, None).unwrap_err();
+        assert!(
+            error
+                .reason
+                .contains("place store %0 has type i64, but its slot has type i32"),
+            "unexpected reason: {}",
+            error.reason
+        );
+
+        // A parameter slot.
+        let mut air = Air::new(Type::UNIT);
+        air.push_inst(AirInst {
+            data: AirInstData::Param { index: 0 },
+            ty: fixture.box_i32,
+            span: NOWHERE,
+        });
+        let value = opaque_value(&mut air, fixture.box_i64);
+        air.push_inst(AirInst {
+            data: AirInstData::ParamStore {
+                param_slot: 0,
+                value,
+            },
+            ty: Type::UNIT,
+            span: NOWHERE,
+        });
+        let error = fixture.validate(air, None).unwrap_err();
+        assert!(
+            error.reason.contains(
+                "store to parameter slot 0 %1 has type Box(i64), but its slot has type Box(i32)"
+            ),
+            "unexpected reason: {}",
+            error.reason
+        );
+    }
+
+    #[test]
+    fn validation_accepts_every_legitimate_store_shape() {
+        let fixture = slot_fixture();
+        // The declared aggregate.
+        assert!(
+            fixture
+                .validate(local_init(fixture.box_i32, fixture.box_i32), None)
+                .is_ok()
+        );
+        // A `!` initializer never arrives.
+        assert!(
+            fixture
+                .validate(local_init(fixture.box_i32, Type::NEVER), None)
+                .is_ok()
+        );
+        // A diverging array literal (`[return 42; 0]`) never completes.
+        assert!(
+            fixture
+                .validate(
+                    local_init(fixture.empty_i32_array, fixture.diverging_array),
+                    None
+                )
+                .is_ok()
+        );
+        // A zero-width local shares its slot index with the next local, so
+        // the index names both bindings.
+        let mut air = local_init(Type::UNIT, Type::UNIT);
+        let value = opaque_value(&mut air, fixture.box_i32);
+        air.push_inst(AirInst {
+            data: AirInstData::StorageLive { slot: 0 },
+            ty: fixture.box_i32,
+            span: NOWHERE,
+        });
+        air.push_inst(AirInst {
+            data: AirInstData::Alloc {
+                slot: 0,
+                init: value,
+            },
+            ty: Type::UNIT,
+            span: NOWHERE,
+        });
+        assert!(fixture.validate(air, None).is_ok());
+    }
+
+    #[test]
+    fn validation_rejects_a_return_value_of_another_type() {
+        let fixture = slot_fixture();
+        let returning = |result: Type, value_ty: Type| {
+            let mut air = Air::new(result);
+            let value = opaque_value(&mut air, value_ty);
+            air.push_inst(AirInst {
+                data: AirInstData::Ret(Some(value)),
+                ty: Type::NEVER,
+                span: NOWHERE,
+            });
+            fixture.validate(air, None)
+        };
+        let error = returning(fixture.box_i32, fixture.box_i64).unwrap_err();
+        assert_eq!(error.instruction, Some(1));
+        assert!(
+            error
+                .reason
+                .contains("return value %0 has type Box(i64), but its slot has type Box(i32)"),
+            "unexpected reason: {}",
+            error.reason
+        );
+        assert!(returning(fixture.box_i32, fixture.box_i32).is_ok());
+        assert!(returning(fixture.box_i32, Type::NEVER).is_ok());
     }
 }
