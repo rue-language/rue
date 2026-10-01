@@ -5657,11 +5657,10 @@ impl<'a> Interp<'a> {
             // `Param` base through the promoted heap allocation when the
             // slot's address was taken, matching the `Param` read path, so an
             // address-taken parameter stays coherent.
-            // A zero-sized parameter's index is its key past the ABI range
-            // (RUE-2534), and it is a place all the same.
-            CfgInstData::Param { index }
-                if *index < cfg.num_params() || self.is_zero_sized(cfg.get_inst(v).ty) =>
-            {
+            // A zero-sized argument never reaches here: both callers skip its
+            // writeback, so a zero-sized parameter's key past the ABI range
+            // (RUE-2534) needs no arm of its own.
+            CfgInstData::Param { index } if *index < cfg.num_params() => {
                 Ok(WritebackPlace::Simple {
                     base: PlaceBase::Param(*index),
                     base_type: cfg.get_inst(v).ty,
