@@ -2233,10 +2233,6 @@ impl<'a> CfgBuilder<'a> {
                 let else_block = self.cfg.new_block();
                 let join_block = self.cfg.new_block();
 
-                // Get types for then/else
-                let then_type = self.air.get(*then_value).ty;
-                let else_type = else_value.map(|e| self.air.get(e).ty);
-
                 // Branch to then/else
                 let then_result = self.cfg.push_then_args(std::iter::empty());
                 let then_args = self.payload_or(then_result, CfgThenArgs::EMPTY, span);
@@ -2301,12 +2297,13 @@ impl<'a> CfgBuilder<'a> {
                     };
                 }
 
-                // Determine result type
-                let result_type = if then_type.is_never() {
-                    else_type.unwrap_or(Type::UNIT)
-                } else {
-                    then_type
-                };
+                // The join carries the `if`'s own type, which sema computed
+                // from the arms that continue (spec 3.4:3-4): an arm that
+                // diverges contributes no edge here and no type to the join.
+                // Its own type may still be a value type — a diverging array
+                // literal is `[!; N]` (RUE-2543) — so it must not be read as
+                // the join's type.
+                let result_type = ty;
 
                 let result_param = self.join_param(join_block, result_type);
 
@@ -2570,12 +2567,10 @@ impl<'a> CfgBuilder<'a> {
                 let arm_blocks: Vec<_> = arms.iter().map(|_| self.cfg.new_block()).collect();
                 let join_block = self.cfg.new_block();
 
-                // Get result type (from first non-Never arm)
-                let result_type = arms
-                    .iter()
-                    .map(|(_, body)| self.air.get(*body).ty)
-                    .find(|ty| !ty.is_never())
-                    .unwrap_or(Type::NEVER);
+                // The join carries the `match`'s own type, which sema
+                // computed from the arms that continue, as for `if` above
+                // (RUE-2543).
+                let result_type = ty;
 
                 // Create the switch terminator
                 // Build cases: for each arm, check pattern and jump to corresponding block
