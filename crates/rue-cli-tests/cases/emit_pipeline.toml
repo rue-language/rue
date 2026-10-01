@@ -523,6 +523,66 @@ compile_stdout_contains = [
     "c entry: thunk, because parameter 0 is re-extended",
 ]
 
+# RUE-2551: a comptime value parameter is substituted into its specialization,
+# yet it still occupies an ABI slot the caller fills. A body that never reads it
+# has no drop entry or `Param` instruction to name its type by, so the report
+# reads the body's comptime parameter record instead of printing `?`. The three
+# shapes are the unread parameter, the unread parameter a later parameter's type
+# depends on, and the read parameter, which all report the same placement.
+[[case]]
+name = "emit_abi_names_an_unread_comptime_value_parameter"
+description = "RUE-2551: --emit abi names the type of a comptime value parameter the specialized body never reads."
+files = [{ path = "main.rue", source = """
+fn take(comptime N: i32, b: i32) -> i32 { b }
+
+fn main() -> i32 {
+    take(2, 5) - 5
+}
+""" }]
+args = ["--emit", "abi", "--target", "aarch64-macos", "main.rue"]
+compile_only = true
+compile_stdout_contains = [
+    "parameter 0: i32, by value, gp register 0 (x0)",
+    "parameter 1: i32, by value, gp register 1 (x1)",
+]
+compile_stdout_not_contains = [": ?,"]
+
+[[case]]
+name = "emit_abi_names_a_comptime_value_parameter_a_later_type_depends_on"
+description = "RUE-2551: --emit abi names the type of an unread comptime value parameter that sizes a later parameter's array type."
+files = [{ path = "main.rue", source = """
+fn take(comptime N: i32, b: [i32; N]) -> i32 { b[0] }
+
+fn main() -> i32 {
+    take(2, [0, 1])
+}
+""" }]
+args = ["--emit", "abi", "--target", "aarch64-macos", "main.rue"]
+compile_only = true
+compile_stdout_contains = [
+    "parameter 0: i32, by value, gp register 0 (x0)",
+    "parameter 1: array_i32_2, by value, gp register 1 (x1)",
+]
+compile_stdout_not_contains = [": ?,"]
+
+[[case]]
+name = "emit_abi_names_a_read_comptime_value_parameter"
+description = "RUE-2551: --emit abi names the type of a comptime value parameter the specialized body reads, as it does an unread one."
+files = [{ path = "main.rue", source = """
+fn take(comptime N: i32, b: i32) -> i32 { b + N }
+
+fn main() -> i32 {
+    take(2, 5) - 7
+}
+""" }]
+args = ["--emit", "abi", "--target", "aarch64-macos", "main.rue"]
+compile_only = true
+compile_stdout_contains = [
+    "parameter 0: i32, by value, gp register 0 (x0)",
+    "parameter 1: i32, by value, gp register 1 (x1)",
+]
+compile_stdout_not_contains = [": ?,"]
+
 # The `--emit` help text renders the stage table, so this is what makes a stage
 # that exists but is undocumented impossible.
 [[case]]
