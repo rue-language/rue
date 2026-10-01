@@ -2099,7 +2099,13 @@ impl<'a> ConstraintGenerator<'a> {
                         && !Self::is_never_concrete(&value_info.ty)
                     {
                         // Assignment stores the value with its semantic type.
-                        self.add_constraint(Constraint::contextual(value_info.ty, target_ty, span));
+                        // The error points at the value, as at a field or
+                        // accessor-place assignment (RUE-2560).
+                        self.add_constraint(Constraint::contextual(
+                            value_info.ty,
+                            target_ty,
+                            value_info.span,
+                        ));
                     }
                 }
                 // Assignment produces unit
