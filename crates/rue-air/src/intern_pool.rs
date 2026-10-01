@@ -3968,9 +3968,9 @@ impl TypeInternPool {
         inner.invalidate_containment_metadata();
     }
 
-    /// Finalize the canonical by-value graph after declaration fields,
-    /// payloads, destructors, and explicit linear markers are known.
-    /// See [`TypeInternPoolInner::containment_path_to`].
+    /// A by-value containment path from one of `roots` to `target`, if any:
+    /// the cycle an anonymous struct closing over `Self` would create
+    /// (RUE-2586). See `TypeInternPoolInner::containment_path_to`.
     pub(crate) fn containment_path_to(&self, roots: &[Type], target: Type) -> Option<Vec<Type>> {
         self.inner
             .read()
@@ -3978,6 +3978,8 @@ impl TypeInternPool {
             .containment_path_to(roots, target)
     }
 
+    /// Finalize the canonical by-value graph after declaration fields,
+    /// payloads, destructors, and explicit linear markers are known.
     pub(crate) fn finalize_containment_metadata(
         &self,
     ) -> Result<TypeContainmentWork, TypeContainmentCycle> {
