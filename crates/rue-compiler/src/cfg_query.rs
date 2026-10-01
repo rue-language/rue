@@ -1196,6 +1196,51 @@ fn interner_resource_failure(
     }
 }
 
+/// Whether the splice primitive's argument-to-parameter mapping agrees with
+/// the keys semantic analysis gave the callee's zero-width parameters.
+///
+/// A CFG call carries every runtime source argument, while the callee's ABI
+/// descriptors list only the parameters that occupy slots. The splice maps
+/// each zero-width argument passed by value to the next key past the callee's
+/// ABI range (RUE-2534, RUE-2539). Sema keys exactly its zero-width by-value
+/// parameters that are not `comptime`, and each one has a drop entry at its
+/// key, so the callee AIR's drop entries past `num_param_slots` count the
+/// keys. A zero-width `comptime` value parameter still travels in the call
+/// but has no key; when one is present, the zero-width arguments outnumber
+/// the keys and the call site is left alone. Equal counts mean every
+/// zero-width argument is a keyed parameter, in key order.
+///
+/// A call with no zero-width argument passes exactly one argument per
+/// descriptor, so the common case is decided without classifying arguments.
+fn zero_width_arguments_reach_their_keys(
+    caller: &CfgRecord,
+    call: rue_cfg::CfgValue,
+    callee: &CfgRecord,
+) -> bool {
+    let args = caller.cfg.get_call_args(&caller.cfg.get_inst(call).data);
+    let occupying = callee.cfg.source_param_abi().len();
+    if args.len() == occupying {
+        return true;
+    }
+    let keys = callee
+        .air
+        .param_drops()
+        .iter()
+        .filter(|(slot, _)| *slot >= callee.num_param_slots)
+        .count();
+    let zero_width = args
+        .iter()
+        .filter(|arg| {
+            arg.mode == rue_cfg::CfgArgMode::Normal
+                && caller
+                    .type_pool
+                    .abi_slot_count(caller.cfg.get_inst(arg.value).ty)
+                    == 0
+        })
+        .count();
+    zero_width == keys && args.len() == occupying + keys
+}
+
 fn canonical_body(
     canonical: &crate::body_query::CanonicalBody,
 ) -> &rue_air::SemanticBody<crate::StableDefinitionKey, crate::ModuleId> {
@@ -2892,14 +2937,19 @@ pub(crate) fn apply_general_inlining(
         let Some(sites) = callsites.get(function) else {
             continue;
         };
-        // CFG calls carry every source argument, a zero-width by-value one
-        // included, while the callee's ABI descriptors list only the
-        // parameters that occupy slots. The splice primitive maps the two by
-        // keying each zero-width parameter past the ABI range (RUE-2539), so
-        // such callees are eligible like any other.
+        // The caller's own record is the same for every site in this
+        // iteration, so it is resolved once rather than per site.
+        let caller_record = record_lookup.get(function).copied();
         let selected = sites
             .iter()
-            .filter(|(_, callee, _)| eligible(callee) && record_lookup.contains_key(callee))
+            .filter(|(call, callee, _)| {
+                eligible(callee)
+                    && record_lookup.get(callee).copied().is_some_and(|callee| {
+                        caller_record.is_some_and(|caller| {
+                            zero_width_arguments_reach_their_keys(caller, *call, callee)
+                        })
+                    })
+            })
             .cloned()
             .collect::<Vec<_>>();
         if selected.is_empty() {
@@ -2964,6 +3014,12 @@ pub(crate) fn apply_general_inlining(
                     // temporary dies, but redirecting an inlined by-reference
                     // parameter back to that dead local would be invalid. Keep
                     // the original call; general inlining is optional.
+                    continue;
+                }
+                Err(rue_cfg::CfgInlineError::ArityMismatch { .. }) => {
+                    // The arguments do not map onto the callee's parameters
+                    // and keys. General inlining is optional, so the call is
+                    // kept rather than failing the batch.
                     continue;
                 }
                 Err(error) => {
