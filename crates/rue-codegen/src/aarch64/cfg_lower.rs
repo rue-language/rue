@@ -7743,9 +7743,10 @@ mod tests {
     /// decided by the pointer's declared pointee rather than by whatever the
     /// value operand materialized into.
     ///
-    /// A zero-sized local reserves no frame slots, so its slot index is the
-    /// index the next local receives and the two unrelated locals share one
-    /// `$n`. Value forwarding once handed the pointer stored in that shared
+    /// Before RUE-2453 a zero-sized local reserved no frame slots, so its slot
+    /// index was the index the next local received and the two unrelated locals
+    /// shared one `$n` (only zero-width by-value parameters can still do so).
+    /// Value forwarding once handed the pointer stored in that shared
     /// slot to the `()`-typed load of the other local, and this arm — reading
     /// the materialized operand's slot count — emitted a real eight-byte store
     /// through the zero-sized sentinel address.

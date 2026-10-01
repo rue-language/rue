@@ -1391,11 +1391,12 @@ struct Frame {
     params: Vec<Option<Value>>,
     /// Local storage keyed by `(slot, Type)`, never by the slot index alone.
     ///
-    /// `reserve_frame_slots` advances the frame watermark by
-    /// `abi_slot_count(ty)`, so a zero-sized local reserves nothing and the
-    /// next local receives the same `$n` (RUE-2086). A slot index is therefore
-    /// not a unique name for a storage location, and a `()` write to the shared
-    /// index would otherwise clobber the sized neighbour's value. The type
+    /// Since RUE-2453 every zero-width local and temporary has a slot of its
+    /// own, so source locals no longer share a `$n`. Only zero-width by-value
+    /// parameters can still share a number with a neighbour (RUE-2086). A slot
+    /// index is therefore not guaranteed to be a unique name for a storage
+    /// location, and a `()` write to a shared index would otherwise clobber the
+    /// sized neighbour's value; the keying stays as a defence. The type
     /// discriminates them, which is the same key the CFG verifier's
     /// `verify_raw_init_fact` and `verify_storage_fact` use for exactly this
     /// convention (RUE-2095).
@@ -7925,9 +7926,10 @@ fn modeled_pointer_intrinsic(kind: UnsupportedIntrinsicKind) -> bool {
 
 /// Stable map key for a promoted place base within a frame.
 ///
-/// `base` alone is not a unique storage name: a zero-sized local reserves no
-/// ABI slot, so its index is the index the next local receives (RUE-2086). The
-/// accessed type discriminates the two, matching how [`Frame::locals`] and the
+/// `base` alone is not a guaranteed-unique storage name: a zero-width by-value
+/// parameter reserves no ABI slot, so its index can be the index the next
+/// parameter receives (RUE-2086); zero-width locals have had their own slots
+/// since RUE-2453. The accessed type discriminates the two, matching how [`Frame::locals`] and the
 /// CFG verifier key the same convention (RUE-2095).
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 struct PromotionKey {

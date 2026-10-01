@@ -87,9 +87,12 @@
 //!
 //! ## Zero-sized locals (RUE-194)
 //!
-//! A zero-sized local (`[T; 0]`, `()`, an empty struct) occupies 0 slots, so
-//! a trailing one is assigned a slot index equal to `num_locals` — out of
-//! range for the classification table. Its `Alloc`/`Load` move no bytes, so
+//! Historically a zero-sized local (`[T; 0]`, `()`, an empty struct) occupied
+//! 0 slots, so a trailing one was assigned a slot index equal to `num_locals`
+//! — out of range for the classification table. Since RUE-2453 every
+//! zero-width local and temporary has a slot of its own, so source programs no
+//! longer produce such a slot; the guard stays for hand-built CFGs and in case
+//! it recurs. Its `Alloc`/`Load` move no bytes, so
 //! there is nothing to track or rewrite: out-of-range slots are skipped, not
 //! a panic.
 //!
@@ -329,7 +332,7 @@ pub(super) fn classify_slot_writes(cfg: &Cfg, reachable: Option<&BitSet>) -> Vec
         }
     }
 
-    // Out-of-range slots (trailing zero-sized locals) are skipped (RUE-194;
+    // Out-of-range slots (historically, trailing zero-sized locals) are skipped (RUE-194;
     // module docs).
     fn record_write(slot_writes: &mut [SlotWrites], slot: u32, write: Option<(CfgValue, BlockId)>) {
         let Some(state) = slot_writes.get_mut(slot as usize) else {

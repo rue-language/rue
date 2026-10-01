@@ -1899,13 +1899,15 @@ fn zst_param_forwarded_through_two_calls() {
     assert_eq!(exit(src), 42);
 }
 
-// ---- zero-sized locals sharing a frame slot (RUE-2095) ---------------------
+// ---- zero-sized locals and the oracle's (slot, Type) key (RUE-2095) --------
 //
-// `reserve_frame_slots` advances the frame watermark by `abi_slot_count(ty)`,
-// so a zero-sized local reserves nothing and the next local receives the same
-// `$n`. Slot indices are therefore not unique storage names, and the oracle's
-// local store keys `(slot, Type)` so a `()` write cannot reach the sized
-// neighbour's value. RUE-2086 fixed the same hazard in the optimizer; the
+// Historical context: when these tests were written, `reserve_frame_slots`
+// advanced the frame watermark by `abi_slot_count(ty)`, so a zero-sized local
+// reserved nothing and the next local received the same `$n`. Since RUE-2453
+// every zero-width local and temporary has a slot of its own, so these source
+// programs no longer produce shared slots; only zero-width by-value parameters
+// can still share a number. The oracle's local store keeps its `(slot, Type)`
+// key as a defence, so a `()` write cannot reach a sized neighbour's value. RUE-2086 fixed the same hazard in the optimizer; the
 // oracle had it too, which made a *correct* compiler look like a miscompile and
 // left this whole shape class un-gateable by oracle-diff.
 
@@ -1923,8 +1925,9 @@ fn zst_reassignment_does_not_clobber_the_local_sharing_its_slot() {
 
 #[test]
 fn two_zst_types_sharing_one_slot_keep_the_sized_value() {
-    // Each zero-sized local reserves nothing, so `()`, `Empty` and `i64` all
-    // root at the same index. Only the type separates the three.
+    // Historically each zero-sized local reserved nothing, so `()`, `Empty`
+    // and `i64` all rooted at the same index and only the type separated the
+    // three. Each now has its own slot (RUE-2453); the keying is a defence.
     let src = "struct Empty { unit: () }
     fn main() -> i32 {
         let mut a: () = ();

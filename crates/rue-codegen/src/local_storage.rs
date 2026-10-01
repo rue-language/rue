@@ -211,9 +211,11 @@ impl LocalSlotPlan {
     /// aggregate access emitted as `frame_slot(base) + k` still addresses that
     /// aggregate's own cells.
     ///
-    /// A zero-slot (ZST) local occupies no cells, so the CFG is allowed to
-    /// root one at `num_locals` itself — the slot one past the local area,
-    /// which the plan therefore does not map. Such a slot keeps its CFG
+    /// A zero-slot (ZST) place can sit at `num_locals` itself — the slot one
+    /// past the local area, which the plan therefore does not map. Source
+    /// zero-width locals and temporaries have a slot of their own since
+    /// RUE-2453 and no longer land there; this stays as a defence for a
+    /// hand-built CFG. Such a slot keeps its CFG
     /// number, exactly as the pre-RUE-768 identity layout gave it, and the
     /// canonical ZST place address it yields (RUE-605) still names zero bytes.
     pub(crate) fn frame_slot(&self, slot: u32) -> u32 {
@@ -255,8 +257,9 @@ impl LocalSlotPlan {
         };
         let mut owners = vec![Vec::new(); self.frame_local_slots as usize];
         for (cfg_slot, &frame_slot) in map.iter().enumerate() {
-            // A ZST local can sit one past the local area and is not mapped;
-            // it owns no cell, so it names none here either.
+            // A ZST place can sit one past the local area (defensive since
+            // RUE-2453) and is not mapped; it owns no cell, so it names none
+            // here either.
             if let Some(cell) = owners.get_mut(frame_slot as usize) {
                 cell.push(cfg_slot as u32);
             }
@@ -786,8 +789,8 @@ mod tests {
         assert_eq!(merged.cfg_slots_by_frame_slot(), vec![vec![0, 2], vec![1]]);
         assert!(merged.shares_any_slot());
 
-        // A ZST local may be rooted one past the local area and is not mapped
-        // to a cell. It must not be attributed to a cell it does not occupy,
+        // A ZST place may be rooted one past the local area (defensive since
+        // RUE-2453) and is not mapped to a cell. It must not be attributed to a cell it does not occupy,
         // and must not index out of bounds.
         let with_zst = LocalSlotPlan {
             map: LocalSlotMap::Shared(vec![0, 1]),

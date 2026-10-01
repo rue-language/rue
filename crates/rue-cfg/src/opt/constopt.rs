@@ -526,9 +526,10 @@ mod tests {
 
     #[test]
     fn test_zero_slot_local_out_of_range_is_ignored() {
-        // A zero-sized local ([T; 0], unit) occupies 0 slots, so a trailing
-        // one is assigned slot index == num_locals — out of range for the
-        // slot table. Its Alloc/Load must be skipped, not panic (RUE-194).
+        // Historically a zero-sized local ([T; 0], unit) occupied 0 slots, so a
+        // trailing one was assigned slot index == num_locals — out of range
+        // for the slot table (source locals have their own slot since
+        // RUE-2453). Its Alloc/Load must be skipped, not panic (RUE-194).
         let mut cfg = make_cfg(0);
         let c = push(&mut cfg, CfgInstData::Const(0), Type::I32);
         push(
