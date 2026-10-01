@@ -2905,9 +2905,9 @@ example : ProgramTyped (enumProg tI64 enumMatchProjection) := checkProgram_sound
 example : ProgramTyped (enumProg tI64 enumTwoPayloadBindings) := checkProgram_sound (by rfl)
 
 /-- The accepted RUE-2325 shapes, each run against the compiler before it was
-committed: the two-class arm, the `return` out of an arm, the temporary and the
-call scrutinees, the two `Linear` values, and the explicit drop of a partially
-moved carrier. -/
+committed: the arm whose payload components have two qualifiers, the `return`
+out of an arm, the temporary and the call scrutinees, the two `Linear` values,
+and the explicit drop of a partially moved carrier. -/
 example : ProgramTyped (enumProg tI64 enumArmMovesAffineDropsLinear) :=
   checkProgram_sound (by rfl)
 example : ProgramTyped (enumProg tI64 enumReturnPastPayload) := checkProgram_sound (by rfl)
