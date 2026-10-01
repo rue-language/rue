@@ -1918,7 +1918,7 @@ fn main() -> i32 {
 }
 """
 compile_fail = true
-error_contains = ["E0203", "cannot assign to immutable variable 'a'"]
+error_contains = ["E0203", "cannot use immutable variable 'a' as an `inout self` receiver"]
 
 [[case]]
 name = "inout_self_accessor_on_shared_accessor_result_of_immutable_root_rejected"
@@ -1944,7 +1944,7 @@ fn main() -> i32 {
 }
 """
 compile_fail = true
-error_contains = ["E0203", "cannot assign to immutable variable 'a'"]
+error_contains = ["E0203", "cannot use a place under immutable variable 'a' as an `inout self` receiver"]
 
 [[case]]
 name = "inout_and_borrow_arguments_from_matching_accessor_results_accepted"

@@ -1512,6 +1512,9 @@ impl RetainedCharge for rue_error::ErrorKind {
             | E::InoutArgOfImmutable {
                 variable: value, ..
             }
+            | E::InoutSelfOfImmutable {
+                variable: value, ..
+            }
             | E::MoveOutOfBorrow { variable: value }
             | E::BorrowInoutConflict { variable: value }
             | E::MoveOutOfInout { variable: value }

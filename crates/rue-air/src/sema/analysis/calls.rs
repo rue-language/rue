@@ -1520,8 +1520,16 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     && !self.receiver_root_is_mutable(receiver_root, ctx)
                 {
                     let name = self.body_interner().resolve(&receiver_root).to_string();
+                    // Anything but a bare variable is a place under the root.
+                    let projected = !matches!(
+                        self.body_rir_ref().get(receiver).data,
+                        InstData::VarRef { .. }
+                    );
                     return Err(CompileError::new(
-                        ErrorKind::AssignToImmutable(name.clone()),
+                        ErrorKind::InoutSelfOfImmutable {
+                            variable: name.clone(),
+                            projected,
+                        },
                         span,
                     )
                     .with_help(format!(
