@@ -105,6 +105,8 @@ mod drop_flag_guard_mutation_tests;
 #[cfg(test)]
 mod integration_tests;
 #[cfg(test)]
+mod operand_backstop_tests;
+#[cfg(test)]
 mod scaling_harness;
 #[cfg(test)]
 mod supported_api_inventory;
