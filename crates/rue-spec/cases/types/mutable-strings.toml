@@ -368,7 +368,7 @@ fn main() -> i32 {
 }
 """
 compile_fail = true
-error_contains = "cannot assign"
+error_contains = "cannot use immutable variable 's' as an `inout self` receiver"
 
 # =============================================================================
 # Heap Promotion (3.10:21 - 3.10:23)

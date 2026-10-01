@@ -133,7 +133,7 @@ fn main() -> i32 {
 }
 """ }]
 compile_fail = true
-error_contains = ["E0203", "cannot assign"]
+error_contains = ["E0203", "cannot use immutable variable 's' as an `inout self` receiver"]
 
 # Control: a genuinely-moved StrBuf is still caught (use-after-move).
 [[case]]

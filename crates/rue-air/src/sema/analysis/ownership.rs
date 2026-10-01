@@ -1647,32 +1647,15 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     ),
                 );
             }
-            let root_name = self.body_interner().resolve(&root).to_string();
             if root_borrow_param {
                 return Err(CompileError::new(
                     ErrorKind::MutateBorrowedValue {
-                        variable: root_name,
+                        variable: self.body_interner().resolve(&root).to_string(),
                     },
                     span,
                 ));
             }
-            // Anything but a bare variable is a place under the root.
-            let projected = !matches!(
-                self.body_rir_ref().get(receiver).data,
-                InstData::VarRef { .. }
-            );
-            let help = format!(
-                "`inout self` needs a mutable receiver; make the binding mutable: \
-                 `let mut {root_name} = ...`"
-            );
-            return Err(CompileError::new(
-                ErrorKind::InoutSelfOfImmutable {
-                    variable: root_name,
-                    projected,
-                },
-                span,
-            )
-            .with_help(help));
+            return Err(self.inout_self_receiver_of_immutable_error(root, receiver, span, ctx));
         }
         // Analyze guard operands before installing the result loan. Under the
         // accessor-call evaluation rule, no accessor result exists when the
@@ -7393,6 +7376,59 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             )
         };
         Err(CompileError::new(error(name), span).with_help(help))
+    }
+
+    /// The E0203 for an `inout self` receiver (a method's or an accessor's)
+    /// rooted at the immutable binding `root` (spec 6.1:43, RUE-2558).
+    ///
+    /// The message names the receiver, and a place under `root` when the
+    /// receiver is not `root` itself. The help names the repair for the kind
+    /// of binding, as [`Self::reject_immutable_inout_arg_root`]'s does for an
+    /// `inout` argument: `let mut` for a local, `mut self` or `inout self` for
+    /// a by-value receiver, a mutable copy or an `inout` parameter otherwise.
+    pub(super) fn inout_self_receiver_of_immutable_error(
+        &self,
+        root: Spur,
+        receiver: InstRef,
+        span: Span,
+        ctx: &AnalysisContext,
+    ) -> CompileError {
+        let name = self.body_interner().resolve(&root).to_string();
+        let projected = !matches!(
+            self.body_rir_ref().get(receiver).data,
+            InstData::VarRef { .. }
+        );
+        let local = ctx.locals.get(&root);
+        let help = if local.is_some() {
+            format!(
+                "`inout self` needs a mutable receiver; make the binding mutable: \
+                 `let mut {name} = ...`"
+            )
+        } else if name == "self" {
+            "`inout self` needs a mutable receiver; declare the receiver `mut self` to mutate \
+             the callee's copy, or `inout self` to write back to the caller"
+                .to_string()
+        } else if let Some(param) = ctx.param(root) {
+            format!(
+                "`inout self` needs a mutable receiver; copy the parameter into a mutable \
+                 binding first: `let mut {name} = {name};`, or make the parameter \
+                 `inout {name}: {}` to write back to the caller",
+                self.format_type_name(param.ty)
+            )
+        } else {
+            "`inout self` needs a mutable receiver".to_string()
+        };
+        let mut error = CompileError::new(
+            ErrorKind::InoutSelfOfImmutable {
+                variable: name,
+                projected,
+            },
+            span,
+        );
+        if let Some(local) = local {
+            error = error.with_label("variable declared as immutable here", local.span);
+        }
+        error.with_help(help)
     }
 
     /// Reject a mutation of a collection that an enclosing `for` loop is

@@ -1519,23 +1519,12 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 if receiver_mode == AirArgMode::Inout
                     && !self.receiver_root_is_mutable(receiver_root, ctx)
                 {
-                    let name = self.body_interner().resolve(&receiver_root).to_string();
-                    // Anything but a bare variable is a place under the root.
-                    let projected = !matches!(
-                        self.body_rir_ref().get(receiver).data,
-                        InstData::VarRef { .. }
-                    );
-                    return Err(CompileError::new(
-                        ErrorKind::InoutSelfOfImmutable {
-                            variable: name.clone(),
-                            projected,
-                        },
+                    return Err(self.inout_self_receiver_of_immutable_error(
+                        receiver_root,
+                        receiver,
                         span,
-                    )
-                    .with_help(format!(
-                        "`inout self` needs a mutable receiver; make the binding \
-                     mutable: `let mut {name} = ...`"
-                    )));
+                        ctx,
+                    ));
                 }
 
                 // Access-point exclusivity (ADR-0037): the receiver's inout/borrow
