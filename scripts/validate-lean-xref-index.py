@@ -4,7 +4,7 @@
 The mechanization (``docs/formal/lean/RueCore/*.lean``) cites the calculus
 (``docs/formal/01-core-calculus.md``) from its doc-comments: a rule label as
 the calculus writes it (``(Use-Move)``, ``(D-Let)``, ``(@Drop)``), a section
-(``§5.5``), one of the calculus's own paragraphs (``§5.3:4``, RUE-2511), or a
+(``§5.5``), one of the calculus's own paragraphs (``core:5.3:4``, RUE-2511), or a
 prose-specification paragraph (``3.8:73``). This gate reads
 those doc-comments and the calculus and writes ``docs/formal/lean/INDEX.md``:
 every declaration with what it cites, and the inverse, every labeled rule and
@@ -24,8 +24,9 @@ The index cannot rot silently because the gate fails when:
 * any text beside the calculus (every text file under ``docs/formal`` outside
   ``.lake``: SPINE, GLOSSARY, the metatheory, the guides, ``explain/*.txt``,
   and the Lean sources in full, strings and ``--`` comments included) cites a
-  calculus paragraph ``§X.Y:Z`` the calculus does not declare, at either end of
-  a range (``§6.4:3–9``), or writes one malformed (``§7:3.1``); a citation
+  calculus paragraph ``core:X.Y:Z`` the calculus does not declare, at either
+  end of a range (``core:6.4:3–9``), or writes one malformed (``core:7:3.1``,
+  ``core:7``); a citation
   split across two lines is not read, and so not checked;
 * the calculus's own paragraph markers are malformed, duplicated, or declared
   under a section other than their own (a marker inside a code fence is not a
@@ -86,30 +87,34 @@ END_LINE = re.compile(r"^end(?:\s+(?P<name>\S+))?\s*$")
 CONTINUATION_LINE = re.compile(r".*\bin$")
 
 SECTION_CITATION = re.compile(r"§(\d+(?:\.\d+)*)")
-# `§` excluded before the chapter: `§5.3:4` is a calculus paragraph, not the
-# spec's `5.3:4`.
-PARAGRAPH_CITATION = re.compile(r"(?<![\d.§])(\d+\.\d+):(\d+[a-z]?)(?![\da-z])")
-# The calculus's own paragraph ids (RUE-2511): `§` + section + `:` + the
-# paragraph's number within it, with an optional letter suffix for a paragraph
-# inserted later (`§5.3:4a`) — `§5.3:4`, `§6.13.3:5`, `§7:3`. The `§` keeps
-# them apart from the spec's bare `X.Y:Z`, whose chapters 5 and 6 overlap the
-# calculus's sections. A citation counts as citing its section too (the
-# `SECTION_CITATION` match on the same token). A citation is read more
-# greedily than the id form, so that a malformed one is seen and rejected
-# rather than skipped: the whole word after the `:` (`§7:3ab`, `§7:30_`), a
-# trailing dot-digit tail (`§7:3.1`, which is not a sub-paragraph: ids have
-# none) and a range's far end (`§6.4:3–9`, with an en dash or a hyphen), whose
-# two ends must both be declared. A lone trailing `.` ends a sentence.
+# A spec paragraph, bare (`3.8:77`) or with the `§` the spec's own prose
+# writes (`§3.8:77`). Not the tail of a calculus id: `core:3.8:77` is the
+# calculus's paragraph, never the spec's `3.8:77`.
+PARAGRAPH_CITATION = re.compile(r"(?<![\d.])(?<!core:)(\d+\.\d+):(\d+[a-z]?)(?![\da-z])")
+# The calculus's own paragraph ids (RUE-2511, RUE-2524): `core:` + section +
+# `:` + the paragraph's number within it, with an optional letter suffix for a
+# paragraph inserted later (`core:5.3:4a`) — `core:5.3:4`, `core:6.13.3:5`,
+# `core:7:3`. The `core:` prefix keeps them apart from the spec's `X.Y:Z`
+# (written with or without `§`), whose chapters 5 and 6 overlap the calculus's
+# sections. A citation counts as citing its section too. A citation is read
+# more greedily than the id form, so that a malformed one is seen and rejected
+# rather than skipped: `core:` and a section number with no paragraph number
+# (`core:7`), the whole word after the `:` (`core:7:3ab`, `core:7:30_`), a
+# trailing dot-digit tail (`core:7:3.1`, which is not a sub-paragraph: ids
+# have none) and a range's far end (`core:6.4:3–9`, with an en dash or a
+# hyphen), whose two ends must both be declared. A lone trailing `.` ends a
+# sentence. `core:` followed by anything but a digit (`the core: surface
+# syntax`) is prose, not a citation.
 CALCULUS_CITATION_TOKEN = re.compile(
-    r"§(?P<section>\d+(?:\.\d+)*):(?P<first>\w+)(?P<tail>(?:\.\d[\w.]*)?)"
-    r"(?:[–-](?P<last>\d\w*))?"
+    r"\bcore:(?P<section>\d+(?:\.\d+)*)(?::(?P<first>\w+)(?P<tail>(?:\.\d[\w.]*)?)"
+    r"(?:[–-](?P<last>\d\w*))?)?"
 )
 CALCULUS_PARAGRAPH_NUMBER = re.compile(r"^\d+[a-z]?$")
-CALCULUS_PARAGRAPH_ID = re.compile(r"^\d+(?:\.\d+)*:\d+[a-z]?$")
+CALCULUS_PARAGRAPH_ID = re.compile(r"^core:\d+(?:\.\d+)*:\d+[a-z]?$")
 # How the calculus declares one: a linkable anchor and the visible tag, both
-# naming the id — ``<a id="5.3:4"></a>**[§5.3:4]**`` — at the start of the
-# paragraph (after ``- `` for a list item, ``> `` for a quoted block).
-CALCULUS_PARAGRAPH_MARKER = re.compile(r'<a id="(?P<anchor>[^"]*)"></a>\*\*\[§(?P<label>[^\]]*)\]\*\*')
+# naming the id — ``<a id="core:5.3:4"></a>**[core:5.3:4]**`` — at the start
+# of the paragraph (after ``- `` for a list item, ``> `` for a quoted block).
+CALCULUS_PARAGRAPH_MARKER = re.compile(r'<a id="(?P<anchor>[^"]*)"></a>\*\*\[(?P<label>[^\]]*)\]\*\*')
 # A Markdown code fence: a paragraph marker inside one is an example, not a
 # declaration.
 FENCE_LINE = re.compile(r"^\s*(```|~~~)")
@@ -443,7 +448,7 @@ class Declaration:
         self.sections: List[str] = []
         self.rules: List[str] = []
         self.paragraphs: List[str] = []
-        # The calculus's own paragraph ids, without the `§` (`5.3:4`).
+        # The calculus's own paragraph ids, without the `core:` (`5.3:4`).
         self.calculus_paragraphs: List[str] = []
         self.unknown_rules: List[str] = []
         self.helper = False
@@ -485,7 +490,7 @@ class Calculus:
         self.rule_order: List[str] = []
         # §2's T/p/e alternatives, in document order.
         self.forms: List[Form] = []
-        # The paragraph ids the calculus declares (`5.3:4`, no `§`), in
+        # The paragraph ids the calculus declares (`5.3:4`, no `core:`), in
         # document order, and what is wrong with its markers.
         self.paragraph_ids: List[str] = []
         self.errors: List[str] = []
@@ -678,10 +683,18 @@ def cite(decl: Declaration, calculus: Calculus) -> None:
     if decl.doc is None:
         return
     decl.helper = HELPER_MARKER in decl.doc
+    # A section is cited by `§X.Y`, or by a paragraph id inside it
+    # (`core:X.Y:Z`), in the order they are written.
+    cited_sections = [(m.start(), m.group(1)) for m in SECTION_CITATION.finditer(decl.doc)]
+    cited_sections += [
+        (m.start(), m.group("section"))
+        for m in CALCULUS_CITATION_TOKEN.finditer(decl.doc)
+        if m.group("first") is not None
+    ]
     seen_sections: List[str] = []
-    for match in SECTION_CITATION.finditer(decl.doc):
-        if match.group(1) not in seen_sections:
-            seen_sections.append(match.group(1))
+    for _, section in sorted(cited_sections):
+        if section not in seen_sections:
+            seen_sections.append(section)
     decl.sections = seen_sections
     paragraphs: List[str] = []
     for match in PARAGRAPH_CITATION.finditer(decl.doc):
@@ -730,7 +743,7 @@ def parse_calculus(path: Path) -> Calculus:
             production = None
             continue
         # A marker inside a code fence is an example of the syntax, not a
-        # declaration; the citation check reads its `§X.Y:Z` as a citation.
+        # declaration; the citation check reads its `core:X.Y:Z` as a citation.
         for marker in [] if in_fence else CALCULUS_PARAGRAPH_MARKER.finditer(line):
             _read_paragraph_marker(calculus, marker, current, f"{path.name}:{number_line}", seen_ids)
         top = current.split(".")[0] if current else ""
@@ -750,7 +763,7 @@ def parse_calculus(path: Path) -> Calculus:
 def _read_paragraph_marker(
     calculus: Calculus, marker: "re.Match[str]", current: str, where: str, seen: Dict[str, int]
 ) -> None:
-    """Record one ``<a id="X.Y:Z"></a>**[§X.Y:Z]**`` paragraph marker.
+    """Record one ``<a id="core:X.Y:Z"></a>**[core:X.Y:Z]**`` paragraph marker.
 
     The id must be well formed, the anchor and the visible tag must agree, it
     must sit under its own section's heading (so a paragraph moved to another
@@ -759,21 +772,22 @@ def _read_paragraph_marker(
     """
     anchor, label = marker.group("anchor"), marker.group("label")
     if anchor != label:
-        calculus.errors.append(f"{where}: paragraph marker's anchor `{anchor}` and tag `§{label}` disagree")
+        calculus.errors.append(f"{where}: paragraph marker's anchor `{anchor}` and tag `{label}` disagree")
         return
     if not CALCULUS_PARAGRAPH_ID.match(label):
-        calculus.errors.append(f"{where}: paragraph marker `§{label}` is not of the form `§X.Y:Z`")
+        calculus.errors.append(f"{where}: paragraph marker `{label}` is not of the form `core:X.Y:Z`")
         return
-    section = label.split(":")[0]
+    ref = label[len("core:"):]
+    section = ref.split(":")[0]
     if section != current:
         calculus.errors.append(
-            f"{where}: paragraph marker `§{label}` sits under §{current or '(no section)'}, not §{section}"
+            f"{where}: paragraph marker `{label}` sits under §{current or '(no section)'}, not §{section}"
         )
-    if label in seen:
-        calculus.errors.append(f"{where}: paragraph id `§{label}` is declared twice (first at line {seen[label]})")
+    if ref in seen:
+        calculus.errors.append(f"{where}: paragraph id `{label}` is declared twice (first at line {seen[ref]})")
         return
-    seen[label] = int(where.rsplit(":", 1)[1])
-    calculus.paragraph_ids.append(label)
+    seen[ref] = int(where.rsplit(":", 1)[1])
+    calculus.paragraph_ids.append(ref)
 
 
 def _fenced_lines(text: str) -> List[Tuple[str, bool]]:
@@ -791,14 +805,20 @@ def _fenced_lines(text: str) -> List[Tuple[str, bool]]:
 
 
 def calculus_citations(text: str) -> List[Tuple[List[str], Optional[str]]]:
-    """The ``§X.Y:Z`` citations in one line or doc-comment, in order.
+    """The ``core:X.Y:Z`` citations in one line or doc-comment, in order.
 
-    Each is ``(ids, problem)``: the ids it cites without the ``§`` (both ends
-    of a range), or, for a malformed one, ``problem`` saying why.
+    Each is ``(ids, problem)``: the ids it cites without the ``core:`` (both
+    ends of a range), or, for a malformed one, ``problem`` saying why.
     """
     found: List[Tuple[List[str], Optional[str]]] = []
     for match in CALCULUS_CITATION_TOKEN.finditer(text):
         section, first, tail, last = match.group("section", "first", "tail", "last")
+        if first is None:
+            found.append(
+                ([], f"cites `{match.group(0)}`: a paragraph id names its paragraph (`core:X.Y:Z`); "
+                 "a section alone is `§X.Y`")
+            )
+            continue
         if tail:
             found.append(([], f"cites `{match.group(0)}`: a paragraph id has no `.`-numbered part after its number"))
             continue
@@ -822,7 +842,7 @@ def _text_files(directory: Path) -> Iterable[Path]:
 def calculus_citations_in_files(
     formal_dir: Path, calculus_path: Path, lean_dir: Path, calculus_ids: set
 ) -> List[str]:
-    """Check every ``§X.Y:Z`` token in the text files beside the calculus.
+    """Check every ``core:X.Y:Z`` token in the text files beside the calculus.
 
     That is every text file under ``formal_dir`` (the Markdown documents, the
     Lean sources in full — doc-comments, ``--`` comments and string literals
@@ -830,12 +850,12 @@ def calculus_citations_in_files(
     under ``lean_dir/RueCore`` wherever that is. A file that is not UTF-8 is
     not text and is skipped. The calculus's own paragraph markers are
     declarations, not citations, and are skipped outside code fences; any
-    other ``§X.Y:Z`` in it (a cross-reference between its own paragraphs) is a
+    other ``core:X.Y:Z`` in it (a cross-reference between its own paragraphs) is a
     citation like any other. Code blocks are scanned too: a citation there is
     still a claim about where a rule lives.
 
     A citation is read within one line: one split across a line break
-    (``§7:`` at a line's end, ``30`` on the next) is not seen as a citation,
+    (``core:7:`` at a line's end, ``30`` on the next) is not seen as a citation,
     so it is not checked. None is written that way.
     """
     errors: List[str] = []
@@ -851,13 +871,15 @@ def calculus_citations_in_files(
             text = resolved.read_text(encoding="utf-8")
         except (UnicodeDecodeError, OSError):
             continue
-        if "§" not in text:
+        if "core:" not in text:
             continue
         is_calculus = resolved == calculus_path.resolve()
         lines = _fenced_lines(text) if is_calculus else [(line, False) for line in text.splitlines()]
         for number, (line, in_fence) in enumerate(lines, start=1):
-            if is_calculus and not in_fence:
-                line = CALCULUS_PARAGRAPH_MARKER.sub("", line)
+            if is_calculus:
+                # A marker declares (outside a fence) or cites once, by its
+                # tag (inside one): its anchor names the same id again.
+                line = CALCULUS_PARAGRAPH_MARKER.sub("" if not in_fence else (lambda m: m.group("label")), line)
             for refs, problem in calculus_citations(line):
                 if problem is not None:
                     errors.append(f"{relative}:{number}: {problem}")
@@ -865,7 +887,7 @@ def calculus_citations_in_files(
                 for ref in refs:
                     if ref not in calculus_ids:
                         errors.append(
-                            f"{relative}:{number}: cites `§{ref}`, which is not a paragraph "
+                            f"{relative}:{number}: cites `core:{ref}`, which is not a paragraph "
                             f"`{calculus_path.name}` declares"
                         )
     return errors
@@ -947,7 +969,7 @@ def render_index(modules: List[Module], calculus: Calculus) -> str:
         "every alternative of the calculus's §2 grammar, every labeled rule and every "
         "section of its §5 and §6, with the declarations that mechanize them. A row "
         "reading *not yet mechanized* is the fragment boundary, stated rather than "
-        "inferred. Sections, rules, paragraphs cited as `§X.Y:Z`, and syntactic forms are those of "
+        "inferred. Sections, rules, paragraphs cited as `core:X.Y:Z`, and syntactic forms are those of "
         "`../01-core-calculus.md`; paragraphs are `docs/spec` paragraph IDs. "
         "Regenerate with `scripts/validate-lean-xref-index.py --write`; the gate "
         "fails when this file is stale or a declaration lacks its citation "
@@ -975,7 +997,7 @@ def render_index(modules: List[Module], calculus: Calculus) -> str:
             calculus_cell = ", ".join(
                 [f"({rule})" for rule in decl.rules]
                 + [f"§{section}" for section in sorted(decl.sections, key=_section_key)]
-                + [f"§{ref}" for ref in sorted(decl.calculus_paragraphs, key=_paragraph_key)]
+                + [f"core:{ref}" for ref in sorted(decl.calculus_paragraphs, key=_paragraph_key)]
             )
             paragraph_cell = ", ".join(f"`{ref}`" for ref in decl.paragraphs) or "—"
             name = decl.name if decl.kind == "module" else f"`{decl.name}`"
