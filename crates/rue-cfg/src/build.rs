@@ -2009,6 +2009,20 @@ impl<'a> CfgBuilder<'a> {
                         _ => {}
                     }
                 }
+                // A read through a pointer to an uninhabited type — `!`,
+                // `[!; 2]`, a struct with a `!` field, an enum none of whose
+                // variants can be built — has no value to produce, even under
+                // `checked`. Control cannot continue past it: end the block in
+                // `Unreachable`, which traps, and emit no memory access. The
+                // operands above were still evaluated in order (RUE-2548).
+                if operation.reads_pointee() && self.type_pool.is_uninhabited(ty) {
+                    self.cfg
+                        .set_terminator(self.current_block, Terminator::Unreachable);
+                    return ExprResult {
+                        value: None,
+                        continuation: Continuation::Diverged,
+                    };
+                }
                 // Store args in extra array
                 let args_result = self.cfg.push_intrinsic_args(arg_vals);
                 let args = self.payload_or(args_result, CfgIntrinsicArgs::EMPTY, span);
