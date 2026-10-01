@@ -1382,7 +1382,9 @@ struct Frame {
     ///
     /// A zero-sized by-value parameter has **no entry at all**: it occupies
     /// zero slots, so its `Param { index }` / `PlaceBase::Param(slot)` names
-    /// the slot the *next* parameter received. Reach parameter storage only
+    /// no storage. Its index is its key past the end of the ABI range
+    /// (RUE-2534); before that key it named the slot the *next* parameter
+    /// received. Reach parameter storage only
     /// through [`Interp::zero_sized_param`], which decides that question from
     /// the accessed type — the same "a slot index is not a storage name"
     /// rule [`Frame::locals`] states as a `(slot, Type)` key (RUE-2095),
@@ -2374,6 +2376,13 @@ impl<'a> Interp<'a> {
                 } else {
                     self.type_pool().abi_slot_count(place.base_type)
                 };
+                // A zero-sized by-value parameter has no storage: its base is
+                // the parameter's key past the ABI range (RUE-2534), so it has
+                // no slot to bound and no slot whose writability to consult.
+                // `zero_sized_param` answers every access to it from the type.
+                if width == 0 {
+                    return None;
+                }
                 (slot, cfg.num_params(), width, Some(slot))
             }
             PlaceBase::Indirect(_) => return None,
@@ -2406,7 +2415,11 @@ impl<'a> Interp<'a> {
     fn intrinsic_arg_is_place(&self, cfg: &Cfg, value: CfgValue) -> bool {
         match &cfg.get_inst(value).data {
             CfgInstData::Load { slot } => *slot < cfg.num_locals(),
-            CfgInstData::Param { index } => *index < cfg.num_params(),
+            // A zero-sized parameter's index is its key past the ABI range
+            // (RUE-2534); it is still a parameter place.
+            CfgInstData::Param { index } => {
+                *index < cfg.num_params() || self.is_zero_sized(cfg.get_inst(value).ty)
+            }
             CfgInstData::PlaceRead { place } => {
                 self.place_base_violation(cfg, place, PlaceAccess::Read)
                     .is_none()
@@ -4100,11 +4113,13 @@ impl<'a> Interp<'a> {
     /// `Frame::param_places` and `Frame::promoted` never hold.
     ///
     /// `call_arg_slot_width` gives a by-value zero-sized argument a width of
-    /// zero, so `call_inner_with_places` never pushes it and its
-    /// `PlaceBase::Param(slot)` names the slot the NEXT parameter occupies.
-    /// Every slot-indexed parameter table therefore answers with the
-    /// neighbour's storage, which is a wrong value for a scalar neighbour and
-    /// a contract violation for an aggregate one (RUE-2101). Materialize the
+    /// zero, so `call_inner_with_places` never pushes it, and its
+    /// `PlaceBase::Param(slot)` names no storage: it is the parameter's key
+    /// past the ABI range (RUE-2534), and before that it was the slot the NEXT
+    /// parameter occupies. A slot-indexed parameter table would answer with
+    /// nothing or with the neighbour's storage, a wrong value for a scalar
+    /// neighbour and a contract violation for an aggregate one (RUE-2101).
+    /// Materialize the
     /// unique value of the type instead, exactly as the `CfgInstData::Param`
     /// read already does.
     ///
@@ -4185,10 +4200,10 @@ impl<'a> Interp<'a> {
             }
             CfgInstData::Param { index } => {
                 // A zero-sized parameter occupies NO slot (abi_slot_count = 0),
-                // but the CFG still emits a Param read for it — sharing its
-                // `index` with the NEXT parameter's slot. Reading the slot
-                // would grab the next parameter's value, so this and every
-                // other parameter-storage path asks `zero_sized_param` first.
+                // but the CFG still emits a Param read for it, at its key past
+                // the ABI range (RUE-2534). No slot holds its value, so this
+                // and every other parameter-storage path asks
+                // `zero_sized_param` first.
                 if let Some(value) = self.zero_sized_param(PlaceBase::Param(*index), ty) {
                     value
                 } else if let Some(target) = frame.param_places.get(index).cloned() {
@@ -5642,7 +5657,11 @@ impl<'a> Interp<'a> {
             // `Param` base through the promoted heap allocation when the
             // slot's address was taken, matching the `Param` read path, so an
             // address-taken parameter stays coherent.
-            CfgInstData::Param { index } if *index < cfg.num_params() => {
+            // A zero-sized parameter's index is its key past the ABI range
+            // (RUE-2534), and it is a place all the same.
+            CfgInstData::Param { index }
+                if *index < cfg.num_params() || self.is_zero_sized(cfg.get_inst(v).ty) =>
+            {
                 Ok(WritebackPlace::Simple {
                     base: PlaceBase::Param(*index),
                     base_type: cfg.get_inst(v).ty,

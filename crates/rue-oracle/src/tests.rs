@@ -1997,8 +1997,9 @@ fn zst_sharing_a_slot_with_an_address_taken_local_writes_through_the_pointer() {
 //
 // The parameter half of the same hazard. `call_arg_slot_width` gives a
 // by-value zero-sized argument a width of zero, so it is never laid into
-// `Frame::params` and its `Param { index }` / `PlaceBase::Param(slot)` names
-// the slot the NEXT parameter received. The `CfgInstData::Param` read has
+// `Frame::params` and its `Param { index }` / `PlaceBase::Param(slot)` named
+// the slot the NEXT parameter received (since RUE-2534 it is the parameter's
+// key past the ABI range, which names no slot). The `CfgInstData::Param` read has
 // always answered such a read from the type; the place-rooted paths
 // (`base_value_of`, `place_write`, `param_places`) and the `Return` inout
 // writeback did not, so a field read on a zero-sized parameter reached its
