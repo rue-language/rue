@@ -5763,7 +5763,7 @@ exit_code = 42
 
 [[case]]
 name = "generic_signature_module_qualified_callee_resolves_in_its_module"
-spec = ["4.14:5a"]
+spec = ["4.14:5a", "4.14:16"]
 description = "A module-qualified generic callee's signature resolves in its own module: the caller's `let T = i64;` and its file-level `K` do not reach `m.rep`'s `-> [T; K]`, which sees the callee module's `K` (RUE-2422)"
 source = """
 const m = @import("rep.rue");
