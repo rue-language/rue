@@ -83,8 +83,8 @@ use rue_air::{FrozenTypeInternPool, Type};
 use rue_span::Span;
 
 use crate::inst::{
-    BlockId, Cfg, CfgCallArg, CfgEditError, CfgInst, CfgInstData, CfgValue, Place, PlaceBase,
-    Projection, Terminator, ValidatedCfg,
+    BlockId, Cfg, CfgArgMode, CfgCallArg, CfgEditError, CfgInst, CfgInstData, CfgValue, Place,
+    PlaceBase, Projection, Terminator, ValidatedCfg,
 };
 use crate::verify::CfgVerificationError;
 
@@ -100,7 +100,8 @@ pub enum CfgInlineError {
     /// body and is never an inlining candidate (ADR-0049 §6).
     RuntimeCall { call: CfgValue },
     /// The call passes a different number of arguments than the callee has
-    /// source parameters.
+    /// source parameters, counting each zero-width by-value argument as the
+    /// parameter it is passed to.
     ArityMismatch {
         call_args: usize,
         callee_params: usize,
@@ -273,7 +274,9 @@ enum ParamRedirect {
     },
 }
 
-/// One callee source parameter: its start ABI slot and full slot width.
+/// One callee source parameter: its start ABI slot and full slot width, or,
+/// for a zero-width by-value parameter, its key past the end of the ABI range
+/// and a width of zero (RUE-2534).
 struct CalleeParam {
     start_slot: u32,
     slot_count: u32,
@@ -404,6 +407,7 @@ fn splice_shape(
     call: CfgValue,
     call_block: Option<BlockId>,
     callee: &Cfg,
+    type_pool: &FrozenTypeInternPool,
 ) -> Result<SpliceShape, CfgInlineError> {
     if call.as_u32() as usize >= caller.value_count() {
         return Err(CfgInlineError::CallSiteNotFound { call });
@@ -440,13 +444,7 @@ fn splice_shape(
     if !callee.get_block(callee.entry).params.is_empty() {
         return Err(CfgInlineError::CalleeEntryHasParams);
     }
-    let params = callee_params(callee);
-    if params.len() != call_args.len() {
-        return Err(CfgInlineError::ArityMismatch {
-            call_args: call_args.len(),
-            callee_params: params.len(),
-        });
-    }
+    let params = callee_params(callee, caller, &call_args, type_pool)?;
     let mut materialized_params = 0u64;
     for (index, (param, arg)) in params.iter().zip(&call_args).enumerate() {
         if callee.is_param_by_ref(param.start_slot) {
@@ -599,7 +597,7 @@ pub fn splice_call_in_block_in_place(
 ) -> Result<Option<CfgValue>, CfgInlineError> {
     let appended_values_from = dst.value_count() as u32;
     // -- Locate and validate the call site. ---------------------------------
-    let shape = splice_shape(dst, call, Some(call_block), callee)?;
+    let shape = splice_shape(dst, call, Some(call_block), callee, type_pool)?;
     let call_ty = shape.call_ty;
     let call_span = shape.call_span;
     let call_args = shape.call_args;
@@ -914,8 +912,9 @@ pub fn splice_call_growth(
     caller: &Cfg,
     call: CfgValue,
     callee: &Cfg,
+    type_pool: &FrozenTypeInternPool,
 ) -> Result<crate::opt::CodeGrowth, CfgInlineError> {
-    splice_shape(caller, call, None, callee)?.growth(callee)
+    splice_shape(caller, call, None, callee, type_pool)?.growth(callee)
 }
 
 fn substitute_accessor_places(
@@ -994,12 +993,30 @@ fn substitute_accessor_places(
     Ok(())
 }
 
-/// The callee's per-source-parameter grouping: the recorded ABI descriptors
-/// when present, else the synthetic one-slot-per-parameter contract used by
-/// directly constructed CFGs (see `Cfg::source_param_abi`).
-fn callee_params(callee: &Cfg) -> Vec<CalleeParam> {
+/// The callee's source parameters, one per call argument, in declaration
+/// order.
+///
+/// The parameters that occupy ABI slots come from the recorded descriptors
+/// when present, else from the synthetic one-slot-per-parameter contract used
+/// by directly constructed CFGs (see `Cfg::source_param_abi`). Neither lists a
+/// zero-width by-value parameter: it has no ABI slot, yet the call still
+/// carries its argument. Such a parameter is keyed past the end of the
+/// callee's ABI range, at `num_params` plus its position among the zero-width
+/// by-value parameters (RUE-2534), and that key is what the callee's `Param`
+/// reads, parameter places and exit drop name. The call argument identifies
+/// it the way code generation omits it from the native call: passed by value
+/// with a type of no ABI slots.
+///
+/// A call whose arguments do not cover the callee's occupying parameters
+/// exactly is an arity mismatch.
+fn callee_params(
+    callee: &Cfg,
+    caller: &Cfg,
+    call_args: &[CfgCallArg],
+    type_pool: &FrozenTypeInternPool,
+) -> Result<Vec<CalleeParam>, CfgInlineError> {
     let descriptors = callee.source_param_abi();
-    if !descriptors.is_empty() {
+    let occupying: Vec<CalleeParam> = if !descriptors.is_empty() {
         descriptors
             .iter()
             .map(|descriptor| CalleeParam {
@@ -1014,7 +1031,41 @@ fn callee_params(callee: &Cfg) -> Vec<CalleeParam> {
                 slot_count: 1,
             })
             .collect()
+    };
+    let zero_width: Vec<bool> = call_args
+        .iter()
+        .map(|arg| {
+            arg.mode == CfgArgMode::Normal
+                && type_pool.abi_slot_count(caller.get_inst(arg.value).ty) == 0
+        })
+        .collect();
+    let zero_width_count = zero_width.iter().filter(|&&zero| zero).count();
+    if occupying.len() + zero_width_count != call_args.len() {
+        return Err(CfgInlineError::ArityMismatch {
+            call_args: call_args.len(),
+            callee_params: occupying.len() + zero_width_count,
+        });
     }
+    let mut occupying = occupying.into_iter();
+    let mut next_zero_width_key = callee.num_params();
+    let mut params = Vec::with_capacity(call_args.len());
+    for zero in zero_width {
+        if zero {
+            params.push(CalleeParam {
+                start_slot: next_zero_width_key,
+                slot_count: 0,
+            });
+            next_zero_width_key =
+                next_zero_width_key
+                    .checked_add(1)
+                    .ok_or(CfgInlineError::Edit(CfgEditError::ResourceLimitExceeded {
+                        family: "inline parameters",
+                    }))?;
+        } else {
+            params.extend(occupying.next());
+        }
+    }
+    Ok(params)
 }
 
 /// Classify a physically by-reference argument's place root. Sema only
@@ -1654,7 +1705,7 @@ mod tests {
             let call = self.find_call(caller, callee);
             let caller_cfg = self.cfg(caller);
             let callee_cfg = self.cfg(callee);
-            let growth = splice_call_growth(caller_cfg, call, callee_cfg)?;
+            let growth = splice_call_growth(caller_cfg, call, callee_cfg, &self.type_pool)?;
             let inlined = inline_call(caller_cfg, call, callee_cfg, &self.type_pool)?;
             assert_eq!(
                 growth.values,
@@ -2233,7 +2284,7 @@ mod tests {
             .find(|block| block.insts.contains(&call))
             .map(|block| block.id)
             .unwrap();
-        let growth = splice_call_growth(&caller, call, &callee).unwrap();
+        let growth = splice_call_growth(&caller, call, &callee, &program.type_pool).unwrap();
         let inlined =
             splice_call_in_block(&caller, call, call_block, &callee, &program.type_pool).unwrap();
         assert_eq!(
@@ -2404,7 +2455,7 @@ mod tests {
         let caller = program.cfg("caller");
         let callee = program.cfg("branch");
         let call = program.find_call("caller", "branch");
-        let growth = splice_call_growth(caller, call, callee).unwrap();
+        let growth = splice_call_growth(caller, call, callee, &program.type_pool).unwrap();
         assert_eq!(growth.values, callee.value_count() as u64 + 1);
         assert_eq!(growth.blocks, callee.block_count() as u64 + 1);
         let inlined = inline_call(caller, call, callee, &program.type_pool).unwrap();
@@ -2426,7 +2477,7 @@ mod tests {
             let _ = value;
         }
         let padded = padded.finish(&program.type_pool).unwrap();
-        let exact = splice_call_growth(caller, call, &padded).unwrap();
+        let exact = splice_call_growth(caller, call, &padded, &program.type_pool).unwrap();
         assert_eq!(exact.values, 256);
         assert_eq!(exact.blocks, padded.block_count() as u64 + 1);
         let mut budget = crate::opt::CodeGrowthBudget::o3();
@@ -2478,7 +2529,7 @@ mod tests {
         let caller = program.cfg("caller");
         let callee = program.cfg("never_many_blocks");
         let call = program.find_call("caller", "never_many_blocks");
-        let growth = splice_call_growth(caller, call, callee).unwrap();
+        let growth = splice_call_growth(caller, call, callee, &program.type_pool).unwrap();
         assert_eq!(growth.values, 0);
         assert_eq!(growth.blocks, 259);
         let charged = crate::opt::CodeGrowthBudget::charge_for_growth(growth);
