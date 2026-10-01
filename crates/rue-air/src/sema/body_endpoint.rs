@@ -494,6 +494,21 @@ where
         self.overlay.borrow().definition_tokens.get(key).copied()
     }
 
+    /// The durable key a request-local definition token was issued for, the
+    /// inverse of the registrations above. A linear scan: it serves only the
+    /// rare relocation of an anonymous nominal the body is still producing
+    /// (RUE-2579).
+    pub fn definition_key_for_token(&self, token: SemanticDefinitionToken) -> Option<K>
+    where
+        K: Clone,
+    {
+        self.overlay
+            .borrow()
+            .definition_tokens
+            .iter()
+            .find_map(|(key, issued)| (*issued == token).then(|| key.clone()))
+    }
+
     /// Mint an overlay [`SemanticDefinitionToken`] standing for a durable nominal
     /// key, recording the `(file, name, kind)` endpoint and the `(file, name)`
     /// preimage the `Named`-nominal arm of [`resolve_instance_type`] reverses. A
@@ -671,14 +686,20 @@ where
     where
         M: Clone,
     {
+        let element = self.identity.pool_mut()?.resolve(element).ok()?;
+        self.register_generated_slice_of(element, name)
+    }
+
+    /// [`Self::register_generated_slice`] over an element already resolved in
+    /// this pool. An anonymous nominal the body is still producing has no
+    /// durable key, yet its own method may view it (`borrow s: [Self]`,
+    /// RUE-2579).
+    pub fn register_generated_slice_of(&self, element: Type, name: &str) -> Option<StructId> {
         let symbol = self.identity.pool().intern_name(name).ok()?;
         let id = self
             .identity
             .pool_mut()?
-            .resolve(&SemanticImportType::Slice {
-                element: Arc::new(element.clone()),
-                name: Arc::from(name),
-            })
+            .mint_slice_view(element, name)
             .ok()?
             .as_struct()?;
         self.overlay

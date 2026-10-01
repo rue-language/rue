@@ -3126,8 +3126,10 @@ where
         ty: Type,
     ) -> Option<(Arc<str>, crate::SemanticImportNominalKind)> {
         match ty.kind() {
+            // A struct still being declared (an anonymous nominal whose own
+            // signature names `Self`) is never builtin.
             TypeKind::Struct(id) => {
-                let def = self.type_pool.struct_def(id);
+                let def = self.type_pool.try_struct_def(id)?;
                 (def.is_builtin || &*def.name == "str")
                     .then(|| (def.name.clone(), crate::SemanticImportNominalKind::Struct))
             }
@@ -3138,6 +3140,74 @@ where
             }
             _ => None,
         }
+    }
+
+    /// `element` relocated to stable content for naming its slice view, for an
+    /// element holding an anonymous nominal this body produces: registered,
+    /// or still being declared because its own signature names `Self`. Such a
+    /// nominal has no durable key in this body's maps, so its issued identity
+    /// is reversed to the durable one through the tokens it was issued from;
+    /// every nominal then relocates exactly as [`crate::types::slice_view_name`]
+    /// relocates it, so the view gets the one name every producer gives it
+    /// (RUE-2571, RUE-2579).
+    fn local_slice_element(
+        &self,
+        element: Type,
+    ) -> Option<crate::SemanticImportType<String, String>> {
+        use crate::SemanticImportType as T;
+        let local = self
+            .canonical_anonymous_types
+            .get(&element)
+            .cloned()
+            .or_else(|| {
+                let id = element.as_struct()?;
+                self.anon_struct_declarations
+                    .iter()
+                    .find_map(|(identity, declared)| (*declared == id).then(|| identity.clone()))
+            });
+        if let Some(identity) = local {
+            let durable = identity
+                .try_map_identities::<K, M, ()>(
+                    &|token| self.endpoint.definition_key_for_token(*token).ok_or(()),
+                    &|token| {
+                        self.module_tokens
+                            .borrow()
+                            .values()
+                            .find_map(|(issued, module)| (issued == token).then(|| module.clone()))
+                            .ok_or(())
+                    },
+                )
+                .ok()?;
+            return durable
+                .try_map_identities::<String, String, std::convert::Infallible>(
+                    &|key| Ok(self.source.definition_symbol_component(key)),
+                    &|module| Ok(self.source.module_symbol_component(module)),
+                )
+                .ok()
+                .map(T::AnonymousNominal);
+        }
+        Some(match element.kind() {
+            TypeKind::Array(id) => {
+                let (inner, len) = self.type_pool.array_def(id);
+                T::Array {
+                    element: Arc::new(self.local_slice_element(inner)?),
+                    len,
+                }
+            }
+            TypeKind::PtrConst(id) => T::PtrConst(Arc::new(
+                self.local_slice_element(self.type_pool.ptr_const_def(id))?,
+            )),
+            TypeKind::PtrMut(id) => T::PtrMut(Arc::new(
+                self.local_slice_element(self.type_pool.ptr_mut_def(id))?,
+            )),
+            _ => self
+                .durable_type_from_concrete(element)?
+                .try_map_identities::<String, String, std::convert::Infallible>(
+                    &|key| Ok(self.source.definition_symbol_component(key)),
+                    &|module| Ok(self.source.module_symbol_component(module)),
+                )
+                .ok()?,
+        })
     }
 
     fn durable_type_from_concrete(&self, ty: Type) -> Option<crate::SemanticImportType<K, M>> {
@@ -4540,9 +4610,23 @@ where
         span: Span,
     ) -> CompileResult<Type> {
         reject_function_child(element, "a slice element", span)?;
-        let durable = self.durable_type_from_concrete(element).ok_or_else(|| {
-            CompileError::new(rue_error::ErrorKind::UnknownType(syntax.to_owned()), span)
-        })?;
+        let Some(durable) = self.durable_type_from_concrete(element) else {
+            // An element holding an anonymous nominal this body produces has
+            // no durable form in this body's maps; its durable identity is
+            // recovered from the issued one so the view gets its canonical
+            // name, and the view is minted over the resolved element, since
+            // that nominal may still be being declared (RUE-2579).
+            let id = self
+                .local_slice_element(element)
+                .and_then(|stable| {
+                    let name = crate::types::stable_slice_view_name(&stable);
+                    self.endpoint.register_generated_slice_of(element, &name)
+                })
+                .ok_or_else(|| {
+                    CompileError::new(rue_error::ErrorKind::UnknownType(syntax.to_owned()), span)
+                })?;
+            return Ok(Type::new_struct(id));
+        };
         // The view is named by its element type, not by `syntax`: `[T]` names a
         // different view at every `T` (RUE-2571).
         let name = crate::types::slice_view_name(
