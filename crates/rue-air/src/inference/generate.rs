@@ -1820,8 +1820,12 @@ impl<'a> ConstraintGenerator<'a> {
                 // Operands must have the same type. (Chained comparisons are
                 // rejected at parse time — validate.rs, RUE-528 — so a
                 // comparison LHS reaching here is a legitimately
-                // parenthesized boolean operand and gets normal typing.)
-                self.add_peer_equal(lhs_info.ty, rhs_info.ty, span);
+                // parenthesized boolean operand and gets normal typing.) The
+                // left operand sets the expectation and the right one is
+                // checked against it, as for arithmetic (RUE-2566) and the
+                // semantic backstop `require_comparison_operand`, so
+                // `true == 1` reads "expected bool, found {integer}".
+                self.add_peer_equal(rhs_info.ty, lhs_info.ty, span);
                 InferType::Concrete(Type::BOOL)
             }
 
@@ -5927,8 +5931,18 @@ mod tests {
 
         // Comparisons always return Bool
         assert_eq!(info.ty, InferType::Concrete(Type::BOOL));
-        // Should generate 1 constraint: lhs type = rhs type
+        // Should generate 1 constraint: the rhs type is checked against the
+        // lhs type, so the left operand is the reported expectation (RUE-2582).
         assert_eq!(cgen.constraints().len(), 1);
+        let lhs_ty = cgen.expr_types()[&lhs].clone();
+        let rhs_ty = cgen.expr_types()[&rhs].clone();
+        match &cgen.constraints()[0] {
+            Constraint::Equal(found, expected, _) => {
+                assert_eq!(found, &rhs_ty);
+                assert_eq!(expected, &lhs_ty);
+            }
+            other => panic!("Expected an Equal constraint, got {other:?}"),
+        }
     }
 
     #[test]

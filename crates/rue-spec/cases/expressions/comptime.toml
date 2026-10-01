@@ -5943,7 +5943,7 @@ fn main() -> i32 {
 }
 """
 compile_fail = true
-error_contains = ["E0206", "expected i32, found i8"]
+error_contains = ["E0206", "expected i8, found i32"]
 
 [[case]]
 name = "generic_ctor_result_returned_at_wrong_instance_rejected"

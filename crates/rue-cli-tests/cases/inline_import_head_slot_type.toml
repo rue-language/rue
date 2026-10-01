@@ -168,7 +168,7 @@ pub fn Box(comptime T: type) -> type { struct { v: T } }
 name = "equality_operand_of_another_instance_is_e0206"
 description = "`q == @import(\"lib.rue\").Box(i64) { .. }` with `q: lib.Box(i32)` is E0206 (was an E9000 AIR ICE)."
 compile_fail = true
-error_contains = ["E0206", "expected Box(i64), found Box(i32)"]
+error_contains = ["E0206", "expected Box(i32), found Box(i64)"]
 files = [
     { path = "main.rue", source = """
 const lib = @import("lib.rue");
