@@ -475,6 +475,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     ///
     /// A parameter whose type cannot be resolved here keeps the deferred
     /// type; the substituted-type check after operand analysis reports it.
+    /// Returns the positions this call resolved.
     #[allow(clippy::too_many_arguments)]
     fn substitute_deferred_param_types(
         &mut self,
@@ -485,7 +486,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         param_names: &[Spur],
         span: Span,
         ctx: &AnalysisContext,
-    ) {
+    ) -> Vec<usize> {
         let deferred = |index: usize, ty: &Type| {
             !param_comptime.get(index).copied().unwrap_or(true) && *ty == Type::COMPTIME_TYPE
         };
@@ -494,7 +495,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             .enumerate()
             .any(|(index, ty)| deferred(index, ty))
         {
-            return;
+            return Vec::new();
         }
         let args = self.body_rir_ref().call_args(args_range).to_vec();
         let type_flags = self.comptime_type_param_flags(fn_info);
@@ -505,10 +506,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 continue;
             }
             let (Some(arg), Some(&name)) = (args.get(index), param_names.get(index)) else {
-                return;
+                return Vec::new();
             };
             let Some(value) = self.try_evaluate_const_in_fn(arg.value, ctx) else {
-                return;
+                return Vec::new();
             };
             let is_type = type_flags
                 .get(index)
@@ -518,12 +519,13 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 match value {
                     ConstValue::Type(ty) => type_subst.insert(name, ty),
                     ConstValue::Unit => type_subst.insert(name, Type::UNIT),
-                    _ => return,
+                    _ => return Vec::new(),
                 };
             } else {
                 value_subst.insert(name, value);
             }
         }
+        let mut resolved = Vec::new();
         for index in 0..param_types.len() {
             if !deferred(index, &param_types[index]) {
                 continue;
@@ -539,8 +541,51 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 && !ty.is_error()
             {
                 param_types[index] = ty;
+                resolved.push(index);
             }
         }
+        resolved
+    }
+
+    /// Reject a parameter whose slice type exists only at this call.
+    ///
+    /// A slice view's generated struct is known to code generation only
+    /// through a declaration signature that names it, and such a parameter's
+    /// signature type is deferred, so a call passing a view to it cannot be
+    /// lowered. It is a compile error, never a call that passes the view in
+    /// the wrong shape (RUE-2435). `str` is a canonical builtin and is not
+    /// affected.
+    fn reject_deferred_slice_params(
+        &self,
+        function: &str,
+        args_range: &rue_rir::RirCallArgsRange,
+        deferred_params: &[usize],
+        param_types: &[Type],
+        param_names: &[Spur],
+        span: Span,
+    ) -> CompileResult<()> {
+        let Some(&index) = deferred_params
+            .iter()
+            .find(|&&index| self.type_contains_slice(param_types[index]))
+        else {
+            return Ok(());
+        };
+        let span = self
+            .body_rir_ref()
+            .call_args(args_range)
+            .get(index)
+            .map_or(span, |arg| self.body_rir_ref().get(arg.value).span);
+        Err(CompileError::new(
+            ErrorKind::ComptimeEvaluationFailed {
+                reason: format!(
+                    "parameter '{}' of '{}' has the slice type {} only at this call; a slice parameter type that depends on a comptime argument is not supported",
+                    self.body_interner().resolve(&param_names[index]),
+                    function,
+                    self.format_type_name(param_types[index]),
+                ),
+            },
+            span,
+        ))
     }
 
     fn analyze_resolved_function_call(
@@ -603,7 +648,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let param_modes = param_data.modes().to_vec();
         let param_comptime = param_data.comptime().to_vec();
         let param_names = param_data.names().to_vec();
-        if fn_info.is_generic {
+        let deferred_params = if fn_info.is_generic {
             self.substitute_deferred_param_types(
                 &fn_info,
                 args_range,
@@ -612,8 +657,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 &param_names,
                 span,
                 ctx,
-            );
-        }
+            )
+        } else {
+            Vec::new()
+        };
 
         self.validate_call_contract(args_range, &param_types, &param_modes, span, true, ctx)?;
         // The declaration, visibility, checked-call policy, and explicit call
@@ -791,6 +838,16 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             !fn_info.is_generic,
             !fn_info.return_type.is_never(),
             ctx,
+        )?;
+        // After the operands, so a mode error such as an unmarked slice
+        // argument keeps its own diagnostic (7.2:10).
+        self.reject_deferred_slice_params(
+            &fn_name_str,
+            args_range,
+            &deferred_params,
+            &param_types,
+            &param_names,
+            span,
         )?;
 
         // Handle generic function calls differently
