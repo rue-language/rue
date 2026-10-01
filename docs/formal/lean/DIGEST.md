@@ -393,7 +393,7 @@ own qualifier and never inside it. This is §3's infectiousness, used.
 
 ```lean
 theorem RueCore.StructDecl.Wf.field_not_linear {D : Decls} {sd : StructDecl}
-  (h : StructDecl.Wf D sd) (hcls : sd.cls ≠ Qual.linear) (T : Ty) :
+  (h : StructDecl.Wf D sd) (hqual : sd.qual ≠ Qual.linear) (T : Ty) :
   T ∈ sd.fields → Ty.qual D T ≠ Qual.linear
 ```
 
@@ -424,7 +424,7 @@ machine's leak monitor need only read the payload it finds under the active tag
 
 ```lean
 theorem RueCore.EnumDecl.Wf.payload_not_linear {D : Decls} {ed : EnumDecl}
-  (h : EnumDecl.Wf D ed) (hcls : ed.cls ≠ Qual.linear) (Ts : List Ty) :
+  (h : EnumDecl.Wf D ed) (hqual : ed.qual ≠ Qual.linear) (Ts : List Ty) :
   Ts ∈ ed.variants → ∀ (T : Ty), T ∈ Ts → Ty.qual D T ≠ Qual.linear
 ```
 
@@ -2746,11 +2746,12 @@ theorem RueCore.Nonvacuous.open_activation (D : Decls) :
       {
         structs :=
           [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-              dtor := true, cls := Qual.affine },
+              dtor := true, qual := Qual.affine },
             { attr := Attr.linear,
               fields := [Ty.int IntWidth.w64 Sign.signed], dtor := false,
-              cls := Qual.linear }],
-        enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] } →
+              qual := Qual.linear }],
+        enums :=
+          [{ variants := [[Ty.struct 0], []], qual := Qual.affine }] } →
     ∀ (e : Expr),
       e =
           (Expr.drop (Place.var 0)).seq
@@ -2832,12 +2833,13 @@ theorem RueCore.Nonvacuous.dtor (B : Expr) :
                 structs :=
                   [{ attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Qual.affine },
+                      dtor := true, qual := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Qual.linear }],
+                      dtor := false, qual := Qual.linear }],
                 enums :=
-                  [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                  [{ variants := [[Ty.struct 0], []],
+                      qual := Qual.affine }] },
             fns :=
               [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                   body := B }] } →
@@ -2899,12 +2901,13 @@ theorem RueCore.Nonvacuous.linear (B : Expr) :
                 structs :=
                   [{ attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Qual.affine },
+                      dtor := true, qual := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Qual.linear }],
+                      dtor := false, qual := Qual.linear }],
                 enums :=
-                  [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                  [{ variants := [[Ty.struct 0], []],
+                      qual := Qual.affine }] },
             fns :=
               [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                   body := B }] } →
@@ -2951,12 +2954,13 @@ theorem RueCore.Nonvacuous.loop (B : Expr) :
                 structs :=
                   [{ attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Qual.affine },
+                      dtor := true, qual := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Qual.linear }],
+                      dtor := false, qual := Qual.linear }],
                 enums :=
-                  [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                  [{ variants := [[Ty.struct 0], []],
+                      qual := Qual.affine }] },
             fns :=
               [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                   body := B }] } →
@@ -2999,12 +3003,13 @@ theorem RueCore.Nonvacuous.array (B : Expr) :
                 structs :=
                   [{ attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Qual.affine },
+                      dtor := true, qual := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Qual.linear }],
+                      dtor := false, qual := Qual.linear }],
                 enums :=
-                  [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                  [{ variants := [[Ty.struct 0], []],
+                      qual := Qual.affine }] },
             fns :=
               [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                   body := B }] } →
@@ -3047,12 +3052,13 @@ theorem RueCore.Nonvacuous.enum_match (B : Expr) :
                 structs :=
                   [{ attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Qual.affine },
+                      dtor := true, qual := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Qual.linear }],
+                      dtor := false, qual := Qual.linear }],
                 enums :=
-                  [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                  [{ variants := [[Ty.struct 0], []],
+                      qual := Qual.affine }] },
             fns :=
               [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                   body := B }] } →
@@ -3096,12 +3102,13 @@ theorem RueCore.Nonvacuous.early_return (B : Expr) :
                 structs :=
                   [{ attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Qual.affine },
+                      dtor := true, qual := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Qual.linear }],
+                      dtor := false, qual := Qual.linear }],
                 enums :=
-                  [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                  [{ variants := [[Ty.struct 0], []],
+                      qual := Qual.affine }] },
             fns :=
               [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                   body := B }] } →
@@ -3143,12 +3150,13 @@ theorem RueCore.Nonvacuous.panic (B : Expr) :
                 structs :=
                   [{ attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Qual.affine },
+                      dtor := true, qual := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Qual.linear }],
+                      dtor := false, qual := Qual.linear }],
                 enums :=
-                  [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                  [{ variants := [[Ty.struct 0], []],
+                      qual := Qual.affine }] },
             fns :=
               [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                   body := B }] } →
@@ -3194,12 +3202,13 @@ theorem RueCore.Nonvacuous.float (B : Expr) :
                 structs :=
                   [{ attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Qual.affine },
+                      dtor := true, qual := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Qual.linear }],
+                      dtor := false, qual := Qual.linear }],
                 enums :=
-                  [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                  [{ variants := [[Ty.struct 0], []],
+                      qual := Qual.affine }] },
             fns :=
               [{ params := [], ret := Ty.float FloatWidth.w64,
                   body := B }] } →
@@ -3257,12 +3266,13 @@ theorem RueCore.Nonvacuous.diverges_drop (B : Expr) :
                 structs :=
                   [{ attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Qual.affine },
+                      dtor := true, qual := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Qual.linear }],
+                      dtor := false, qual := Qual.linear }],
                 enums :=
-                  [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                  [{ variants := [[Ty.struct 0], []],
+                      qual := Qual.affine }] },
             fns := [{ params := [], ret := Ty.unit, body := B }] } →
         checkProgram P = true ∧
           ProgramTyped P ∧
@@ -3293,12 +3303,13 @@ theorem RueCore.Nonvacuous.refused_stuck (B : Expr) :
                 structs :=
                   [{ attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Qual.affine },
+                      dtor := true, qual := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Qual.linear }],
+                      dtor := false, qual := Qual.linear }],
                 enums :=
-                  [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                  [{ variants := [[Ty.struct 0], []],
+                      qual := Qual.affine }] },
             fns :=
               [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                   body := B }] } →
@@ -3331,12 +3342,13 @@ theorem RueCore.Nonvacuous.whole_drops (B : Expr) :
                 structs :=
                   [{ attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Qual.affine },
+                      dtor := true, qual := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Qual.linear }],
+                      dtor := false, qual := Qual.linear }],
                 enums :=
-                  [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                  [{ variants := [[Ty.struct 0], []],
+                      qual := Qual.affine }] },
             fns :=
               [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                   body := B }] } →
@@ -3370,12 +3382,12 @@ theorem RueCore.Nonvacuous.whole_result (P : Program) :
             structs :=
               [{ attr := Attr.none,
                   fields := [Ty.int IntWidth.w64 Sign.signed], dtor := true,
-                  cls := Qual.affine },
+                  qual := Qual.affine },
                 { attr := Attr.linear,
                   fields := [Ty.int IntWidth.w64 Sign.signed], dtor := false,
-                  cls := Qual.linear }],
+                  qual := Qual.linear }],
             enums :=
-              [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+              [{ variants := [[Ty.struct 0], []], qual := Qual.affine }] },
         fns :=
           [{ params := [], ret := Ty.struct 0,
               body :=
@@ -4100,12 +4112,13 @@ theorem RueCore.Sharp.refused (B : Expr) :
                 structs :=
                   [{ attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Qual.affine },
+                      dtor := true, qual := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Qual.linear }],
+                      dtor := false, qual := Qual.linear }],
                 enums :=
-                  [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                  [{ variants := [[Ty.struct 0], []],
+                      qual := Qual.affine }] },
             fns :=
               [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                   body := B }] } →
@@ -4185,12 +4198,13 @@ theorem RueCore.Sharp.stuck_step (B : Expr) :
                 structs :=
                   [{ attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Qual.affine },
+                      dtor := true, qual := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Qual.linear }],
+                      dtor := false, qual := Qual.linear }],
                 enums :=
-                  [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                  [{ variants := [[Ty.struct 0], []],
+                      qual := Qual.affine }] },
             fns :=
               [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                   body := B }] } →
@@ -4246,12 +4260,13 @@ theorem RueCore.Sharp.typed (B : Expr) :
                 structs :=
                   [{ attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Qual.affine },
+                      dtor := true, qual := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Qual.linear }],
+                      dtor := false, qual := Qual.linear }],
                 enums :=
-                  [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                  [{ variants := [[Ty.struct 0], []],
+                      qual := Qual.affine }] },
             fns :=
               [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                   body := B }] } →
@@ -4321,12 +4336,13 @@ theorem RueCore.Sharp.activation (B : Expr) :
                 structs :=
                   [{ attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Qual.affine },
+                      dtor := true, qual := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Qual.linear }],
+                      dtor := false, qual := Qual.linear }],
                 enums :=
-                  [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                  [{ variants := [[Ty.struct 0], []],
+                      qual := Qual.affine }] },
             fns :=
               [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                   body := B }] } →
@@ -4388,12 +4404,12 @@ theorem RueCore.Sharp.no_entry (P : Program) :
             structs :=
               [{ attr := Attr.none,
                   fields := [Ty.int IntWidth.w64 Sign.signed], dtor := true,
-                  cls := Qual.affine },
+                  qual := Qual.affine },
                 { attr := Attr.linear,
                   fields := [Ty.int IntWidth.w64 Sign.signed], dtor := false,
-                  cls := Qual.linear }],
+                  qual := Qual.linear }],
             enums :=
-              [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+              [{ variants := [[Ty.struct 0], []], qual := Qual.affine }] },
         fns := [] } →
     WfProgram P ∧
       P.fns[0]? = none ∧
@@ -4421,12 +4437,12 @@ theorem RueCore.Sharp.entry_param (P : Program) :
             structs :=
               [{ attr := Attr.none,
                   fields := [Ty.int IntWidth.w64 Sign.signed], dtor := true,
-                  cls := Qual.affine },
+                  qual := Qual.affine },
                 { attr := Attr.linear,
                   fields := [Ty.int IntWidth.w64 Sign.signed], dtor := false,
-                  cls := Qual.linear }],
+                  qual := Qual.linear }],
             enums :=
-              [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+              [{ variants := [[Ty.struct 0], []], qual := Qual.affine }] },
         fns :=
           [{
               params :=
@@ -4470,10 +4486,10 @@ theorem RueCore.Sharp.copy (B : Expr) :
                 structs :=
                   [{ attr := Attr.copy,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Qual.copy },
+                      dtor := false, qual := Qual.copy },
                     { attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Qual.affine }],
+                      dtor := true, qual := Qual.affine }],
                 enums := [] },
             fns :=
               [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
@@ -4503,12 +4519,13 @@ theorem RueCore.Sharp.leak (B : Expr) :
                 structs :=
                   [{ attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Qual.affine },
+                      dtor := true, qual := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Qual.linear }],
+                      dtor := false, qual := Qual.linear }],
                 enums :=
-                  [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                  [{ variants := [[Ty.struct 0], []],
+                      qual := Qual.affine }] },
             fns :=
               [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                   body := B }] } →
@@ -4547,12 +4564,13 @@ theorem RueCore.Sharp.overwrite (B : Expr) :
                 structs :=
                   [{ attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Qual.affine },
+                      dtor := true, qual := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Qual.linear }],
+                      dtor := false, qual := Qual.linear }],
                 enums :=
-                  [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                  [{ variants := [[Ty.struct 0], []],
+                      qual := Qual.affine }] },
             fns :=
               [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                   body := B }] } →
@@ -4580,12 +4598,13 @@ theorem RueCore.Sharp.discard (B : Expr) :
                 structs :=
                   [{ attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Qual.affine },
+                      dtor := true, qual := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Qual.linear }],
+                      dtor := false, qual := Qual.linear }],
                 enums :=
-                  [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                  [{ variants := [[Ty.struct 0], []],
+                      qual := Qual.affine }] },
             fns :=
               [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                   body := B }] } →
@@ -4619,12 +4638,13 @@ theorem RueCore.Sharp.discard_loop (B : Expr) :
                 structs :=
                   [{ attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Qual.affine },
+                      dtor := true, qual := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Qual.linear }],
+                      dtor := false, qual := Qual.linear }],
                 enums :=
-                  [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                  [{ variants := [[Ty.struct 0], []],
+                      qual := Qual.affine }] },
             fns := [{ params := [], ret := Ty.unit, body := B }] } →
         checkProgram P = false ∧
           ¬ProgramTyped P ∧
@@ -4666,12 +4686,13 @@ theorem RueCore.Sharp.fuel (B : Expr) :
                 structs :=
                   [{ attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Qual.affine },
+                      dtor := true, qual := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Qual.linear }],
+                      dtor := false, qual := Qual.linear }],
                 enums :=
-                  [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                  [{ variants := [[Ty.struct 0], []],
+                      qual := Qual.affine }] },
             fns :=
               [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                   body := B }] } →
@@ -4719,12 +4740,13 @@ theorem RueCore.Sharp.fuel_panic (B : Expr) :
                 structs :=
                   [{ attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Qual.affine },
+                      dtor := true, qual := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Qual.linear }],
+                      dtor := false, qual := Qual.linear }],
                 enums :=
-                  [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                  [{ variants := [[Ty.struct 0], []],
+                      qual := Qual.affine }] },
             fns :=
               [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                   body := B }] } →
@@ -4762,12 +4784,13 @@ theorem RueCore.Sharp.not_fits (B : Expr) :
                 structs :=
                   [{ attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Qual.affine },
+                      dtor := true, qual := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Qual.linear }],
+                      dtor := false, qual := Qual.linear }],
                 enums :=
-                  [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                  [{ variants := [[Ty.struct 0], []],
+                      qual := Qual.affine }] },
             fns :=
               [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                   body := B }] } →
@@ -4803,15 +4826,15 @@ theorem RueCore.Sharp.double_drop (B : Expr) :
                 structs :=
                   [{ attr := Attr.copy,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Qual.copy },
+                      dtor := true, qual := Qual.copy },
                     { attr := Attr.none, fields := [Ty.struct 0],
-                      dtor := false, cls := Qual.affine },
+                      dtor := false, qual := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.struct 0, Ty.struct 3], dtor := false,
-                      cls := Qual.linear },
+                      qual := Qual.linear },
                     { attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Qual.affine }],
+                      dtor := true, qual := Qual.affine }],
                 enums := [] },
             fns :=
               [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
@@ -4851,15 +4874,15 @@ theorem RueCore.Sharp.bare_dtor (B : Expr) :
                 structs :=
                   [{ attr := Attr.copy,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Qual.copy },
+                      dtor := true, qual := Qual.copy },
                     { attr := Attr.none, fields := [Ty.struct 0],
-                      dtor := false, cls := Qual.affine },
+                      dtor := false, qual := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.struct 0, Ty.struct 3], dtor := false,
-                      cls := Qual.linear },
+                      qual := Qual.linear },
                     { attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Qual.affine }],
+                      dtor := true, qual := Qual.affine }],
                 enums := [] },
             fns :=
               [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
@@ -4887,12 +4910,12 @@ theorem RueCore.Sharp.pending_program (P : Program) :
             structs :=
               [{ attr := Attr.none,
                   fields := [Ty.int IntWidth.w64 Sign.signed], dtor := true,
-                  cls := Qual.affine },
+                  qual := Qual.affine },
                 { attr := Attr.linear,
                   fields := [Ty.int IntWidth.w64 Sign.signed], dtor := false,
-                  cls := Qual.linear }],
+                  qual := Qual.linear }],
             enums :=
-              [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+              [{ variants := [[Ty.struct 0], []], qual := Qual.affine }] },
         fns :=
           [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
               body := Expr.intLit IntWidth.w64 Sign.signed 0 },
@@ -4996,12 +5019,13 @@ theorem RueCore.Sharp.pending_expr (B : Expr) :
                 structs :=
                   [{ attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Qual.affine },
+                      dtor := true, qual := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Qual.linear }],
+                      dtor := false, qual := Qual.linear }],
                 enums :=
-                  [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                  [{ variants := [[Ty.struct 0], []],
+                      qual := Qual.affine }] },
             fns :=
               [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                   body := B }] } →
@@ -5108,12 +5132,13 @@ theorem RueCore.Sharp.store_cc (B : Expr) :
                 structs :=
                   [{ attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Qual.affine },
+                      dtor := true, qual := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Qual.linear }],
+                      dtor := false, qual := Qual.linear }],
                 enums :=
-                  [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                  [{ variants := [[Ty.struct 0], []],
+                      qual := Qual.affine }] },
             fns :=
               [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                   body := B }] } →
@@ -5232,12 +5257,13 @@ theorem RueCore.Sharp.no_lead (B : Expr) :
                 structs :=
                   [{ attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Qual.affine },
+                      dtor := true, qual := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Qual.linear }],
+                      dtor := false, qual := Qual.linear }],
                 enums :=
-                  [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                  [{ variants := [[Ty.struct 0], []],
+                      qual := Qual.affine }] },
             fns :=
               [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                   body := B }] } →
@@ -5296,12 +5322,13 @@ theorem RueCore.Sharp.no_eval (B : Expr) :
                 structs :=
                   [{ attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Qual.affine },
+                      dtor := true, qual := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Qual.linear }],
+                      dtor := false, qual := Qual.linear }],
                 enums :=
-                  [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                  [{ variants := [[Ty.struct 0], []],
+                      qual := Qual.affine }] },
             fns :=
               [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                   body := B }] } →
@@ -5346,12 +5373,13 @@ theorem RueCore.Sharp.unreached (B : Expr) :
                 structs :=
                   [{ attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Qual.affine },
+                      dtor := true, qual := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Qual.linear }],
+                      dtor := false, qual := Qual.linear }],
                 enums :=
-                  [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                  [{ variants := [[Ty.struct 0], []],
+                      qual := Qual.affine }] },
             fns :=
               [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                   body := B }] } →
@@ -5405,12 +5433,13 @@ theorem RueCore.Sharp.unreached_panic (B : Expr) :
                 structs :=
                   [{ attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Qual.affine },
+                      dtor := true, qual := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Qual.linear }],
+                      dtor := false, qual := Qual.linear }],
                 enums :=
-                  [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                  [{ variants := [[Ty.struct 0], []],
+                      qual := Qual.affine }] },
             fns :=
               [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                   body := B }] } →
@@ -5463,12 +5492,13 @@ theorem RueCore.Sharp.unordered (B : Expr) :
                 structs :=
                   [{ attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Qual.affine },
+                      dtor := true, qual := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Qual.linear }],
+                      dtor := false, qual := Qual.linear }],
                 enums :=
-                  [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                  [{ variants := [[Ty.struct 0], []],
+                      qual := Qual.affine }] },
             fns :=
               [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                   body := B }] } →
@@ -5529,12 +5559,13 @@ theorem RueCore.Sharp.not_a_step (B : Expr) :
                 structs :=
                   [{ attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Qual.affine },
+                      dtor := true, qual := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Qual.linear }],
+                      dtor := false, qual := Qual.linear }],
                 enums :=
-                  [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                  [{ variants := [[Ty.struct 0], []],
+                      qual := Qual.affine }] },
             fns :=
               [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                   body := B }] } →
@@ -5584,12 +5615,13 @@ theorem RueCore.Sharp.init_steps (B : Expr) :
                 structs :=
                   [{ attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Qual.affine },
+                      dtor := true, qual := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Qual.linear }],
+                      dtor := false, qual := Qual.linear }],
                 enums :=
-                  [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                  [{ variants := [[Ty.struct 0], []],
+                      qual := Qual.affine }] },
             fns :=
               [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                   body := B }] } →
@@ -5636,12 +5668,13 @@ theorem RueCore.Sharp.unreachable_stuck (B : Expr) :
                 structs :=
                   [{ attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Qual.affine },
+                      dtor := true, qual := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Qual.linear }],
+                      dtor := false, qual := Qual.linear }],
                 enums :=
-                  [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                  [{ variants := [[Ty.struct 0], []],
+                      qual := Qual.affine }] },
             fns :=
               [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                   body := B }] } →
@@ -5697,12 +5730,13 @@ theorem RueCore.Sharp.tombstoned_cell (B : Expr) :
                 structs :=
                   [{ attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Qual.affine },
+                      dtor := true, qual := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Qual.linear }],
+                      dtor := false, qual := Qual.linear }],
                 enums :=
-                  [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                  [{ variants := [[Ty.struct 0], []],
+                      qual := Qual.affine }] },
             fns :=
               [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                   body := B }] } →
@@ -5741,12 +5775,13 @@ theorem RueCore.Sharp.unreached_double (B : Expr) :
                 structs :=
                   [{ attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Qual.affine },
+                      dtor := true, qual := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Qual.linear }],
+                      dtor := false, qual := Qual.linear }],
                 enums :=
-                  [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                  [{ variants := [[Ty.struct 0], []],
+                      qual := Qual.affine }] },
             fns :=
               [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                   body := B }] } →
@@ -5794,12 +5829,13 @@ theorem RueCore.Sharp.uncut_drop (B : Expr) :
                 structs :=
                   [{ attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Qual.affine },
+                      dtor := true, qual := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Qual.linear }],
+                      dtor := false, qual := Qual.linear }],
                 enums :=
-                  [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                  [{ variants := [[Ty.struct 0], []],
+                      qual := Qual.affine }] },
             fns :=
               [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                   body := B }] } →
@@ -5946,12 +5982,13 @@ theorem RueCore.Sharp.ill_typed_halt (B : Expr) :
                 structs :=
                   [{ attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Qual.affine },
+                      dtor := true, qual := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Qual.linear }],
+                      dtor := false, qual := Qual.linear }],
                 enums :=
-                  [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                  [{ variants := [[Ty.struct 0], []],
+                      qual := Qual.affine }] },
             fns :=
               [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                   body := B }] } →
@@ -5989,12 +6026,13 @@ theorem RueCore.Sharp.out_of_range_halt (B : Expr) :
                 structs :=
                   [{ attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Qual.affine },
+                      dtor := true, qual := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Qual.linear }],
+                      dtor := false, qual := Qual.linear }],
                 enums :=
-                  [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                  [{ variants := [[Ty.struct 0], []],
+                      qual := Qual.affine }] },
             fns :=
               [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                   body := B }] } →
@@ -6046,12 +6084,13 @@ theorem RueCore.Sharp.float_halt (B : Expr) :
                 structs :=
                   [{ attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Qual.affine },
+                      dtor := true, qual := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Qual.linear }],
+                      dtor := false, qual := Qual.linear }],
                 enums :=
-                  [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                  [{ variants := [[Ty.struct 0], []],
+                      qual := Qual.affine }] },
             fns :=
               [{ params := [], ret := Ty.float FloatWidth.w64,
                   body := B }] } →
@@ -6123,10 +6162,10 @@ theorem RueCore.Sharp.copy_leak (B : Expr) :
                 structs :=
                   [{ attr := Attr.copy,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Qual.copy },
+                      dtor := false, qual := Qual.copy },
                     { attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Qual.affine }],
+                      dtor := true, qual := Qual.affine }],
                 enums := [] },
             fns :=
               [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
@@ -6161,12 +6200,12 @@ theorem RueCore.Sharp.pending_leak (P : Program) :
             structs :=
               [{ attr := Attr.none,
                   fields := [Ty.int IntWidth.w64 Sign.signed], dtor := true,
-                  cls := Qual.affine },
+                  qual := Qual.affine },
                 { attr := Attr.linear,
                   fields := [Ty.int IntWidth.w64 Sign.signed], dtor := false,
-                  cls := Qual.linear }],
+                  qual := Qual.linear }],
             enums :=
-              [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+              [{ variants := [[Ty.struct 0], []], qual := Qual.affine }] },
         fns :=
           [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
               body :=
@@ -6216,12 +6255,13 @@ theorem RueCore.Sharp.unreached_held (B : Expr) :
                 structs :=
                   [{ attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Qual.affine },
+                      dtor := true, qual := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Qual.linear }],
+                      dtor := false, qual := Qual.linear }],
                 enums :=
-                  [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                  [{ variants := [[Ty.struct 0], []],
+                      qual := Qual.affine }] },
             fns :=
               [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                   body := B }] } →
@@ -6270,12 +6310,13 @@ theorem RueCore.Sharp.unheld (B : Expr) :
                 structs :=
                   [{ attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Qual.affine },
+                      dtor := true, qual := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Qual.linear }],
+                      dtor := false, qual := Qual.linear }],
                 enums :=
-                  [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                  [{ variants := [[Ty.struct 0], []],
+                      qual := Qual.affine }] },
             fns :=
               [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                   body := B }] } →
@@ -6312,12 +6353,13 @@ theorem RueCore.Sharp.off_run (B : Expr) :
                 structs :=
                   [{ attr := Attr.none,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := true, cls := Qual.affine },
+                      dtor := true, qual := Qual.affine },
                     { attr := Attr.linear,
                       fields := [Ty.int IntWidth.w64 Sign.signed],
-                      dtor := false, cls := Qual.linear }],
+                      dtor := false, qual := Qual.linear }],
                 enums :=
-                  [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                  [{ variants := [[Ty.struct 0], []],
+                      qual := Qual.affine }] },
             fns :=
               [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                   body := B }] } →
@@ -10012,7 +10054,7 @@ well-formed `@copy` declaration's join is already `Copy` (helper).
 
 ```lean
 theorem RueCore.StructDecl.Wf.field_copy {D : Decls} {sd : StructDecl}
-  (h : StructDecl.Wf D sd) (hcls : sd.cls = Qual.copy) (T : Ty) :
+  (h : StructDecl.Wf D sd) (hqual : sd.qual = Qual.copy) (T : Ty) :
   T ∈ sd.fields → Ty.qual D T = Qual.copy
 ```
 
@@ -10025,7 +10067,7 @@ over every payload component of every variant (helper).
 
 ```lean
 theorem RueCore.EnumDecl.Wf.payload_copy {D : Decls} {ed : EnumDecl}
-  (h : EnumDecl.Wf D ed) (hcls : ed.cls = Qual.copy) (Ts : List Ty) :
+  (h : EnumDecl.Wf D ed) (hqual : ed.qual = Qual.copy) (Ts : List Ty) :
   Ts ∈ ed.variants → ∀ (T : Ty), T ∈ Ts → Ty.qual D T = Qual.copy
 ```
 
@@ -14328,12 +14370,12 @@ theorem RueCore.Nonvacuous.dropTurn_eval (M : FloatSig) (fns : List FnDef) (m : 
               structs :=
                 [{ attr := Attr.none,
                     fields := [Ty.int IntWidth.w64 Sign.signed], dtor := true,
-                    cls := Qual.affine },
+                    qual := Qual.affine },
                   { attr := Attr.linear,
                     fields := [Ty.int IntWidth.w64 Sign.signed],
-                    dtor := false, cls := Qual.linear }],
+                    dtor := false, qual := Qual.linear }],
               enums :=
-                [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                [{ variants := [[Ty.struct 0], []], qual := Qual.affine }] },
           fns := fns }
         H φ
         (Expr.letIn false
@@ -14359,12 +14401,12 @@ theorem RueCore.Nonvacuous.dropLoop_eval (M : FloatSig) (fns : List FnDef) (n : 
             structs :=
               [{ attr := Attr.none,
                   fields := [Ty.int IntWidth.w64 Sign.signed], dtor := true,
-                  cls := Qual.affine },
+                  qual := Qual.affine },
                 { attr := Attr.linear,
                   fields := [Ty.int IntWidth.w64 Sign.signed], dtor := false,
-                  cls := Qual.linear }],
+                  qual := Qual.linear }],
             enums :=
-              [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+              [{ variants := [[Ty.struct 0], []], qual := Qual.affine }] },
         fns := fns }
       H φ
       (Expr.letIn false
@@ -25573,7 +25615,7 @@ Constructors:
 **`EnumDecl.mk`**
 
 ```lean
-RueCore.EnumDecl.mk (variants : List (List Ty)) (cls : Qual) : EnumDecl
+RueCore.EnumDecl.mk (variants : List (List Ty)) (qual : Qual) : EnumDecl
 ```
 
 ### `Examples.tI64`
@@ -25931,7 +25973,7 @@ Constructors:
 
 ```lean
 RueCore.StructDecl.mk (attr : Attr) (fields : List Ty) (dtor : Bool)
-  (cls : Qual) : StructDecl
+  (qual : Qual) : StructDecl
 ```
 
 ### `Ty.grounded`
@@ -26575,7 +26617,7 @@ Defining equations, as Lean derived them from the body:
 ```lean
 Examples.dAffine =
   { attr := Attr.none, fields := [Examples.tI64], dtor := true,
-    cls := Qual.affine }
+    qual := Qual.affine }
 ```
 
 ### `Examples.dAffineInt`
@@ -26595,7 +26637,7 @@ Defining equations, as Lean derived them from the body:
 ```lean
 Examples.dAffineInt =
   { attr := Attr.none, fields := [Ty.struct 1, Examples.tI64],
-    dtor := false, cls := Qual.affine }
+    dtor := false, qual := Qual.affine }
 ```
 
 ### `Examples.dCarry`
@@ -26615,7 +26657,7 @@ Defining equations, as Lean derived them from the body:
 ```lean
 Examples.dCarry =
   { attr := Attr.none, fields := [Examples.tI64, Ty.struct 3],
-    dtor := false, cls := Qual.linear }
+    dtor := false, qual := Qual.linear }
 ```
 
 ### `Examples.dCarryAffine`
@@ -26635,7 +26677,7 @@ Defining equations, as Lean derived them from the body:
 ```lean
 Examples.dCarryAffine =
   { attr := Attr.none, fields := [Ty.struct 3, Ty.struct 1],
-    dtor := false, cls := Qual.linear }
+    dtor := false, qual := Qual.linear }
 ```
 
 ### `Examples.dCopy`
@@ -26654,7 +26696,7 @@ Defining equations, as Lean derived them from the body:
 ```lean
 Examples.dCopy =
   { attr := Attr.copy, fields := [Examples.tI64], dtor := false,
-    cls := Qual.copy }
+    qual := Qual.copy }
 ```
 
 ### `Examples.dLinear`
@@ -26678,7 +26720,7 @@ Defining equations, as Lean derived them from the body:
 ```lean
 Examples.dLinear =
   { attr := Attr.linear, fields := [Examples.tI64], dtor := false,
-    cls := Qual.linear }
+    qual := Qual.linear }
 ```
 
 ### `Examples.dLinearDtor`
@@ -26698,7 +26740,7 @@ Defining equations, as Lean derived them from the body:
 ```lean
 Examples.dLinearDtor =
   { attr := Attr.linear, fields := [Examples.tI64], dtor := true,
-    cls := Qual.linear }
+    qual := Qual.linear }
 ```
 
 ### `Examples.dNested`
@@ -26717,7 +26759,7 @@ Defining equations, as Lean derived them from the body:
 ```lean
 Examples.dNested =
   { attr := Attr.none, fields := [Ty.struct 7, Examples.tI64],
-    dtor := false, cls := Qual.affine }
+    dtor := false, qual := Qual.affine }
 ```
 
 ### `Examples.dOuter`
@@ -26737,7 +26779,7 @@ Defining equations, as Lean derived them from the body:
 ```lean
 Examples.dOuter =
   { attr := Attr.none, fields := [Examples.tI64, Ty.struct 1],
-    dtor := true, cls := Qual.affine }
+    dtor := true, qual := Qual.affine }
 ```
 
 ### `Examples.dPair`
@@ -26757,7 +26799,7 @@ Defining equations, as Lean derived them from the body:
 ```lean
 Examples.dPair =
   { attr := Attr.copy, fields := [Examples.tI64, Examples.tI64],
-    dtor := false, cls := Qual.copy }
+    dtor := false, qual := Qual.copy }
 ```
 
 ### `Examples.dTwoAffine`
@@ -26776,7 +26818,7 @@ Defining equations, as Lean derived them from the body:
 ```lean
 Examples.dTwoAffine =
   { attr := Attr.none, fields := [Ty.struct 1, Ty.struct 1],
-    dtor := false, cls := Qual.affine }
+    dtor := false, qual := Qual.affine }
 ```
 
 ### `Examples.v64`
@@ -27757,7 +27799,7 @@ Defining equations, as Lean derived them from the body:
 ∀ (D : Decls) (e : Nat),
   D.enumQualOf e =
     match D.enums[e]? with
-    | some ed => ed.cls
+    | some ed => ed.qual
     | none => Qual.affine
 ```
 
@@ -27798,7 +27840,7 @@ Defining equations, as Lean derived them from the body:
 ∀ (D : Decls) (s : Nat),
   D.qualOf s =
     match D.structs[s]? with
-    | some sd => sd.cls
+    | some sd => sd.qual
     | none => Qual.affine
 ```
 
@@ -28440,8 +28482,8 @@ demoDecls =
   {
     structs :=
       [{ attr := Attr.none, fields := [], dtor := true,
-          cls := Qual.affine }],
-    enums := [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] }
+          qual := Qual.affine }],
+    enums := [{ variants := [[Ty.struct 0], []], qual := Qual.affine }] }
 ```
 
 ### `demoI32`
@@ -29683,9 +29725,9 @@ Defining equations, as Lean derived them from the body:
 dupDecls =
   Decls.ofStructs
     [{ attr := Attr.copy, fields := [Ty.int IntWidth.w64 Sign.signed],
-        dtor := false, cls := Qual.copy },
+        dtor := false, qual := Qual.copy },
       { attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-        dtor := true, cls := Qual.affine }]
+        dtor := true, qual := Qual.affine }]
 ```
 
 ### `dynPlace`
@@ -29840,7 +29882,7 @@ Defining equations, as Lean derived them from the body:
 lostDecls =
   Decls.ofStructs
     [{ attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
-        dtor := true, cls := Qual.affine }]
+        dtor := true, qual := Qual.affine }]
 ```
 
 ### `lostStore`
@@ -30568,12 +30610,12 @@ Sharp.loopProg =
         structs :=
           [{ attr := Attr.none,
               fields := [Ty.int IntWidth.w64 Sign.signed], dtor := true,
-              cls := Qual.affine },
+              qual := Qual.affine },
             { attr := Attr.linear,
               fields := [Ty.int IntWidth.w64 Sign.signed], dtor := false,
-              cls := Qual.linear }],
+              qual := Qual.linear }],
         enums :=
-          [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+          [{ variants := [[Ty.struct 0], []], qual := Qual.affine }] },
     fns :=
       [{ params := [], ret := Ty.unit, body := Sharp.loopBody.loop }] }
 ```
@@ -31320,7 +31362,7 @@ Constructors:
 
 ```lean
 RueCore.EnumDecl.Wf.mk {D : Decls} {ed : EnumDecl}
-  (qualIsJoin : ed.cls = EnumDecl.payloadJoin D ed) : EnumDecl.Wf D ed
+  (qualIsJoin : ed.qual = EnumDecl.payloadJoin D ed) : EnumDecl.Wf D ed
 ```
 
 ### `EvalInv`
@@ -31631,7 +31673,7 @@ Constructors:
 
 ```lean
 RueCore.StructDecl.Wf.mk {D : Decls} {sd : StructDecl}
-  (qualIsJoin : sd.cls = sd.attr.lift (StructDecl.baseOf D sd))
+  (qualIsJoin : sd.qual = sd.attr.lift (StructDecl.baseOf D sd))
   (copyWf :
     sd.attr = Attr.copy →
       StructDecl.baseOf D sd = Qual.copy ∧ sd.dtor = false)
@@ -31699,7 +31741,7 @@ Defining equations, as Lean derived them from the body:
 
 ```lean
 ∀ (D : Decls) (ed : EnumDecl),
-  checkEnumDecl D ed = decide (ed.cls = EnumDecl.payloadJoin D ed)
+  checkEnumDecl D ed = decide (ed.qual = EnumDecl.payloadJoin D ed)
 ```
 
 ### `checkIdx`
@@ -31761,7 +31803,7 @@ Defining equations, as Lean derived them from the body:
 ```lean
 ∀ (D : Decls) (sd : StructDecl),
   checkStructDecl D sd =
-    ((decide (sd.cls = sd.attr.lift (StructDecl.baseOf D sd)) &&
+    ((decide (sd.qual = sd.attr.lift (StructDecl.baseOf D sd)) &&
         match sd.attr with
         | Attr.copy =>
           decide (StructDecl.baseOf D sd = Qual.copy) && !sd.dtor
@@ -36290,13 +36332,13 @@ def RueCore.Spec.Nonvacuous.refused_stuck_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine },
+                        dtor := true, qual := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.linear }],
+                        dtor := false, qual := Qual.linear }],
                   enums :=
                     [{ variants := [[Ty.struct 0], []],
-                        cls := Qual.affine }] },
+                        qual := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                     body := B }] } →
@@ -36595,13 +36637,13 @@ def RueCore.Spec.Nonvacuous.diverges_drop_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine },
+                        dtor := true, qual := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.linear }],
+                        dtor := false, qual := Qual.linear }],
                   enums :=
                     [{ variants := [[Ty.struct 0], []],
-                        cls := Qual.affine }] },
+                        qual := Qual.affine }] },
               fns := [{ params := [], ret := Ty.unit, body := B }] } →
           checkProgram P = true ∧
             ProgramTyped P ∧
@@ -36665,13 +36707,13 @@ def RueCore.Spec.Nonvacuous.whole_drops_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine },
+                        dtor := true, qual := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.linear }],
+                        dtor := false, qual := Qual.linear }],
                   enums :=
                     [{ variants := [[Ty.struct 0], []],
-                        cls := Qual.affine }] },
+                        qual := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                     body := B }] } →
@@ -36711,12 +36753,13 @@ def RueCore.Spec.Nonvacuous.whole_result_stmt : Prop :=
               structs :=
                 [{ attr := Attr.none,
                     fields := [Ty.int IntWidth.w64 Sign.signed],
-                    dtor := true, cls := Qual.affine },
+                    dtor := true, qual := Qual.affine },
                   { attr := Attr.linear,
                     fields := [Ty.int IntWidth.w64 Sign.signed],
-                    dtor := false, cls := Qual.linear }],
+                    dtor := false, qual := Qual.linear }],
               enums :=
-                [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                [{ variants := [[Ty.struct 0], []],
+                    qual := Qual.affine }] },
           fns :=
             [{ params := [], ret := Ty.struct 0,
                 body :=
@@ -36769,15 +36812,15 @@ def RueCore.Spec.Sharp.bare_dtor_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.copy,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.copy },
+                        dtor := true, qual := Qual.copy },
                       { attr := Attr.none, fields := [Ty.struct 0],
-                        dtor := false, cls := Qual.affine },
+                        dtor := false, qual := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.struct 0, Ty.struct 3], dtor := false,
-                        cls := Qual.linear },
+                        qual := Qual.linear },
                       { attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine }],
+                        dtor := true, qual := Qual.affine }],
                   enums := [] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
@@ -36822,10 +36865,10 @@ def RueCore.Spec.Sharp.copy_leak_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.copy,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.copy },
+                        dtor := false, qual := Qual.copy },
                       { attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine }],
+                        dtor := true, qual := Qual.affine }],
                   enums := [] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
@@ -36878,10 +36921,10 @@ def RueCore.Spec.Sharp.copy_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.copy,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.copy },
+                        dtor := false, qual := Qual.copy },
                       { attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine }],
+                        dtor := true, qual := Qual.affine }],
                   enums := [] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
@@ -36918,13 +36961,13 @@ def RueCore.Spec.Sharp.discard_loop_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine },
+                        dtor := true, qual := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.linear }],
+                        dtor := false, qual := Qual.linear }],
                   enums :=
                     [{ variants := [[Ty.struct 0], []],
-                        cls := Qual.affine }] },
+                        qual := Qual.affine }] },
               fns := [{ params := [], ret := Ty.unit, body := B }] } →
           checkProgram P = false ∧
             ¬ProgramTyped P ∧
@@ -36972,13 +37015,13 @@ def RueCore.Spec.Sharp.discard_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine },
+                        dtor := true, qual := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.linear }],
+                        dtor := false, qual := Qual.linear }],
                   enums :=
                     [{ variants := [[Ty.struct 0], []],
-                        cls := Qual.affine }] },
+                        qual := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                     body := B }] } →
@@ -37027,15 +37070,15 @@ def RueCore.Spec.Sharp.double_drop_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.copy,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.copy },
+                        dtor := true, qual := Qual.copy },
                       { attr := Attr.none, fields := [Ty.struct 0],
-                        dtor := false, cls := Qual.affine },
+                        dtor := false, qual := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.struct 0, Ty.struct 3], dtor := false,
-                        cls := Qual.linear },
+                        qual := Qual.linear },
                       { attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine }],
+                        dtor := true, qual := Qual.affine }],
                   enums := [] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
@@ -37088,13 +37131,13 @@ def RueCore.Spec.Sharp.float_halt_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine },
+                        dtor := true, qual := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.linear }],
+                        dtor := false, qual := Qual.linear }],
                   enums :=
                     [{ variants := [[Ty.struct 0], []],
-                        cls := Qual.affine }] },
+                        qual := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.float FloatWidth.w64,
                     body := B }] } →
@@ -37172,13 +37215,13 @@ def RueCore.Spec.Sharp.fuel_panic_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine },
+                        dtor := true, qual := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.linear }],
+                        dtor := false, qual := Qual.linear }],
                   enums :=
                     [{ variants := [[Ty.struct 0], []],
-                        cls := Qual.affine }] },
+                        qual := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                     body := B }] } →
@@ -37227,13 +37270,13 @@ def RueCore.Spec.Sharp.fuel_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine },
+                        dtor := true, qual := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.linear }],
+                        dtor := false, qual := Qual.linear }],
                   enums :=
                     [{ variants := [[Ty.struct 0], []],
-                        cls := Qual.affine }] },
+                        qual := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                     body := B }] } →
@@ -37293,13 +37336,13 @@ def RueCore.Spec.Sharp.ill_typed_halt_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine },
+                        dtor := true, qual := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.linear }],
+                        dtor := false, qual := Qual.linear }],
                   enums :=
                     [{ variants := [[Ty.struct 0], []],
-                        cls := Qual.affine }] },
+                        qual := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                     body := B }] } →
@@ -37344,13 +37387,13 @@ def RueCore.Spec.Sharp.init_steps_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine },
+                        dtor := true, qual := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.linear }],
+                        dtor := false, qual := Qual.linear }],
                   enums :=
                     [{ variants := [[Ty.struct 0], []],
-                        cls := Qual.affine }] },
+                        qual := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                     body := B }] } →
@@ -37403,13 +37446,13 @@ def RueCore.Spec.Sharp.leak_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine },
+                        dtor := true, qual := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.linear }],
+                        dtor := false, qual := Qual.linear }],
                   enums :=
                     [{ variants := [[Ty.struct 0], []],
-                        cls := Qual.affine }] },
+                        qual := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                     body := B }] } →
@@ -37453,13 +37496,13 @@ def RueCore.Spec.Sharp.not_a_step_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine },
+                        dtor := true, qual := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.linear }],
+                        dtor := false, qual := Qual.linear }],
                   enums :=
                     [{ variants := [[Ty.struct 0], []],
-                        cls := Qual.affine }] },
+                        qual := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                     body := B }] } →
@@ -37516,13 +37559,13 @@ def RueCore.Spec.Sharp.off_run_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine },
+                        dtor := true, qual := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.linear }],
+                        dtor := false, qual := Qual.linear }],
                   enums :=
                     [{ variants := [[Ty.struct 0], []],
-                        cls := Qual.affine }] },
+                        qual := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                     body := B }] } →
@@ -37571,13 +37614,13 @@ def RueCore.Spec.Sharp.out_of_range_halt_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine },
+                        dtor := true, qual := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.linear }],
+                        dtor := false, qual := Qual.linear }],
                   enums :=
                     [{ variants := [[Ty.struct 0], []],
-                        cls := Qual.affine }] },
+                        qual := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                     body := B }] } →
@@ -37634,13 +37677,13 @@ def RueCore.Spec.Sharp.overwrite_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine },
+                        dtor := true, qual := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.linear }],
+                        dtor := false, qual := Qual.linear }],
                   enums :=
                     [{ variants := [[Ty.struct 0], []],
-                        cls := Qual.affine }] },
+                        qual := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                     body := B }] } →
@@ -37676,12 +37719,13 @@ def RueCore.Spec.Sharp.pending_leak_stmt : Prop :=
               structs :=
                 [{ attr := Attr.none,
                     fields := [Ty.int IntWidth.w64 Sign.signed],
-                    dtor := true, cls := Qual.affine },
+                    dtor := true, qual := Qual.affine },
                   { attr := Attr.linear,
                     fields := [Ty.int IntWidth.w64 Sign.signed],
-                    dtor := false, cls := Qual.linear }],
+                    dtor := false, qual := Qual.linear }],
               enums :=
-                [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                [{ variants := [[Ty.struct 0], []],
+                    qual := Qual.affine }] },
           fns :=
             [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                 body :=
@@ -37741,13 +37785,13 @@ def RueCore.Spec.Sharp.stuck_step_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine },
+                        dtor := true, qual := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.linear }],
+                        dtor := false, qual := Qual.linear }],
                   enums :=
                     [{ variants := [[Ty.struct 0], []],
-                        cls := Qual.affine }] },
+                        qual := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                     body := B }] } →
@@ -37815,13 +37859,13 @@ def RueCore.Spec.Sharp.tombstoned_cell_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine },
+                        dtor := true, qual := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.linear }],
+                        dtor := false, qual := Qual.linear }],
                   enums :=
                     [{ variants := [[Ty.struct 0], []],
-                        cls := Qual.affine }] },
+                        qual := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                     body := B }] } →
@@ -37870,13 +37914,13 @@ def RueCore.Spec.Sharp.uncut_drop_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine },
+                        dtor := true, qual := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.linear }],
+                        dtor := false, qual := Qual.linear }],
                   enums :=
                     [{ variants := [[Ty.struct 0], []],
-                        cls := Qual.affine }] },
+                        qual := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                     body := B }] } →
@@ -38033,13 +38077,13 @@ def RueCore.Spec.Sharp.unheld_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine },
+                        dtor := true, qual := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.linear }],
+                        dtor := false, qual := Qual.linear }],
                   enums :=
                     [{ variants := [[Ty.struct 0], []],
-                        cls := Qual.affine }] },
+                        qual := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                     body := B }] } →
@@ -38081,13 +38125,13 @@ def RueCore.Spec.Sharp.unordered_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine },
+                        dtor := true, qual := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.linear }],
+                        dtor := false, qual := Qual.linear }],
                   enums :=
                     [{ variants := [[Ty.struct 0], []],
-                        cls := Qual.affine }] },
+                        qual := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                     body := B }] } →
@@ -38158,13 +38202,13 @@ def RueCore.Spec.Sharp.unreachable_stuck_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine },
+                        dtor := true, qual := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.linear }],
+                        dtor := false, qual := Qual.linear }],
                   enums :=
                     [{ variants := [[Ty.struct 0], []],
-                        cls := Qual.affine }] },
+                        qual := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                     body := B }] } →
@@ -38229,13 +38273,13 @@ def RueCore.Spec.Sharp.unreached_double_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine },
+                        dtor := true, qual := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.linear }],
+                        dtor := false, qual := Qual.linear }],
                   enums :=
                     [{ variants := [[Ty.struct 0], []],
-                        cls := Qual.affine }] },
+                        qual := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                     body := B }] } →
@@ -38291,13 +38335,13 @@ def RueCore.Spec.Sharp.unreached_held_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine },
+                        dtor := true, qual := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.linear }],
+                        dtor := false, qual := Qual.linear }],
                   enums :=
                     [{ variants := [[Ty.struct 0], []],
-                        cls := Qual.affine }] },
+                        qual := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                     body := B }] } →
@@ -38354,13 +38398,13 @@ def RueCore.Spec.Sharp.unreached_panic_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine },
+                        dtor := true, qual := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.linear }],
+                        dtor := false, qual := Qual.linear }],
                   enums :=
                     [{ variants := [[Ty.struct 0], []],
-                        cls := Qual.affine }] },
+                        qual := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                     body := B }] } →
@@ -38424,13 +38468,13 @@ def RueCore.Spec.Sharp.unreached_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine },
+                        dtor := true, qual := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.linear }],
+                        dtor := false, qual := Qual.linear }],
                   enums :=
                     [{ variants := [[Ty.struct 0], []],
-                        cls := Qual.affine }] },
+                        qual := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                     body := B }] } →
@@ -38925,13 +38969,13 @@ def RueCore.Spec.Nonvacuous.array_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine },
+                        dtor := true, qual := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.linear }],
+                        dtor := false, qual := Qual.linear }],
                   enums :=
                     [{ variants := [[Ty.struct 0], []],
-                        cls := Qual.affine }] },
+                        qual := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                     body := B }] } →
@@ -38985,13 +39029,13 @@ def RueCore.Spec.Nonvacuous.dtor_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine },
+                        dtor := true, qual := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.linear }],
+                        dtor := false, qual := Qual.linear }],
                   enums :=
                     [{ variants := [[Ty.struct 0], []],
-                        cls := Qual.affine }] },
+                        qual := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                     body := B }] } →
@@ -39058,13 +39102,13 @@ def RueCore.Spec.Nonvacuous.early_return_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine },
+                        dtor := true, qual := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.linear }],
+                        dtor := false, qual := Qual.linear }],
                   enums :=
                     [{ variants := [[Ty.struct 0], []],
-                        cls := Qual.affine }] },
+                        qual := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                     body := B }] } →
@@ -39115,13 +39159,13 @@ def RueCore.Spec.Nonvacuous.enum_match_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine },
+                        dtor := true, qual := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.linear }],
+                        dtor := false, qual := Qual.linear }],
                   enums :=
                     [{ variants := [[Ty.struct 0], []],
-                        cls := Qual.affine }] },
+                        qual := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                     body := B }] } →
@@ -39173,13 +39217,13 @@ def RueCore.Spec.Nonvacuous.float_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine },
+                        dtor := true, qual := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.linear }],
+                        dtor := false, qual := Qual.linear }],
                   enums :=
                     [{ variants := [[Ty.struct 0], []],
-                        cls := Qual.affine }] },
+                        qual := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.float FloatWidth.w64,
                     body := B }] } →
@@ -39229,13 +39273,13 @@ def RueCore.Spec.Nonvacuous.linear_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine },
+                        dtor := true, qual := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.linear }],
+                        dtor := false, qual := Qual.linear }],
                   enums :=
                     [{ variants := [[Ty.struct 0], []],
-                        cls := Qual.affine }] },
+                        qual := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                     body := B }] } →
@@ -39289,13 +39333,13 @@ def RueCore.Spec.Nonvacuous.loop_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine },
+                        dtor := true, qual := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.linear }],
+                        dtor := false, qual := Qual.linear }],
                   enums :=
                     [{ variants := [[Ty.struct 0], []],
-                        cls := Qual.affine }] },
+                        qual := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                     body := B }] } →
@@ -39338,12 +39382,12 @@ def RueCore.Spec.Nonvacuous.open_activation_stmt : Prop :=
           structs :=
             [{ attr := Attr.none,
                 fields := [Ty.int IntWidth.w64 Sign.signed], dtor := true,
-                cls := Qual.affine },
+                qual := Qual.affine },
               { attr := Attr.linear,
                 fields := [Ty.int IntWidth.w64 Sign.signed], dtor := false,
-                cls := Qual.linear }],
+                qual := Qual.linear }],
           enums :=
-            [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] } →
+            [{ variants := [[Ty.struct 0], []], qual := Qual.affine }] } →
       ∀ (e : Expr),
         e =
             (Expr.drop (Place.var 0)).seq
@@ -39434,13 +39478,13 @@ def RueCore.Spec.Nonvacuous.panic_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine },
+                        dtor := true, qual := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.linear }],
+                        dtor := false, qual := Qual.linear }],
                   enums :=
                     [{ variants := [[Ty.struct 0], []],
-                        cls := Qual.affine }] },
+                        qual := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                     body := B }] } →
@@ -39493,13 +39537,13 @@ def RueCore.Spec.Sharp.activation_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine },
+                        dtor := true, qual := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.linear }],
+                        dtor := false, qual := Qual.linear }],
                   enums :=
                     [{ variants := [[Ty.struct 0], []],
-                        cls := Qual.affine }] },
+                        qual := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                     body := B }] } →
@@ -39572,12 +39616,13 @@ def RueCore.Spec.Sharp.entry_param_stmt : Prop :=
               structs :=
                 [{ attr := Attr.none,
                     fields := [Ty.int IntWidth.w64 Sign.signed],
-                    dtor := true, cls := Qual.affine },
+                    dtor := true, qual := Qual.affine },
                   { attr := Attr.linear,
                     fields := [Ty.int IntWidth.w64 Sign.signed],
-                    dtor := false, cls := Qual.linear }],
+                    dtor := false, qual := Qual.linear }],
               enums :=
-                [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                [{ variants := [[Ty.struct 0], []],
+                    qual := Qual.affine }] },
           fns :=
             [{
                 params :=
@@ -39617,12 +39662,13 @@ def RueCore.Spec.Sharp.no_entry_stmt : Prop :=
               structs :=
                 [{ attr := Attr.none,
                     fields := [Ty.int IntWidth.w64 Sign.signed],
-                    dtor := true, cls := Qual.affine },
+                    dtor := true, qual := Qual.affine },
                   { attr := Attr.linear,
                     fields := [Ty.int IntWidth.w64 Sign.signed],
-                    dtor := false, cls := Qual.linear }],
+                    dtor := false, qual := Qual.linear }],
               enums :=
-                [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                [{ variants := [[Ty.struct 0], []],
+                    qual := Qual.affine }] },
           fns := [] } →
       WfProgram P ∧
         P.fns[0]? = none ∧
@@ -39662,13 +39708,13 @@ def RueCore.Spec.Sharp.no_eval_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine },
+                        dtor := true, qual := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.linear }],
+                        dtor := false, qual := Qual.linear }],
                   enums :=
                     [{ variants := [[Ty.struct 0], []],
-                        cls := Qual.affine }] },
+                        qual := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                     body := B }] } →
@@ -39720,13 +39766,13 @@ def RueCore.Spec.Sharp.no_lead_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine },
+                        dtor := true, qual := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.linear }],
+                        dtor := false, qual := Qual.linear }],
                   enums :=
                     [{ variants := [[Ty.struct 0], []],
-                        cls := Qual.affine }] },
+                        qual := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                     body := B }] } →
@@ -39793,13 +39839,13 @@ def RueCore.Spec.Sharp.not_fits_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine },
+                        dtor := true, qual := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.linear }],
+                        dtor := false, qual := Qual.linear }],
                   enums :=
                     [{ variants := [[Ty.struct 0], []],
-                        cls := Qual.affine }] },
+                        qual := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                     body := B }] } →
@@ -39843,13 +39889,13 @@ def RueCore.Spec.Sharp.pending_expr_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine },
+                        dtor := true, qual := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.linear }],
+                        dtor := false, qual := Qual.linear }],
                   enums :=
                     [{ variants := [[Ty.struct 0], []],
-                        cls := Qual.affine }] },
+                        qual := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                     body := B }] } →
@@ -39963,12 +40009,13 @@ def RueCore.Spec.Sharp.pending_program_stmt : Prop :=
               structs :=
                 [{ attr := Attr.none,
                     fields := [Ty.int IntWidth.w64 Sign.signed],
-                    dtor := true, cls := Qual.affine },
+                    dtor := true, qual := Qual.affine },
                   { attr := Attr.linear,
                     fields := [Ty.int IntWidth.w64 Sign.signed],
-                    dtor := false, cls := Qual.linear }],
+                    dtor := false, qual := Qual.linear }],
               enums :=
-                [{ variants := [[Ty.struct 0], []], cls := Qual.affine }] },
+                [{ variants := [[Ty.struct 0], []],
+                    qual := Qual.affine }] },
           fns :=
             [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                 body := Expr.intLit IntWidth.w64 Sign.signed 0 },
@@ -40093,13 +40140,13 @@ def RueCore.Spec.Sharp.refused_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine },
+                        dtor := true, qual := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.linear }],
+                        dtor := false, qual := Qual.linear }],
                   enums :=
                     [{ variants := [[Ty.struct 0], []],
-                        cls := Qual.affine }] },
+                        qual := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                     body := B }] } →
@@ -40192,13 +40239,13 @@ def RueCore.Spec.Sharp.store_cc_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine },
+                        dtor := true, qual := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.linear }],
+                        dtor := false, qual := Qual.linear }],
                   enums :=
                     [{ variants := [[Ty.struct 0], []],
-                        cls := Qual.affine }] },
+                        qual := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                     body := B }] } →
@@ -40343,13 +40390,13 @@ def RueCore.Spec.Sharp.typed_stmt : Prop :=
                   structs :=
                     [{ attr := Attr.none,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := true, cls := Qual.affine },
+                        dtor := true, qual := Qual.affine },
                       { attr := Attr.linear,
                         fields := [Ty.int IntWidth.w64 Sign.signed],
-                        dtor := false, cls := Qual.linear }],
+                        dtor := false, qual := Qual.linear }],
                   enums :=
                     [{ variants := [[Ty.struct 0], []],
-                        cls := Qual.affine }] },
+                        qual := Qual.affine }] },
               fns :=
                 [{ params := [], ret := Ty.int IntWidth.w64 Sign.signed,
                     body := B }] } →
