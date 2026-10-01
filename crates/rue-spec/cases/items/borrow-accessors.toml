@@ -3470,3 +3470,468 @@ fn main() -> i32 {
 """
 compile_fail = true
 error_contains = ["E0252"]
+
+[[case]]
+name = "borrow_argument_of_root_then_exclusive_accessor_rejected"
+spec = ["6.6:10"]
+description = "A `borrow` argument of the root is a shared access even after its call returns, so a later exclusive accessor result on that root in the same full expression is rejected like after a value-context read (E0259, RUE-2372)."
+source = """
+struct P {
+    c: i64,
+
+    fn get(borrow self) -> i64 { self.c }
+    fn set(inout self) { self.c = 88; }
+}
+struct Acc {
+    p: P,
+    arr: [P; 2],
+
+    fn pmut(inout self) -> inout P { yield self.p; }
+    fn pref(borrow self) -> borrow P { yield self.p; }
+    fn emut(inout self, i: u64) -> inout P { yield self.arr[i]; }
+    fn len(borrow self) -> i64 { 2 }
+    fn idx(borrow self) -> u64 { 1 }
+}
+fn mk() -> Acc { Acc { p: P { c: 1 }, arr: [P { c: 2 }, P { c: 3 }] } }
+fn gr(borrow a: Acc) -> i64 { a.p.c }
+fn use2(x: i64, y: i64) -> i64 { x + y }
+fn main() -> i32 {
+    let mut a = mk();
+    let x = use2(gr(borrow a), a.pmut().c);
+    @intCast(x)
+}
+"""
+compile_fail = true
+error_contains = ["E0259", "for an exclusive accessor result after a shared read"]
+
+[[case]]
+name = "borrow_argument_after_exclusive_accessor_rejected"
+spec = ["6.6:10"]
+description = "The reverse order is rejected too: the `borrow` argument overlaps the live exclusive accessor loan (E0259, RUE-2372)."
+source = """
+struct P {
+    c: i64,
+
+    fn get(borrow self) -> i64 { self.c }
+    fn set(inout self) { self.c = 88; }
+}
+struct Acc {
+    p: P,
+    arr: [P; 2],
+
+    fn pmut(inout self) -> inout P { yield self.p; }
+    fn pref(borrow self) -> borrow P { yield self.p; }
+    fn emut(inout self, i: u64) -> inout P { yield self.arr[i]; }
+    fn len(borrow self) -> i64 { 2 }
+    fn idx(borrow self) -> u64 { 1 }
+}
+fn mk() -> Acc { Acc { p: P { c: 1 }, arr: [P { c: 2 }, P { c: 3 }] } }
+fn gr(borrow a: Acc) -> i64 { a.p.c }
+fn use2(x: i64, y: i64) -> i64 { x + y }
+fn main() -> i32 {
+    let mut a = mk();
+    let x = use2(a.pmut().c, gr(borrow a));
+    @intCast(x)
+}
+"""
+compile_fail = true
+error_contains = ["E0259", "cannot use 'a' as `borrow` while an accessor result borrows it"]
+
+[[case]]
+name = "borrow_argument_of_field_then_exclusive_accessor_inout_argument_rejected"
+spec = ["6.6:10"]
+description = "A `borrow` argument of a place under the root conflicts with a later exclusive accessor result passed `inout` (E0259, RUE-2372)."
+source = """
+struct P {
+    c: i64,
+
+    fn get(borrow self) -> i64 { self.c }
+    fn set(inout self) { self.c = 88; }
+}
+struct Acc {
+    p: P,
+    arr: [P; 2],
+
+    fn pmut(inout self) -> inout P { yield self.p; }
+    fn pref(borrow self) -> borrow P { yield self.p; }
+    fn emut(inout self, i: u64) -> inout P { yield self.arr[i]; }
+    fn len(borrow self) -> i64 { 2 }
+    fn idx(borrow self) -> u64 { 1 }
+}
+fn mk() -> Acc { Acc { p: P { c: 1 }, arr: [P { c: 2 }, P { c: 3 }] } }
+fn bp(borrow p: P) -> i64 { p.c }
+fn pc(inout p: P) -> i64 { p.c = p.c + 10; p.c }
+fn use2(x: i64, y: i64) -> i64 { x + y }
+fn main() -> i32 {
+    let mut a = mk();
+    let x = use2(bp(borrow a.p), pc(inout a.pmut()));
+    @intCast(x)
+}
+"""
+compile_fail = true
+error_contains = ["E0259", "for an exclusive accessor result after a shared read"]
+
+[[case]]
+name = "borrow_argument_of_element_then_exclusive_element_accessor_rejected"
+spec = ["6.6:10", "6.6:17"]
+description = "Accessor exclusivity is root-granular: a `borrow` argument of one element conflicts with an exclusive accessor result for another element of the same root (E0259, RUE-2372)."
+source = """
+struct P {
+    c: i64,
+
+    fn get(borrow self) -> i64 { self.c }
+    fn set(inout self) { self.c = 88; }
+}
+struct Acc {
+    p: P,
+    arr: [P; 2],
+
+    fn pmut(inout self) -> inout P { yield self.p; }
+    fn pref(borrow self) -> borrow P { yield self.p; }
+    fn emut(inout self, i: u64) -> inout P { yield self.arr[i]; }
+    fn len(borrow self) -> i64 { 2 }
+    fn idx(borrow self) -> u64 { 1 }
+}
+fn mk() -> Acc { Acc { p: P { c: 1 }, arr: [P { c: 2 }, P { c: 3 }] } }
+fn bp(borrow p: P) -> i64 { p.c }
+fn use2(x: i64, y: i64) -> i64 { x + y }
+fn main() -> i32 {
+    let mut a = mk();
+    let x = use2(bp(borrow a.arr[1]), a.emut(0).c);
+    @intCast(x)
+}
+"""
+compile_fail = true
+error_contains = ["E0259", "for an exclusive accessor result after a shared read"]
+
+[[case]]
+name = "nested_borrow_argument_then_exclusive_accessor_rejected"
+spec = ["6.6:10"]
+description = "A `borrow` argument of a nested call is still a shared access within the enclosing full expression (E0259, RUE-2372)."
+source = """
+struct P {
+    c: i64,
+
+    fn get(borrow self) -> i64 { self.c }
+    fn set(inout self) { self.c = 88; }
+}
+struct Acc {
+    p: P,
+    arr: [P; 2],
+
+    fn pmut(inout self) -> inout P { yield self.p; }
+    fn pref(borrow self) -> borrow P { yield self.p; }
+    fn emut(inout self, i: u64) -> inout P { yield self.arr[i]; }
+    fn len(borrow self) -> i64 { 2 }
+    fn idx(borrow self) -> u64 { 1 }
+}
+fn mk() -> Acc { Acc { p: P { c: 1 }, arr: [P { c: 2 }, P { c: 3 }] } }
+fn gr(borrow a: Acc) -> i64 { a.p.c }
+fn id(x: i64) -> i64 { x }
+fn use2(x: i64, y: i64) -> i64 { x + y }
+fn main() -> i32 {
+    let mut a = mk();
+    let x = use2(id(gr(borrow a)), a.pmut().c);
+    @intCast(x)
+}
+"""
+compile_fail = true
+error_contains = ["E0259", "for an exclusive accessor result after a shared read"]
+
+[[case]]
+name = "borrow_self_receiver_on_root_then_exclusive_accessor_rejected"
+spec = ["6.6:10"]
+description = "A `borrow self` method call on the root is a shared access even after it returns, so a later exclusive accessor result on that root is rejected (E0259, RUE-2372)."
+source = """
+struct P {
+    c: i64,
+
+    fn get(borrow self) -> i64 { self.c }
+    fn set(inout self) { self.c = 88; }
+}
+struct Acc {
+    p: P,
+    arr: [P; 2],
+
+    fn pmut(inout self) -> inout P { yield self.p; }
+    fn pref(borrow self) -> borrow P { yield self.p; }
+    fn emut(inout self, i: u64) -> inout P { yield self.arr[i]; }
+    fn len(borrow self) -> i64 { 2 }
+    fn idx(borrow self) -> u64 { 1 }
+}
+fn mk() -> Acc { Acc { p: P { c: 1 }, arr: [P { c: 2 }, P { c: 3 }] } }
+fn use2(x: i64, y: i64) -> i64 { x + y }
+fn main() -> i32 {
+    let mut a = mk();
+    let x = use2(a.len(), a.pmut().c);
+    @intCast(x)
+}
+"""
+compile_fail = true
+error_contains = ["E0259", "for an exclusive accessor result after a shared read"]
+
+[[case]]
+name = "borrow_self_receiver_on_field_then_exclusive_accessor_method_rejected"
+spec = ["6.6:10"]
+description = "A `borrow self` method call on a field of the root conflicts with a later exclusive accessor result on that root (E0259, RUE-2372)."
+source = """
+struct P {
+    c: i64,
+
+    fn get(borrow self) -> i64 { self.c }
+    fn set(inout self) { self.c = 88; }
+}
+struct Acc {
+    p: P,
+    arr: [P; 2],
+
+    fn pmut(inout self) -> inout P { yield self.p; }
+    fn pref(borrow self) -> borrow P { yield self.p; }
+    fn emut(inout self, i: u64) -> inout P { yield self.arr[i]; }
+    fn len(borrow self) -> i64 { 2 }
+    fn idx(borrow self) -> u64 { 1 }
+}
+fn mk() -> Acc { Acc { p: P { c: 1 }, arr: [P { c: 2 }, P { c: 3 }] } }
+fn use2(x: i64, y: i64) -> i64 { x + y }
+fn main() -> i32 {
+    let mut a = mk();
+    let x = use2(a.p.get(), a.pmut().get());
+    @intCast(x)
+}
+"""
+compile_fail = true
+error_contains = ["E0259", "for an exclusive accessor result after a shared read"]
+
+[[case]]
+name = "borrow_self_receiver_after_exclusive_accessor_rejected"
+spec = ["6.6:10"]
+description = "The reverse order is rejected too: the `borrow self` receiver overlaps the live exclusive accessor loan (E0259, RUE-2372)."
+source = """
+struct P {
+    c: i64,
+
+    fn get(borrow self) -> i64 { self.c }
+    fn set(inout self) { self.c = 88; }
+}
+struct Acc {
+    p: P,
+    arr: [P; 2],
+
+    fn pmut(inout self) -> inout P { yield self.p; }
+    fn pref(borrow self) -> borrow P { yield self.p; }
+    fn emut(inout self, i: u64) -> inout P { yield self.arr[i]; }
+    fn len(borrow self) -> i64 { 2 }
+    fn idx(borrow self) -> u64 { 1 }
+}
+fn mk() -> Acc { Acc { p: P { c: 1 }, arr: [P { c: 2 }, P { c: 3 }] } }
+fn use2(x: i64, y: i64) -> i64 { x + y }
+fn main() -> i32 {
+    let mut a = mk();
+    let x = use2(a.pmut().get(), a.p.get());
+    @intCast(x)
+}
+"""
+compile_fail = true
+error_contains = ["E0259", "as a `borrow self` receiver while an accessor result borrows it"]
+
+[[case]]
+name = "borrow_self_receiver_in_exclusive_accessor_argument_rejected"
+spec = ["6.6:10"]
+description = "An exclusive accessor's own argument is evaluated within the accessor's full expression: a `borrow self` call on the root there conflicts with the accessor's exclusive loan, like a value read of the root would (E0259, RUE-2372)."
+source = """
+struct P {
+    c: i64,
+
+    fn get(borrow self) -> i64 { self.c }
+    fn set(inout self) { self.c = 88; }
+}
+struct Acc {
+    p: P,
+    arr: [P; 2],
+
+    fn pmut(inout self) -> inout P { yield self.p; }
+    fn pref(borrow self) -> borrow P { yield self.p; }
+    fn emut(inout self, i: u64) -> inout P { yield self.arr[i]; }
+    fn len(borrow self) -> i64 { 2 }
+    fn idx(borrow self) -> u64 { 1 }
+}
+fn mk() -> Acc { Acc { p: P { c: 1 }, arr: [P { c: 2 }, P { c: 3 }] } }
+fn main() -> i32 {
+    let mut a = mk();
+    a.emut(a.idx()).c = 4;
+    @intCast(a.arr[1].c)
+}
+"""
+compile_fail = true
+error_contains = ["E0259", "for an exclusive accessor result after a shared read"]
+
+[[case]]
+name = "borrow_argument_of_inout_parameter_then_exclusive_accessor_rejected"
+spec = ["6.6:10"]
+description = "The rule applies to a parameter root as to a local (E0259, RUE-2372)."
+source = """
+struct P {
+    c: i64,
+
+    fn get(borrow self) -> i64 { self.c }
+    fn set(inout self) { self.c = 88; }
+}
+struct Acc {
+    p: P,
+    arr: [P; 2],
+
+    fn pmut(inout self) -> inout P { yield self.p; }
+    fn pref(borrow self) -> borrow P { yield self.p; }
+    fn emut(inout self, i: u64) -> inout P { yield self.arr[i]; }
+    fn len(borrow self) -> i64 { 2 }
+    fn idx(borrow self) -> u64 { 1 }
+}
+fn mk() -> Acc { Acc { p: P { c: 1 }, arr: [P { c: 2 }, P { c: 3 }] } }
+fn gr(borrow a: Acc) -> i64 { a.p.c }
+fn use2(x: i64, y: i64) -> i64 { x + y }
+fn f(inout a: Acc) -> i64 { use2(gr(borrow a), a.pmut().c) }
+fn main() -> i32 {
+    let mut a = mk();
+    @intCast(f(inout a))
+}
+"""
+compile_fail = true
+error_contains = ["E0259", "for an exclusive accessor result after a shared read"]
+
+[[case]]
+name = "borrow_argument_and_borrow_self_with_shared_accessor_results_coexist"
+spec = ["6.6:10"]
+description = "Shared uses coexist: a `borrow` argument and a `borrow self` call on the root sit beside shared accessor results on it in one full expression (RUE-2372)."
+source = """
+struct P {
+    c: i64,
+
+    fn get(borrow self) -> i64 { self.c }
+    fn set(inout self) { self.c = 88; }
+}
+struct Acc {
+    p: P,
+    arr: [P; 2],
+
+    fn pmut(inout self) -> inout P { yield self.p; }
+    fn pref(borrow self) -> borrow P { yield self.p; }
+    fn emut(inout self, i: u64) -> inout P { yield self.arr[i]; }
+    fn len(borrow self) -> i64 { 2 }
+    fn idx(borrow self) -> u64 { 1 }
+}
+fn mk() -> Acc { Acc { p: P { c: 1 }, arr: [P { c: 2 }, P { c: 3 }] } }
+fn gr(borrow a: Acc) -> i64 { a.p.c }
+fn bp(borrow p: P) -> i64 { p.c }
+fn use2(x: i64, y: i64) -> i64 { x + y }
+fn main() -> i32 {
+    let a = mk();
+    let x = use2(gr(borrow a), a.pref().c);
+    let y = use2(a.p.get(), a.pref().get());
+    let z = use2(bp(borrow a.pref()), a.len());
+    @intCast(x + y + z - 7)
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "borrow_uses_and_exclusive_accessor_in_separate_statements_are_legal"
+spec = ["6.6:10"]
+description = "A `borrow` argument, a `borrow self` call and an exclusive accessor result on one root in separate full expressions do not conflict; neither does a `borrow` of a different root (RUE-2372)."
+source = """
+struct P {
+    c: i64,
+
+    fn get(borrow self) -> i64 { self.c }
+    fn set(inout self) { self.c = 88; }
+}
+struct Acc {
+    p: P,
+    arr: [P; 2],
+
+    fn pmut(inout self) -> inout P { yield self.p; }
+    fn pref(borrow self) -> borrow P { yield self.p; }
+    fn emut(inout self, i: u64) -> inout P { yield self.arr[i]; }
+    fn len(borrow self) -> i64 { 2 }
+    fn idx(borrow self) -> u64 { 1 }
+}
+fn mk() -> Acc { Acc { p: P { c: 1 }, arr: [P { c: 2 }, P { c: 3 }] } }
+fn gr(borrow a: Acc) -> i64 { a.p.c }
+fn pc(inout p: P) -> i64 { p.c = p.c + 10; p.c }
+fn use2(x: i64, y: i64) -> i64 { x + y }
+fn main() -> i32 {
+    let mut a = mk();
+    let b = mk();
+    let x = gr(borrow a);
+    let y = a.p.get();
+    a.pmut().set();
+    let z = use2(gr(borrow b), a.pmut().c);
+    let w = use2(b.p.get(), pc(inout a.pmut()));
+    @intCast(x + y + z + w - 190)
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "borrow_argument_in_if_condition_before_exclusive_accessor_in_body_is_legal"
+spec = ["6.6:10"]
+description = "An `if` condition is its own full expression, so a `borrow` use there has ended before the body's exclusive accessor result; an assignment's right-hand side likewise completes before an exclusive accessor target (RUE-2372)."
+source = """
+struct P {
+    c: i64,
+
+    fn get(borrow self) -> i64 { self.c }
+    fn set(inout self) { self.c = 88; }
+}
+struct Acc {
+    p: P,
+    arr: [P; 2],
+
+    fn pmut(inout self) -> inout P { yield self.p; }
+    fn pref(borrow self) -> borrow P { yield self.p; }
+    fn emut(inout self, i: u64) -> inout P { yield self.arr[i]; }
+    fn len(borrow self) -> i64 { 2 }
+    fn idx(borrow self) -> u64 { 1 }
+}
+fn mk() -> Acc { Acc { p: P { c: 1 }, arr: [P { c: 2 }, P { c: 3 }] } }
+fn gr(borrow a: Acc) -> i64 { a.p.c }
+fn main() -> i32 {
+    let mut a = mk();
+    if gr(borrow a) > 0 {
+        a.pmut().set();
+    }
+    a.pmut().c = gr(borrow a) + a.p.get();
+    @intCast(a.p.c - 176)
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "method_chain_on_one_exclusive_accessor_result_is_legal"
+spec = ["6.6:10"]
+description = "`borrow self` and `inout self` calls on an exclusive accessor result use that result's own loan, not a new access of the root (RUE-2372)."
+source = """
+struct P {
+    c: i64,
+
+    fn get(borrow self) -> i64 { self.c }
+    fn set(inout self) { self.c = 88; }
+}
+struct Acc {
+    p: P,
+    arr: [P; 2],
+
+    fn pmut(inout self) -> inout P { yield self.p; }
+    fn pref(borrow self) -> borrow P { yield self.p; }
+    fn emut(inout self, i: u64) -> inout P { yield self.arr[i]; }
+    fn len(borrow self) -> i64 { 2 }
+    fn idx(borrow self) -> u64 { 1 }
+}
+fn mk() -> Acc { Acc { p: P { c: 1 }, arr: [P { c: 2 }, P { c: 3 }] } }
+fn main() -> i32 {
+    let mut a = mk();
+    a.pmut().set();
+    let x = a.pmut().get();
+    @intCast(x - 88)
+}
+"""
+exit_code = 0
