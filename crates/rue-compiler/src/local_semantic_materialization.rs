@@ -1512,6 +1512,12 @@ pub(crate) fn select_materialization_facts(
         callables: std::collections::BTreeSet<FunctionInstanceKey>,
         modules: std::collections::BTreeSet<ModuleId>,
         builtins: std::collections::BTreeSet<LocalBuiltinNominalRequest>,
+        // A slice view named by an anonymous method signature has no
+        // declaration to source it: the selected anonymous fact is its only
+        // signature. Those views resolve once the nominal worklist has drained,
+        // because a body names the view before the walk reaches its owner.
+        anonymous_slice_sources: AHashMap<Arc<str>, crate::TypeInstanceKey>,
+        pending_slice_builtins: Vec<(crate::AnonymousNominalKind, Arc<str>)>,
         seen_semantic_types: AHashSet<crate::durable_semantics::DurableType>,
         seen_opaque_types: AHashSet<crate::durable_semantics::DurableType>,
     }
@@ -1529,16 +1535,26 @@ pub(crate) fn select_materialization_facts(
             {
                 return;
             }
-            let query_ty = self
-                .index
-                .shared
-                .slice_sources
-                .get(name)
-                .cloned()
-                .unwrap_or_else(|| crate::TypeInstanceKey::BuiltinNominal {
+            let query_ty = match self.index.shared.slice_sources.get(name) {
+                Some(source) => source.clone(),
+                None if rue_air::is_slice_struct_name(name) => {
+                    self.pending_slice_builtins.push((kind, name.clone()));
+                    return;
+                }
+                None => crate::TypeInstanceKey::BuiltinNominal {
                     kind,
                     name: name.clone(),
-                });
+                },
+            };
+            self.request_builtin(kind, name, query_ty);
+        }
+
+        fn request_builtin(
+            &mut self,
+            kind: crate::AnonymousNominalKind,
+            name: &Arc<str>,
+            query_ty: crate::TypeInstanceKey,
+        ) {
             // A slice view is materialized from its source type, and its `ptr`
             // field names the element type. The element's nominal therefore has
             // to exist in this body's epoch even when the body reaches the view
@@ -1844,6 +1860,8 @@ pub(crate) fn select_materialization_facts(
                                 for method in methods.iter() {
                                     for (ty, _, _) in method.parameters.iter() {
                                         if let crate::durable_semantics::DurableAnonymousMethodType::Concrete(ty) = ty {
+                                            let mut work = LocalFactSelectionIndexWork::default();
+                                            collect_slice_sources(ty, &mut self.anonymous_slice_sources, &mut work);
                                             self.semantic_type(ty);
                                         }
                                     }
@@ -1878,6 +1896,17 @@ pub(crate) fn select_materialization_facts(
                         }
                     }
                 }
+            }
+            for (kind, name) in std::mem::take(&mut self.pending_slice_builtins) {
+                let query_ty = self
+                    .anonymous_slice_sources
+                    .get(&name)
+                    .cloned()
+                    .unwrap_or_else(|| crate::TypeInstanceKey::BuiltinNominal {
+                        kind,
+                        name: name.clone(),
+                    });
+                self.request_builtin(kind, &name, query_ty);
             }
             for nominal in std::mem::take(&mut self.opaque_nominals) {
                 if self.seen_nominals.contains(&nominal) {
@@ -1968,6 +1997,8 @@ pub(crate) fn select_materialization_facts(
         callables: std::collections::BTreeSet::new(),
         modules: std::collections::BTreeSet::new(),
         builtins: std::collections::BTreeSet::new(),
+        anonymous_slice_sources: AHashMap::new(),
+        pending_slice_builtins: Vec::new(),
         seen_semantic_types: AHashSet::new(),
         seen_opaque_types: AHashSet::new(),
     };
