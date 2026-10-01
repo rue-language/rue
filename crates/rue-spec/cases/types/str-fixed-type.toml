@@ -467,3 +467,116 @@ fn main() -> i32 {
 }
 """
 exit_code = 3
+
+# 3.7:60 — an `inout str` view of a local `Str(N)` reads the buffer through the
+# view at every optimization level. Inlining redirects the view parameter to
+# the caller's `Str(N)` slot; it must read that slot through the view, not load
+# it as a `str`, which named storage no marker opened and failed verification
+# whenever the caller also held a `str` value (RUE-2564).
+[[case]]
+name = "inout_str_view_of_fixed_str_beside_str_argument_o{level}"
+spec = ["3.7:60"]
+description = "An inout str view of a Str(N) local passed beside a str argument reads its length at -O{level}."
+source = """
+fn g(inout a: str, x: str) -> i32 { let n: i32 = @intCast(a.len()); n }
+fn main() -> i32 { let mut f: Str(8) = "abc"; g(inout f, "zz") }
+"""
+exit_code = 3
+params = [
+  { level = "0", opt_level = 0 },
+  { level = "1", opt_level = 1 },
+  { level = "2", opt_level = 2 },
+  { level = "3", opt_level = 3 },
+]
+
+[[case]]
+name = "inout_str_view_of_fixed_str_after_str_argument_o{level}"
+spec = ["3.7:60"]
+description = "An inout str view of a Str(N) local passed after a str argument reads both lengths at -O{level}."
+source = """
+fn g(x: str, inout a: str) -> i32 {
+    let n: i32 = @intCast(a.len());
+    let m: i32 = @intCast(x.len());
+    n * 10 + m
+}
+fn main() -> i32 { let mut f: Str(8) = "abc"; g("zz", inout f) }
+"""
+exit_code = 32
+params = [
+  { level = "0", opt_level = 0 },
+  { level = "1", opt_level = 1 },
+  { level = "2", opt_level = 2 },
+  { level = "3", opt_level = 3 },
+]
+
+[[case]]
+name = "inout_str_views_of_two_fixed_strs_beside_str_argument_o{level}"
+spec = ["3.7:60"]
+description = "Two inout str views of Str(N) locals of different capacities passed around a str argument each read their own length at -O{level}."
+source = """
+fn g(inout a: str, x: str, inout b: str) -> i32 {
+    let n: i32 = @intCast(a.len());
+    let m: i32 = @intCast(b.len());
+    let k: i32 = @intCast(x.len());
+    n * 100 + m * 10 + k
+}
+fn main() -> i32 {
+    let mut f: Str(8) = "ab";
+    let mut h: Str(16) = "hello";
+    g(inout f, "z", inout h)
+}
+"""
+exit_code = 251
+params = [
+  { level = "0", opt_level = 0 },
+  { level = "1", opt_level = 1 },
+  { level = "2", opt_level = 2 },
+  { level = "3", opt_level = 3 },
+]
+
+[[case]]
+name = "inout_str_view_of_fixed_str_forwarded_beside_str_argument_o{level}"
+spec = ["3.7:60", "6.1:35"]
+description = "An inout str view of a Str(N) local forwarded to a second inout str parameter beside a str argument reads its length at -O{level}."
+source = """
+fn h(inout a: str, y: str) -> i32 {
+    let n: i32 = @intCast(a.len());
+    let m: i32 = @intCast(y.len());
+    n * 10 + m
+}
+fn g(inout a: str, x: str) -> i32 { h(inout a, x) + 1 }
+fn main() -> i32 { let mut f: Str(8) = "abc"; g(inout f, "zz") }
+"""
+exit_code = 33
+params = [
+  { level = "0", opt_level = 0 },
+  { level = "1", opt_level = 1 },
+  { level = "2", opt_level = 2 },
+  { level = "3", opt_level = 3 },
+]
+
+# The `StrBuf` control: a `StrBuf` operand is narrowed to a materialized
+# `{ptr, len}` view temporary rather than viewed in place, so it never reached
+# the RUE-2564 redirect; it stays correct at every level.
+[[case]]
+name = "inout_str_view_of_strbuf_beside_str_argument_o{level}"
+spec = ["3.7:60"]
+description = "An inout str view of a StrBuf local passed beside a str argument reads both lengths at -O{level}."
+real_std = true
+source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+fn g(inout a: str, x: str) -> i32 {
+    let n: i32 = @intCast(a.len());
+    let m: i32 = @intCast(x.len());
+    n * 10 + m
+}
+fn main() -> i32 { let mut f: StrBuf = "abcd"; g(inout f, "zz") }
+"""
+exit_code = 42
+params = [
+  { level = "0", opt_level = 0 },
+  { level = "1", opt_level = 1 },
+  { level = "2", opt_level = 2 },
+  { level = "3", opt_level = 3 },
+]
