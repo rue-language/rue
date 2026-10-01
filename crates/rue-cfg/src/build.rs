@@ -98,7 +98,8 @@ struct LiveSlot {
 enum MovedSlot {
     /// A local variable slot
     Local(u32),
-    /// A parameter ABI slot
+    /// A parameter ABI slot, or a zero-width parameter's key past the end of
+    /// the ABI range (RUE-2534)
     Param(u32),
 }
 
@@ -931,8 +932,8 @@ fn derive_source_param_abi(builder: &CfgBuilder<'_>) -> Vec<SourceParamAbi> {
     // only through places — one it only ever *forwards*, a `borrow` of it as
     // a call argument, say, or the error value a synthesized printer walks
     // field by field with no drop schedule (RUE-1943) — is named by the place
-    // that reads it. A zero-sized parameter occupies no slot, so it never
-    // claims the slot it shares with the parameter that follows it.
+    // that reads it. A zero-sized parameter occupies no slot: it is keyed past
+    // the end of the ABI range (RUE-2534), and it never claims a slot.
     let occupies = |ty: Type| type_pool.abi_slot_count(ty) > 0;
     let mut ty_at: AHashMap<u32, Type> = rue_air::occupying_body_parameter_types(air, occupies);
     for (slot, ty) in rue_air::parameter_place_base_types(air) {
