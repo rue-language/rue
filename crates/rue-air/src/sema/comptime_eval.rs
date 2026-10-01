@@ -2260,19 +2260,18 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         };
         let inline_heads = self.inline_ctor_head_candidates(body, &mut attribution)?;
         let mut discovered = PrecomputedTypeLocals::default();
-        let mut eval_types: AHashMap<Spur, Type> = type_subst.cloned().unwrap_or_default();
-        let mut eval_values: AHashMap<Spur, ConstValue> = value_subst.cloned().unwrap_or_default();
-        let mut runtime_bindings: AHashSet<Spur> = runtime_params.iter().copied().collect();
+        let mut scope = WalkScope {
+            types: type_subst.cloned().unwrap_or_default(),
+            values: value_subst.cloned().unwrap_or_default(),
+            runtime: runtime_params.iter().copied().collect(),
+            ..WalkScope::default()
+        };
         let mut root_frame = Vec::new();
-        let mut local_modules = LocalModuleScope::default();
         self.walk_comptime_type_locals(
             body,
             &inline_heads,
             &mut discovered,
-            &mut eval_types,
-            &mut eval_values,
-            &mut runtime_bindings,
-            &mut local_modules,
+            &mut scope,
             &mut root_frame,
             false,
             &mut attribution,
@@ -2364,10 +2363,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         inst_ref: InstRef,
         inline_heads: &AHashSet<InstRef>,
         discovered: &mut PrecomputedTypeLocals,
-        eval_types: &mut AHashMap<Spur, Type>,
-        eval_values: &mut AHashMap<Spur, ConstValue>,
-        runtime_bindings: &mut AHashSet<Spur>,
-        local_modules: &mut LocalModuleScope,
+        scope: &mut WalkScope,
         frame: &mut Vec<WalkFrameEntry>,
         in_comptime: bool,
         attribution: &mut ComptimePrecomputeAttribution,
@@ -2381,7 +2377,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             if attribution.enabled {
                 attribution.inline_eval_attempts += 1;
             }
-            let result = self.try_evaluate_const_with_subst(inst_ref, eval_types, eval_values);
+            let result = self.try_evaluate_const_with_subst(inst_ref, &scope.types, &scope.values);
             if let Some(started) = started {
                 attribution.eval_provider_ns = attribution
                     .eval_provider_ns
@@ -2413,37 +2409,26 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         stmt,
                         inline_heads,
                         discovered,
-                        eval_types,
-                        eval_values,
-                        runtime_bindings,
-                        local_modules,
+                        scope,
                         &mut inner_frame,
                         in_comptime,
                         attribution,
                     )?;
                 }
-                for (name, old_type, was_runtime, old_value) in inner_frame.into_iter().rev() {
-                    local_modules.unbind(name);
-                    match old_type {
-                        Some(ty) => eval_types.insert(name, ty),
-                        None => eval_types.remove(&name),
-                    };
-                    match old_value {
-                        Some(value) => eval_values.insert(name, value),
-                        None => eval_values.remove(&name),
-                    };
-                    if was_runtime {
-                        runtime_bindings.insert(name);
-                    } else {
-                        runtime_bindings.remove(&name);
-                    }
-                }
+                scope.unwind(inner_frame);
             }
-            InstData::Alloc { name, init, ty, .. } => {
+            InstData::Alloc {
+                name,
+                init,
+                ty,
+                is_mut,
+                ..
+            } => {
                 if attribution.enabled {
                     attribution.alias_allocations_examined += 1;
                 }
-                let (name, init, annotation) = (*name, *init, *ty);
+                let (name, init, annotation, is_mut) = (*name, *init, *ty, *is_mut);
+                let mut annotated = None;
                 if let Some(annotation) = annotation {
                     // Resolved under the aliases and comptime values in
                     // scope at this statement, exactly as semantic analysis
@@ -2453,21 +2438,21 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     // A runtime binding in scope shadows a same-named
                     // `const` in a length, as semantic analysis will hold
                     // it (RUE-2446); such an annotation gives no hint.
-                    let shadowing = self
-                        .names_in_type_syntax(annotation, |name| runtime_bindings.contains(&name));
-                    if let Some(resolved) = self
+                    let shadowing =
+                        self.names_in_type_syntax(annotation, |name| scope.runtime.contains(&name));
+                    annotated = self
                         .resolve_rir_type_under_runtime_bindings(
                             annotation,
-                            eval_types,
-                            eval_values,
+                            &scope.types,
+                            &scope.values,
                             shadowing.as_ref(),
                             span,
                         )
                         // A callback cannot annotate a local. Leave it to the
                         // position check in analyze_alloc rather than masking
                         // its E0214 with an initializer type mismatch.
-                        .filter(|resolved| !resolved.is_function())
-                    {
+                        .filter(|resolved| !resolved.is_function());
+                    if let Some(resolved) = annotated {
                         discovered.local_annotations.insert(inst_ref, resolved);
                     }
                 }
@@ -2475,28 +2460,22 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     init,
                     inline_heads,
                     discovered,
-                    eval_types,
-                    eval_values,
-                    runtime_bindings,
-                    local_modules,
+                    scope,
                     frame,
                     in_comptime,
                     attribution,
                 )?;
                 if let Some(name) = name {
-                    self.bind_local_module(inst_ref, local_modules);
-                    if let Some(Some(module)) = local_modules.lookup(name) {
-                        let module = Type::new_module(module);
-                        let old_type = eval_types.insert(name, module);
-                        let was_runtime = runtime_bindings.remove(&name);
-                        let old_value = eval_values.remove(&name);
-                        frame.push((name, old_type, was_runtime, old_value));
+                    self.bind_local_module(inst_ref, &mut scope.modules);
+                    if let Some(Some(module)) = scope.modules.lookup(name) {
+                        frame.push(scope.hide(name));
+                        scope.types.insert(name, Type::new_module(module));
                         return Ok(());
                     }
                     let alias = if initializer_may_evaluate_to_type_with_bindings(
                         self.body_rir_ref(),
                         init,
-                        runtime_bindings,
+                        &scope.runtime,
                     ) {
                         let started = attribution.enabled.then(Instant::now);
                         if attribution.enabled {
@@ -2505,9 +2484,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         }
                         let result = self.try_eval_type_alias_init(
                             init,
-                            eval_types,
-                            eval_values,
-                            runtime_bindings,
+                            &scope.types,
+                            &scope.values,
+                            &scope.runtime,
                         );
                         if let Some(started) = started {
                             attribution.eval_provider_ns = attribution
@@ -2522,34 +2501,30 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         }
                         None
                     };
-                    // A `let` of a `comptime` block is a compile-time value
-                    // the block's later annotations and lengths read (spec
-                    // 4.14:27); evaluate it as the block will, so a length
-                    // naming it resolves at its value rather than at a
-                    // shadowed `const` or not at all (RUE-2446).
-                    let comptime_value = if alias.is_none() && in_comptime {
-                        self.try_eval_comptime_local_init(
-                            init,
-                            eval_types,
-                            eval_values,
-                            runtime_bindings,
-                        )
+                    // An immutable `let` of a `comptime` block is a
+                    // compile-time value the block's later annotations and
+                    // lengths read (spec 4.14:27); evaluate it as the block
+                    // will, so a length naming it resolves at its value
+                    // rather than at a shadowed `const` or not at all
+                    // (RUE-2446). Only a value known to be the one the block
+                    // binds is taken; anything else stays a runtime binding
+                    // and gives no hint.
+                    let comptime_value = if alias.is_none() && in_comptime && !is_mut {
+                        self.comptime_local_integer(init, annotated, scope)
                     } else {
                         None
                     };
-                    let old_type = eval_types.remove(&name);
-                    let was_runtime = runtime_bindings.remove(&name);
-                    let old_value = eval_values.remove(&name);
-                    frame.push((name, old_type, was_runtime, old_value));
+                    frame.push(scope.hide(name));
                     if let Some(ty) = alias {
                         discovered.aliases.insert(inst_ref, ty);
-                        eval_types.insert(name, ty);
-                    } else if let Some(value) = comptime_value
-                        && !matches!(value, ConstValue::Type(_))
-                    {
-                        eval_values.insert(name, value);
+                        scope.types.insert(name, ty);
+                    } else if let Some((value, declared)) = comptime_value {
+                        scope.values.insert(name, ConstValue::Integer(value));
+                        if let Some(declared) = declared {
+                            scope.integer_locals.insert(name, declared);
+                        }
                     } else {
-                        runtime_bindings.insert(name);
+                        scope.runtime.insert(name);
                     }
                 }
             }
@@ -2559,14 +2534,55 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     expr,
                     inline_heads,
                     discovered,
-                    eval_types,
-                    eval_values,
-                    runtime_bindings,
-                    local_modules,
+                    scope,
                     frame,
                     true,
                     attribution,
                 )?;
+            }
+            InstData::Match { scrutinee, arms } => {
+                // A match arm's payload binders scope over its body and hide
+                // every same-named binding outside it, as a `let` does: an
+                // outer alias, comptime value, block local or `const` (spec
+                // 4.7, RUE-2446). They are runtime bindings for the walk.
+                let scrutinee = *scrutinee;
+                let arms = self
+                    .body_rir_ref()
+                    .match_arms(arms)
+                    .iter()
+                    .map(|(pattern, body)| {
+                        let mut binders = Vec::new();
+                        collect_pattern_binders(&pattern, &mut binders);
+                        (binders, body)
+                    })
+                    .collect::<Vec<_>>();
+                self.walk_comptime_type_locals(
+                    scrutinee,
+                    inline_heads,
+                    discovered,
+                    scope,
+                    frame,
+                    in_comptime,
+                    attribution,
+                )?;
+                for (binders, body) in arms {
+                    let mut arm_frame = Vec::with_capacity(binders.len());
+                    for binder in binders {
+                        scope.modules.bind(binder, None);
+                        arm_frame.push(scope.hide(binder));
+                        scope.runtime.insert(binder);
+                    }
+                    self.walk_comptime_type_locals(
+                        body,
+                        inline_heads,
+                        discovered,
+                        scope,
+                        &mut arm_frame,
+                        in_comptime,
+                        attribution,
+                    )?;
+                    scope.unwind(arm_frame);
+                }
             }
             // Each declaration body has its own inference pass and lexical
             // environment; it must not inherit this body's local annotations.
@@ -2584,10 +2600,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         child,
                         inline_heads,
                         discovered,
-                        eval_types,
-                        eval_values,
-                        runtime_bindings,
-                        local_modules,
+                        scope,
                         frame,
                         in_comptime,
                         attribution,
@@ -2598,11 +2611,60 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         Ok(())
     }
 
-    /// Evaluate a `let` initializer as a compile-time type value, if it is
-    /// one. Handles calls to type-returning functions (`F()`, `Pair(i32)`,
-    /// `FixedBuffer(8)` — mirroring `analyze_call`'s implicit-comptime gate)
-    /// and direct type expressions (`let P = Q;`, `let P = struct { .. };`).
-    /// Returns `None` for anything else.
+    /// The integer a `comptime` block's immutable `let` binds, with its
+    /// declared type, when the walk can be sure of the value the block will
+    /// bind. Its type is the `let`'s integer annotation, or `i32` without
+    /// one, and the value must fit it. An annotated `let` may read only
+    /// block locals annotated with that same type, and an unannotated one
+    /// none at all, so the evaluator's untyped arithmetic agrees with the
+    /// block's typed arithmetic. Anything else (a mutable binding, an
+    /// operand of another or an inferred width, an overflow, a non-integer)
+    /// is left to the block's own evaluation and its diagnostics.
+    fn comptime_local_integer(
+        &mut self,
+        init: InstRef,
+        annotated: Option<Type>,
+        scope: &WalkScope,
+    ) -> Option<(i128, Option<Type>)> {
+        let semantics = annotated.unwrap_or(Type::I32).integer_semantics()?;
+        if !self.reads_only_integer_locals_of(init, annotated, scope) {
+            return None;
+        }
+        let value = self
+            .try_eval_comptime_local_init(init, &scope.types, &scope.values, &scope.runtime)?
+            .as_int_value()?;
+        semantics.fits_i128(value).then_some((value, annotated))
+    }
+
+    /// Whether every name `init` reads is a block local this walk bound with
+    /// the integer annotation `ty`; with no `ty`, whether it reads none.
+    fn reads_only_integer_locals_of(
+        &self,
+        init: InstRef,
+        ty: Option<Type>,
+        scope: &WalkScope,
+    ) -> bool {
+        let mut pending = vec![init];
+        let mut children = Vec::new();
+        while let Some(inst) = pending.pop() {
+            match &self.body_rir_ref().get(inst).data {
+                InstData::VarRef { name, .. } => {
+                    if ty.is_none() || scope.integer_locals.get(name) != ty.as_ref() {
+                        return false;
+                    }
+                }
+                InstData::Block { .. } | InstData::Alloc { .. } | InstData::Match { .. } => {
+                    return false;
+                }
+                _ => {}
+            }
+            children.clear();
+            self.body_rir_ref().child_instructions(inst, &mut children);
+            pending.extend(children.iter().copied());
+        }
+        true
+    }
+
     /// Evaluate the initializer of a `comptime` block's `let` through the
     /// canonical evaluator, as the block itself will.
     fn try_eval_comptime_local_init(
@@ -2619,6 +2681,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         self.eval_const_expr(init, &mut env).ok().flatten()
     }
 
+    /// Evaluate a `let` initializer as a compile-time type value, if it is
+    /// one. Handles calls to type-returning functions (`F()`, `Pair(i32)`,
+    /// `FixedBuffer(8)` — mirroring `analyze_call`'s implicit-comptime gate)
+    /// and direct type expressions (`let P = Q;`, `let P = struct { .. };`).
+    /// Returns `None` for anything else.
     fn try_eval_type_alias_init(
         &mut self,
         init: InstRef,
@@ -2641,10 +2708,88 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     }
 }
 
-/// One binding the pre-inference walk saved to restore when its block ends:
-/// the name, its shadowed alias, whether it was a runtime binding, and its
-/// shadowed compile-time value.
-type WalkFrameEntry = (Spur, Option<Type>, bool, Option<ConstValue>);
+/// The lexical state of the pre-inference walk at one point of a body.
+#[derive(Default)]
+struct WalkScope {
+    /// Comptime type aliases, local modules and type substitutions.
+    types: AHashMap<Spur, Type>,
+    /// Comptime value substitutions and `comptime` block locals.
+    values: AHashMap<Spur, ConstValue>,
+    /// Names bound to a runtime value.
+    runtime: AHashSet<Spur>,
+    /// `let`s in scope, with the module each one names.
+    modules: LocalModuleScope,
+    /// The declared integer type of each annotated `comptime` block local in
+    /// `values`.
+    integer_locals: AHashMap<Spur, Type>,
+}
+
+/// One binding the pre-inference walk saved to restore when its scope ends.
+struct WalkFrameEntry {
+    name: Spur,
+    old_type: Option<Type>,
+    was_runtime: bool,
+    old_value: Option<ConstValue>,
+    old_integer_local: Option<Type>,
+}
+
+impl WalkScope {
+    /// Hide every binding of `name` for a new one and record how to restore
+    /// it. The caller has already bound `name` in `modules`.
+    fn hide(&mut self, name: Spur) -> WalkFrameEntry {
+        WalkFrameEntry {
+            name,
+            old_type: self.types.remove(&name),
+            was_runtime: self.runtime.remove(&name),
+            old_value: self.values.remove(&name),
+            old_integer_local: self.integer_locals.remove(&name),
+        }
+    }
+
+    /// Restore the bindings a scope's frame hid, innermost first.
+    fn unwind(&mut self, frame: Vec<WalkFrameEntry>) {
+        for entry in frame.into_iter().rev() {
+            let name = entry.name;
+            self.modules.unbind(name);
+            restore(&mut self.types, name, entry.old_type);
+            restore(&mut self.values, name, entry.old_value);
+            restore(&mut self.integer_locals, name, entry.old_integer_local);
+            if entry.was_runtime {
+                self.runtime.insert(name);
+            } else {
+                self.runtime.remove(&name);
+            }
+        }
+    }
+}
+
+fn restore<V>(map: &mut AHashMap<Spur, V>, name: Spur, old: Option<V>) {
+    match old {
+        Some(value) => map.insert(name, value),
+        None => map.remove(&name),
+    };
+}
+
+/// Every name a match pattern binds: a payload binder, recursively through
+/// nested variant patterns, or a struct pattern's hidden local.
+fn collect_pattern_binders(pattern: &rue_rir::RirPatternView<'_>, out: &mut Vec<Spur>) {
+    match pattern {
+        rue_rir::RirPatternView::Path { elements, .. } => {
+            for element in elements.iter() {
+                match element {
+                    rue_rir::RirPatternElementView::Binding(name) => out.push(name),
+                    rue_rir::RirPatternElementView::Nested(nested) => {
+                        collect_pattern_binders(&nested, out);
+                    }
+                }
+            }
+        }
+        rue_rir::RirPatternView::Struct { local, .. } => out.push(*local),
+        rue_rir::RirPatternView::Wildcard(_)
+        | rue_rir::RirPatternView::Int { .. }
+        | rue_rir::RirPatternView::Bool(..) => {}
+    }
+}
 
 /// The `let` bindings a body's pre-inference walk resolved, keyed by the
 /// binding's `Alloc` instruction (see `precompute_comptime_type_locals`).
