@@ -265,8 +265,12 @@ pub struct SourceParamAbi {
 /// parameters.
 ///
 /// `param_drops` covers every `Normal` by-value parameter, including ones the
-/// body never reads; the body's own `Param` instructions supplement any
-/// parameter whose drop entry was cleared (a destructor receiver). Both the
+/// body never reads; `comptime_param_types` covers every comptime value
+/// parameter, whose value is substituted into the body but which the caller
+/// still passes, classified by its type (RUE-2563: without it an unread
+/// comptime `f64` was read as a general-purpose slot, shifting every later
+/// argument); the body's own `Param` instructions supplement any parameter
+/// whose drop entry was cleared (a destructor receiver). Both the
 /// [`SourceParamAbi`] derivation in `rue_cfg` and the `pub extern "C" fn`
 /// export-thunk projection read this one recovery, so a parameter's type cannot
 /// be rediscovered two different ways — the export thunk in particular must see
@@ -297,6 +301,9 @@ pub fn occupying_body_parameter_types(
         }
     };
     for &(slot, ty) in air.param_drops() {
+        record(slot, ty, &mut types);
+    }
+    for &(slot, ty) in air.comptime_param_types() {
         record(slot, ty, &mut types);
     }
     for index in 0..air.len() {

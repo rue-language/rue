@@ -1722,3 +1722,31 @@ fn main() -> i32 { @intCast(R) }
 """
 compile_fail = true
 error_contains = ["E0206", "comptime_float"]
+
+# RUE-2563: a comptime float parameter keeps its ABI slot in a runtime call,
+# classified by its type on both sides, so later runtime arguments land where
+# the callee reads them.
+
+[[case]]
+name = "comptime_float_parameter_unread_before_a_runtime_argument"
+spec = ["4.14:5"]
+description = "An unread `comptime N: f64` before a runtime `i32` does not shift the runtime argument (RUE-2563)"
+source = """
+fn take(comptime N: f64, b: i32) -> i32 { b }
+fn take32(comptime N: f32, b: i32) -> i32 { b }
+fn main() -> i32 { take(1.5, 5) + take32(2.5, 6) }
+"""
+exit_code = 11
+
+[[case]]
+name = "comptime_float_parameter_read_only_at_comptime"
+spec = ["4.14:5"]
+description = "A `comptime N: f64` read only in a comptime-folded condition, between and before runtime arguments (RUE-2563)"
+source = """
+fn pick(comptime N: f64, a: i32, b: f64) -> i32 {
+    if N > 1.0 { a + @float_to_int(b) } else { 0 }
+}
+fn mid(a: i32, comptime N: f64, b: i32) -> i32 { if N > 1.0 { a + b } else { 0 } }
+fn main() -> i32 { pick(1.5, 3, 4.0) + mid(5, 2.0, 6) }
+"""
+exit_code = 18
