@@ -2090,8 +2090,12 @@ impl<'a> ConstraintGenerator<'a> {
                     // check: `analyze_assign` rejects a buffer or a view with
                     // the escape diagnostic and any other incompatible value
                     // with E0206 (RUE-2248).
+                    //
+                    // A value that does not continue is still typed at the
+                    // target, as a `let` initializer is: in `x = [return 5,
+                    // 2]` the literal `2` takes the target's element type
+                    // (RUE-2538). Only a value typed `!` itself is skipped.
                     if !self.is_slice_struct_type(target_ty.clone())
-                        && value_info.continues
                         && !Self::is_never_concrete(&value_info.ty)
                     {
                         // Assignment stores the value with its semantic type.
@@ -2112,7 +2116,9 @@ impl<'a> ConstraintGenerator<'a> {
                     return ExprInfo::diverged(InferType::Concrete(Type::ERROR), span);
                 }
                 continues &= place_info.continues && value_info.continues;
-                if value_info.continues {
+                // A value that does not continue is still typed at the place,
+                // as at a local (RUE-2538); only a value typed `!` is skipped.
+                if !Self::is_never_concrete(&value_info.ty) {
                     self.add_constraint(Constraint::equal(place_info.ty, value_info.ty, span));
                 }
                 InferType::Concrete(Type::UNIT)
@@ -2137,7 +2143,10 @@ impl<'a> ConstraintGenerator<'a> {
                     // the result's element type, while the trailing-expression
                     // form compiled (RUE-2305, as for array pointees in
                     // RUE-2212).
-                    if value_info.continues
+                    // A value that does not continue is still typed at the
+                    // result, as a `let` initializer is (RUE-2538); only a
+                    // value typed `!` itself is skipped.
+                    if !Self::is_never_concrete(&value_info.ty)
                         && !self.is_slice_struct_type(InferType::Concrete(ctx.return_type))
                     {
                         self.add_constraint(Constraint::contextual(
@@ -3345,14 +3354,18 @@ impl<'a> ConstraintGenerator<'a> {
                 // rejected rather than truncate to 44). (RUE-104)
                 if let Some(field_ty) = self.known_field_type(&base_info.ty, *field) {
                     let expected = self.type_to_infer(field_ty);
-                    if value_info.continues {
+                    // A value that does not continue is still typed at the
+                    // field (RUE-2538); only a value typed `!` is skipped.
+                    if !Self::is_never_concrete(&value_info.ty) {
                         self.add_constraint(Constraint::contextual(
                             value_info.ty,
                             expected,
                             value_info.span,
                         ));
                     }
-                } else if !matches!(base_info.ty, InferType::Concrete(_)) && value_info.continues {
+                } else if !matches!(base_info.ty, InferType::Concrete(_))
+                    && !Self::is_never_concrete(&value_info.ty)
+                {
                     self.add_constraint(Constraint::FieldSet {
                         base: base_info.ty,
                         field: *field,
@@ -3417,7 +3430,12 @@ impl<'a> ConstraintGenerator<'a> {
                         }
                         let elem_diverges =
                             !elem_info.continues && Self::is_diverging_array(&elem_info.ty);
-                        if Self::is_never_concrete(&element_ty) {
+                        if Self::is_never_concrete(&elem_info.ty) {
+                            // A `!` element fits any element type and keeps
+                            // the peer type (or diverging shape) so far: in
+                            // `[[return 1; 2], return 3, [1, 2, 3]]` the
+                            // last element is still checked against `[_; 2]`.
+                        } else if Self::is_never_concrete(&element_ty) {
                             element_ty = elem_info.ty;
                             element_diverges = elem_diverges;
                         } else if element_diverges && !elem_diverges {
@@ -3566,14 +3584,18 @@ impl<'a> ConstraintGenerator<'a> {
                 // so it admits an integer literal at a float element (3.12:11)
                 // exactly as a field store and the deferred `IndexSet` do.
                 if let InferType::Array { element, .. } = &base_info.ty {
-                    if value_info.continues {
+                    // A value that does not continue is still typed at the
+                    // element (RUE-2538); only a value typed `!` is skipped.
+                    if !Self::is_never_concrete(&value_info.ty) {
                         self.add_constraint(Constraint::contextual(
                             value_info.ty,
                             (**element).clone(),
                             value_info.span,
                         ));
                     }
-                } else if !matches!(base_info.ty, InferType::Concrete(_)) && value_info.continues {
+                } else if !matches!(base_info.ty, InferType::Concrete(_))
+                    && !Self::is_never_concrete(&value_info.ty)
+                {
                     self.add_constraint(Constraint::IndexSet {
                         base: base_info.ty.clone(),
                         value: value_info.ty,
