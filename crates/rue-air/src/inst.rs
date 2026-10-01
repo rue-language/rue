@@ -291,7 +291,7 @@ impl AirValidationContext<'_> {
         value.can_coerce_to(&slot) || slot.is_error() || self.diverging_array_fits(value, slot)
     }
 
-    /// Whether two operands of one operator agree: either coerces to the
+    /// Whether two comparison operands agree: either coerces to the
     /// other (`!` and `<error>` are the escapes), or one is the `[!; N]` of
     /// an array literal whose elements all diverge and the other an array of
     /// the same shape ([`Type::diverging_array_fits`]).
@@ -2398,11 +2398,11 @@ impl Air {
             // never produces a value, and an erroneous one has already been
             // reported, so neither carries a width the operator must respect.
             // That is exactly what `Type::can_coerce_to` already means, so
-            // reuse it rather than restating the exemption. Two operands of
-            // one operator also agree when one is the `[!; N]` of a diverging
+            // reuse it rather than restating the exemption. Two comparison
+            // operands also agree when one is the `[!; N]` of a diverging
             // array literal beside an array of its shape
-            // (`AirValidationContext::operands_agree`); a result type is
-            // never such an array.
+            // (`AirValidationContext::operands_agree`); no other operator
+            // takes array operands, so the rest keep this strict rule.
             let agree = |a: Type, b: Type| a.can_coerce_to(&b) || b.can_coerce_to(&a);
             // Every operand refers backward and every place is well formed.
             // This is the canonical operand walk, so the checks below may
@@ -2418,21 +2418,27 @@ impl Air {
             // Only valid for a reference that `check_ref` has already
             // accepted: it proves the index is inside the instruction store.
             let operand_ty = |value: AirRef| self.instructions[value.as_u32() as usize].ty;
-            let operands_agree = |a: AirRef, b: AirRef| -> Result<(), AirValidationError> {
-                let (a_ty, b_ty) = (operand_ty(a), operand_ty(b));
-                if context.operands_agree(a_ty, b_ty) {
-                    Ok(())
-                } else {
-                    Err(fail(
-                        Some(index),
-                        format!(
-                            "operands {a} and {b} have mismatched types {} and {}",
-                            a_ty.name(),
-                            b_ty.name()
-                        ),
-                    ))
-                }
-            };
+            let operands_agree =
+                |a: AirRef, b: AirRef, comparison: bool| -> Result<(), AirValidationError> {
+                    let (a_ty, b_ty) = (operand_ty(a), operand_ty(b));
+                    let agreed = if comparison {
+                        context.operands_agree(a_ty, b_ty)
+                    } else {
+                        agree(a_ty, b_ty)
+                    };
+                    if agreed {
+                        Ok(())
+                    } else {
+                        Err(fail(
+                            Some(index),
+                            format!(
+                                "operands {a} and {b} have mismatched types {} and {}",
+                                a_ty.name(),
+                                b_ty.name()
+                            ),
+                        ))
+                    }
+                };
             let result_agrees = |a: AirRef| -> Result<(), AirValidationError> {
                 let a_ty = operand_ty(a);
                 if agree(a_ty, inst.ty) {
@@ -2499,7 +2505,7 @@ impl Air {
                 | AirInstData::BitXor(a, b)
                 | AirInstData::Shl(a, b)
                 | AirInstData::Shr(a, b) => {
-                    operands_agree(*a, *b)?;
+                    operands_agree(*a, *b, false)?;
                     result_agrees(*a)?;
                     result_agrees(*b)?;
                 }
@@ -2519,7 +2525,7 @@ impl Air {
                 | AirInstData::Le(a, b)
                 | AirInstData::Ge(a, b) => {
                     if !(operand_ty(*a).is_integer() && operand_ty(*b).is_integer()) {
-                        operands_agree(*a, *b)?;
+                        operands_agree(*a, *b, true)?;
                     }
                     result_is_bool()?;
                 }
@@ -6757,6 +6763,22 @@ mod tests {
         };
         assert!(compare(fixture.empty_i32_array, fixture.diverging_array).is_ok());
         assert!(compare(fixture.diverging_array, fixture.empty_i32_array).is_ok());
+        // Only comparisons take array operands; arithmetic keeps the strict
+        // operand rule.
+        let mut air = Air::new(Type::UNIT);
+        let a = opaque_value(&mut air, fixture.empty_i32_array);
+        let b = opaque_value(&mut air, fixture.diverging_array);
+        air.push_inst(AirInst {
+            data: AirInstData::Add(a, b),
+            ty: fixture.empty_i32_array,
+            span: NOWHERE,
+        });
+        let error = fixture.validate(air, None).unwrap_err();
+        assert!(
+            error.reason.contains("have mismatched types"),
+            "unexpected reason: {}",
+            error.reason
+        );
         for other in [fixture.one_i32_array, Type::I64] {
             for (lhs, rhs) in [
                 (other, fixture.diverging_array),
