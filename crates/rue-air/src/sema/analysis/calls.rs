@@ -1021,6 +1021,14 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     value_subst.insert(param_names[i], value);
                     value_arg_index += 1;
                 }
+                // An `inout str` view keeps its source's own type as the
+                // operand, exactly as at a non-generic call
+                // (`analyze_call_operands`): `validate_inout_str_operand`
+                // already admitted it against the parameter type the
+                // operand was lowered for.
+                if self.is_inout_str_param(param_modes[i], param_types[i]) {
+                    continue;
+                }
                 let found = air.get(air_arg.value).ty;
                 if !self.operand_fits_slot(expected, found, operand_continues[i]) {
                     let arg_span = self.body_rir_ref().get(args.get(i).unwrap().value).span;
