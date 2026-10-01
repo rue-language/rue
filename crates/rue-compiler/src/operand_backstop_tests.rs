@@ -3,7 +3,7 @@
 //! Sema compares the type AIR emission computed for a value against the slot
 //! it flows into, or the type its operator demands, at every position where
 //! inference would otherwise be trusted: a call argument, a local, field or
-//! element store, a function result, an array element, a comparison's right
+//! element store, an `inout` parameter store, a function result, an array element, a comparison's right
 //! operand, an `if` or `while` condition, the operand of `!`, `&&`, `||` and
 //! unary `-` (`require_slot_type`, `require_operand_type` and
 //! `require_comparison_operand`). The check matters only when inference has
@@ -291,6 +291,16 @@ fn main() -> i32 { let mut xs = [lib.Box(i32) { v: 1 }]; xs[0] = @import("lib.ru
         "E0206",
         BOX_MISMATCH,
     );
+    assert_backstop_rejects(
+        "inout parameter assignment",
+        r#"
+const lib = @import("lib.rue");
+fn set(inout b: lib.Box(i32)) { b = @import("lib.rue").Box(i64) { v: 7 }; }
+fn main() -> i32 { let mut p = lib.Box(i32) { v: 1 }; set(inout p); p.v }
+"#,
+        "E0206",
+        BOX_MISMATCH,
+    );
 }
 
 #[test]
@@ -343,9 +353,10 @@ fn take(b: lib.Box(i64)) -> i64 { b.v }
 fn ap(f: fn(lib.Box(i64)) -> i64) -> i64 { f(@import("lib.rue").Box(i64) { v: 1 }) }
 fn mk() -> lib.Box(i64) { @import("lib.rue").Box(i64) { v: 10 } }
 fn early(c: bool) -> lib.Box(i64) { if c { return @import("lib.rue").Box(i64) { v: 2 }; } lib.Box(i64) { v: 0 } }
+fn set(inout b: lib.Box(i64)) { b = @import("lib.rue").Box(i64) { v: 20 }; }
 fn main() -> i32 {
     let mut p = lib.Box(i64) { v: 0 };
-    p = @import("lib.rue").Box(i64) { v: 20 };
+    set(inout p);
     let mut h = H { b: lib.Box(i64) { v: 0 } };
     h.b = @import("lib.rue").Box(i64) { v: 5 };
     let mut xs = [lib.Box(i64) { v: 0 }, @import("lib.rue").Box(i64) { v: 4 }];
@@ -478,6 +489,14 @@ fn main() -> i32 { let c = true; if (c && (@import("lib.rue").Box(i64) { v: 3 })
         "&& left operand",
         r#"
 fn main() -> i32 { let c = true; if ((@import("lib.rue").Box(i64) { v: 3 }) && c) { 1 } else { 2 } }
+"#,
+        "E0206",
+        "type mismatch: expected bool, found Box(i64)",
+    );
+    assert_backstop_rejects(
+        "|| left operand",
+        r#"
+fn main() -> i32 { let c = false; if ((@import("lib.rue").Box(i64) { v: 3 }) || c) { 1 } else { 2 } }
 "#,
         "E0206",
         "type mismatch: expected bool, found Box(i64)",

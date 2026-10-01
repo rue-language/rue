@@ -1183,6 +1183,8 @@ impl rue_air::DurableBodyLookupSource<crate::StableDefinitionKey, ModuleId>
     }
 
     // The RUE-2474 test switch; production builds keep the `false` default.
+    // Its state lives in the test module that sets it, so no production source
+    // gains a crate-visible item for a test-only seam.
     #[cfg(test)]
     fn withholds_inline_import_head_fact(&self) -> bool {
         crate::operand_backstop_tests::inline_import_head_fact_withheld()
