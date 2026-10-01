@@ -462,18 +462,27 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 // its producer and structural anchor, both settled before any
                 // field type resolves, so the struct id is issued first and
                 // `next: ptr mut Self` resolves through the same comptime
-                // substitution that carries `comptime T: type` (RUE-2223).
+                // substitution that carries `comptime T: type` (RUE-2223), as
+                // do composite method signature types such as
+                // `borrow s: [Self]` (RUE-2579).
                 let self_identity = crate::AnonymousNominalKey {
                     kind: crate::AnonymousNominalKind::Struct,
                     producer: ctx.canonical_producer.clone(),
                     anchor: anchor.clone(),
                 };
-                let self_name = ComptimeEngine::new(self)
-                    .self_type_name(&(), field_decls.iter().map(|(_, type_sym)| *type_sym));
-                let mut field_type_subst = std::borrow::Cow::Borrowed(&*ctx.comptime_type_vars);
+                let self_name = {
+                    let engine = ComptimeEngine::new(self);
+                    let roots = engine.anon_struct_type_syntax_roots(
+                        &(),
+                        field_decls.iter().map(|(_, type_sym)| *type_sym),
+                        methods,
+                    );
+                    engine.self_type_name(&(), roots)
+                };
+                let mut declared_type_subst = std::borrow::Cow::Borrowed(&*ctx.comptime_type_vars);
                 if let Some(name) = self_name {
                     let self_ty = self.anonymous_struct_self_type(&self_identity)?;
-                    field_type_subst.to_mut().insert(name, self_ty);
+                    declared_type_subst.to_mut().insert(name, self_ty);
                 }
 
                 // Resolve each field type and build the struct fields
@@ -482,7 +491,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     let name_str = self.body_interner().resolve(&name_sym).to_string();
                     let field_subst = self.with_local_module_roots(
                         type_sym,
-                        std::borrow::Cow::Borrowed(field_type_subst.as_ref()),
+                        std::borrow::Cow::Borrowed(declared_type_subst.as_ref()),
                         ctx,
                     );
                     let field_ty = self.resolve_body_declaration_type(
@@ -524,7 +533,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 let descriptors = match ComptimeEngine::new(self).decode_anon_method_descriptors(
                     &(),
                     methods,
-                    &ctx.comptime_type_vars,
+                    declared_type_subst.as_ref(),
                     &ctx.comptime_value_vars,
                 ) {
                     ComptimeOutcome::Known(value) => value,
