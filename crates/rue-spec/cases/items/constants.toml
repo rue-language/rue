@@ -692,7 +692,8 @@ fn main() -> i32 {
 exit_code = 42
 
 # An untyped literal that cannot take the declared type reads as the body
-# path's inference reports it, from the literal's side (RUE-2357).
+# path's inference reports it, with the literal as the found side (RUE-2357,
+# RUE-2566).
 
 [[case]]
 name = "const_integer_literal_at_bool_type_rejected_with_run_time_wording"
@@ -703,7 +704,7 @@ const X: bool = 1;
 fn main() -> i32 { 0 }
 """
 compile_fail = true
-error_contains = ["E0206", "expected integer type, found bool"]
+error_contains = ["E0206", "expected bool, found {integer}"]
 
 [[case]]
 name = "const_float_literal_at_integer_type_rejected_with_run_time_wording"
@@ -714,7 +715,7 @@ const X: i32 = 1.5;
 fn main() -> i32 { X }
 """
 compile_fail = true
-error_contains = ["E0206", "expected comptime_float, found i32"]
+error_contains = ["E0206", "expected i32, found comptime_float"]
 
 [[case]]
 name = "const_untyped_integer_arithmetic_at_float_type_accepted"
@@ -1270,14 +1271,14 @@ error_contains = ["E0206", "expected S, found [{integer}; 1]"]
 [[case]]
 name = "const_nested_integer_literal_at_struct_slot_rejected"
 spec = ["6.5:2", "4.14:26"]
-description = "An integer literal filling a struct-typed array element is E0206 read from the literal's side, as the scalar constant and the body report it (RUE-2407)"
+description = "An integer literal filling a struct-typed array element is E0206 with the literal as the found side, as the scalar constant and the body report it (RUE-2407)"
 source = """
 @copy struct S { a: i32 }
 const K: [S; 1] = [1];
 fn main() -> i32 { 0 }
 """
 compile_fail = true
-error_contains = ["E0206", "expected integer type, found S"]
+error_contains = ["E0206", "expected S, found {integer}"]
 
 [[case]]
 name = "const_struct_literal_at_enum_type_rejected"
