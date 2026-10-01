@@ -1460,7 +1460,8 @@ where
         for (slot, ty) in body.param_drops.iter() {
             let ty = import_type(ty)?;
             if *slot >= body.num_param_slots {
-                if *slot != next_zero_width_key || !matches!(type_pool.try_abi_slot_count(ty), Ok(0))
+                if *slot != next_zero_width_key
+                    || !matches!(type_pool.try_abi_slot_count(ty), Ok(0))
                 {
                     return Err(F::InvalidParameterDrop);
                 }
