@@ -1788,6 +1788,165 @@ compile_fail = true
 error_contains = ["E0203"]
 
 [[case]]
+name = "inout_self_accessor_on_shared_accessor_result_rejected"
+spec = ["6.6:8", "6.6:10"]
+description = "An `inout self` accessor called on a shared accessor result mutates through the shared loan, like an `inout self` method on it: rejected for a mutable root with the accessor-loan conflict (E0259), not as a `borrow` parameter (RUE-2531)."
+source = """
+struct Q { c: i64 }
+struct P {
+    c: i64,
+    q: Q,
+
+    fn pmut2(inout self) -> inout Q { yield self.q; }
+}
+struct Acc {
+    p: P,
+
+    fn pref(borrow self) -> borrow P { yield self.p; }
+}
+fn setq(inout q: Q) { q.c = 55; }
+fn main() -> i32 {
+    let mut a = Acc { p: P { c: 1, q: Q { c: 2 } } };
+    setq(inout a.pref().pmut2());
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0259", "cannot use 'a' as an `inout self` receiver while an accessor result borrows it"]
+
+[[case]]
+name = "inout_self_accessor_on_field_of_shared_accessor_result_rejected"
+spec = ["6.6:8", "6.6:10"]
+description = "A field projected from a shared accessor result is still reached through the shared loan, so an `inout self` accessor on it is rejected (E0259, RUE-2531)."
+source = """
+struct Q {
+    c: i64,
+
+    fn qmut(inout self) -> inout i64 { yield self.c; }
+}
+struct P { c: i64, q: Q }
+struct Acc {
+    p: P,
+
+    fn pref(borrow self) -> borrow P { yield self.p; }
+}
+fn seti(inout x: i64) { x = 77; }
+fn main() -> i32 {
+    let mut a = Acc { p: P { c: 1, q: Q { c: 2 } } };
+    seti(inout a.pref().q.qmut());
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0259", "cannot use 'a' as an `inout self` receiver while an accessor result borrows it"]
+
+[[case]]
+name = "inout_self_accessor_on_borrow_param_root_rejected"
+spec = ["6.1:24", "6.6:8"]
+description = "Near miss: an `inout self` accessor called on a `borrow` parameter mutates the borrowed value (E0428, RUE-2531)."
+source = """
+struct Q { c: i64 }
+struct P {
+    c: i64,
+    q: Q,
+
+    fn pmut2(inout self) -> inout Q { yield self.q; }
+}
+struct Acc {
+    p: P,
+
+    fn pmut(inout self) -> inout P { yield self.p; }
+    fn pref(borrow self) -> borrow P { yield self.p; }
+}
+fn f(borrow a: Acc) -> i64 { a.pmut().c }
+fn main() -> i32 {
+    let a = Acc { p: P { c: 1, q: Q { c: 2 } } };
+    @intCast(f(borrow a))
+}
+"""
+compile_fail = true
+error_contains = ["E0428", "cannot mutate borrowed value 'a'"]
+
+[[case]]
+name = "inout_self_accessor_on_shared_accessor_result_of_borrow_param_rejected"
+spec = ["6.1:24", "6.6:8"]
+description = "Near miss: through a shared accessor result on a `borrow` parameter, the parameter's own rule still rejects an `inout self` accessor first (E0428, RUE-2531)."
+source = """
+struct Q { c: i64 }
+struct P {
+    c: i64,
+    q: Q,
+
+    fn pmut2(inout self) -> inout Q { yield self.q; }
+}
+struct Acc {
+    p: P,
+
+    fn pmut(inout self) -> inout P { yield self.p; }
+    fn pref(borrow self) -> borrow P { yield self.p; }
+}
+fn f(borrow a: Acc) -> i64 { a.pref().pmut2().c }
+fn main() -> i32 {
+    let a = Acc { p: P { c: 1, q: Q { c: 2 } } };
+    @intCast(f(borrow a))
+}
+"""
+compile_fail = true
+error_contains = ["E0428", "cannot mutate borrowed value 'a'"]
+
+[[case]]
+name = "inout_self_accessor_on_immutable_root_rejected"
+spec = ["6.6:8"]
+description = "Near miss: an `inout self` accessor called on an immutable `let` root is rejected by the root's mutability (E0203, RUE-2531)."
+source = """
+struct Q { c: i64 }
+struct P {
+    c: i64,
+    q: Q,
+
+    fn pmut2(inout self) -> inout Q { yield self.q; }
+}
+struct Acc {
+    p: P,
+
+    fn pmut(inout self) -> inout P { yield self.p; }
+    fn pref(borrow self) -> borrow P { yield self.p; }
+}
+fn main() -> i32 {
+    let a = Acc { p: P { c: 1, q: Q { c: 2 } } };
+    @intCast(a.pmut().c)
+}
+"""
+compile_fail = true
+error_contains = ["E0203", "cannot assign to immutable variable 'a'"]
+
+[[case]]
+name = "inout_self_accessor_on_shared_accessor_result_of_immutable_root_rejected"
+spec = ["6.6:8"]
+description = "Near miss: through a shared accessor result on an immutable `let` root, the root's mutability still rejects an `inout self` accessor first (E0203, RUE-2531)."
+source = """
+struct Q { c: i64 }
+struct P {
+    c: i64,
+    q: Q,
+
+    fn pmut2(inout self) -> inout Q { yield self.q; }
+}
+struct Acc {
+    p: P,
+
+    fn pmut(inout self) -> inout P { yield self.p; }
+    fn pref(borrow self) -> borrow P { yield self.p; }
+}
+fn main() -> i32 {
+    let a = Acc { p: P { c: 1, q: Q { c: 2 } } };
+    @intCast(a.pref().pmut2().c)
+}
+"""
+compile_fail = true
+error_contains = ["E0203", "cannot assign to immutable variable 'a'"]
+
+[[case]]
 name = "inout_and_borrow_arguments_from_matching_accessor_results_accepted"
 spec = ["6.6:8", "6.6:10", "6.6:15"]
 description = "Near misses that stay legal: an exclusive accessor result, a field of it, or an exclusive element result passed `inout`, and a shared result passed `borrow` from a mutable or immutable root (RUE-2371)."
