@@ -2435,6 +2435,170 @@ fn main() -> i32 {
 """
 exit_code = 4
 
+# A function's `comptime` type parameter is in scope across its signature, as
+# `a: N` shows, so it shadows a same-named `const` in a parameter's or the
+# result's array length as it does in the body, and a type is not an integer
+# constant. Each case used the shadowed `const` (RUE-2541).
+[[case]]
+name = "array_length_in_signature_parameter_names_comptime_type_param"
+error_contains = ["[E0481]", "shadows the `const` `N`"]
+spec = ["3.5:2", "7.1:32", "7.1:33"]
+source = """
+const N: i32 = 2;
+fn g(comptime N: type, a: [i32; N]) -> i32 {
+    a[1]
+}
+fn main() -> i32 {
+    g(i32, [3, 4])
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "array_length_in_signature_result_names_comptime_type_param"
+error_contains = ["[E0481]", "shadows the `const` `N`"]
+spec = ["3.5:2", "7.1:32", "7.1:33"]
+source = """
+const N: i32 = 2;
+fn g(comptime N: type) -> [i32; N] {
+    [3, 4]
+}
+fn main() -> i32 {
+    let a = g(i32);
+    a[1]
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "array_length_in_signature_later_parameter_names_earlier_comptime_type_param"
+error_contains = ["[E0481]", "shadows the `const` `N`"]
+spec = ["3.5:2", "7.1:32", "7.1:33"]
+description = "The length of a later parameter names the second of two earlier `comptime` type parameters"
+source = """
+const N: i32 = 2;
+fn g(comptime T: type, comptime N: type, x: T, a: [i32; N]) -> T {
+    x
+}
+fn main() -> i32 {
+    g(i32, u8, 1, [3, 4])
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "array_length_in_method_signature_parameter_names_comptime_type_param"
+error_contains = ["[E0481]", "shadows the `const` `N`"]
+spec = ["3.5:2", "7.1:32", "7.1:33"]
+source = """
+const N: i32 = 2;
+struct S {
+    x: i32,
+    fn g(self, comptime N: type, a: [i32; N]) -> i32 {
+        a[1] + self.x
+    }
+}
+fn main() -> i32 {
+    let s = S { x: 1 };
+    s.x
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "array_length_in_associated_function_result_names_comptime_type_param"
+error_contains = ["[E0481]", "shadows the `const` `N`"]
+spec = ["3.5:2", "7.1:32", "7.1:33"]
+source = """
+const N: i32 = 2;
+struct S {
+    x: i32,
+    fn g(comptime N: type) -> [i32; N] {
+        [3, 4]
+    }
+}
+fn main() -> i32 {
+    let s = S { x: 1 };
+    s.x
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "array_length_in_signature_comptime_value_param_shadows_const"
+spec = ["3.5:2", "7.1:32", "7.1:34", "7.1:37"]
+description = "A `comptime` value parameter shadows a same-named `const` in its signature and is the length at each specialization"
+source = """
+const N: i32 = 7;
+fn f(comptime N: i32, a: [i32; N]) -> [i32; N] {
+    a
+}
+fn main() -> i32 {
+    let b = f(2, [3, 4]);
+    let c = f(3, [1, 2, 5]);
+    b[1] + c[2]
+}
+"""
+exit_code = 9
+
+[[case]]
+name = "array_length_in_signature_names_const_beside_other_comptime_type_param"
+spec = ["7.1:32"]
+description = "A `comptime` type parameter of another name leaves the `const` the length in the signature"
+source = """
+const N: i32 = 2;
+fn g(comptime T: type, a: [T; N]) -> [T; N] {
+    a
+}
+fn main() -> i32 {
+    let b = g(i32, [3, 4]);
+    b[1]
+}
+"""
+exit_code = 4
+
+[[case]]
+name = "array_length_in_method_signature_names_const_beside_other_comptime_type_param"
+spec = ["7.1:32"]
+source = """
+const N: i32 = 2;
+struct S {
+    x: i32,
+    fn g(self, comptime T: type, a: [i32; N]) -> i32 {
+        a[1]
+    }
+    fn h(self, a: [i32; N]) -> [i32; N] {
+        a
+    }
+}
+fn main() -> i32 {
+    let s = S { x: 1 };
+    let a = s.h([3, 4]);
+    a[1] + 1
+}
+"""
+exit_code = 5
+
+[[case]]
+name = "array_length_in_signature_names_const_from_module"
+spec = ["7.1:32"]
+description = "A file-level `const` defined from a module's `const` is a signature length beside a `comptime` type parameter"
+source = """
+const m = @import("lib.rue");
+const N: i32 = m.N;
+fn g(comptime T: type, a: [T; N]) -> [T; N] {
+    a
+}
+fn main() -> i32 {
+    let b = g(i32, [3, 4, 5]);
+    b[2]
+}
+"""
+aux_files = { "lib.rue" = """
+pub const N: i32 = 3;
+""" }
+exit_code = 5
+
 [[case]]
 name = "array_repeat_valid_const_count_against_wrong_annotation"
 error_contains = "[E0901]"
