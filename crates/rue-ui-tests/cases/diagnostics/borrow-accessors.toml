@@ -320,3 +320,22 @@ error_contains = [
     "[E0203]",
     "cannot pass a place under immutable variable 'p' as `inout`",
 ]
+
+[[case]]
+name = "inout_self_accessor_on_a_by_value_self_names_the_receiver_repair"
+description = "An `inout self` accessor called on a by-value `self` is E0203 worded for the receiver, with the `mut self`/`inout self` repair (RUE-2558)."
+source = """
+struct P {
+    c: i64,
+
+    fn pmut(inout self) -> inout i64 { yield self.c; }
+    fn read(self) -> i64 { self.pmut() }
+}
+fn main() -> i32 { @intCast(P { c: 1 }.read()) }
+"""
+compile_fail = true
+error_contains = [
+    "[E0203]",
+    "cannot use immutable variable 'self' as an `inout self` receiver",
+    "declare the receiver `mut self` to mutate the callee's copy, or `inout self` to write back to the caller",
+]
