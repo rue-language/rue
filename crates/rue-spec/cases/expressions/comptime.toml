@@ -6389,3 +6389,103 @@ fn f(comptime N: i32, borrow s: [i32]) -> Wrap([i32], N) { s }
 fn main() -> i32 { 0 }
 """
 exit_code = 0
+
+[[case]]
+name = "value_param_ctor_str_borrow_parameter"
+spec = ["4.14:5", "4.14:23"]
+description = "A `borrow` parameter whose type `Wrap(str, N)` is `str` at the call receives the caller's view: `s.len()` is 4 (RUE-2435)"
+source = """
+fn Wrap(comptime T: type, comptime N: i32) -> type { T }
+fn g(comptime N: i32, borrow s: Wrap(str, N)) -> i32 { @intCast(s.len()) }
+
+fn main() -> i32 {
+    let x = "abcd";
+    g(1, borrow x)
+}
+"""
+exit_code = 4
+
+[[case]]
+name = "value_param_ctor_slice_parameter_from_slice_rejected"
+spec = ["4.14:5", "7.2:10"]
+description = "A parameter whose slice type `Wrap([i64], N)` exists only at the call is rejected there, when the caller forwards its own slice; it is never passed in the wrong shape (RUE-2435)"
+source = """
+fn Wrap(comptime T: type, comptime N: i32) -> type { T }
+fn g(comptime N: i32, borrow s: Wrap([i64], N)) -> i64 { s[0] }
+fn h(borrow s: [i64]) -> i64 { g(5, borrow s) }
+
+fn main() -> i32 {
+    let a: [i64; 2] = [10, 20];
+    @intCast(h(borrow a))
+}
+"""
+compile_fail = true
+error_contains = ["E1200", "parameter 's' of 'g' has the slice type [i64] only at this call"]
+
+[[case]]
+name = "value_param_ctor_slice_parameter_len_rejected"
+spec = ["4.14:5", "7.2:10"]
+description = "A forwarded slice whose `len()` the callee reads through a `Wrap([i64], N)` parameter is rejected at the call (RUE-2435)"
+source = """
+fn Wrap(comptime T: type, comptime N: i32) -> type { T }
+fn g(comptime N: i32, borrow s: Wrap([i64], N)) -> i64 { @intCast(s.len()) }
+fn h(borrow s: [i64]) -> i64 { g(5, borrow s) }
+
+fn main() -> i32 {
+    let a: [i64; 3] = [10, 20, 30];
+    let r = h(borrow a);
+    @dbg(r);
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E1200", "parameter 's' of 'g' has the slice type [i64] only at this call"]
+
+[[case]]
+name = "value_param_ctor_slice_parameter_from_array_rejected"
+spec = ["4.14:5", "7.2:10"]
+description = "An array passed `borrow` to a parameter whose slice type `Wrap([i64], N)` exists only at the call is rejected there (RUE-2435)"
+source = """
+fn Wrap(comptime T: type, comptime N: i32) -> type { T }
+fn g(comptime N: i32, borrow s: Wrap([i64], N)) -> i64 { s[0] }
+
+fn main() -> i32 {
+    let a: [i64; 2] = [10, 20];
+    @intCast(g(5, borrow a))
+}
+"""
+compile_fail = true
+error_contains = ["E1200", "parameter 's' of 'g' has the slice type [i64] only at this call"]
+
+[[case]]
+name = "value_param_ctor_unmarked_slice_parameter_rejected"
+spec = ["7.2:10"]
+description = "A parameter whose type `Wrap([i64], N)` is a slice at the call must be `borrow`, as a written slice parameter must: an unmarked one is E0432 (RUE-2435)"
+source = """
+fn Wrap(comptime T: type, comptime N: i32) -> type { T }
+fn g(comptime N: i32, s: Wrap([i64], N)) -> i64 { s[0] }
+fn h(borrow s: [i64]) -> i64 { g(1, s) }
+
+fn main() -> i32 {
+    let a: [i64; 2] = [10, 20];
+    @intCast(h(borrow a))
+}
+"""
+compile_fail = true
+error_contains = ["E0432"]
+
+[[case]]
+name = "ctor_slice_let_annotation_rejected"
+spec = ["7.2:3", "7.2:6"]
+description = "A `let` annotation that resolves to a slice through a type constructor, `let t: Wrap([i64], 3) = s`, is E0489 as `let t: [i64] = s` is (RUE-2435)"
+source = """
+fn Wrap(comptime T: type, comptime N: i32) -> type { T }
+fn f(borrow s: [i64]) -> i64 { let t: Wrap([i64], 3) = s; t[1] }
+
+fn main() -> i32 {
+    let a: [i64; 2] = [10, 20];
+    @intCast(f(borrow a))
+}
+"""
+compile_fail = true
+error_contains = ["E0489"]
