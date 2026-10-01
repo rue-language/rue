@@ -1545,6 +1545,16 @@ pub struct Air {
     /// past the end of the ABI range, so every entry names one parameter
     /// (RUE-2534).
     param_drops: Vec<(u32, Type)>,
+    /// The source type of each comptime value parameter that occupies an ABI
+    /// slot in this specialization, keyed by its first ABI slot.
+    ///
+    /// The value is substituted into the body, so the parameter has no drop
+    /// entry and, when the body never reads it as a runtime value, no `Param`
+    /// instruction either; but the caller still materializes the argument into
+    /// the slot. This record is presentation only: `--emit abi` reads it to
+    /// name the parameter's type. Drop elaboration, slot grouping, and code
+    /// generation never consult it.
+    comptime_param_types: Vec<(u32, Type)>,
     /// Local slots that hold a non-owning *borrow* value and so must NOT be
     /// dropped at scope exit. Currently the element binder of a `for` loop
     /// over a non-Copy collection: iteration is a shared read (spec 4.8:26),
@@ -1613,6 +1623,7 @@ pub(crate) struct AirCheckpoint {
     projections: usize,
     places: usize,
     param_drops: usize,
+    comptime_param_types: usize,
     borrow_slots: usize,
 }
 
@@ -1840,6 +1851,10 @@ impl AirEditor {
 
     pub fn set_param_drops(&mut self, drops: Vec<(u32, Type)>) {
         self.air.set_param_drops(drops);
+    }
+
+    pub fn set_comptime_param_types(&mut self, types: Vec<(u32, Type)>) {
+        self.air.set_comptime_param_types(types);
     }
 
     pub(crate) fn rewrite_generic_call_to_call(&mut self, index: usize, name: Spur) {
@@ -2116,6 +2131,14 @@ impl Air {
                 fail(
                     None,
                     format!("invalid parameter-drop type at slot {slot}: {reason}"),
+                )
+            })?;
+        }
+        for (slot, ty) in &self.comptime_param_types {
+            validate_type(*ty).map_err(|reason| {
+                fail(
+                    None,
+                    format!("invalid comptime parameter type at slot {slot}: {reason}"),
                 )
             })?;
         }
@@ -3339,6 +3362,7 @@ impl Air {
             projections: Vec::new(),
             places: Vec::new(),
             param_drops: Vec::new(),
+            comptime_param_types: Vec::new(),
             borrow_slots: Vec::new(),
             instruction_limit_exceeded: false,
             #[cfg(test)]
@@ -3496,6 +3520,20 @@ impl Air {
         self.param_drops = param_drops;
     }
 
+    /// Set the comptime value parameter types: (first ABI slot, type) for
+    /// each comptime value parameter that occupies a slot (see
+    /// `comptime_param_types`).
+    pub(crate) fn set_comptime_param_types(&mut self, types: Vec<(u32, Type)>) {
+        self.comptime_param_types = types;
+    }
+
+    /// Comptime value parameters that occupy an ABI slot: (first ABI slot,
+    /// type). Presentation only; see `comptime_param_types`.
+    #[inline]
+    pub fn comptime_param_types(&self) -> &[(u32, Type)] {
+        &self.comptime_param_types
+    }
+
     /// Clear the owned-parameter drop list. Used for destructors: the
     /// destructor consumes `self`, and the drop glue (not the destructor
     /// itself) is responsible for dropping the fields afterwards, so the
@@ -3541,6 +3579,7 @@ impl Air {
             projections: self.projections.len(),
             places: self.places.len(),
             param_drops: self.param_drops.len(),
+            comptime_param_types: self.comptime_param_types.len(),
             borrow_slots: self.borrow_slots.len(),
         }
     }
@@ -3551,6 +3590,8 @@ impl Air {
         self.projections.truncate(checkpoint.projections);
         self.places.truncate(checkpoint.places);
         self.param_drops.truncate(checkpoint.param_drops);
+        self.comptime_param_types
+            .truncate(checkpoint.comptime_param_types);
         self.borrow_slots.truncate(checkpoint.borrow_slots);
     }
 

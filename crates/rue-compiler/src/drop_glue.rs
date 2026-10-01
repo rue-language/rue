@@ -191,6 +191,7 @@ pub(crate) fn synthesize_canonical_drop_glue(
         strings: Arc::new([]),
         local_atoms: Arc::new([]),
         param_drops: Arc::new([]),
+        comptime_param_types: Arc::new([]),
         borrow_slots: Arc::new([]),
         num_locals: 0,
         num_param_slots,

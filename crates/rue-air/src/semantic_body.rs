@@ -1024,6 +1024,10 @@ pub struct SemanticBody<K, M> {
     pub strings: Arc<[Arc<str>]>,
     pub local_atoms: Arc<[crate::SemanticBodyLocalAtom<K, M>]>,
     pub param_drops: Arc<[(u32, SemanticImportType<K, M>)]>,
+    /// The type of each comptime value parameter that occupies an ABI slot,
+    /// keyed by its first slot in ascending order. Presentation only: it names
+    /// a parameter the body substituted away and never reads (`--emit abi`).
+    pub comptime_param_types: Arc<[(u32, SemanticImportType<K, M>)]>,
     pub borrow_slots: Arc<[u32]>,
     pub num_locals: u32,
     pub num_param_slots: u32,
@@ -1136,6 +1140,12 @@ impl<K, M> SemanticBody<K, M> {
                 .map(|(slot, value)| Ok((*slot, value.try_map_identities(key, module)?)))
                 .collect::<Result<Vec<_>, E>>()?
                 .into(),
+            comptime_param_types: self
+                .comptime_param_types
+                .iter()
+                .map(|(slot, value)| Ok((*slot, value.try_map_identities(key, module)?)))
+                .collect::<Result<Vec<_>, E>>()?
+                .into(),
             borrow_slots: self.borrow_slots.clone(),
             num_locals: self.num_locals,
             num_param_slots: self.num_param_slots,
@@ -1227,6 +1237,7 @@ pub enum SemanticBodyImportFailure {
     InvalidParameterModes,
     InvalidIntrinsicOperation,
     InvalidParameterDrop,
+    InvalidComptimeParameter,
     InvalidBorrowSlot,
     InvalidAnchor,
     WrongNominalKind,

@@ -794,6 +794,7 @@ impl RetainedCharge for rue_air::ValidatedAir {
             + payload.projection_store_logical_bytes as u64
             + payload.place_store_logical_bytes as u64
             + std::mem::size_of_val(self.param_drops()) as u64
+            + std::mem::size_of_val(self.comptime_param_types()) as u64
     }
 }
 

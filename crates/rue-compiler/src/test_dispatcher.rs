@@ -321,6 +321,7 @@ pub(crate) fn synthesize_test_dispatcher(table: &[Option<crate::FunctionInstance
         strings: Arc::new([]),
         local_atoms: Arc::new([]),
         param_drops: Arc::new([]),
+        comptime_param_types: Arc::new([]),
         borrow_slots: Arc::new([]),
         num_locals: LOCAL_SLOTS,
         num_param_slots: 0,

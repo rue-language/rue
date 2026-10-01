@@ -1166,7 +1166,7 @@ impl CfgDomainProjection {
                 )?;
             }
         }
-        for (_, ty) in air.param_drops() {
+        for (_, ty) in air.param_drops().iter().chain(air.comptime_param_types()) {
             record_cfg_type(
                 &mut types,
                 *ty,

@@ -994,6 +994,7 @@ impl<K: RetainedCharge, M: RetainedCharge> RetainedCharge for rue_air::SemanticB
             .saturating_add(self.strings.retained_charge())
             .saturating_add(self.local_atoms.retained_charge())
             .saturating_add(self.param_drops.retained_charge())
+            .saturating_add(self.comptime_param_types.retained_charge())
             .saturating_add(self.borrow_slots.retained_charge())
             .saturating_add(self.param_by_ref.retained_charge())
             .saturating_add(self.param_writable.retained_charge())
