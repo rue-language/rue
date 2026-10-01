@@ -1612,6 +1612,216 @@ compile_fail = true
 error_contains = ["E0259", "as an `inout self` receiver while an accessor result borrows it"]
 
 [[case]]
+name = "inout_argument_from_shared_accessor_result_rejected"
+spec = ["6.6:8", "6.6:10"]
+description = "A shared accessor result is not an exclusive place: passing it as an `inout` argument mutates through the shared loan and is rejected even when the root is mutable (E0259, RUE-2371)."
+source = """
+struct P { c: i64 }
+struct Acc {
+    p: P,
+
+    fn pref(borrow self) -> borrow P { yield self.p; }
+}
+fn setp(inout p: P) { p.c = 66; }
+fn main() -> i32 {
+    let mut a = Acc { p: P { c: 1 } };
+    setp(inout a.pref());
+    @intCast(a.p.c)
+}
+"""
+compile_fail = true
+error_contains = ["E0259", "cannot use 'a' as an `inout` argument while an accessor result borrows it"]
+
+[[case]]
+name = "inout_argument_from_field_of_shared_accessor_result_rejected"
+spec = ["6.6:8", "6.6:10"]
+description = "A field projected from a shared accessor result is reached through the shared loan, so passing it `inout` is rejected like the whole result (E0259, RUE-2371)."
+source = """
+struct P { c: i64 }
+struct Acc {
+    p: P,
+
+    fn pref(borrow self) -> borrow P { yield self.p; }
+}
+fn seti(inout x: i64) { x = 77; }
+fn main() -> i32 {
+    let mut a = Acc { p: P { c: 1 } };
+    seti(inout a.pref().c);
+    @intCast(a.p.c)
+}
+"""
+compile_fail = true
+error_contains = ["E0259", "as an `inout` argument while an accessor result borrows it"]
+
+[[case]]
+name = "inout_argument_from_shared_element_accessor_result_rejected"
+spec = ["6.6:8", "6.6:10"]
+description = "A shared element accessor result passed `inout` is rejected (E0259, RUE-2371)."
+source = """
+struct P { c: i64 }
+struct Acc {
+    ps: [P; 2],
+
+    fn at(borrow self, i: u64) -> borrow P { yield self.ps[i]; }
+}
+fn setp(inout p: P) { p.c = 66; }
+fn main() -> i32 {
+    let mut a = Acc { ps: [P { c: 2 }, P { c: 3 }] };
+    setp(inout a.at(1));
+    @intCast(a.ps[1].c)
+}
+"""
+compile_fail = true
+error_contains = ["E0259", "as an `inout` argument while an accessor result borrows it"]
+
+[[case]]
+name = "inout_argument_from_element_of_shared_array_accessor_result_rejected"
+spec = ["6.6:8", "6.6:10"]
+description = "An element field indexed out of a shared whole-array accessor result is still reached through the shared loan; passing it `inout` is rejected (E0259, RUE-2371)."
+source = """
+struct P { c: i64 }
+struct Acc {
+    ps: [P; 2],
+
+    fn all(borrow self) -> borrow [P; 2] { yield self.ps; }
+}
+fn seti(inout x: i64) { x = 77; }
+fn main() -> i32 {
+    let mut a = Acc { ps: [P { c: 2 }, P { c: 3 }] };
+    seti(inout a.all()[0].c);
+    @intCast(a.ps[0].c)
+}
+"""
+compile_fail = true
+error_contains = ["E0259", "as an `inout` argument while an accessor result borrows it"]
+
+[[case]]
+name = "inout_argument_from_shared_accessor_result_on_field_reached_root_rejected"
+spec = ["6.6:8", "6.6:10"]
+description = "A shared accessor called on a field of a mutable root yields a shared place; passing it `inout` is rejected (E0259, RUE-2371)."
+source = """
+struct P { c: i64 }
+struct Acc {
+    p: P,
+
+    fn pref(borrow self) -> borrow P { yield self.p; }
+}
+struct H { acc: Acc }
+fn setp(inout p: P) { p.c = 66; }
+fn main() -> i32 {
+    let mut h = H { acc: Acc { p: P { c: 1 } } };
+    setp(inout h.acc.pref());
+    @intCast(h.acc.p.c)
+}
+"""
+compile_fail = true
+error_contains = ["E0259", "cannot use 'h' as an `inout` argument while an accessor result borrows it"]
+
+[[case]]
+name = "inout_argument_from_shared_accessor_result_on_inout_param_rejected"
+spec = ["6.6:8", "6.6:10"]
+description = "An `inout` parameter or an `inout self` receiver is a mutable root, but a shared accessor result on it is still not an exclusive place (E0259, RUE-2371)."
+source = """
+struct P { c: i64 }
+struct Acc {
+    p: P,
+
+    fn pref(borrow self) -> borrow P { yield self.p; }
+    fn bump(inout self) { setp(inout self.pref()); }
+}
+fn setp(inout p: P) { p.c = 66; }
+fn via(inout a: Acc) { setp(inout a.pref()); }
+fn main() -> i32 {
+    let mut a = Acc { p: P { c: 1 } };
+    via(inout a);
+    a.bump();
+    @intCast(a.p.c)
+}
+"""
+compile_fail = true
+error_contains = ["E0259", "cannot use 'self' as an `inout` argument while an accessor result borrows it", "cannot use 'a' as an `inout` argument while an accessor result borrows it"]
+
+[[case]]
+name = "inout_method_argument_from_shared_accessor_result_rejected"
+spec = ["6.6:8", "6.6:10"]
+description = "The rule covers a method's explicit `inout` argument as well as a free function's (E0259, RUE-2371)."
+source = """
+struct P {
+    c: i64,
+
+    fn copy_into(borrow self, inout q: P) { q.c = self.c; }
+}
+struct Acc {
+    p: P,
+
+    fn pref(borrow self) -> borrow P { yield self.p; }
+}
+fn main() -> i32 {
+    let mut a = Acc { p: P { c: 1 } };
+    let b = P { c: 9 };
+    b.copy_into(inout a.pref());
+    @intCast(a.p.c)
+}
+"""
+compile_fail = true
+error_contains = ["E0259", "as an `inout` argument while an accessor result borrows it"]
+
+[[case]]
+name = "inout_argument_from_shared_accessor_result_on_immutable_root_rejected"
+spec = ["6.1:43", "6.6:8"]
+description = "With an immutable root, the `inout` argument's mutable-root requirement rejects the shape first (E0203, RUE-2371)."
+source = """
+struct P { c: i64 }
+struct Acc {
+    p: P,
+
+    fn pref(borrow self) -> borrow P { yield self.p; }
+}
+fn setp(inout p: P) { p.c = 66; }
+fn main() -> i32 {
+    let a = Acc { p: P { c: 1 } };
+    setp(inout a.pref());
+    @intCast(a.p.c)
+}
+"""
+compile_fail = true
+error_contains = ["E0203"]
+
+[[case]]
+name = "inout_and_borrow_arguments_from_matching_accessor_results_accepted"
+spec = ["6.6:8", "6.6:10", "6.6:15"]
+description = "Near misses that stay legal: an exclusive accessor result, a field of it, or an exclusive element result passed `inout`, and a shared result passed `borrow` from a mutable or immutable root (RUE-2371)."
+source = """
+struct P { c: i64 }
+struct Acc {
+    p: P,
+    ps: [P; 2],
+
+    fn pmut(inout self) -> inout P { yield self.p; }
+    fn pref(borrow self) -> borrow P { yield self.p; }
+    fn at_mut(inout self, i: u64) -> inout P { yield self.ps[i]; }
+    fn at(borrow self, i: u64) -> borrow P { yield self.ps[i]; }
+}
+fn setp(inout p: P) { p.c = p.c + 60; }
+fn seti(inout x: i64) { x = x + 7; }
+fn getp(borrow p: P) -> i64 { p.c }
+fn main() -> i32 {
+    let mut a = Acc { p: P { c: 1 }, ps: [P { c: 2 }, P { c: 3 }] };
+    setp(inout a.pmut());
+    seti(inout a.pmut().c);
+    setp(inout a.at_mut(1));
+    @dbg(a.p.c);
+    @dbg(a.ps[1].c);
+    @dbg(getp(borrow a.pref()) + getp(borrow a.at(0)));
+    let b = Acc { p: P { c: 4 }, ps: [P { c: 5 }, P { c: 6 }] };
+    @dbg(getp(borrow b.pref()) + getp(borrow b.at(1)));
+    0
+}
+"""
+expected_stdout = "68\n63\n70\n10\n"
+exit_code = 0
+
+[[case]]
 name = "compare_operand_conflicts_with_later_exclusive_accessor_method"
 spec = ["6.6:10", "6.6:16"]
 description = "An `==` operand borrows its place, so the root's shared read conflicts with a later exclusive accessor result whose `inout self` method mutates it (E0259, RUE-2358)."
