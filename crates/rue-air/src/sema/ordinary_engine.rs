@@ -3292,64 +3292,87 @@ impl<H: OrdinaryBodyAnalysisHost> Drop for OrdinaryBodyEngine<'_, H> {
 ///
 /// The callee's signature comes from the declaration facts the call was
 /// resolved through, not from the call: a free function by its symbol, a
-/// method or associated function by the member symbol each of this body's
+/// method or associated function by the member symbol one of this body's
 /// `referenced_methods` renders to. A generic callee, whose declared types
 /// still mention type parameters, and a callee none of those names (a
 /// runtime or synthesized callable) are left unchecked.
+///
+/// Signatures are resolved lazily and memoized per symbol, so a body pays
+/// only for the callees it calls: a method symbol is found by rendering
+/// referenced methods one at a time until it turns up, and each rendered
+/// symbol is remembered for later lookups.
 pub(crate) fn validate_body_air<H: OrdinaryBodyAnalysisHost>(
     host: &H,
     air: Air,
     referenced_methods: &AHashSet<(StructId, Spur)>,
 ) -> CompileResult<crate::ValidatedAir> {
-    let declared = |params: ParamRangeData,
-                    receiver: Option<crate::AirCalleeParam>|
-     -> Option<Vec<crate::AirCalleeParam>> {
+    type Signature = Option<std::rc::Rc<crate::AirCalleeSignature>>;
+    let declared = |params: ParamRangeData, receiver: Option<crate::AirCalleeParam>| -> Signature {
         if params.comptime().iter().any(|&is_comptime| is_comptime) {
             return None;
         }
-        Some(
-            receiver
-                .into_iter()
-                .chain(
-                    params
-                        .types()
-                        .iter()
-                        .zip(params.modes())
-                        .map(|(&ty, &mode)| crate::AirCalleeParam {
-                            ty,
-                            mode: air_arg_mode(mode),
-                        }),
-                )
-                .collect(),
-        )
+        let has_receiver = receiver.is_some();
+        let params = receiver
+            .into_iter()
+            .chain(
+                params
+                    .types()
+                    .iter()
+                    .zip(params.modes())
+                    .map(|(&ty, &mode)| crate::AirCalleeParam {
+                        ty,
+                        mode: air_arg_mode(mode),
+                    }),
+            )
+            .collect();
+        Some(std::rc::Rc::new(crate::AirCalleeSignature {
+            has_receiver,
+            params,
+        }))
     };
-    let mut methods: AHashMap<Spur, Vec<crate::AirCalleeParam>> = AHashMap::new();
-    for &(struct_id, method) in referenced_methods {
-        let Some(info) = host.call_method_info(struct_id, method) else {
-            continue;
-        };
-        let method_name = host.body_interner().resolve(&method).to_owned();
-        let Ok(symbol) = host.try_member_callable_symbol(struct_id, &method_name, info.has_self)
-        else {
-            continue;
-        };
+    let method_signature = |info: &MethodCallInfo| -> Signature {
         let receiver = info.has_self.then_some(crate::AirCalleeParam {
             ty: info.struct_type,
             mode: air_arg_mode(info.self_mode),
         });
-        if let Some(params) = declared(host.body_param_data(info.params), receiver) {
-            methods.insert(symbol, params);
+        declared(host.body_param_data(info.params), receiver)
+    };
+    // Memoized signatures by call symbol, and the referenced methods not yet
+    // rendered to their symbols.
+    let memo: std::cell::RefCell<AHashMap<Spur, Signature>> = Default::default();
+    let unrendered = std::cell::RefCell::new(referenced_methods.iter());
+    let resolve = |name: Spur| -> Signature {
+        if let Some(signature) = memo.borrow().get(&name) {
+            return signature.clone();
         }
-    }
-    let resolve = |name: Spur| -> Option<Vec<crate::AirCalleeParam>> {
-        if let Some(params) = methods.get(&name) {
-            return Some(params.clone());
-        }
-        let function = host.call_function_info(name)?;
-        if function.is_generic {
-            return None;
-        }
-        declared(host.body_param_data(function.params), None)
+        let signature = match host.call_function_info(name) {
+            Some(function) if function.is_generic => None,
+            Some(function) => declared(host.body_param_data(function.params), None),
+            None => {
+                let mut found = None;
+                let mut unrendered = unrendered.borrow_mut();
+                for &(struct_id, method) in unrendered.by_ref() {
+                    let Some(info) = host.call_method_info(struct_id, method) else {
+                        continue;
+                    };
+                    let method_name = host.body_interner().resolve(&method);
+                    let Ok(symbol) =
+                        host.try_member_callable_symbol(struct_id, method_name, info.has_self)
+                    else {
+                        continue;
+                    };
+                    let signature = method_signature(&info);
+                    if symbol == name {
+                        found = signature;
+                        break;
+                    }
+                    memo.borrow_mut().insert(symbol, signature);
+                }
+                found
+            }
+        };
+        memo.borrow_mut().insert(name, signature.clone());
+        signature
     };
     Ok(crate::ValidatedAir::from_semantic_air_with_callees(
         air,
