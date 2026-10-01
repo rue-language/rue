@@ -266,6 +266,40 @@ impl AirValidationContext<'_> {
         }
     }
 
+    /// Whether a value of type `value` may flow into a slot declared `slot`
+    /// without a conversion step: a call parameter, a local, a field or
+    /// element place, a parameter slot, or the function result.
+    ///
+    /// This is semantic analysis's own slot relation (`require_slot_type`,
+    /// RUE-2438) restated at the AIR boundary, so that a producer gap is an
+    /// internal error here and not a layout mismatch in code generation
+    /// (RUE-2452). It is directional: the value must have exactly the slot's
+    /// type, with these escapes only:
+    ///
+    /// - A `!` value never arrives, so it coerces to every slot (spec 3.4:3-4).
+    /// - An `<error>` value or slot has already been reported.
+    /// - An array whose element type is `!` (at any depth) is the type sema
+    ///   gives an array literal whose element expression diverges
+    ///   (`[return 42; 0]`). Its element operand never produces a value, so
+    ///   building the array never completes and, like `!` itself, it reaches
+    ///   no slot.
+    fn slot_accepts(&self, slot: Type, value: Type) -> bool {
+        value.can_coerce_to(&slot) || slot.is_error() || self.is_diverging_array(value)
+    }
+
+    /// Whether `ty` is an array whose element type is `!`, directly or through
+    /// nested arrays.
+    fn is_diverging_array(&self, ty: Type) -> bool {
+        let mut current = ty;
+        while let Some(id) = current.as_array() {
+            current = match self {
+                Self::Semantic(pool) | Self::SemanticWithSymbols(pool, _) => pool.array_def(id).0,
+                Self::Canonical(pool) | Self::CanonicalWithSymbols(pool, _) => pool.array_def(id).0,
+            };
+        }
+        current != ty && current.is_never()
+    }
+
     /// Whether `ty` is the builtin `str` view.
     fn is_str_view(&self, ty: Type) -> bool {
         let Some(id) = ty.as_struct() else {
@@ -1819,20 +1853,6 @@ pub struct AirCalleeParam {
 /// parameters, or a synthesized or runtime callable with no source signature.
 pub type AirCalleeResolver<'a> = &'a dyn Fn(Spur) -> Option<Vec<AirCalleeParam>>;
 
-/// Whether a value of type `value` may flow into a slot declared `slot`
-/// without a conversion step: a call parameter, a local, a field or element
-/// place, a parameter slot, or the function result.
-///
-/// This is semantic analysis's own slot relation (`require_slot_type`, RUE-2438)
-/// restated at the AIR boundary, so that a producer gap is an internal error
-/// here and not a layout mismatch in code generation (RUE-2452). It is
-/// directional: the value must have exactly the slot's type, with two
-/// recovery escapes. A `!` value never arrives, so it coerces to every slot
-/// (spec 3.4:3-4); an `<error>` value or slot has already been reported.
-fn slot_accepts(slot: Type, value: Type) -> bool {
-    value.can_coerce_to(&slot) || slot.is_error()
-}
-
 /// One operand of an AIR instruction, as [`Air::try_for_each_operand`]
 /// reports it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2181,17 +2201,24 @@ impl Air {
                 };
             }
         }
-        // The declared type of every local and parameter slot a store may
-        // write: a local's comes from its `StorageLive` marker, a parameter's
+        // The declared types of every local and parameter slot a store may
+        // write: a local's come from its `StorageLive` markers, a parameter's
         // from the body's `Param` reads and the base types of places rooted at
-        // it. A slot no marker names is typed by its first `Alloc`, which is
-        // then its only declaration and is not checked against itself.
-        let mut local_slot_types: ahash::AHashMap<u32, Type> = ahash::AHashMap::new();
+        // it. A local slot index names a frame position, not one binding: a
+        // zero-width local (a `()`, an empty array, a module or `type` value)
+        // occupies no slot, so it shares its index with the next local. A
+        // store must therefore match one of the bindings declared at its
+        // index. A slot no marker names (a temporary typed by its own
+        // `Alloc`) has no declaration to check against.
+        let mut local_slot_types: ahash::AHashMap<u32, Vec<Type>> = ahash::AHashMap::new();
         let mut param_slot_types: ahash::AHashMap<u32, Type> = ahash::AHashMap::new();
         for inst in &self.instructions {
             match inst.data {
                 AirInstData::StorageLive { slot } => {
-                    local_slot_types.entry(slot).or_insert(inst.ty);
+                    let declared = local_slot_types.entry(slot).or_default();
+                    if !declared.contains(&inst.ty) {
+                        declared.push(inst.ty);
+                    }
                 }
                 AirInstData::Param { index } => {
                     param_slot_types.entry(index).or_insert(inst.ty);
@@ -2373,7 +2400,7 @@ impl Air {
             let slot_agrees =
                 |slot_ty: Type, value: AirRef, what: &str| -> Result<(), AirValidationError> {
                     let value_ty = operand_ty(value);
-                    if slot_accepts(slot_ty, value_ty) {
+                    if context.slot_accepts(slot_ty, value_ty) {
                         Ok(())
                     } else {
                         Err(fail(
@@ -2449,18 +2476,35 @@ impl Air {
                     let place_ty = check_place(*place)?;
                     slot_agrees(place_ty, *value, "place store")?;
                 }
-                AirInstData::Store { slot, value } => {
-                    if let Some(&slot_ty) = local_slot_types.get(slot) {
-                        slot_agrees(slot_ty, *value, &format!("store to local slot {slot}"))?;
-                    }
-                }
-                AirInstData::Alloc { slot, init } => {
-                    if let Some(&slot_ty) = local_slot_types.get(slot) {
-                        slot_agrees(
-                            slot_ty,
-                            *init,
-                            &format!("initializer of local slot {slot}"),
-                        )?;
+                AirInstData::Store { slot, value: operand }
+                | AirInstData::Alloc {
+                    slot,
+                    init: operand,
+                } => {
+                    if let Some(declared) = local_slot_types.get(slot) {
+                        let value_ty = operand_ty(*operand);
+                        if !declared
+                            .iter()
+                            .any(|&slot_ty| context.slot_accepts(slot_ty, value_ty))
+                        {
+                            let what = if matches!(inst.data, AirInstData::Alloc { .. }) {
+                                "initializer"
+                            } else {
+                                "store"
+                            };
+                            let declared = declared
+                                .iter()
+                                .map(|&ty| context.type_name(ty))
+                                .collect::<Vec<_>>()
+                                .join(" or ");
+                            return Err(fail(
+                                Some(index),
+                                format!(
+                                    "{what} {operand} of local slot {slot} has type {}, but the slot has type {declared}",
+                                    context.type_name(value_ty)
+                                ),
+                            ));
+                        }
                     }
                 }
                 AirInstData::ParamStore { param_slot, value } => {
