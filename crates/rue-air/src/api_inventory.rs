@@ -2400,7 +2400,7 @@ fn diagnostic_hooks_are_keyed_by_the_engine_program() {
         "fn match_no_selected_arm(",
         "fn require_preview(",
         "fn require_transfer_marker_preview(",
-        "fn reject_callback_member(",
+        "fn reject_unstorable_member(",
         "fn depth_exceeded(",
         "fn literal_out_of_range(",
         "fn cannot_negate(",

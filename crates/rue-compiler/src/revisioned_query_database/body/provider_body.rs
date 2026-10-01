@@ -3019,16 +3019,7 @@ pub(in crate::revisioned_query_database) fn resolve_parsed_semantic_signature(
         DeclarationSignatureProjection as Output, ParsedSemanticSignature as Input,
     };
 
-    fn contains_slice(ty: &crate::durable_semantics::DurableType) -> bool {
-        use crate::durable_semantics::DurableType as T;
-        match ty {
-            T::Slice { .. } => true,
-            T::Array { element, .. } | T::PtrConst(element) | T::PtrMut(element) => {
-                contains_slice(element)
-            }
-            _ => false,
-        }
-    }
+    use crate::durable_semantics::durable_type_contains_slice as contains_slice;
 
     let diagnostic = |kind| {
         ResolveSemanticSignatureError::failure(

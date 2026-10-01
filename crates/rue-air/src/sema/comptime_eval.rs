@@ -4155,12 +4155,15 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeRejections for OrdinaryBodyEngine<
             site,
         )
     }
-    fn reject_callback_member(
+    fn reject_unstorable_member(
         &self,
         ty: &Type,
         position: &str,
         site: &ComptimeDiagnosticSite<Self::ProgramKey>,
     ) -> ComptimeHostResult<(), Self::Failure> {
+        if self.type_contains_slice(*ty) {
+            return Err(CompileError::new(ErrorKind::SliceInAggregateField, site.span()).into());
+        }
         if ty.is_function() {
             return Err(CompileError::new(
                 ErrorKind::FnTypeOutsideParameter {

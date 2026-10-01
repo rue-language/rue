@@ -2327,7 +2327,7 @@ impl ComptimeRejections for FakeHost {
         Ok(())
     }
 
-    fn reject_callback_member(
+    fn reject_unstorable_member(
         &self,
         _ty: &Self::Type,
         _position: &str,

@@ -15,6 +15,20 @@ use crate::{ModuleId, StableDefinitionKey};
 /// The durable specialization of rue-air's canonical type algebra.
 pub type DurableType = SemanticImportType<StableDefinitionKey, ModuleId>;
 
+/// Whether `ty` is a slice view, or an array or pointer whose element is one:
+/// the shapes that may not be a return type (spec 7.2:4) or an aggregate
+/// field or payload (spec 7.2:5). Named declarations and the anonymous
+/// nominals a type constructor builds both ask this one question.
+pub(crate) fn durable_type_contains_slice(ty: &DurableType) -> bool {
+    match ty {
+        DurableType::Slice { .. } => true,
+        DurableType::Array { element, .. }
+        | DurableType::PtrConst(element)
+        | DurableType::PtrMut(element) => durable_type_contains_slice(element),
+        _ => false,
+    }
+}
+
 /// The durable specialization of rue-air's canonical constant algebra.
 pub type DurableConstValue = SemanticImportConstValue<StableDefinitionKey, ModuleId>;
 
