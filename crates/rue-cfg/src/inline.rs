@@ -24,6 +24,23 @@
 //!   redirected to its root and any caller projection prefix is composed with
 //!   the callee's own projections.
 //!
+//! # A by-reference view over differently typed storage
+//!
+//! A by-reference parameter's callee-side type is usually the type of the
+//! storage its argument place names, but not always: an `inout str` parameter
+//! views a caller's `Str(N)` place in place (spec 3.7:60), so the callee reads
+//! `param 0 : str` while the caller's slot holds a `Str(N)`. The two share
+//! the `{ptr, len}` representation, and the CFG states that one sanctioned
+//! coercion only as a `PlaceRead` whose result type is the view over a place
+//! of the fixed-capacity type (the form `borrow` view materialization already
+//! uses). A redirected whole-parameter read therefore becomes such a
+//! `PlaceRead` whenever its type is not the place's type, never a `Load` of
+//! the slot at the view type: storage facts are keyed by `(slot, type)`, so
+//! that `Load` would name storage no `StorageLive`/`Alloc` ever opened
+//! (RUE-2564). A view parameter that the callee writes, or reaches through
+//! its own projections, has no such form over the caller's storage; the
+//! preflight refuses that splice and the call is kept.
+//!
 //! # Worked elaboration example: the materialized-parameter drop
 //!
 //! The callee owns its by-value parameters and drops them at exit unless they
@@ -135,6 +152,11 @@ pub enum CfgInlineError {
     /// place read. A later iteration may observe a replacement storage epoch,
     /// so redirecting the argument to the local is not proven sound.
     ByRefArgumentCallCycle { arg_index: usize },
+    /// A by-reference parameter views argument storage of another type (an
+    /// `inout str` over a `Str(N)` place), and the callee writes it or
+    /// projects through it rather than only reading it whole. Only a whole
+    /// read has a CFG form over the caller's storage (module docs).
+    ByRefArgumentViewAccess { arg_index: usize },
     /// The copied callee references a parameter ABI slot that is not the
     /// start slot of any of its source parameters.
     UnmappedCalleeParamSlot { slot: u32 },
@@ -200,6 +222,10 @@ impl std::fmt::Display for CfgInlineError {
             Self::ByRefArgumentCallCycle { arg_index } => write!(
                 f,
                 "by-ref argument {arg_index} reaches a repeated call without re-executing its place read"
+            ),
+            Self::ByRefArgumentViewAccess { arg_index } => write!(
+                f,
+                "by-ref argument {arg_index} is viewed at another type and the callee accesses it other than by a whole read"
             ),
             Self::UnmappedCalleeParamSlot { slot } => write!(
                 f,
@@ -271,6 +297,11 @@ enum ParamRedirect {
         base: PlaceBase,
         base_type: Type,
         projections: Vec<Projection>,
+        /// The type of the storage the place names (its base type, or the
+        /// type its last projection produces). A whole-parameter read of a
+        /// different type is a view of that storage and is redirected as a
+        /// coercing `PlaceRead` (module docs).
+        place_ty: Type,
     },
 }
 
@@ -454,6 +485,8 @@ fn splice_shape(
                     caller, arg.value, index, call, call_block, &place,
                 )?;
             }
+            let place_ty = byref_place_type(caller, &place, type_pool, index)?;
+            ensure_byref_view_is_only_read(callee, param.start_slot, place_ty, type_pool, index)?;
         } else {
             materialized_params =
                 materialized_params
@@ -626,6 +659,7 @@ pub fn splice_call_in_block_in_place(
             // The argument is a place; only a simple local/parameter root is
             // redirectable in this phase (module docs, ADR-0049 §2/§3).
             let place = byref_argument_place(dst, arg.value, index)?;
+            let place_ty = byref_place_type(dst, &place, type_pool, index)?;
             match place.base {
                 PlaceBase::Local(slot) => {
                     if callee.is_param_address_taken(param.start_slot) {
@@ -650,6 +684,7 @@ pub fn splice_call_in_block_in_place(
                 base: place.base,
                 base_type: place.base_type,
                 projections: dst.get_place_projections(&place).to_vec(),
+                place_ty,
             }
         } else {
             let arg_ty = dst.get_inst(arg.value).ty;
@@ -741,7 +776,7 @@ pub fn splice_call_in_block_in_place(
     };
     for index in 0..callee.value_count() {
         let source = callee.get_inst(CfgValue::from_raw(index as u32));
-        let data = translate_data(dst, callee, &source.data, &splice)?;
+        let data = translate_data(dst, callee, &source.data, source.ty, &splice)?;
         // Spans are copied verbatim so a future location-carrying trap
         // mechanism inherits the callee's real source position (ADR-0049 §7).
         let translated = splice.value(CfgValue::from_raw(index as u32));
@@ -1093,6 +1128,76 @@ fn byref_argument_place(
     }
 }
 
+/// The type of the storage a by-reference argument place names: its base
+/// type, or the type its last projection produces.
+fn byref_place_type(
+    caller: &Cfg,
+    place: &Place,
+    type_pool: &FrozenTypeInternPool,
+    arg_index: usize,
+) -> Result<Type, CfgInlineError> {
+    let Some(last) = caller.get_place_projections(place).last() else {
+        return Ok(place.base_type);
+    };
+    match last {
+        Projection::Field {
+            struct_id,
+            field_index,
+        } => type_pool
+            .try_struct_def(*struct_id)
+            .and_then(|def| def.fields.get(*field_index as usize).map(|field| field.ty)),
+        Projection::Index { array_type, .. } => match array_type.kind() {
+            rue_air::TypeKind::Array(array_id) => type_pool
+                .try_array_def(array_id)
+                .map(|(element_ty, _)| element_ty),
+            _ => None,
+        },
+    }
+    .ok_or(CfgInlineError::NonPlaceByRefArgument { arg_index })
+}
+
+/// Refuse a splice whose by-reference parameter views a fixed-capacity
+/// `Str(N)` argument place at another type (an `inout str` view) unless the
+/// callee only reads that parameter whole: a write, or a callee projection
+/// through the view, has no CFG form over the caller's `Str(N)` storage
+/// (module docs). Every other place type is the parameter's own type, so the
+/// scan runs only for the one place type that can be viewed.
+fn ensure_byref_view_is_only_read(
+    callee: &Cfg,
+    param_slot: u32,
+    place_ty: Type,
+    type_pool: &FrozenTypeInternPool,
+    arg_index: usize,
+) -> Result<(), CfgInlineError> {
+    let rue_air::TypeKind::Struct(struct_id) = place_ty.kind() else {
+        return Ok(());
+    };
+    if !matches!(
+        type_pool.text_view_kind(struct_id),
+        Some(rue_air::TextViewKind::StrFixed(_))
+    ) {
+        return Ok(());
+    }
+    let views = (0..callee.value_count()).any(|raw| {
+        match &callee.get_inst(CfgValue::from_raw(raw as u32)).data {
+            CfgInstData::ParamStore {
+                param_slot: slot,
+                value,
+            } => *slot == param_slot && callee.get_inst(*value).ty != place_ty,
+            CfgInstData::PlaceRead { place }
+            | CfgInstData::PlaceWrite { place, .. }
+            | CfgInstData::MoveOut { place } => {
+                place.base == PlaceBase::Param(param_slot) && place.base_type != place_ty
+            }
+            _ => false,
+        }
+    });
+    if views {
+        return Err(CfgInlineError::ByRefArgumentViewAccess { arg_index });
+    }
+    Ok(())
+}
+
 /// Prove that redirecting a by-reference SSA argument back to a caller local
 /// preserves the exact storage epoch from which the value was read.
 ///
@@ -1273,13 +1378,14 @@ fn storage_inst(dst: &mut Cfg, data: CfgInstData, span: Span) -> CfgValue {
     })
 }
 
-/// Copy one callee instruction into the caller: value operands shifted,
-/// local slots rebased, parameter accesses redirected, and every opaque
-/// payload re-pushed into the caller's stores.
+/// Copy one callee instruction of type `ty` into the caller: value operands
+/// shifted, local slots rebased, parameter accesses redirected, and every
+/// opaque payload re-pushed into the caller's stores.
 fn translate_data(
     dst: &mut Cfg,
     callee: &Cfg,
     data: &CfgInstData,
+    ty: Type,
     splice: &Splice<'_>,
 ) -> Result<CfgInstData, CfgInlineError> {
     use CfgInstData::*;
@@ -1290,10 +1396,21 @@ fn translate_data(
         BlockParam { index } => BlockParam { index: *index },
         Param { index } => match splice.param(*index)? {
             ParamRedirect::Materialized { slot } => Load { slot },
+            // A read at another type than the storage's is a view of it, and
+            // only a coercing `PlaceRead` states that (module docs).
             ParamRedirect::ByRefPlace {
                 base,
                 base_type,
                 projections,
+                place_ty,
+            } if place_ty != ty => PlaceRead {
+                place: dst.make_place(base, base_type, projections)?,
+            },
+            ParamRedirect::ByRefPlace {
+                base,
+                base_type,
+                projections,
+                ..
             } if projections.is_empty() => match base {
                 PlaceBase::Local(slot) => Load { slot },
                 PlaceBase::Param(index) => Param { index },
@@ -1305,6 +1422,7 @@ fn translate_data(
                 base,
                 base_type,
                 projections,
+                ..
             } => PlaceRead {
                 place: dst.make_place(base, base_type, projections)?,
             },
@@ -1350,6 +1468,7 @@ fn translate_data(
                     base,
                     base_type,
                     projections,
+                    ..
                 } if projections.is_empty() => match base {
                     PlaceBase::Local(slot) => Store { slot, value },
                     PlaceBase::Param(param_slot) => ParamStore { param_slot, value },
@@ -1362,6 +1481,7 @@ fn translate_data(
                     base,
                     base_type,
                     projections,
+                    ..
                 } => PlaceWrite {
                     place: dst.make_place(base, base_type, projections)?,
                     value,
@@ -1552,6 +1672,7 @@ fn translate_place(
                 base,
                 base_type,
                 projections,
+                ..
             } => (base, base_type, projections),
         },
         PlaceBase::Accessor(value) => (
