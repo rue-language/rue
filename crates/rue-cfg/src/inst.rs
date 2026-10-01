@@ -4630,6 +4630,125 @@ mod tests {
             .unwrap();
     }
 
+    /// The place edit API and the verifier state one root slot-range rule
+    /// (`root_slot_range`): a sized root fits below `num_locals` /
+    /// `num_params`, a zero-width local may sit at `num_locals`, and a
+    /// zero-width by-value parameter is admitted at any key (RUE-2534). A
+    /// by-reference parameter is one pointer slot whatever its logical type.
+    #[test]
+    fn place_edit_api_and_verifier_agree_on_root_slot_ranges() {
+        use rue_air::TypeInternPool;
+
+        let pool = TypeInternPool::new();
+        let pair_ty = Type::new_array(pool.intern_array_from_type(Type::I32, 2));
+        let pool = pool.freeze();
+        const LOCAL: bool = false;
+        const PARAM: bool = true;
+        // 2 locals; 2 parameter slots, the second by reference.
+        let fresh = || {
+            let mut cfg = Cfg::new(Type::UNIT, 2, 2, "roots".into(), vec![false, true]);
+            let entry = cfg.new_block();
+            cfg.entry = entry;
+            cfg.set_terminator(entry, Terminator::Unreachable);
+            (cfg, entry)
+        };
+        // (is_param, base type, slot, accepted)
+        let table = [
+            (LOCAL, Type::UNIT, 0, true),
+            (LOCAL, Type::UNIT, 2, true),
+            (LOCAL, Type::UNIT, 3, false),
+            (LOCAL, Type::I32, 1, true),
+            (LOCAL, Type::I32, 2, false),
+            (LOCAL, pair_ty, 0, true),
+            (LOCAL, pair_ty, 1, false),
+            (LOCAL, Type::I32, u32::MAX, false),
+            (PARAM, Type::UNIT, 0, true),
+            (PARAM, Type::UNIT, 2, true),
+            (PARAM, Type::UNIT, 7, true),
+            (PARAM, Type::UNIT, u32::MAX, true),
+            (PARAM, Type::I32, 0, true),
+            (PARAM, Type::I32, 2, false),
+            (PARAM, pair_ty, 0, true),
+            (PARAM, pair_ty, 2, false),
+            // Slot 1 is by reference: one pointer slot, whatever the type.
+            (PARAM, pair_ty, 1, true),
+            (PARAM, Type::I32, u32::MAX, false),
+        ];
+        for (is_param, ty, slot, accepted) in table {
+            let (mut edited, entry) = fresh();
+            let base = if is_param {
+                PlaceBase::Param(slot)
+            } else {
+                PlaceBase::Local(slot)
+            };
+            let edit = edited.append_place_read(&pool, entry, base, ty, [], ty, Span::new(0, 0));
+            assert_eq!(
+                edit.is_ok(),
+                accepted,
+                "edit API: param={is_param} ty={ty:?} slot={slot}: {edit:?}"
+            );
+
+            let (mut raw, entry) = fresh();
+            let place = if is_param {
+                Place::param(slot, ty)
+            } else {
+                Place::local(slot, ty)
+            };
+            raw.add_inst_to_block(
+                entry,
+                CfgInst {
+                    data: CfgInstData::PlaceRead { place },
+                    ty,
+                    span: Span::new(0, 0),
+                },
+            );
+            assert_eq!(
+                raw.verify_with_type_pool(&pool).is_ok(),
+                accepted,
+                "verifier: param={is_param} ty={ty:?} slot={slot}"
+            );
+        }
+    }
+
+    #[test]
+    fn place_edit_api_rejects_a_sized_parameter_past_the_range_without_changing_the_cfg() {
+        let pool = rue_air::TypeInternPool::new().freeze();
+        let mut cfg = Cfg::new(Type::UNIT, 0, 1, "p".into(), vec![false]);
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        let zero_width = cfg
+            .append_place_read(
+                &pool,
+                entry,
+                PlaceBase::Param(1),
+                Type::UNIT,
+                [],
+                Type::UNIT,
+                Span::new(0, 0),
+            )
+            .expect("a zero-width parameter is keyed past the ABI range");
+        let before = cfg.to_string();
+        let error = cfg
+            .append_place_read(
+                &pool,
+                entry,
+                PlaceBase::Param(1),
+                Type::I32,
+                [],
+                Type::I32,
+                Span::new(0, 0),
+            )
+            .unwrap_err();
+        assert!(matches!(error, CfgEditError::InvalidBuilderInput { .. }));
+        let error = cfg
+            .replace_place_read(&pool, zero_width, PlaceBase::Param(1), Type::I32, [])
+            .unwrap_err();
+        assert!(matches!(error, CfgEditError::InvalidBuilderInput { .. }));
+        assert_eq!(cfg.to_string(), before);
+        cfg.replace_place_read(&pool, zero_width, PlaceBase::Param(9), Type::UNIT, [])
+            .expect("any key past the range names a zero-width parameter");
+    }
+
     #[test]
     fn rewrite_failure_poisoning_is_private_but_transactional_owner_is_unchanged() {
         let mut cfg = Cfg::new(Type::UNIT, 0, 0, "rewrite-failure".into(), vec![]);
