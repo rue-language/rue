@@ -6,6 +6,30 @@ pub(crate) fn execution(attempt: &QueryRequestAttempt<impl Sized>) -> RequestExe
     attempt.execution()
 }
 
+#[cfg(test)]
+thread_local! {
+    static WITHHOLD_INLINE_IMPORT_HEAD_FACT: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+}
+
+/// Run `action` with body analysis on this thread withholding the
+/// inline-`@import` constructor-head fact (RUE-2439) from the comptime
+/// engine, so inference types such a head `<error>` and only the analyzed
+/// operand check of RUE-2438 stands between a mismatched operand and code
+/// generation (RUE-2474). Test-only: production builds have no way to set it.
+#[cfg(test)]
+pub(crate) fn with_inline_import_head_fact_withheld<R>(action: impl FnOnce() -> R) -> R {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            WITHHOLD_INLINE_IMPORT_HEAD_FACT.with(|withheld| withheld.set(self.0));
+        }
+    }
+    let _restore =
+        Restore(WITHHOLD_INLINE_IMPORT_HEAD_FACT.with(|withheld| withheld.replace(true)));
+    action()
+}
+
 // ---------------------------------------------------------------------------
 // RUE-1091 slice 3b — the exact body-fact provider.
 //
@@ -1180,6 +1204,11 @@ impl rue_air::DurableBodyLookupSource<crate::StableDefinitionKey, ModuleId>
         specifier: &str,
     ) -> Option<ModuleId> {
         self.provider.import_target(current.module(), specifier)
+    }
+
+    #[cfg(test)]
+    fn withholds_inline_import_head_fact(&self) -> bool {
+        WITHHOLD_INLINE_IMPORT_HEAD_FACT.with(std::cell::Cell::get)
     }
 
     fn trusted_try_producer(
