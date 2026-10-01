@@ -3610,6 +3610,12 @@ fn record_optimization_stats(
     record!("constopt.fold-attempts", constopt_fold_attempts);
     record!("constopt.folded", constopt_folded);
     record!("constopt.loads-rewritten", constopt_loads_rewritten);
+    record!("constopt.params-resolved", constopt_params_resolved);
+    record!("constopt.aliases-recorded", constopt_aliases_recorded);
+    record!("constopt.edges-pruned", constopt_edges_pruned);
+    record!("constopt.blocks-proven-dead", constopt_blocks_proven_dead);
+    record!("constopt.reachability-walks", constopt_reachability_walks);
+    record!("cleanup.rounds", cleanup_rounds);
     record!("peephole.divmods-reduced", peephole_divmods_reduced);
     record!("peephole.identities-rewired", peephole_identities_rewired);
     record!("simplify.blocks-scanned", simplify_blocks_scanned);
