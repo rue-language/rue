@@ -5930,3 +5930,107 @@ fn main() -> i32 {
 """
 compile_fail = true
 error_contains = ["E0206", "Option(i32)", "Option(u8)"]
+
+[[case]]
+name = "zero_width_comptime_value_parameters_beside_zero_width_by_value_parameters"
+spec = ["4.14:5", "3.8:62"]
+description = "A zero-width `comptime` value parameter (`()`, an empty `@copy` struct, `[i64; 0]`) before or after a destructor-bearing zero-width by-value parameter leaves that parameter its own identity: each by-value parameter is dropped exactly once at the callee's exit (RUE-2539)"
+source = """
+struct Z {}
+drop fn Z(self) { @dbg(99); }
+struct Y {}
+drop fn Y(self) { @dbg(98); }
+@copy
+struct E {}
+
+fn unit_before(comptime u: (), z: Z, n: i64) -> i64 { @dbg(1); n }
+fn unit_after(z: Z, comptime u: (), y: Y, n: i64) -> i64 { @dbg(2); n }
+fn empty_before(comptime e: E, z: Z, y: Y, n: i64) -> i64 { @dbg(3); n }
+fn empty_after(n: i64, z: Z, comptime e: E) -> i64 { @dbg(4); n }
+fn array_before(comptime a: [i64; 0], z: Z, n: i64) -> i64 { @dbg(5); n }
+fn array_after(z: Z, y: Y, comptime a: [i64; 0], n: i64) -> i64 { let _k = y; @dbg(6); n }
+
+fn main() -> i32 {
+    // Each call's `Z` (99) and `Y` (98) is dropped once, at the callee's exit,
+    // in reverse declaration order; the comptime values carry no destructor.
+    @dbg(unit_before((), Z {}, 10));               // 1 99 10
+    @dbg(unit_after(Z {}, (), Y {}, 20));          // 2 98 99 20
+    @dbg(empty_before(E {}, Z {}, Y {}, 30));      // 3 98 99 30
+    @dbg(empty_after(40, Z {}, E {}));             // 4 99 40
+    @dbg(array_before([], Z {}, 50));              // 5 99 50
+    @dbg(array_after(Z {}, Y {}, [], 60));         // 6 98 99 60
+    0
+}
+"""
+expected_stdout = "1\n99\n10\n2\n98\n99\n20\n3\n98\n99\n30\n4\n99\n40\n5\n99\n50\n6\n98\n99\n60\n"
+exit_code = 0
+
+[[case]]
+name = "zero_width_comptime_value_parameters_beside_zero_width_by_value_parameters_o2"
+spec = ["4.14:5", "3.8:62"]
+description = "At -O2, a zero-width `comptime` value parameter (`()`, an empty `@copy` struct, `[i64; 0]`) before or after a destructor-bearing zero-width by-value parameter leaves that parameter its own identity: each by-value parameter is dropped exactly once at the callee's exit (RUE-2539)"
+source = """
+struct Z {}
+drop fn Z(self) { @dbg(99); }
+struct Y {}
+drop fn Y(self) { @dbg(98); }
+@copy
+struct E {}
+
+fn unit_before(comptime u: (), z: Z, n: i64) -> i64 { @dbg(1); n }
+fn unit_after(z: Z, comptime u: (), y: Y, n: i64) -> i64 { @dbg(2); n }
+fn empty_before(comptime e: E, z: Z, y: Y, n: i64) -> i64 { @dbg(3); n }
+fn empty_after(n: i64, z: Z, comptime e: E) -> i64 { @dbg(4); n }
+fn array_before(comptime a: [i64; 0], z: Z, n: i64) -> i64 { @dbg(5); n }
+fn array_after(z: Z, y: Y, comptime a: [i64; 0], n: i64) -> i64 { let _k = y; @dbg(6); n }
+
+fn main() -> i32 {
+    // Each call's `Z` (99) and `Y` (98) is dropped once, at the callee's exit,
+    // in reverse declaration order; the comptime values carry no destructor.
+    @dbg(unit_before((), Z {}, 10));               // 1 99 10
+    @dbg(unit_after(Z {}, (), Y {}, 20));          // 2 98 99 20
+    @dbg(empty_before(E {}, Z {}, Y {}, 30));      // 3 98 99 30
+    @dbg(empty_after(40, Z {}, E {}));             // 4 99 40
+    @dbg(array_before([], Z {}, 50));              // 5 99 50
+    @dbg(array_after(Z {}, Y {}, [], 60));         // 6 98 99 60
+    0
+}
+"""
+expected_stdout = "1\n99\n10\n2\n98\n99\n20\n3\n98\n99\n30\n4\n99\n40\n5\n99\n50\n6\n98\n99\n60\n"
+exit_code = 0
+opt_level = 2
+
+[[case]]
+name = "zero_width_comptime_value_parameters_beside_zero_width_by_value_parameters_o3"
+spec = ["4.14:5", "3.8:62"]
+description = "At -O3, a zero-width `comptime` value parameter (`()`, an empty `@copy` struct, `[i64; 0]`) before or after a destructor-bearing zero-width by-value parameter leaves that parameter its own identity: each by-value parameter is dropped exactly once at the callee's exit (RUE-2539)"
+source = """
+struct Z {}
+drop fn Z(self) { @dbg(99); }
+struct Y {}
+drop fn Y(self) { @dbg(98); }
+@copy
+struct E {}
+
+fn unit_before(comptime u: (), z: Z, n: i64) -> i64 { @dbg(1); n }
+fn unit_after(z: Z, comptime u: (), y: Y, n: i64) -> i64 { @dbg(2); n }
+fn empty_before(comptime e: E, z: Z, y: Y, n: i64) -> i64 { @dbg(3); n }
+fn empty_after(n: i64, z: Z, comptime e: E) -> i64 { @dbg(4); n }
+fn array_before(comptime a: [i64; 0], z: Z, n: i64) -> i64 { @dbg(5); n }
+fn array_after(z: Z, y: Y, comptime a: [i64; 0], n: i64) -> i64 { let _k = y; @dbg(6); n }
+
+fn main() -> i32 {
+    // Each call's `Z` (99) and `Y` (98) is dropped once, at the callee's exit,
+    // in reverse declaration order; the comptime values carry no destructor.
+    @dbg(unit_before((), Z {}, 10));               // 1 99 10
+    @dbg(unit_after(Z {}, (), Y {}, 20));          // 2 98 99 20
+    @dbg(empty_before(E {}, Z {}, Y {}, 30));      // 3 98 99 30
+    @dbg(empty_after(40, Z {}, E {}));             // 4 99 40
+    @dbg(array_before([], Z {}, 50));              // 5 99 50
+    @dbg(array_after(Z {}, Y {}, [], 60));         // 6 98 99 60
+    0
+}
+"""
+expected_stdout = "1\n99\n10\n2\n98\n99\n20\n3\n98\n99\n30\n4\n99\n40\n5\n99\n50\n6\n98\n99\n60\n"
+exit_code = 0
+opt_level = 3
