@@ -215,3 +215,16 @@ fn main() -> i32 {
 """
 compile_fail = true
 error_contains = ["E0206", "expected integer type, found [i32; 2]", "test.rue:3:5"]
+
+# An annotated array literal checks each element against the annotation's
+# element type before joining the elements, as a const initializer does.
+[[case]]
+name = "array_literal_element_is_checked_against_the_annotation"
+source = """
+fn main() -> i32 {
+    let x: [bool; 2] = [1, true];
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0206", "expected bool, found {integer}", "test.rue:2:25"]

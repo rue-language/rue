@@ -428,6 +428,11 @@ pub struct ConstraintGenerator<'a> {
     /// these default to the canonical core `str` type. Context may still bind
     /// a literal to the trusted standard-library `StrBuf` language item.
     string_literal_vars: Vec<TypeVarId>,
+    /// The element type an annotated `let` expects of the array literal that
+    /// is its initializer, keyed by that literal. Each element is checked
+    /// against it before the elements are joined, so an element the
+    /// annotation refuses is blamed rather than a later peer (RUE-2566).
+    array_literal_expectation: Option<(InstRef, InferType)>,
     /// Concrete default for an otherwise-unconstrained string literal.
     string_literal_default: Type,
     /// Fixed-string nominal identities used while generating constraints.
@@ -723,6 +728,7 @@ impl<'a> ConstraintGenerator<'a> {
             int_literal_vars: Vec::new(),
             float_literal_vars: Vec::new(),
             string_literal_vars: Vec::new(),
+            array_literal_expectation: None,
             string_literal_default,
             fixed_string_types: Vec::new(),
             strbuf_type,
@@ -788,6 +794,7 @@ impl<'a> ConstraintGenerator<'a> {
             int_literal_vars: Vec::new(),
             float_literal_vars: Vec::new(),
             string_literal_vars: Vec::new(),
+            array_literal_expectation: None,
             string_literal_default,
             fixed_string_types: Vec::new(),
             strbuf_type,
@@ -1958,34 +1965,44 @@ impl<'a> ConstraintGenerator<'a> {
                 init,
                 iter_elem: _,
             } => {
-                let init_info = self.generate(*init, ctx);
-                continues &= init_info.continues;
-
-                let var_ty = if let Some(type_syntax) = type_annotation {
-                    // Semantic resolution supplies the annotation in its
-                    // lexical and specialization context. Keep this generator
-                    // a consumer of those facts: qualified paths and comptime
-                    // constructors are not resolved by the best-effort hint.
-                    let annotated = self
-                        .local_annotations
+                // Semantic resolution supplies the annotation in its
+                // lexical and specialization context. Keep this generator
+                // a consumer of those facts: qualified paths and comptime
+                // constructors are not resolved by the best-effort hint.
+                let annotated = type_annotation.and_then(|type_syntax| {
+                    self.local_annotations
                         .and_then(|annotations| annotations.get(&inst_ref))
                         .map(|ty| self.type_to_infer(*ty))
                         .or_else(|| {
                             // The best-effort hint reads a named length from
                             // the file's `const`s; a length naming a binding
                             // in scope gives no hint (RUE-2446).
-                            if self.names_shadowed_length(*type_syntax, ctx) {
+                            if self.names_shadowed_length(type_syntax, ctx) {
                                 return None;
                             }
                             self.infer_type_hint(
                                 self.rir.type_syntax(),
-                                *type_syntax,
+                                type_syntax,
                                 None,
                                 None,
                                 span.file_id,
                                 TypeHintScope::Body,
                             )
-                        });
+                        })
+                });
+                // An array literal written directly as the initializer checks
+                // each element against the annotation's element type before
+                // its elements are joined, as a const initializer does.
+                if let Some(InferType::Array { element, .. }) = &annotated
+                    && matches!(self.rir.get(*init).data, InstData::ArrayInit { .. })
+                {
+                    self.array_literal_expectation = Some((*init, (**element).clone()));
+                }
+                let init_info = self.generate(*init, ctx);
+                self.array_literal_expectation = None;
+                continues &= init_info.continues;
+
+                let var_ty = if type_annotation.is_some() {
                     if let Some(annotated_ty) = annotated {
                         // A `str` annotation (ADR-0043 Phase 3, RUE-324) accepts
                         // a string literal (HM type `String`) by coercion, and a
@@ -3432,12 +3449,25 @@ impl<'a> ConstraintGenerator<'a> {
                     // in `[[return 5; 1], [2]]` the second element supplies
                     // the type. The later element is still constrained
                     // against the first's shape, which checks the length.
+                    //
+                    // An annotated `let` whose initializer is this literal
+                    // also checks each element against the annotation's
+                    // element type first, so `[1, true]` at `[bool; 2]`
+                    // blames the `1` rather than the `true` (RUE-2566).
+                    let expected_element = match self.array_literal_expectation.take() {
+                        Some((target, element)) if target == inst_ref => Some(element),
+                        other => {
+                            self.array_literal_expectation = other;
+                            None
+                        }
+                    };
                     let first_info =
                         self.generate_sequenced_operand(elements.get(0).unwrap(), ctx, true);
                     continues &= first_info.continues;
                     if self.was_canceled() {
                         return ExprInfo::diverged(InferType::Concrete(Type::ERROR), span);
                     }
+                    self.expect_array_element(&first_info, expected_element.as_ref());
                     let mut element_diverges =
                         !first_info.continues && Self::is_diverging_array(&first_info.ty);
                     let mut element_ty = first_info.ty;
@@ -3447,6 +3477,7 @@ impl<'a> ConstraintGenerator<'a> {
                         if self.was_canceled() {
                             break;
                         }
+                        self.expect_array_element(&elem_info, expected_element.as_ref());
                         let elem_diverges =
                             !elem_info.continues && Self::is_diverging_array(&elem_info.ty);
                         if Self::is_never_concrete(&elem_info.ty) {
@@ -4189,6 +4220,24 @@ impl<'a> ConstraintGenerator<'a> {
             return;
         }
         self.add_constraint(Constraint::equal(operand, peer, span));
+    }
+
+    /// Check an array-literal element against the element type its
+    /// annotation expects, as a value context (3.12:11). A diverging element
+    /// (`!`, or an array of `!`) fits any element type and is left to the
+    /// peer join.
+    fn expect_array_element(&mut self, element: &ExprInfo, expected: Option<&InferType>) {
+        let Some(expected) = expected else {
+            return;
+        };
+        if Self::is_never_concrete(&element.ty) || Self::is_diverging_array(&element.ty) {
+            return;
+        }
+        self.add_constraint(Constraint::contextual(
+            element.ty.clone(),
+            expected.clone(),
+            element.span,
+        ));
     }
 
     /// Whether `ty` is *concretely* the never type `!` (a diverging expression),
