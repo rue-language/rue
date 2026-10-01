@@ -277,3 +277,46 @@ error_contains = [
    |                |
    |                info: accessor result borrows the value here""",
 ]
+
+[[case]]
+name = "inout_argument_from_shared_accessor_result_on_immutable_root_names_the_argument"
+description = "An `inout` argument through a shared accessor result on an immutable root is E0203 (6.1:43); nothing is assigned, so the message names the `inout` argument and the place under the binding (RUE-2533)."
+source = """
+struct P { c: i64 }
+struct Acc {
+    p: P,
+
+    fn pref(borrow self) -> borrow P { yield self.p; }
+}
+fn setp(inout p: P) { p.c = 66; }
+fn main() -> i32 {
+    let a = Acc { p: P { c: 1 } };
+    setp(inout a.pref());
+    0
+}
+"""
+compile_fail = true
+error_contains = [
+    "[E0203]",
+    "cannot pass a place under immutable variable 'a' as `inout`",
+    "variable declared as immutable here",
+    "make the binding mutable: `let mut a = ...`",
+]
+
+[[case]]
+name = "inout_argument_of_a_field_of_an_immutable_binding_names_the_place"
+description = "A field of an immutable binding passed `inout` gets the same projected wording (RUE-2533)."
+source = """
+struct P { c: i64 }
+fn seti(inout x: i64) { x = 1; }
+fn main() -> i32 {
+    let p = P { c: 0 };
+    seti(inout p.c);
+    0
+}
+"""
+compile_fail = true
+error_contains = [
+    "[E0203]",
+    "cannot pass a place under immutable variable 'p' as `inout`",
+]

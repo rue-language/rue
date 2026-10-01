@@ -7316,7 +7316,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     ///
     /// An `inout` argument is a write to the caller's place, so it carries the
     /// same mut-binding requirement an assignment to that place carries, and
-    /// reports the same diagnostic (E0203, 5.2:3). `let`, `for`, and `match`
+    /// reports the same code (E0203, 5.2:3), worded for the `inout` argument. `let`, `for`, and `match`
     /// bindings all reach this through `ctx.locals`, and locals shadow
     /// parameters (RUE-278), so a `let mut` rebinding a parameter name is the
     /// binding that later uses see.
@@ -7326,13 +7326,22 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// `borrow` parameter is E0428 (6.1:24, checked just above this), and a
     /// by-value parameter names the callee's own copy, which 6.1:18 and the
     /// RUE-2042 parameter-slot contract let the callee pass `inout`.
+    ///
+    /// `projected` is set when the argument is a place under `root` (a field,
+    /// element or accessor result) rather than `root` itself; it only words
+    /// the message (RUE-2533).
     fn reject_immutable_inout_arg_root(
         &self,
         root: Spur,
+        projected: bool,
         span: Span,
         ctx: &AnalysisContext,
     ) -> CompileResult<()> {
         let name = self.body_interner().resolve(&root).to_string();
+        let error = |name: String| ErrorKind::InoutArgOfImmutable {
+            variable: name,
+            projected,
+        };
         if let Some(local) = ctx.locals.get(&root) {
             if local.is_mut {
                 return Ok(());
@@ -7341,7 +7350,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 "an `inout` argument writes to the caller's place; make the binding mutable: \
                  `let mut {name} = ...`"
             );
-            return Err(CompileError::new(ErrorKind::AssignToImmutable(name), span)
+            return Err(CompileError::new(error(name), span)
                 .with_label("variable declared as immutable here", local.span)
                 .with_help(help));
         }
@@ -7368,7 +7377,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 self.format_type_name(param.ty)
             )
         };
-        Err(CompileError::new(ErrorKind::AssignToImmutable(name), span).with_help(help))
+        Err(CompileError::new(error(name), span).with_help(help))
     }
 
     /// Reject a mutation of a collection that an enclosing `for` loop is
@@ -8660,8 +8669,13 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 // assignment to that place and an `inout self` receiver carry
                 // (spec 6.1:43, RUE-2054, RUE-2079).
                 if arg.is_inout() {
+                    let projected = !matches!(
+                        self.body_rir_ref().get(arg.value).data,
+                        InstData::VarRef { .. }
+                    );
                     self.reject_immutable_inout_arg_root(
                         root,
+                        projected,
                         self.body_rir_ref().get(arg.value).span,
                         ctx,
                     )?;

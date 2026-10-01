@@ -1509,6 +1509,9 @@ impl RetainedCharge for rue_error::ErrorKind {
             | E::ContainerElementNotTriviallyDroppable { ty: value, .. }
             | E::InoutExclusiveAccess { variable: value }
             | E::MutateBorrowedValue { variable: value }
+            | E::InoutArgOfImmutable {
+                variable: value, ..
+            }
             | E::MoveOutOfBorrow { variable: value }
             | E::BorrowInoutConflict { variable: value }
             | E::MoveOutOfInout { variable: value }

@@ -5021,6 +5021,7 @@ fn is_statement_recoverable(error: &CompileError) -> bool {
         ErrorKind::UndefinedVariable(_)
             | ErrorKind::UndefinedFunction(_)
             | ErrorKind::AssignToImmutable(_)
+            | ErrorKind::InoutArgOfImmutable { .. }
             | ErrorKind::UnknownType(_)
             | ErrorKind::TypeMismatch { .. }
             | ErrorKind::WrongArgumentCount { .. }
