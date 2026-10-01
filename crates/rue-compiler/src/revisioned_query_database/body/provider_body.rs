@@ -416,27 +416,36 @@ impl SemanticNucleusTypeProvider<'_> {
     }
 
     /// Read a comptime value parameter of the generic signature being
-    /// resolved. It has no value until a call site supplies one, so no type
-    /// built from it can be formed here: an array length or a type-constructor
-    /// argument that names it stops resolution, and the signature resolver
-    /// defers the whole written type to the call site, which resolves it again
-    /// under that call's value substitution (RUE-2435). Reading the parameter
-    /// as a placeholder value instead would build a type of the wrong shape,
-    /// such as `Buf(0)` for `Buf(N)`.
-    fn defer_value_parameter<T>(
-        &mut self,
-        name: &str,
-    ) -> Result<
-        T,
-        rue_air::SemanticProviderError<
-            QueryAbort,
-            crate::semantic_query_nucleus::SemanticNucleusFailure,
-        >,
-    > {
+    /// resolved. It has no value until a call site supplies one, so it reads
+    /// as the unknown value [`deferred_comptime_value`]: an array length or a
+    /// type-constructor call that depends on it is left unreduced (the array
+    /// node is `ComptimeType`, the call is never evaluated), while every other
+    /// part of the written type still resolves and reports its own errors.
+    /// The signature resolver then defers the whole written type to the call
+    /// site, which resolves it again under that call's value substitution
+    /// (RUE-2435). Reading the parameter as a placeholder such as `0` would
+    /// build a type of the wrong shape, `Buf(0)` for `Buf(N)`.
+    fn defer_value_parameter(&mut self) -> crate::durable_semantics::DurableConstValue {
         self.deferred_value_read = true;
-        Self::provider_failure(format!(
-            "comptime value parameter `{name}` has no value outside a call site"
-        ))
+        deferred_comptime_value()
+    }
+
+    /// Whether a type-constructor call's arguments include an unknown value
+    /// from a deferred read, directly or through an unreduced inner call or
+    /// array. Such a call is not evaluated: it has no meaning until a call
+    /// site supplies the value.
+    fn comptime_call_is_deferred(
+        &self,
+        type_arguments: &[(Arc<str>, crate::durable_semantics::DurableType)],
+        value_arguments: &[(Arc<str>, crate::durable_semantics::DurableConstValue)],
+    ) -> bool {
+        self.deferred_value_read
+            && (value_arguments
+                .iter()
+                .any(|(_, value)| *value == deferred_comptime_value())
+                || type_arguments
+                    .iter()
+                    .any(|(_, ty)| durable_type_mentions_comptime_type(ty)))
     }
 
     /// The declared type of a type constructor's comptime value parameter at
@@ -1971,7 +1980,8 @@ impl rue_air::SemanticTypeSyntaxProvider<ModuleId, ModuleId, StableDefinitionKey
                 }
                 if let Some(ty) = self.deferred_value_parameters.get(name) {
                     if crate::durable_comptime::durable_int_width(ty).is_some() {
-                        return self.defer_value_parameter(name);
+                        self.defer_value_parameter();
+                        return Ok(None);
                     }
                     return Self::provider_domain_failure(
                         crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
@@ -2035,6 +2045,9 @@ impl rue_air::SemanticTypeSyntaxProvider<ModuleId, ModuleId, StableDefinitionKey
         QueryAbort,
         crate::semantic_query_nucleus::SemanticNucleusFailure,
     > {
+        if self.deferred_value_read && *value == deferred_comptime_value() {
+            return Ok(None);
+        }
         let crate::durable_semantics::DurableConstValue::Integer(value) = value else {
             return Self::provider_failure("array length is not an integer");
         };
@@ -2054,10 +2067,13 @@ impl rue_air::SemanticTypeSyntaxProvider<ModuleId, ModuleId, StableDefinitionKey
         crate::semantic_query_nucleus::SemanticNucleusFailure,
     > {
         reject_function_child(&element, "an array element")?;
-        // Every length this provider answers is known: a length naming a
-        // deferred value parameter stops resolution instead
-        // (`defer_value_parameter`), so an unknown length here is a bug.
+        // A length is unknown only when it depends on a deferred value
+        // parameter (`defer_value_parameter`); the array is then left
+        // unreduced, as part of a written type the call site resolves.
         let Some(len) = length else {
+            if self.deferred_value_read {
+                return Ok(crate::durable_semantics::DurableType::ComptimeType);
+            }
             return Self::provider_failure("type syntax produced an array without a known length");
         };
         Ok(crate::durable_semantics::DurableType::Array {
@@ -2260,7 +2276,7 @@ impl rue_air::SemanticTypeSyntaxProvider<ModuleId, ModuleId, StableDefinitionKey
                     ),
                 );
             }
-            return self.defer_value_parameter(syntax);
+            return Ok(self.defer_value_parameter());
         }
         if let Some(value) = self.value_substitutions.get(syntax) {
             return Ok(value.clone());
@@ -2310,6 +2326,15 @@ impl rue_air::SemanticTypeSyntaxProvider<ModuleId, ModuleId, StableDefinitionKey
         };
         for (_, ty) in type_arguments {
             reject_function_child(ty, "a type argument")?;
+        }
+        if self.comptime_call_is_deferred(type_arguments, value_arguments) {
+            return Ok(Some(if head.returns_type {
+                rue_air::SemanticComptimeCallResult::Type(
+                    crate::durable_semantics::DurableType::ComptimeType,
+                )
+            } else {
+                rue_air::SemanticComptimeCallResult::Value(deferred_comptime_value())
+            }));
         }
         let declaration = constructor_declaration(head);
         let signature = self.signature(declaration.clone())?;
@@ -2440,6 +2465,36 @@ struct ConstructorHeadSite {
     /// `Some` only for an alias: the constant's own `pub`-ness governs the
     /// access, so a `pub` alias re-exports a private constructor.
     visibility: Option<bool>,
+}
+
+/// The unknown value a deferred comptime value parameter reads as while a
+/// generic signature is resolved (`defer_value_parameter`). A type value of
+/// `ComptimeType` can never be a value parameter's argument, so it cannot be
+/// mistaken for one the program wrote.
+fn deferred_comptime_value() -> crate::durable_semantics::DurableConstValue {
+    crate::durable_semantics::DurableConstValue::Type(
+        crate::durable_semantics::DurableType::ComptimeType,
+    )
+}
+
+/// Whether a type is, or contains, the unreduced `ComptimeType` a deferred
+/// read leaves behind.
+fn durable_type_mentions_comptime_type(ty: &crate::durable_semantics::DurableType) -> bool {
+    use crate::durable_semantics::DurableType as T;
+    match ty {
+        T::ComptimeType => true,
+        T::Array { element, .. }
+        | T::Slice { element, .. }
+        | T::PtrConst(element)
+        | T::PtrMut(element) => durable_type_mentions_comptime_type(element),
+        T::Function { params, result } => {
+            params
+                .iter()
+                .any(|(_, ty)| durable_type_mentions_comptime_type(ty))
+                || durable_type_mentions_comptime_type(result)
+        }
+        _ => false,
+    }
 }
 
 /// The function declaration a type-constructor call head names.
@@ -3004,13 +3059,13 @@ pub(in crate::revisioned_query_database) fn resolve_parsed_semantic_signature(
         // A written type that reads a comptime value parameter (`Buf(N)`,
         // `[i32; N]`, `[Buf(N); 2]`) is the call-site-resolved `ComptimeType`
         // as a whole: each call resolves it again from the retained syntax
-        // under its own value substitution (RUE-2435).
-        if std::mem::take(&mut provider.deferred_value_read)
-            && !matches!(resolved, Err(ResolveSemanticSignatureError::Abort(_)))
-        {
-            return Ok(crate::durable_semantics::DurableType::ComptimeType);
+        // under its own value substitution (RUE-2435). The rest of the type
+        // was still resolved, so an error anywhere in it is reported here.
+        let deferred = std::mem::take(&mut provider.deferred_value_read);
+        match resolved {
+            Ok(_) if deferred => Ok(crate::durable_semantics::DurableType::ComptimeType),
+            resolved => resolved,
         }
-        resolved
     };
     match parsed {
         Input::Callable {

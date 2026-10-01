@@ -2542,11 +2542,7 @@ fn live_type_provider_array_length_adapter_preserves_integer_boundaries_without_
             rue_error::ErrorKind::InvalidArrayLength { ref reason }
         ))) if reason == "array length 'NEG' is negative (-1)"
     ));
-    assert!(matches!(
-        deferred_integer,
-        Err(rue_air::SemanticProviderError::Failure(Failure::Resolution(ref reason)))
-            if reason.as_ref() == "comptime value parameter `DEFERRED_I` has no value outside a call site"
-    ));
+    assert!(matches!(deferred_integer, Ok(None)));
     assert!(
         provider_deferred_read,
         "a deferred length read must be recorded"
