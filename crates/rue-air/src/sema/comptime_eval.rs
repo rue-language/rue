@@ -3135,6 +3135,15 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeTypeAlgebra for OrdinaryBodyEngine
             site.span(),
         )
     }
+    fn type_contains_slice(&self, ty: &Self::Type) -> bool {
+        OrdinaryBodyEngine::type_contains_slice(self, *ty)
+    }
+    fn slice_return_anon_method(
+        &self,
+        site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> Self::Failure {
+        CompileError::new(ErrorKind::SliceReturnNotAllowed, site.span())
+    }
     fn resolve_named_array_length(
         &mut self,
         name: &Spur,

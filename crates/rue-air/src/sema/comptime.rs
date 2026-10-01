@@ -293,6 +293,15 @@ pub trait ComptimeTypeAlgebra: ComptimeDomain {
         &self,
         site: &ComptimeDiagnosticSite<Self::ProgramKey>,
     ) -> Self::Failure;
+    /// Whether `ty` is a slice view, or an array or pointer whose element is
+    /// one: the shapes a return type may not have (spec 7.2:4).
+    fn type_contains_slice(&self, ty: &Self::Type) -> bool;
+    /// An anonymous method whose return type is or holds a slice view
+    /// (spec 7.2:4), reported as a named function's is (E0487).
+    fn slice_return_anon_method(
+        &self,
+        site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> Self::Failure;
     fn resolve_named_array_length(
         &mut self,
         name: &Self::Name,
@@ -1688,6 +1697,15 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                     ComptimeOutcome::Abort(error) => return ComptimeOutcome::Abort(error),
                 }
             };
+            // A named function's return type may not be or hold a slice view
+            // (spec 7.2:4, ADR-0043); an anonymous method's signature has no
+            // declaration query, so its producer reduction applies the rule.
+            if let ComptimeMethodType::Concrete(ty) = &result
+                && self.host.type_contains_slice(ty)
+            {
+                let site = ComptimeDiagnosticSite::new(program.clone(), method_span);
+                return ComptimeOutcome::HostFailure(self.host.slice_return_anon_method(&site));
+            }
             descriptors.push(ComptimeMethodDescriptor {
                 name: method_name,
                 has_self,
