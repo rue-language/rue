@@ -1451,6 +1451,9 @@ pub struct Air {
     /// builder drops these at function exit unless they were moved out
     /// (see [`AirInstData::MarkMoved`]). Empty for destructors (a destructor
     /// must not re-drop `self`) and for synthesized drop-glue functions.
+    /// A zero-width parameter, which has no ABI slot, is listed under its key
+    /// past the end of the ABI range, so every entry names one parameter
+    /// (RUE-2534).
     param_drops: Vec<(u32, Type)>,
     /// Local slots that hold a non-owning *borrow* value and so must NOT be
     /// dropped at scope exit. Currently the element binder of a `for` loop
