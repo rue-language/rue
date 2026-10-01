@@ -44,6 +44,8 @@ pub(crate) struct ParamInfo {
     /// Starting ABI slot for this parameter (0-based).
     /// For scalar types, this is the single slot.
     /// For struct types, this is the first field's slot.
+    /// A zero-width by-value parameter has no slot; this is then its key past
+    /// the end of the ABI range, unique among the parameters (RUE-2534).
     pub abi_slot: u32,
     /// Parameter type
     pub ty: Type,

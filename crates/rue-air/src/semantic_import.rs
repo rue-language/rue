@@ -1096,10 +1096,15 @@ where
         {
             return Err(F::InvalidParameterModes);
         }
+        // A zero-width parameter's drop entry sits past the ABI range, one
+        // key per such parameter (RUE-2534), so no entry lies beyond
+        // `num_param_slots` plus the entry count.
+        let param_drop_key_limit = u64::from(body.num_param_slots)
+            .saturating_add(u64::try_from(body.param_drops.len()).unwrap_or(u64::MAX));
         if body
             .param_drops
             .iter()
-            .any(|(slot, _)| *slot >= body.num_param_slots)
+            .any(|(slot, _)| u64::from(*slot) >= param_drop_key_limit)
         {
             return Err(F::InvalidParameterDrop);
         }

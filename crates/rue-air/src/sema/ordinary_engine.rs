@@ -2942,13 +2942,37 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         let mut param_writable: Vec<bool> = Vec::with_capacity(num_param_slots as usize);
 
         // Publish the already-validated offsets and per-slot modes.
+        //
+        // A zero-width by-value parameter occupies no ABI slot, so the next
+        // free slot would name the parameter that follows it (or, for the last
+        // one, no parameter at all). It has no storage to address, but drop
+        // elaboration and the moved-state keys still need it to be a parameter
+        // of its own (RUE-2534). It is therefore identified past the end of
+        // the ABI range, at `num_param_slots` plus its position among the
+        // zero-width by-value parameters: a key no occupied slot can collide
+        // with, which callers and the calling convention never see.
         let mut next_abi_slot = 0_u32;
+        let mut next_zero_width_key = num_param_slots;
         for ((pname, ptype, mode, is_comptime), (is_by_ref, is_mut_binding, slot_count)) in
             params.iter().zip(param_layouts)
         {
+            let abi_slot = if slot_count == 0 && *mode == RirParamMode::Normal && !*is_comptime {
+                let key = next_zero_width_key;
+                next_zero_width_key = next_zero_width_key.checked_add(1).ok_or_else(|| {
+                    CompileError::new(
+                        ErrorKind::InternalError(
+                            "zero-width parameter identity overflowed u32".to_owned(),
+                        ),
+                        self.body_rir_ref().get(body).span,
+                    )
+                })?;
+                key
+            } else {
+                next_abi_slot
+            };
             param_vec.push(ParamInfo {
                 name: *pname,
-                abi_slot: next_abi_slot,
+                abi_slot,
                 ty: *ptype,
                 mode: *mode,
                 is_comptime: *is_comptime,
@@ -2971,12 +2995,12 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         // them at exit unless they are moved out (RUE-61). Inout/borrow params
         // stay owned by the caller; comptime params are substituted away.
         // Destructors clear this list after analysis (see the destructor path).
+        // A zero-width parameter is listed under its own key (above), so its
+        // destructor runs at exit like any other parameter's (RUE-2534).
         air.set_param_drops(
             param_vec
                 .iter()
-                .filter(|p| {
-                    p.mode == RirParamMode::Normal && !p.is_comptime && p.abi_slot < num_param_slots
-                })
+                .filter(|p| p.mode == RirParamMode::Normal && !p.is_comptime)
                 .map(|p| (p.abi_slot, p.ty))
                 .collect(),
         );
