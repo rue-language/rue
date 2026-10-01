@@ -2313,6 +2313,74 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             // happen to use the same spelling.
             || (self.is_str_struct(found) && self.is_str_struct(expected))
     }
+    /// Publish an analyzed body's AIR across the validation boundary, checking
+    /// every direct call's arguments against the declared parameters of the
+    /// callee it names (RUE-2452).
+    ///
+    /// The callee's signature comes from the declaration facts the call was
+    /// resolved through, not from the call: a free function by its symbol, a
+    /// method or associated function by the member symbol each of this body's
+    /// `referenced_methods` renders to. A generic callee, whose declared types
+    /// still mention type parameters, and a callee none of those names (a
+    /// runtime or synthesized callable) are left unchecked.
+    pub(crate) fn validate_body_air(
+        &self,
+        air: Air,
+        referenced_methods: &AHashSet<(StructId, Spur)>,
+    ) -> CompileResult<crate::ValidatedAir> {
+        let declared = |params: ParamRangeData,
+                        receiver: Option<crate::AirCalleeParam>|
+         -> Option<Vec<crate::AirCalleeParam>> {
+            if params.comptime().iter().any(|&is_comptime| is_comptime) {
+                return None;
+            }
+            Some(
+                receiver
+                    .into_iter()
+                    .chain(params.types().iter().zip(params.modes()).map(|(&ty, &mode)| {
+                        crate::AirCalleeParam {
+                            ty,
+                            mode: air_arg_mode(mode),
+                        }
+                    }))
+                    .collect(),
+            )
+        };
+        let mut methods: AHashMap<Spur, Vec<crate::AirCalleeParam>> = AHashMap::new();
+        for &(struct_id, method) in referenced_methods {
+            let Some(info) = self.method_info((struct_id, method)) else {
+                continue;
+            };
+            let method_name = self.body_interner().resolve(&method).to_owned();
+            let Ok(symbol) = self.method_symbol_handle(struct_id, &method_name, info.has_self)
+            else {
+                continue;
+            };
+            let receiver = info.has_self.then_some(crate::AirCalleeParam {
+                ty: info.struct_type,
+                mode: air_arg_mode(info.self_mode),
+            });
+            if let Some(params) = declared(self.body_param_data(info.params), receiver) {
+                methods.insert(symbol, params);
+            }
+        }
+        let resolve = |name: Spur| -> Option<Vec<crate::AirCalleeParam>> {
+            if let Some(params) = methods.get(&name) {
+                return Some(params.clone());
+            }
+            let function = self.call_facts().call_function_info(name)?;
+            if function.is_generic {
+                return None;
+            }
+            declared(self.body_param_data(function.params), None)
+        };
+        Ok(crate::ValidatedAir::from_semantic_air_with_callees(
+            air,
+            self.storage.body_type_pool(),
+            self.storage.body_interner(),
+            &resolve,
+        )?)
+    }
     pub(crate) fn function_returns_type(&self, function: &FunctionCallInfo) -> bool {
         function.returns_type
     }
@@ -2507,11 +2575,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
                 ordinary_owner: None,
                 name: fn_name.to_owned(),
                 implicit_drop_source: None,
-                air: crate::ValidatedAir::from_semantic_air_with_symbols(
-                    air,
-                    self.storage.body_type_pool(),
-                    self.storage.body_interner(),
-                )?,
+                air: self.validate_body_air(air, &ref_meths)?,
                 local_atoms,
                 num_locals,
                 num_param_slots,
@@ -2662,11 +2726,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
                 name: full_name.to_owned(),
                 implicit_drop_source: is_destructor
                     .then_some(super::ImplicitDropDependencySourceEvent::Anonymous),
-                air: crate::ValidatedAir::from_semantic_air_with_symbols(
-                    air,
-                    self.storage.body_type_pool(),
-                    self.storage.body_interner(),
-                )?,
+                air: self.validate_body_air(air, &referenced_methods)?,
                 local_atoms,
                 num_locals,
                 num_param_slots,
@@ -2748,11 +2808,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
                 ordinary_owner: None,
                 name: full_name.to_owned(),
                 implicit_drop_source: None,
-                air: crate::ValidatedAir::from_semantic_air_with_symbols(
-                    air,
-                    self.storage.body_type_pool(),
-                    self.storage.body_interner(),
-                )?,
+                air: self.validate_body_air(air, &referenced_methods)?,
                 local_atoms,
                 num_locals,
                 num_param_slots,
@@ -3287,5 +3343,14 @@ impl<H: OrdinaryBodyAnalysisHost> Drop for OrdinaryBodyEngine<'_, H> {
             stats.body_instances_dropped += 1;
             stats.last_dropped_entries = self.comptime_reduction_memo.len();
         });
+    }
+}
+
+/// The AIR passing mode of a declared parameter mode.
+fn air_arg_mode(mode: RirParamMode) -> crate::AirArgMode {
+    match mode {
+        RirParamMode::Inout => crate::AirArgMode::Inout,
+        RirParamMode::Borrow => crate::AirArgMode::Borrow,
+        _ => crate::AirArgMode::Normal,
     }
 }

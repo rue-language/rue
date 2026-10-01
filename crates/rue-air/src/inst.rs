@@ -240,6 +240,44 @@ impl AirValidationContext<'_> {
         .map_err(|error| format!("{error:?}"))
     }
 
+    /// A type's name for a validation message, resolved through the pool so
+    /// that two instances of one generic nominal read differently.
+    fn type_name(&self, ty: Type) -> String {
+        match self {
+            Self::Semantic(pool) | Self::SemanticWithSymbols(pool, _) => {
+                ty.safe_name_with_pool(Some(pool))
+            }
+            Self::Canonical(pool) | Self::CanonicalWithSymbols(pool, _) => {
+                ty.safe_name_with_frozen_pool(Some(pool))
+            }
+        }
+    }
+
+    /// A call symbol's spelling for a validation message, when this context
+    /// carries the interner that owns it.
+    fn symbol_name(&self, symbol: Spur) -> String {
+        match self {
+            Self::SemanticWithSymbols(_, interner) | Self::CanonicalWithSymbols(_, interner) => {
+                interner
+                    .try_resolve(&symbol)
+                    .map_or_else(|| format!("symbol#{}", symbol.into_usize()), str::to_owned)
+            }
+            Self::Semantic(_) | Self::Canonical(_) => format!("symbol#{}", symbol.into_usize()),
+        }
+    }
+
+    /// Whether `ty` is the builtin `str` view.
+    fn is_str_view(&self, ty: Type) -> bool {
+        let Some(id) = ty.as_struct() else {
+            return false;
+        };
+        let kind = match self {
+            Self::Semantic(pool) | Self::SemanticWithSymbols(pool, _) => pool.text_view_kind(id),
+            Self::Canonical(pool) | Self::CanonicalWithSymbols(pool, _) => pool.text_view_kind(id),
+        };
+        matches!(kind, Some(crate::types::TextViewKind::Str))
+    }
+
     fn struct_field_type(
         &self,
         id: StructId,
@@ -1764,6 +1802,37 @@ impl AirEditor {
     }
 }
 
+/// One declared parameter of a direct callee, as AIR validation compares a
+/// call's argument against it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AirCalleeParam {
+    /// The parameter's declared type.
+    pub ty: Type,
+    /// The parameter's declared passing mode.
+    pub mode: AirArgMode,
+}
+
+/// Resolves a direct call's symbol to its callee's declared parameters, in
+/// argument order (a method's receiver first). `None` means the validator
+/// cannot name the callee's signature, and the call's arguments are not
+/// checked: a generic callee, whose declared types still mention its type
+/// parameters, or a synthesized or runtime callable with no source signature.
+pub type AirCalleeResolver<'a> = &'a dyn Fn(Spur) -> Option<Vec<AirCalleeParam>>;
+
+/// Whether a value of type `value` may flow into a slot declared `slot`
+/// without a conversion step: a call parameter, a local, a field or element
+/// place, a parameter slot, or the function result.
+///
+/// This is semantic analysis's own slot relation (`require_slot_type`, RUE-2438)
+/// restated at the AIR boundary, so that a producer gap is an internal error
+/// here and not a layout mismatch in code generation (RUE-2452). It is
+/// directional: the value must have exactly the slot's type, with two
+/// recovery escapes. A `!` value never arrives, so it coerces to every slot
+/// (spec 3.4:3-4); an `<error>` value or slot has already been reported.
+fn slot_accepts(slot: Type, value: Type) -> bool {
+    value.can_coerce_to(&slot) || slot.is_error()
+}
+
 /// One operand of an AIR instruction, as [`Air::try_for_each_operand`]
 /// reports it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1942,6 +2011,20 @@ impl ValidatedAir {
         air.finish(AirValidationContext::SemanticWithSymbols(pool, interner))
     }
 
+    /// [`Self::from_semantic_air_with_symbols`], also checking each direct
+    /// call's arguments against the parameters `callees` declares for it.
+    pub(crate) fn from_semantic_air_with_callees(
+        air: Air,
+        pool: &TypeInternPool,
+        interner: &ThreadedRodeo,
+        callees: AirCalleeResolver<'_>,
+    ) -> Result<Self, AirValidationError> {
+        air.finish_with_callees(
+            AirValidationContext::SemanticWithSymbols(pool, interner),
+            Some(callees),
+        )
+    }
+
     pub fn into_editor(self) -> AirEditor {
         AirEditor { air: self.air }
     }
@@ -1949,6 +2032,16 @@ impl ValidatedAir {
 
 impl Air {
     fn finish(self, context: AirValidationContext<'_>) -> Result<ValidatedAir, AirValidationError> {
+        self.finish_with_callees(context, None)
+    }
+
+    /// [`Self::finish`], also checking every direct call's arguments against
+    /// the declared parameters `callees` resolves for its symbol.
+    fn finish_with_callees(
+        self,
+        context: AirValidationContext<'_>,
+        callees: Option<AirCalleeResolver<'_>>,
+    ) -> Result<ValidatedAir, AirValidationError> {
         // Report the published per-body instruction ceiling first: a latched
         // owner holds a truncated reference graph, so every structural finding
         // downstream would be a consequence of the limit rather than a producer
@@ -2086,6 +2179,29 @@ impl Air {
                             })?
                     }
                 };
+            }
+        }
+        // The declared type of every local and parameter slot a store may
+        // write: a local's comes from its `StorageLive` marker, a parameter's
+        // from the body's `Param` reads and the base types of places rooted at
+        // it. A slot no marker names is typed by its first `Alloc`, which is
+        // then its only declaration and is not checked against itself.
+        let mut local_slot_types: ahash::AHashMap<u32, Type> = ahash::AHashMap::new();
+        let mut param_slot_types: ahash::AHashMap<u32, Type> = ahash::AHashMap::new();
+        for inst in &self.instructions {
+            match inst.data {
+                AirInstData::StorageLive { slot } => {
+                    local_slot_types.entry(slot).or_insert(inst.ty);
+                }
+                AirInstData::Param { index } => {
+                    param_slot_types.entry(index).or_insert(inst.ty);
+                }
+                _ => {}
+            }
+        }
+        for place in &self.places {
+            if let AirPlaceBase::Param(slot) = place.base {
+                param_slot_types.entry(slot).or_insert(place.base_type);
             }
         }
         for (index, inst) in self.instructions.iter().enumerate() {
@@ -2254,6 +2370,22 @@ impl Air {
                     ))
                 }
             };
+            let slot_agrees =
+                |slot_ty: Type, value: AirRef, what: &str| -> Result<(), AirValidationError> {
+                    let value_ty = operand_ty(value);
+                    if slot_accepts(slot_ty, value_ty) {
+                        Ok(())
+                    } else {
+                        Err(fail(
+                            Some(index),
+                            format!(
+                                "{what} {value} has type {}, but its slot has type {}",
+                                context.type_name(value_ty),
+                                context.type_name(slot_ty)
+                            ),
+                        ))
+                    }
+                };
             let result_is_bool = || -> Result<(), AirValidationError> {
                 if agree(inst.ty, Type::BOOL) {
                     Ok(())
@@ -2311,18 +2443,77 @@ impl Air {
                 AirInstData::Neg(value) | AirInstData::Not(value) | AirInstData::BitNot(value) => {
                     result_agrees(*value)?;
                 }
+                // Stores, results and call arguments: each operand against
+                // the declared type of the slot it flows into (RUE-2452).
                 AirInstData::PlaceWrite { place, value } => {
                     let place_ty = check_place(*place)?;
-                    let value_ty = operand_ty(*value);
-                    if !agree(place_ty, value_ty) {
-                        return Err(fail(
-                            Some(index),
-                            format!(
-                                "store writes {} into a place of type {}",
-                                value_ty.name(),
-                                place_ty.name()
-                            ),
-                        ));
+                    slot_agrees(place_ty, *value, "place store")?;
+                }
+                AirInstData::Store { slot, value } => {
+                    if let Some(&slot_ty) = local_slot_types.get(slot) {
+                        slot_agrees(slot_ty, *value, &format!("store to local slot {slot}"))?;
+                    }
+                }
+                AirInstData::Alloc { slot, init } => {
+                    if let Some(&slot_ty) = local_slot_types.get(slot) {
+                        slot_agrees(
+                            slot_ty,
+                            *init,
+                            &format!("initializer of local slot {slot}"),
+                        )?;
+                    }
+                }
+                AirInstData::ParamStore { param_slot, value } => {
+                    if let Some(&slot_ty) = param_slot_types.get(param_slot) {
+                        slot_agrees(
+                            slot_ty,
+                            *value,
+                            &format!("store to parameter slot {param_slot}"),
+                        )?;
+                    }
+                }
+                AirInstData::Ret(Some(value)) => {
+                    slot_agrees(self.return_type, *value, "return value")?;
+                }
+                AirInstData::Call {
+                    runtime: None,
+                    name,
+                    args,
+                }
+                | AirInstData::AccessorCall { name, args } => {
+                    if let Some(params) = callees.and_then(|resolve| resolve(*name)) {
+                        let args = self
+                            .try_get_call_args(args)
+                            .map_err(|e| fail(Some(index), e.to_string()))?;
+                        if args.len() != params.len() {
+                            return Err(fail(
+                                Some(index),
+                                format!(
+                                    "the call to `{}` passes {} arguments, but the callee declares {} parameters",
+                                    context.symbol_name(*name),
+                                    args.len(),
+                                    params.len()
+                                ),
+                            ));
+                        }
+                        for (position, (arg, param)) in args.zip(params).enumerate() {
+                            // An `inout str` parameter views its caller's
+                            // `StrBuf`, `Str(N)` or `str` storage in place, so
+                            // the operand keeps its source's own type; sema's
+                            // `validate_inout_str_operand` is that position's
+                            // authority (RUE-386).
+                            if param.mode == AirArgMode::Inout && context.is_str_view(param.ty) {
+                                continue;
+                            }
+                            slot_agrees(
+                                param.ty,
+                                arg.value,
+                                &format!(
+                                    "argument {position} of the call to `{}`",
+                                    context.symbol_name(*name)
+                                ),
+                            )?;
+                        }
                     }
                 }
                 AirInstData::EnumPayloadGet {
