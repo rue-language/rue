@@ -1546,6 +1546,38 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         None
     }
 
+    /// Every type syntax an anonymous struct's declaration spells: its field
+    /// types (`field_types`) and each method's parameter and result types.
+    /// These are the roots in which `Self` may name the struct being built, so
+    /// a composite method signature (`borrow s: [Self]`, `-> [Self; 1]`)
+    /// binds it just as a field type does (RUE-2579).
+    pub(crate) fn anon_struct_type_syntax_roots(
+        &self,
+        program: &H::ProgramKey,
+        field_types: impl IntoIterator<Item = rue_rir::RirTypeSyntaxRef>,
+        methods: &rue_rir::RirAnonStructMethodsRange,
+    ) -> Vec<rue_rir::RirTypeSyntaxRef> {
+        let rir = self.host.program_rir(program);
+        let mut roots = field_types.into_iter().collect::<Vec<_>>();
+        for method_ref in rir.anon_struct_methods(methods).to_vec() {
+            if let InstData::FnDecl {
+                params,
+                return_type,
+                ..
+            } = &rir.get(method_ref).data
+            {
+                roots.extend(
+                    rir.params(params)
+                        .to_vec()
+                        .into_iter()
+                        .map(|parameter| parameter.ty),
+                );
+                roots.push(*return_type);
+            }
+        }
+        roots
+    }
+
     /// Decode anonymous method signatures from RIR exactly once, at the AIR
     /// boundary. Hosts receive the resolved descriptor below and therefore do
     /// not need to interpret `FnDecl`, parameter ranges, or type syntax.
@@ -4973,8 +5005,10 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 // its producer and structural anchor, both settled before any
                 // field type resolves, so the binding is issued up front and
                 // `next: ptr mut Self` resolves through the same substitution
-                // that carries `comptime T: type` (RUE-2223). A named struct
-                // binds `Self` in its declaration signature instead.
+                // that carries `comptime T: type` (RUE-2223), as do composite
+                // method signature types such as `borrow s: [Self]`
+                // (RUE-2579). A named struct binds `Self` in its declaration
+                // signature instead.
                 let self_identity = env.canonical_identity.as_ref().map(|producer| {
                     self.host.issue_anonymous_identity(
                         &self.program_key(),
@@ -4984,12 +5018,15 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                     )
                 });
                 let self_name = self_identity.as_ref().and_then(|_| {
-                    self.self_type_name(
-                        &self.program_key(),
+                    let program = self.program_key();
+                    let roots = self.anon_struct_type_syntax_roots(
+                        &program,
                         field_decls.iter().map(|(_, type_sym)| *type_sym),
-                    )
+                        methods,
+                    );
+                    self.self_type_name(&program, roots)
                 });
-                let mut field_type_subst = Cow::Borrowed(&local_type_subst);
+                let mut declared_type_subst = Cow::Borrowed(&local_type_subst);
                 if let Some(name) = self_name {
                     let identity = self_identity
                         .as_ref()
@@ -4997,7 +5034,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                     if let Some(self_ty) =
                         host_value!(self.host.anonymous_nominal_self_type(identity))
                     {
-                        field_type_subst.to_mut().insert(name, self_ty);
+                        declared_type_subst.to_mut().insert(name, self_ty);
                     }
                 }
 
@@ -5012,7 +5049,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                         &self.program_key(),
                         type_sym,
                         env,
-                        field_type_subst.as_ref(),
+                        declared_type_subst.as_ref(),
                         &local_value_subst,
                         span,
                     ));
@@ -5028,7 +5065,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                     &self.program_key(),
                     methods,
                     env,
-                    &local_type_subst,
+                    declared_type_subst.as_ref(),
                     &local_value_subst,
                 ));
 
