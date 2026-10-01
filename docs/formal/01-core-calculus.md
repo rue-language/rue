@@ -1990,11 +1990,17 @@ depends on.
 read; reading out an owning value would mint a second owner and is rejected —
 the same argument as the RUE-651 `get` gate), projected further, passed as a
 `borrow` argument, or compared (§5.4's compare loan). A `place(exclusive, T)`
-result may also be passed as an `inout` argument or be the receiver of an
-`inout self` method: that uses the place the result's loan grants and is not a
-new access of `root(p)`. An `inout` argument or `inout self` receiver requires
-`place(exclusive, T)`, so a `place(shared, T)` result there is rejected, even
-when `root(p)` is mutable (prose `6.6:10`, E0259). It may **not** be
+result, or a place projected from one, may also be passed as an `inout`
+argument or be the receiver of an `inout self` method (prose `6.6:10`,
+`6.6:15`): that use is covered by the result's own `(root(p), exclusive)` entry
+in `Λ_expr`, so it adds no further exclusive entry for `root(p)` to `Λ_call`;
+every other exclusive use of `root(p)` in the extent stays inconsistent. A
+`place(shared, T)` result, or a place projected from one, is not mutable, so
+(Call)'s `p mutable` premise fails for it as an `inout` argument or as the
+receiver of an `inout self` method: it is rejected with E0259 when `root(p)` is
+mutable (prose `6.6:10`), and by the mutability premise itself, E0203, when it
+is not (prose `6.1:43`). Whether a result may be the receiver of an
+`inout self` **accessor** is left open (RUE-2530). It may **not** be
 returned, stored, bound by a `let`, or captured in an aggregate — each escape
 would let the loan outlive its extent (prose `6.6:9`–`6.6:11`). Unlike `(Call)`'s
 loans, which are discharged at the call, the accessor loan joins the enclosing
