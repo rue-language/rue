@@ -2121,8 +2121,9 @@ impl<'a> ConstraintGenerator<'a> {
                 //
                 // The value flows into the place exactly as into a field: the
                 // place type is the expected side and the error points at the
-                // value, so a mismatch reads "expected <place>, found <value>"
-                // as a local or field assignment does (RUE-2560).
+                // value, as at a field assignment, so a mismatch reads
+                // "expected <place>, found <value>", the direction a local
+                // assignment's message has too (RUE-2560).
                 if !Self::is_never_concrete(&value_info.ty) {
                     self.add_constraint(Constraint::contextual(
                         value_info.ty,
