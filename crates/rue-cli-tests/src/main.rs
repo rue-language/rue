@@ -3016,8 +3016,8 @@ fn write_watch_edit(dir: &Path, edit: &WatchEdit) -> Result<(), String> {
     if let Some(target) = edit.symlink_target.as_deref() {
         return replace_watch_symlink(&path, target);
     }
-    // A repair can land on a path a previous edit turned into something
-    // `fs::write` cannot open: a directory, or a named pipe, where the open
+    // A repair can land on a path a previous edit turned into something a
+    // file write or rename cannot replace: a directory, or a named pipe, where an open
     // would block until a reader appeared and hang the harness rather than
     // fail it. Clear those first. Inert for every case that only ever writes
     // files, and `metadata` follows symlinks, so a case whose fixture is a
@@ -3080,10 +3080,26 @@ fn replace_watch_fixture(path: &Path, contents: &[u8]) -> std::io::Result<()> {
         .unwrap_or_else(|| Path::new("."));
     let mut staged = tempfile::NamedTempFile::new_in(parent)?;
     staged.write_all(contents)?;
+    // Keep the fixture's mode: an existing file's own, and for a new file the
+    // ordinary 0644 `fs::write` would give it, not `NamedTempFile`'s 0600.
     if let Some(existing) = existing {
         staged.as_file().set_permissions(existing.permissions())?;
+    } else {
+        set_new_watch_fixture_mode(staged.as_file())?;
     }
     staged.persist(&target).map_err(|error| error.error)?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn set_new_watch_fixture_mode(file: &std::fs::File) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    file.set_permissions(std::fs::Permissions::from_mode(0o644))
+}
+
+#[cfg(not(unix))]
+fn set_new_watch_fixture_mode(_: &std::fs::File) -> std::io::Result<()> {
     Ok(())
 }
 
