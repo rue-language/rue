@@ -6489,3 +6489,17 @@ fn main() -> i32 {
 """
 compile_fail = true
 error_contains = ["E0489"]
+
+[[case]]
+name = "type_param_str_borrow_parameter"
+spec = ["4.14:5", "4.14:16"]
+description = "`fn g(comptime T: type, borrow s: T)` called with `T = str` receives the caller's view by value: `s.len()` is 4 (RUE-2552)"
+source = """
+fn g(comptime T: type, borrow s: T) -> i32 { @intCast(s.len()) }
+
+fn main() -> i32 {
+    let x = "abcd";
+    g(str, borrow x)
+}
+"""
+exit_code = 4
