@@ -276,12 +276,14 @@ pub fn body_parameter_types(air: &crate::Air) -> ahash::AHashMap<u32, crate::Typ
 /// [`body_parameter_types`] restricted to the parameters that actually occupy
 /// an ABI slot.
 ///
-/// A zero-sized by-value parameter occupies no slot, so the slot it is recorded
-/// against is the *next* parameter's. `occupies_slot` reports whether a type has
-/// any slot at all, and a parameter it rejects never claims one — which leaves
-/// each slot to the parameter that owns it. Every consumer that derives a
-/// physical layout from these types asks this way; the unrestricted spelling
-/// above is for presentation, where naming a zero-sized parameter is the point.
+/// A zero-sized by-value parameter occupies no slot. It is recorded under its
+/// own key past the end of the ABI range (RUE-2534), so it never names another
+/// parameter's slot, but no slot is its own either. `occupies_slot` reports
+/// whether a type has any slot at all, and a parameter it rejects never claims
+/// one — which leaves each slot to the parameter that owns it. Every consumer
+/// that derives a physical layout from these types asks this way; the
+/// unrestricted spelling above is for presentation, where naming a zero-sized
+/// parameter is the point.
 pub fn occupying_body_parameter_types(
     air: &crate::Air,
     occupies_slot: impl Fn(crate::Type) -> bool,
