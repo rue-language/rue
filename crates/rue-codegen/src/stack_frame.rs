@@ -1306,6 +1306,7 @@ mod tests {
         storage_live(&mut cfg, entry, 2, Type::I32);
         let held_a = cfg
             .append_place_read(
+                &pool,
                 entry,
                 PlaceBase::Local(0),
                 pair_ty,
@@ -1434,6 +1435,7 @@ mod tests {
             for field_index in 0..3 {
                 let field = cfg
                     .append_place_read(
+                        &pool,
                         entry,
                         PlaceBase::Local(base_slot),
                         triple_ty,
@@ -1790,6 +1792,7 @@ mod tests {
             storage_live(&mut cfg, entry, slot, Type::I32);
             let field = cfg
                 .append_place_read(
+                    &type_pool,
                     entry,
                     PlaceBase::Param(0),
                     pair_ty,

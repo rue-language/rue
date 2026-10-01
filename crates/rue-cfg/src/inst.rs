@@ -1201,7 +1201,51 @@ impl Clone for Cfg {
     }
 }
 
+/// Which root a place base names, for the slot-range rule shared by the CFG
+/// verifier and the edit API.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RootKind {
+    Local,
+    Param,
+}
+
+/// The slot-range rule for a local or parameter place root of ABI `width`
+/// against `limit` (`num_locals` / `num_params`). A sized root must fit
+/// entirely below the limit. A zero-width local needs no storage but must not
+/// start past the limit; a zero-width by-value parameter is keyed past the ABI
+/// range (RUE-2534), so any key is admitted. `Err` carries the range end
+/// (`None` on overflow) for diagnostics.
+pub(crate) fn root_slot_range(
+    kind: RootKind,
+    slot: u32,
+    width: u32,
+    limit: u32,
+) -> Result<(), Option<u32>> {
+    if width == 0 && kind == RootKind::Param {
+        return Ok(());
+    }
+    let end = slot.checked_add(width);
+    match end {
+        Some(end) if end <= limit => Ok(()),
+        _ => Err(end),
+    }
+}
+
 impl Cfg {
+    /// Width of a parameter root: a by-reference parameter is one pointer
+    /// slot whatever its logical type; otherwise the type's ABI width.
+    pub(crate) fn param_root_width<E>(
+        &self,
+        slot: u32,
+        abi_width: impl FnOnce() -> Result<u32, E>,
+    ) -> Result<u32, E> {
+        if self.is_param_by_ref(slot) {
+            Ok(1)
+        } else {
+            abi_width()
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn reset_test_clone_count() {
         CFG_CLONE_COUNT.with(|count| count.set(0));
@@ -2244,6 +2288,7 @@ impl Cfg {
     /// Replace a place read, storing its projections in this CFG owner.
     pub fn replace_place_read(
         &mut self,
+        type_pool: &rue_air::FrozenTypeInternPool,
         value: CfgValue,
         base: PlaceBase,
         base_type: Type,
@@ -2260,7 +2305,7 @@ impl Cfg {
             ));
         }
         let staged = Self::stage_edit(OP, projections)?;
-        self.validate_place_input(OP, base, &staged)?;
+        self.validate_place_input(OP, type_pool, base, base_type, &staged)?;
         let projections = payload::push_projections(&mut self.projections, staged)?;
         self.values[value.0 as usize].data = CfgInstData::PlaceRead {
             place: Place {
@@ -2275,6 +2320,7 @@ impl Cfg {
     /// Replace a place write, storing its projections in this CFG owner.
     pub fn replace_place_write(
         &mut self,
+        type_pool: &rue_air::FrozenTypeInternPool,
         instruction: CfgValue,
         base: PlaceBase,
         base_type: Type,
@@ -2297,7 +2343,7 @@ impl Cfg {
             return Err(Self::invalid_edit(OP, "written value is undefined"));
         }
         let staged = Self::stage_edit(OP, projections)?;
-        self.validate_place_input(OP, base, &staged)?;
+        self.validate_place_input(OP, type_pool, base, base_type, &staged)?;
         let projections = payload::push_projections(&mut self.projections, staged)?;
         self.values[instruction.0 as usize].data = CfgInstData::PlaceWrite {
             place: Place {
@@ -2487,12 +2533,25 @@ impl Cfg {
     fn validate_place_input(
         &self,
         operation: &'static str,
+        type_pool: &rue_air::FrozenTypeInternPool,
         base: PlaceBase,
+        base_type: Type,
         projections: &[Projection],
     ) -> Result<(), CfgEditError> {
+        let width_error = || Self::invalid_edit(operation, "place base type has no valid width");
         let base_valid = match base {
-            PlaceBase::Local(slot) => slot < self.num_locals,
-            PlaceBase::Param(slot) => slot < self.num_params,
+            PlaceBase::Local(slot) => {
+                let width = type_pool
+                    .try_abi_slot_count(base_type)
+                    .map_err(|_| width_error())?;
+                root_slot_range(RootKind::Local, slot, width, self.num_locals).is_ok()
+            }
+            PlaceBase::Param(slot) => {
+                let width = self
+                    .param_root_width(slot, || type_pool.try_abi_slot_count(base_type))
+                    .map_err(|_| width_error())?;
+                root_slot_range(RootKind::Param, slot, width, self.num_params).is_ok()
+            }
             PlaceBase::Accessor(value) => {
                 (value.as_u32() as usize) < self.values.len()
                     && matches!(self.get_inst(value).data, CfgInstData::AccessorCall { .. })
@@ -2702,6 +2761,7 @@ impl Cfg {
     /// Append a place read whose projections are owned by this CFG.
     pub fn append_place_read(
         &mut self,
+        type_pool: &rue_air::FrozenTypeInternPool,
         block: BlockId,
         base: PlaceBase,
         base_type: Type,
@@ -2711,7 +2771,7 @@ impl Cfg {
     ) -> Result<CfgValue, CfgEditError> {
         const OP: &str = "projections";
         let staged = Self::stage_edit(OP, projections)?;
-        self.validate_place_input(OP, base, &staged)?;
+        self.validate_place_input(OP, type_pool, base, base_type, &staged)?;
         self.preflight_append(OP, block)?;
         let projections = payload::push_projections(&mut self.projections, staged)?;
         let place = Place {
@@ -4391,6 +4451,7 @@ mod tests {
             .unwrap();
         let place = cfg
             .append_place_read(
+                &pool,
                 entry,
                 PlaceBase::Local(0),
                 array_ty,
@@ -4536,10 +4597,10 @@ mod tests {
                 .replace_enum_payload(&pool, old, [replacement])
                 .unwrap_err(),
             rewritten
-                .replace_place_read(old, PlaceBase::Local(0), array_ty, [])
+                .replace_place_read(&pool, old, PlaceBase::Local(0), array_ty, [])
                 .unwrap_err(),
             rewritten
-                .replace_place_write(old, PlaceBase::Local(0), array_ty, [], replacement)
+                .replace_place_write(&pool, old, PlaceBase::Local(0), array_ty, [], replacement)
                 .unwrap_err(),
         ] {
             assert!(matches!(error, CfgEditError::InvalidBuilderInput { .. }));
@@ -4557,6 +4618,7 @@ mod tests {
             .unwrap();
         rewritten
             .replace_place_read(
+                &pool,
                 place,
                 PlaceBase::Local(0),
                 array_ty,

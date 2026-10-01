@@ -868,6 +868,7 @@ mod tests {
     /// so the write is appended projection-free and rewritten in place.
     fn place_write(
         cfg: &mut Cfg,
+        type_pool: &FrozenTypeInternPool,
         block: BlockId,
         base: PlaceBase,
         base_type: Type,
@@ -890,7 +891,7 @@ mod tests {
             },
             Type::UNIT,
         );
-        cfg.replace_place_write(instruction, base, base_type, projections, stored)
+        cfg.replace_place_write(type_pool, instruction, base, base_type, projections, stored)
             .unwrap();
     }
 
@@ -1144,6 +1145,7 @@ mod tests {
         let projections = cells_projections(fixture, i, j);
         let element = cfg
             .append_place_read(
+                &fixture.pool,
                 entry,
                 PlaceBase::Local(3),
                 fixture.grid_ty,
@@ -1159,6 +1161,7 @@ mod tests {
         let projections = cells_projections(fixture, i, j);
         place_write(
             &mut cfg,
+            &fixture.pool,
             entry,
             PlaceBase::Local(3),
             fixture.grid_ty,
@@ -1170,6 +1173,7 @@ mod tests {
         let projections = cells_projections(fixture, i, j);
         let result = cfg
             .append_place_read(
+                &fixture.pool,
                 entry,
                 PlaceBase::Local(3),
                 fixture.grid_ty,
@@ -1261,6 +1265,7 @@ mod tests {
         cfg.entry = entry;
         let index = value(&mut cfg, entry, CfgInstData::Param { index: 1 }, Type::U64);
         cfg.append_place_read(
+            &fixture.pool,
             entry,
             PlaceBase::Param(0),
             fixture.empty_array_ty,
@@ -1302,6 +1307,7 @@ mod tests {
         let index = value(&mut cfg, entry, CfgInstData::Param { index: 1 }, Type::U64);
         place_write(
             &mut cfg,
+            &fixture.pool,
             entry,
             PlaceBase::Param(0),
             fixture.empty_array_ty,
@@ -1447,6 +1453,7 @@ mod tests {
         );
         let read = indexed_cfg
             .append_place_read(
+                &fixture.pool,
                 indexed_entry,
                 PlaceBase::Local(0),
                 array_ty,
@@ -1657,6 +1664,7 @@ mod tests {
         );
         let element = local_cfg
             .append_place_read(
+                &pool,
                 entry,
                 PlaceBase::Local(0),
                 empty_ty,
@@ -1682,6 +1690,7 @@ mod tests {
         );
         let element = param_cfg
             .append_place_read(
+                &pool,
                 entry,
                 PlaceBase::Param(0),
                 empty_ty,
@@ -1801,6 +1810,7 @@ mod tests {
         );
         let element = local_cfg
             .append_place_read(
+                &pool,
                 entry,
                 PlaceBase::Local(0),
                 holder_ty,
@@ -1823,6 +1833,7 @@ mod tests {
         );
         let element = param_cfg
             .append_place_read(
+                &pool,
                 entry,
                 PlaceBase::Param(0),
                 holder_ty,
@@ -1941,6 +1952,7 @@ mod tests {
         storage_live(&mut cfg, entry, 0, ptr_unit_ty);
         let empty_unit = cfg
             .append_place_read(
+                &pool,
                 entry,
                 PlaceBase::Local(0),
                 empty_ty,
@@ -1973,6 +1985,7 @@ mod tests {
         storage_live(&mut cfg, entry, 2, ptr_unit_ty);
         let tail_unit = cfg
             .append_place_read(
+                &pool,
                 entry,
                 PlaceBase::Local(1),
                 tail_ty,
@@ -1997,6 +2010,7 @@ mod tests {
         alloc_slot(&mut cfg, entry, 2, tail_zst);
         let borrow_operand = cfg
             .append_place_read(
+                &pool,
                 entry,
                 PlaceBase::Local(1),
                 tail_ty,
@@ -2108,6 +2122,7 @@ mod tests {
         let pointer = value(&mut cfg, entry, CfgInstData::Param { index: 0 }, ptr_ty);
         let read = cfg
             .append_place_read(
+                &pool,
                 entry,
                 PlaceBase::Indirect(pointer),
                 narrow_ty,
@@ -2235,6 +2250,7 @@ mod tests {
         let projections = cells_projections(&fixture, i, j);
         let element = cfg
             .append_place_read(
+                &fixture.pool,
                 entry,
                 PlaceBase::Local(0),
                 fixture.grid_ty,
@@ -2259,6 +2275,7 @@ mod tests {
         let projections = cells_projections(&fixture, i, j);
         let result = cfg
             .append_place_read(
+                &fixture.pool,
                 entry,
                 PlaceBase::Local(0),
                 fixture.grid_ty,

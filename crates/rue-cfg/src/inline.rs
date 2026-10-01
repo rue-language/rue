@@ -2726,6 +2726,7 @@ mod tests {
         // `fn get(p: Pair) -> i64 { p.a }` inlined into
         // `fn caller() -> i64 { let p = Pair { a: 1, b: 2 }; get(p) }`.
         let (mut program, pair_id, pair_ty) = pair_program();
+        let edit_pool = program.type_pool.clone();
         program.add("get", |_| {
             let mut cfg = Cfg::new(Type::I64, 0, 2, "get".to_string(), vec![false, false]);
             // One source parameter spans both flattened ABI slots.
@@ -2738,6 +2739,7 @@ mod tests {
             cfg.entry = entry;
             let read = cfg
                 .append_place_read(
+                    &edit_pool,
                     entry,
                     PlaceBase::Param(0),
                     pair_ty,
@@ -3321,6 +3323,7 @@ mod tests {
         // `fn caller() -> i64 { let mut p = Pair { a: 1, b: 2 };
         //  bump(inout p.a); p.a }`: the inout argument is a projected place.
         let (mut program, pair_id, pair_ty) = pair_program();
+        let edit_pool = program.type_pool.clone();
         program.add("bump", |_| by_ref_bump_callee());
         program.add("caller", |interner| {
             let mut cfg = Cfg::new(Type::I64, 2, 0, "caller".to_string(), Vec::<bool>::new());
@@ -3353,6 +3356,7 @@ mod tests {
             );
             let argument = cfg
                 .append_place_read(
+                    &edit_pool,
                     entry,
                     PlaceBase::Local(0),
                     pair_ty,
@@ -3378,6 +3382,7 @@ mod tests {
             .unwrap();
             let result = cfg
                 .append_place_read(
+                    &edit_pool,
                     entry,
                     PlaceBase::Local(0),
                     pair_ty,
@@ -3451,6 +3456,7 @@ mod tests {
         let slice_ty = Type::new_struct(slice_id);
         let array_ty = Type::new_array(type_pool.intern_array_from_type(Type::I64, 3));
         let mut program = Program::new(type_pool.freeze(), interner);
+        let edit_pool = program.type_pool.clone();
         program.add("first", |interner| {
             // `fn first(borrow s: [i64]) -> i64 { s[0] }`: the fat pointer's
             // data pointer is projected out of the by-value parameter.
@@ -3466,6 +3472,7 @@ mod tests {
             cfg.append_inst(entry, inst(CfgInstData::Param { index: 0 }, slice_ty));
             let data = cfg
                 .append_place_read(
+                    &edit_pool,
                     entry,
                     PlaceBase::Param(0),
                     slice_ty,
@@ -3525,6 +3532,7 @@ mod tests {
             let zero = cfg.append_inst(entry, inst(CfgInstData::Const(0), Type::U64));
             let base = cfg
                 .append_place_read(
+                    &edit_pool,
                     entry,
                     PlaceBase::Local(0),
                     array_ty,
