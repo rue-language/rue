@@ -129,6 +129,17 @@ pub struct OptimizationStats {
     pub constopt_fold_attempts: u64,
     pub constopt_folded: u64,
     pub constopt_loads_rewritten: u64,
+    /// Block parameters constopt replaced by the constant every live edge
+    /// passes (RUE-2545).
+    pub constopt_params_resolved: u64,
+    /// Values constopt recorded as always equal to another value.
+    pub constopt_aliases_recorded: u64,
+    /// Edges constopt proved never taken.
+    pub constopt_edges_pruned: u64,
+    /// Blocks constopt proved never executed.
+    pub constopt_blocks_proven_dead: u64,
+    /// Constopt walks over live edges that retire dead cycles.
+    pub constopt_reachability_walks: u64,
     pub peephole_divmods_reduced: u64,
     pub peephole_identities_rewired: u64,
     pub simplify_blocks_scanned: u64,
@@ -191,6 +202,11 @@ impl OptimizationStats {
         self.constopt_fold_attempts += pass.fold_attempts;
         self.constopt_folded += pass.folded;
         self.constopt_loads_rewritten += pass.loads_rewritten;
+        self.constopt_params_resolved += pass.params_resolved;
+        self.constopt_aliases_recorded += pass.aliases_recorded;
+        self.constopt_edges_pruned += pass.edges_pruned;
+        self.constopt_blocks_proven_dead += pass.blocks_proven_dead;
+        self.constopt_reachability_walks += pass.reachability_walks;
     }
 
     fn add_peephole(&mut self, pass: peephole::Stats) {
@@ -293,7 +309,7 @@ enum CleanupSequence {
 }
 
 fn constopt_made_progress(stats: constopt::Stats) -> bool {
-    stats.folded > 0 || stats.loads_rewritten > 0
+    stats.made_progress()
 }
 
 fn peephole_made_progress(stats: peephole::Stats) -> bool {
@@ -340,7 +356,7 @@ fn run_cleanup_to_fixpoint_with_limit(
                 let dce_stats = dce::run(cfg);
                 let dce_progress = dce_stats.made_progress();
                 stats.add_dce(dce_stats);
-                let constopt_stats = constopt::run(cfg);
+                let constopt_stats = constopt::run(cfg)?;
                 let constopt_progress = constopt_made_progress(constopt_stats);
                 stats.add_constopt(constopt_stats);
                 let peephole_stats = peephole::run(cfg)?;
@@ -352,7 +368,7 @@ fn run_cleanup_to_fixpoint_with_limit(
                 dce_progress || constopt_progress || peephole_progress || simplify_progress
             }
             CleanupSequence::Forwarding => {
-                let constopt_stats = constopt::run(cfg);
+                let constopt_stats = constopt::run(cfg)?;
                 let constopt_progress = constopt_made_progress(constopt_stats);
                 stats.add_constopt(constopt_stats);
                 let simplify_stats = simplify::run(cfg)?;
@@ -361,7 +377,7 @@ fn run_cleanup_to_fixpoint_with_limit(
                 constopt_progress || simplify_progress
             }
             CleanupSequence::Unrolling { revisit_clones } => {
-                let constopt_stats = constopt::run(cfg);
+                let constopt_stats = constopt::run(cfg)?;
                 let constopt_progress = constopt_made_progress(constopt_stats);
                 stats.add_constopt(constopt_stats);
                 let simplify_stats = simplify::run(cfg)?;
@@ -627,7 +643,7 @@ pub fn optimize_with_budget(
                 // instruction only when one of its inputs becomes constant, so
                 // deep chains stay linear instead of forcing quadratic full-CFG
                 // rescans (RUE-794).
-                let constopt_stats = constopt::run(&mut cfg);
+                let constopt_stats = constopt::run(&mut cfg)?;
                 stats.add_constopt(constopt_stats);
 
                 // Peephole algebraic simplification (RUE-912): rewire trap-free
@@ -1069,7 +1085,10 @@ mod tests {
         assert_eq!(
             stats,
             OptimizationStats {
-                constopt_fold_attempts: 15,
+                // The `load | 0` identity is recorded as an alias and its one
+                // foldable user re-attempted through it.
+                constopt_fold_attempts: 16,
+                constopt_aliases_recorded: 1,
                 peephole_identities_rewired: 1,
                 simplify_blocks_scanned: 2,
                 dce_instructions_removed: 4,

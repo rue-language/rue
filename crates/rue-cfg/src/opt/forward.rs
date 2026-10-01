@@ -288,7 +288,7 @@ pub fn run(cfg: &mut Cfg, type_pool: &FrozenTypeInternPool) -> Result<Stats, cra
     // are excluded from the Rule 2 table below too). Nothing here depends
     // on later rewriting, so one scan suffices.
     // ------------------------------------------------------------------
-    let slot_class = slot_facts::classify_slot_writes(cfg, Some(&reachable));
+    let slot_class = slot_facts::classify_slot_writes(cfg, &reachable);
     let mut roots = OwnerRoots::default();
 
     // ------------------------------------------------------------------

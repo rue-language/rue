@@ -60,7 +60,18 @@ pub(super) fn is_foldable_instruction(cfg: &Cfg, value: CfgValue) -> bool {
 /// This is the fold kernel; the sparse worklist driver in
 /// [`super::constopt`] decides which instructions to attempt and when to
 /// revisit them (RUE-794).
-pub(super) fn fold_instruction(cfg: &mut Cfg, value: CfgValue) -> bool {
+///
+/// `same(lhs, rhs)` decides the equal-operand annihilators (`x - x`,
+/// `x ^ x`). It may answer `true` only for operands that hold the same value
+/// at every execution of `value`; plain identity is always sound. The driver
+/// passes its alias knowledge here so a chain exposed by an identity
+/// (`(x + 0) - x`) folds in the same run instead of waiting for the peephole
+/// pass to rewire the identity (RUE-2545).
+pub(super) fn fold_instruction(
+    cfg: &mut Cfg,
+    value: CfgValue,
+    same: impl Fn(CfgValue, CfgValue) -> bool,
+) -> bool {
     // Get the instruction data and type
     let inst = cfg.get_inst(value);
     let ty = inst.ty;
@@ -77,7 +88,7 @@ pub(super) fn fold_instruction(cfg: &mut Cfg, value: CfgValue) -> bool {
                 // x - x is 0 with no possible overflow, for any integer x
                 // (RUE-912). Not for a float: `inf - inf` and `NaN - NaN` are
                 // both NaN (spec 3.12:21).
-                .or_else(|| (!ty.is_float() && lhs == rhs).then_some(CfgInstData::Const(0)))
+                .or_else(|| (!ty.is_float() && same(*lhs, *rhs)).then_some(CfgInstData::Const(0)))
         }
         CfgInstData::Mul(lhs, rhs) => {
             fold_binary_arith(cfg, *lhs, *rhs, ty, |a, b| checked_mul(a, b, ty))
@@ -102,7 +113,7 @@ pub(super) fn fold_instruction(cfg: &mut Cfg, value: CfgValue) -> bool {
                 Some(ty.integer_semantics()?.wrapping_sub_u64(a, b))
             })
             // x wrapping_sub x is always zero and cannot trap.
-            .or_else(|| (lhs == rhs).then_some(CfgInstData::Const(0)))
+            .or_else(|| same(*lhs, *rhs).then_some(CfgInstData::Const(0)))
         }
         CfgInstData::WrappingMul(lhs, rhs) => {
             fold_binary_arith(cfg, *lhs, *rhs, ty, |a, b| {
@@ -178,7 +189,7 @@ pub(super) fn fold_instruction(cfg: &mut Cfg, value: CfgValue) -> bool {
         CfgInstData::BitXor(lhs, rhs) => {
             fold_binary_arith(cfg, *lhs, *rhs, ty, |a, b| Some(a ^ b))
                 // x ^ x is 0 for any x; bitwise ops never trap (RUE-912).
-                .or_else(|| (lhs == rhs).then_some(CfgInstData::Const(0)))
+                .or_else(|| same(*lhs, *rhs).then_some(CfgInstData::Const(0)))
         }
         CfgInstData::Shl(lhs, rhs) => fold_shift(cfg, *lhs, *rhs, ty, true),
         CfgInstData::Shr(lhs, rhs) => fold_shift(cfg, *lhs, *rhs, ty, false),
@@ -462,7 +473,7 @@ mod tests {
         );
         finalize_cfg(&mut cfg, result);
 
-        crate::opt::constopt::run(&mut cfg);
+        crate::opt::constopt::run(&mut cfg).unwrap();
 
         assert!(
             matches!(cfg.get_inst(result).data, CfgInstData::Const(v) if v == expected),
@@ -489,7 +500,7 @@ mod tests {
         let add = add_add(&mut cfg, c1, c2, Type::I32);
         finalize_cfg(&mut cfg, add);
 
-        crate::opt::constopt::run(&mut cfg);
+        crate::opt::constopt::run(&mut cfg).unwrap();
 
         // The add should be folded to const 5
         match &cfg.get_inst(add).data {
@@ -597,7 +608,7 @@ mod tests {
         );
         finalize_cfg(&mut cfg, mul);
 
-        crate::opt::constopt::run(&mut cfg);
+        crate::opt::constopt::run(&mut cfg).unwrap();
 
         assert!(matches!(cfg.get_inst(sub).data, CfgInstData::Const(0)));
         assert!(matches!(cfg.get_inst(mul).data, CfgInstData::Const(0)));
@@ -612,7 +623,7 @@ mod tests {
         let add = add_add(&mut cfg, c1, c2, Type::I32);
         finalize_cfg(&mut cfg, add);
 
-        crate::opt::constopt::run(&mut cfg);
+        crate::opt::constopt::run(&mut cfg).unwrap();
 
         // The add should NOT be folded (would overflow at runtime)
         match &cfg.get_inst(add).data {
@@ -637,7 +648,7 @@ mod tests {
         );
         finalize_cfg(&mut cfg, lt_val);
 
-        crate::opt::constopt::run(&mut cfg);
+        crate::opt::constopt::run(&mut cfg).unwrap();
 
         // 5 < 3 = false
         match &cfg.get_inst(lt_val).data {
@@ -663,7 +674,7 @@ mod tests {
         );
         finalize_cfg(&mut cfg, lt_val);
 
-        crate::opt::constopt::run(&mut cfg);
+        crate::opt::constopt::run(&mut cfg).unwrap();
 
         // -1 < 0 = true (signed comparison)
         match &cfg.get_inst(lt_val).data {
@@ -695,7 +706,7 @@ mod tests {
         let shr = add_shr(&mut cfg, c1, c2, Type::I8);
         finalize_cfg(&mut cfg, shr);
 
-        crate::opt::constopt::run(&mut cfg);
+        crate::opt::constopt::run(&mut cfg).unwrap();
 
         // -1 >> 1 should be -1, stored canonically (sign-extended to 64 bits)
         match &cfg.get_inst(shr).data {
@@ -721,7 +732,7 @@ mod tests {
         let shr = add_shr(&mut cfg, c1, c2, Type::I8);
         finalize_cfg(&mut cfg, shr);
 
-        crate::opt::constopt::run(&mut cfg);
+        crate::opt::constopt::run(&mut cfg).unwrap();
 
         // -8 >> 2 should be -2, stored canonically (sign-extended to 64 bits)
         match &cfg.get_inst(shr).data {
@@ -746,7 +757,7 @@ mod tests {
         let shr = add_shr(&mut cfg, c1, c2, Type::I16);
         finalize_cfg(&mut cfg, shr);
 
-        crate::opt::constopt::run(&mut cfg);
+        crate::opt::constopt::run(&mut cfg).unwrap();
 
         // -1 >> 4 should be -1, stored canonically (sign-extended to 64 bits)
         match &cfg.get_inst(shr).data {
@@ -771,7 +782,7 @@ mod tests {
         let shr = add_shr(&mut cfg, c1, c2, Type::I32);
         finalize_cfg(&mut cfg, shr);
 
-        crate::opt::constopt::run(&mut cfg);
+        crate::opt::constopt::run(&mut cfg).unwrap();
 
         // -1 >> 8 should be -1, stored canonically (sign-extended to 64 bits)
         match &cfg.get_inst(shr).data {
@@ -796,7 +807,7 @@ mod tests {
         let shr = add_shr(&mut cfg, c1, c2, Type::U8);
         finalize_cfg(&mut cfg, shr);
 
-        crate::opt::constopt::run(&mut cfg);
+        crate::opt::constopt::run(&mut cfg).unwrap();
 
         // 0xFF >> 1 should be 0x7F (logical shift fills with 0)
         match &cfg.get_inst(shr).data {
@@ -815,7 +826,7 @@ mod tests {
         let shr = add_shr(&mut cfg, c1, c2, Type::U8);
         finalize_cfg(&mut cfg, shr);
 
-        crate::opt::constopt::run(&mut cfg);
+        crate::opt::constopt::run(&mut cfg).unwrap();
 
         match &cfg.get_inst(shr).data {
             CfgInstData::Const(value) => {
@@ -845,7 +856,7 @@ mod tests {
         let not = add_bitnot(&mut cfg, c, Type::U32);
         finalize_cfg(&mut cfg, not);
 
-        crate::opt::constopt::run(&mut cfg);
+        crate::opt::constopt::run(&mut cfg).unwrap();
 
         match &cfg.get_inst(not).data {
             CfgInstData::Const(val) => {
@@ -863,7 +874,7 @@ mod tests {
         let not = add_bitnot(&mut cfg, c, Type::U8);
         finalize_cfg(&mut cfg, not);
 
-        crate::opt::constopt::run(&mut cfg);
+        crate::opt::constopt::run(&mut cfg).unwrap();
 
         match &cfg.get_inst(not).data {
             CfgInstData::Const(val) => {
@@ -881,7 +892,7 @@ mod tests {
         let not = add_bitnot(&mut cfg, c, Type::I32);
         finalize_cfg(&mut cfg, not);
 
-        crate::opt::constopt::run(&mut cfg);
+        crate::opt::constopt::run(&mut cfg).unwrap();
 
         match &cfg.get_inst(not).data {
             CfgInstData::Const(val) => {
@@ -904,7 +915,7 @@ mod tests {
         let not = add_bitnot(&mut cfg, c, Type::U64);
         finalize_cfg(&mut cfg, not);
 
-        crate::opt::constopt::run(&mut cfg);
+        crate::opt::constopt::run(&mut cfg).unwrap();
 
         match &cfg.get_inst(not).data {
             CfgInstData::Const(val) => {
@@ -974,7 +985,7 @@ mod tests {
             },
         );
         finalize_cfg(&mut cfg, value);
-        crate::opt::constopt::run(&mut cfg);
+        crate::opt::constopt::run(&mut cfg).unwrap();
         check(&cfg.get_inst(value).data)
     }
 
@@ -1086,7 +1097,7 @@ mod tests {
             },
         );
         finalize_cfg(&mut cfg, value);
-        crate::opt::constopt::run(&mut cfg);
+        crate::opt::constopt::run(&mut cfg).unwrap();
         assert!(
             matches!(cfg.get_inst(value).data, CfgInstData::Sub(..)),
             "inf - inf is NaN, not zero: {:?}",
@@ -1106,7 +1117,7 @@ mod tests {
             },
         );
         finalize_cfg(&mut cfg, value);
-        crate::opt::constopt::run(&mut cfg);
+        crate::opt::constopt::run(&mut cfg).unwrap();
         assert!(matches!(cfg.get_inst(value).data, CfgInstData::Const(0)));
     }
 }

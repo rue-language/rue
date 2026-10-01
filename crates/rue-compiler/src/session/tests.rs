@@ -566,7 +566,7 @@ fn o3_publishes_nested_unrolled_work_for_canonical_slot_loops() {
         o3.work().cfg.optimization_passes,
         crate::canonical_semantic::CfgOptimizationWork {
             // Includes the final observed-no-progress cleanup round.
-            constopt_fold_attempts: 420,
+            constopt_fold_attempts: 423,
             constopt_folded: 26,
             constopt_loads_rewritten: 0,
             peephole_divmods_reduced: 0,

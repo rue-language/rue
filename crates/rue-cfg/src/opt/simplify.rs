@@ -92,6 +92,72 @@ pub fn run(cfg: &mut Cfg) -> Result<Stats, crate::CfgEditError> {
     Ok(stats)
 }
 
+/// The successor a terminator with a constant condition always takes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ConstantSuccessor {
+    /// A `Branch` whose condition is `true`: the then-edge.
+    Then,
+    /// A `Branch` whose condition is `false`: the else-edge.
+    Else,
+    /// A `Switch` whose scrutinee is constant: every edge to this block
+    /// (the matching case, or the default when no case matches).
+    Switch(BlockId),
+}
+
+/// Decide which edge a `Branch` or `Switch` takes when its condition is
+/// already a constant, or `None` when the terminator still depends on a
+/// runtime value.
+///
+/// This is the single authority for constant control flow: terminator folding
+/// below rewrites exactly this choice into a `Goto`, and the sparse constant
+/// driver ([`super::constopt`]) prunes the untaken edges with the same answer
+/// before the rewrite happens.
+pub(super) fn constant_successor(cfg: &Cfg, terminator: &Terminator) -> Option<ConstantSuccessor> {
+    match terminator {
+        Terminator::Branch { cond, .. } => match cfg.get_inst(*cond).data {
+            CfgInstData::BoolConst(true) => Some(ConstantSuccessor::Then),
+            CfgInstData::BoolConst(false) => Some(ConstantSuccessor::Else),
+            _ => None,
+        },
+        Terminator::Switch {
+            scrutinee,
+            cases,
+            default,
+        } => {
+            let inst = cfg.get_inst(*scrutinee);
+            let scrut_val = match inst.data {
+                CfgInstData::Const(v) => v,
+                // Bool match arms lower to cases 0/1 (see CfgBuilder's
+                // AirPattern::Bool handling).
+                CfgInstData::BoolConst(b) => b as u64,
+                _ => return None,
+            };
+            // Match at the width the backends compare at (see module docs),
+            // asking the type's own switch-compare policy rather than
+            // restating it here.
+            let wide = inst.ty.switch_compare_width() == 64;
+            let matches = |case: i64| {
+                if wide {
+                    scrut_val == case as u64
+                } else {
+                    scrut_val as u32 == case as u32
+                }
+            };
+            let target = cfg
+                .switch_cases(cases)
+                .iter()
+                .find(|(case, _)| matches(*case))
+                .map(|(_, target)| *target)
+                .unwrap_or(*default);
+            Some(ConstantSuccessor::Switch(target))
+        }
+        Terminator::Goto { .. }
+        | Terminator::Return { .. }
+        | Terminator::Unreachable
+        | Terminator::None => None,
+    }
+}
+
 /// Rewrite constant-condition `Branch`/`Switch` terminators into `Goto`s.
 ///
 /// Terminators are rewritten in place (not via `Cfg::set_terminator`, whose
@@ -102,69 +168,53 @@ fn fold_terminators(cfg: &mut Cfg, stats: &mut Stats) -> Result<(), crate::CfgEd
         let block_id = BlockId::from_raw(block_idx as u32);
         stats.blocks_scanned += 1;
 
-        match &cfg.get_block(block_id).terminator {
-            Terminator::Branch {
-                cond,
-                then_block,
-                then_args,
-                else_block,
-                else_args,
-            } => {
-                let CfgInstData::BoolConst(taken) = cfg.get_inst(*cond).data else {
-                    continue;
-                };
-                let (target, values) = if taken {
-                    (*then_block, cfg.then_args(then_args).to_vec())
-                } else {
-                    (*else_block, cfg.else_args(else_args).to_vec())
-                };
-                let args = cfg.push_goto_args(values)?;
-                cfg.get_block_mut(block_id).terminator = Terminator::Goto { target, args };
+        let terminator = &cfg.get_block(block_id).terminator;
+        let Some(successor) = constant_successor(cfg, terminator) else {
+            continue;
+        };
+        let replacement = match (successor, terminator) {
+            (
+                ConstantSuccessor::Then,
+                Terminator::Branch {
+                    then_block,
+                    then_args,
+                    ..
+                },
+            ) => {
+                let (target, values) = (*then_block, cfg.then_args(then_args).to_vec());
                 stats.branches_folded += 1;
+                Terminator::Goto {
+                    target,
+                    args: cfg.push_goto_args(values)?,
+                }
             }
-            Terminator::Switch {
-                scrutinee,
-                cases,
-                default,
-            } => {
-                let inst = cfg.get_inst(*scrutinee);
-                let scrut_val = match inst.data {
-                    CfgInstData::Const(v) => v,
-                    // Bool match arms lower to cases 0/1 (see CfgBuilder's
-                    // AirPattern::Bool handling).
-                    CfgInstData::BoolConst(b) => b as u64,
-                    _ => continue,
-                };
-                // Match at the width the backends compare at (see module
-                // docs), asking the type's own switch-compare policy rather
-                // than restating it here.
-                let wide = inst.ty.switch_compare_width() == 64;
-                let matches = |case: i64| {
-                    if wide {
-                        scrut_val == case as u64
-                    } else {
-                        scrut_val as u32 == case as u32
-                    }
-                };
-                let target = cfg
-                    .switch_cases(cases)
-                    .iter()
-                    .find(|(case, _)| matches(*case))
-                    .map(|(_, target)| *target)
-                    .unwrap_or(*default);
+            (
+                ConstantSuccessor::Else,
+                Terminator::Branch {
+                    else_block,
+                    else_args,
+                    ..
+                },
+            ) => {
+                let (target, values) = (*else_block, cfg.else_args(else_args).to_vec());
+                stats.branches_folded += 1;
+                Terminator::Goto {
+                    target,
+                    args: cfg.push_goto_args(values)?,
+                }
+            }
+            (ConstantSuccessor::Switch(target), Terminator::Switch { .. }) => {
+                stats.switches_folded += 1;
                 // Switch edges carry no block arguments, so the Goto is
                 // argument-free.
-                cfg.get_block_mut(block_id).terminator = Terminator::Goto {
+                Terminator::Goto {
                     target,
                     args: crate::payload::CfgGotoArgs::EMPTY,
-                };
-                stats.switches_folded += 1;
+                }
             }
-            Terminator::Goto { .. }
-            | Terminator::Return { .. }
-            | Terminator::Unreachable
-            | Terminator::None => {}
-        }
+            _ => unreachable!("a constant successor matches its terminator kind"),
+        };
+        cfg.get_block_mut(block_id).terminator = replacement;
     }
     Ok(())
 }
@@ -1272,20 +1322,24 @@ mod tests {
             },
         );
 
-        super::super::constopt::run(&mut cfg);
+        let constopt = super::super::constopt::run(&mut cfg).unwrap();
         let stats = run(&mut cfg).unwrap();
         super::super::dce::run(&mut cfg);
 
+        // Constopt already pruned the then-edge and resolved the join param to
+        // the only live argument's constant, so the merge has no parameter
+        // left to substitute.
+        assert_eq!(constopt.params_resolved, 1);
         assert_eq!(stats.branches_folded, 1);
-        // else (the taken arm) and join both merged into entry, and the join
-        // param was substituted by the else arm's value.
+        // else (the taken arm) and join both merged into entry.
         assert_eq!(stats.blocks_merged, 2);
         assert!(
             matches!(
                 cfg.get_block(cfg.entry).terminator,
-                Terminator::Return { value: Some(v) } if v == e
+                Terminator::Return { value: Some(v) }
+                    if v == join_param && matches!(cfg.get_inst(v).data, CfgInstData::Const(2))
             ),
-            "entry must return the else-arm value directly"
+            "entry must return the else-arm constant directly"
         );
         // The dead then-arm is gone entirely: DCE compacts unreachable blocks
         // away rather than leaving an `Unreachable` husk behind (RUE-769), so

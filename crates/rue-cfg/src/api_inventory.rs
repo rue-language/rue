@@ -162,17 +162,32 @@ fn slot_write_classification_has_one_owner() {
     assert!(licm.contains("slot_fact_workspace_growths"));
     assert!(!licm.contains("fn body_has_memory_effect("));
 
-    for (name, source) in [
-        ("opt/constopt.rs", include_str!("opt/constopt.rs")),
-        ("opt/forward.rs", include_str!("opt/forward.rs")),
+    // Constopt counts writes in live blocks only, as it proves blocks dead
+    // (RUE-2545); the incremental classifier shares the per-instruction write
+    // rule with the batch one, inside slot_facts.rs.
+    assert!(owner.contains("pub(super) struct LiveSlotWrites"));
+    assert!(owner.contains("fn visit_local_slot_writes("));
+    for (name, source, consumer) in [
+        (
+            "opt/constopt.rs",
+            include_str!("opt/constopt.rs"),
+            "slot_facts::LiveSlotWrites::new(",
+        ),
+        (
+            "opt/forward.rs",
+            include_str!("opt/forward.rs"),
+            "slot_facts::classify_slot_writes(",
+        ),
     ] {
         assert!(
-            source.contains("slot_facts::classify_slot_writes("),
+            source.contains(consumer),
             "{name} no longer consumes the shared slot-write classifier"
         );
         for reimpl in [
             "enum SlotWrite",
             "enum SlotClass",
+            "enum LocalSlotWrite",
+            "fn visit_local_slot_writes(",
             "fn record_write(",
             "fn classify_slot_writes(",
         ] {

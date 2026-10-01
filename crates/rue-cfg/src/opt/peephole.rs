@@ -137,7 +137,17 @@ fn reduce_unsigned_div_mod(cfg: &mut Cfg, stats: &mut Stats) {
 
 /// If `value` is a can't-trap operation that returns one operand unchanged,
 /// return that operand.
-fn identity_target(cfg: &Cfg, value: CfgValue) -> Option<CfgValue> {
+///
+/// `same(a, b)` decides the equal-operand identities (`x & x`, `x | x`), with
+/// the same contract as the constant-fold kernel's: `true` only for operands
+/// that hold the same value at every execution of `value`. The sparse
+/// constant driver ([`super::constopt`]) asks this with its alias knowledge
+/// so it can fold through identities before this pass rewires them.
+pub(super) fn identity_target(
+    cfg: &Cfg,
+    value: CfgValue,
+    same: impl Fn(CfgValue, CfgValue) -> bool,
+) -> Option<CfgValue> {
     // `Const` stores floating-point operands as their IEEE bit patterns, so
     // payloads 0 and 1 are +0.0 and the minimum subnormal, respectively, not
     // the integer identity values. Floating-point addition also has signed
@@ -193,7 +203,7 @@ fn identity_target(cfg: &Cfg, value: CfgValue) -> Option<CfgValue> {
         // in the constfold kernel instead.)
         CfgInstData::BitOr(a, b) | CfgInstData::BitXor(a, b) if is0(b) => Some(a),
         CfgInstData::BitOr(a, b) | CfgInstData::BitXor(a, b) if is0(a) => Some(b),
-        CfgInstData::BitAnd(a, b) | CfgInstData::BitOr(a, b) if a == b => Some(a),
+        CfgInstData::BitAnd(a, b) | CfgInstData::BitOr(a, b) if same(a, b) => Some(a),
         CfgInstData::Shl(a, b) | CfgInstData::Shr(a, b) if is0(b) => Some(a),
         // Boolean double negation.
         CfgInstData::Not(a) => match cfg.get_inst(a).data {
@@ -214,7 +224,7 @@ fn rewire_identities(cfg: &mut Cfg, stats: &mut Stats) -> Result<(), crate::CfgE
     let mut any = false;
     for i in 0..value_count {
         let value = CfgValue::from_raw(i as u32);
-        if let Some(target) = identity_target(cfg, value) {
+        if let Some(target) = identity_target(cfg, value, |a, b| a == b) {
             alias[i] = Some(target);
             any = true;
         }
