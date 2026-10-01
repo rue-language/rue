@@ -3935,3 +3935,128 @@ fn main() -> i32 {
 }
 """
 exit_code = 0
+
+[[case]]
+name = "zero_width_by_value_parameters_on_borrow_and_inout_accessors"
+spec = ["6.6:8", "6.6:12", "3.9:18"]
+description = "A `()` or destructor-bearing zero-width by-value accessor parameter, alone or before or after a sized one, on a `borrow self` or `inout self` accessor, is spliced with the accessor body and dropped exactly once (RUE-2539)"
+source = """
+struct Z {}
+drop fn Z(self) { @dbg(99); }
+struct P {
+    x: i64,
+    xs: [i64; 2],
+
+    fn unit_only(borrow self, u: ()) -> borrow i64 { yield self.x; }
+    fn z_only(borrow self, z: Z) -> borrow i64 { yield self.x; }
+    fn z_before(borrow self, z: Z, i: u64) -> borrow i64 { yield self.xs[i]; }
+    fn z_after(borrow self, i: u64, u: (), z: Z) -> borrow i64 { yield self.xs[i]; }
+    fn z_moved(borrow self, z: Z) -> borrow i64 { let _k = z; @dbg(5); yield self.x; }
+    fn unit_mut(inout self, u: ()) -> inout i64 { yield self.x; }
+    fn z_mut_before(inout self, z: Z, i: u64) -> inout i64 { yield self.xs[i]; }
+    fn z_mut_after(inout self, i: u64, z: Z, u: ()) -> inout i64 { yield self.xs[i]; }
+}
+fn main() -> i32 {
+    // Seven `Z` values are made and each is dropped once (99), when the
+    // accessor's inlined body exits and before the caller reads the place.
+    let mut p = P { x: 7, xs: [10, 20] };
+    @dbg(p.unit_only(()) + 0);          // 7
+    @dbg(p.z_only(Z {}) + 0);           // 99 7
+    let z = Z {};
+    @dbg(p.z_only(z) + 1);              // 99 8
+    @dbg(p.z_before(Z {}, 1) + 0);      // 99 20
+    @dbg(p.z_after(0, (), Z {}) + 0);   // 99 10
+    @dbg(p.z_moved(Z {}) + 0);          // 5 99 7
+    p.unit_mut(()) = 8;
+    p.z_mut_before(Z {}, 0) = 11;       // 99
+    p.z_mut_after(1, Z {}, ()) = 21;    // 99
+    @dbg(p.x + p.xs[0] + p.xs[1]);      // 40
+    0
+}
+"""
+expected_stdout = "7\n99\n7\n99\n8\n99\n20\n99\n10\n5\n99\n7\n99\n99\n40\n"
+exit_code = 0
+
+[[case]]
+name = "zero_width_by_value_parameters_on_borrow_and_inout_accessors_o2"
+spec = ["6.6:8", "6.6:12", "3.9:18"]
+description = "At -O2, a `()` or destructor-bearing zero-width by-value accessor parameter, alone or before or after a sized one, on a `borrow self` or `inout self` accessor, is spliced with the accessor body and dropped exactly once (RUE-2539)"
+source = """
+struct Z {}
+drop fn Z(self) { @dbg(99); }
+struct P {
+    x: i64,
+    xs: [i64; 2],
+
+    fn unit_only(borrow self, u: ()) -> borrow i64 { yield self.x; }
+    fn z_only(borrow self, z: Z) -> borrow i64 { yield self.x; }
+    fn z_before(borrow self, z: Z, i: u64) -> borrow i64 { yield self.xs[i]; }
+    fn z_after(borrow self, i: u64, u: (), z: Z) -> borrow i64 { yield self.xs[i]; }
+    fn z_moved(borrow self, z: Z) -> borrow i64 { let _k = z; @dbg(5); yield self.x; }
+    fn unit_mut(inout self, u: ()) -> inout i64 { yield self.x; }
+    fn z_mut_before(inout self, z: Z, i: u64) -> inout i64 { yield self.xs[i]; }
+    fn z_mut_after(inout self, i: u64, z: Z, u: ()) -> inout i64 { yield self.xs[i]; }
+}
+fn main() -> i32 {
+    // Seven `Z` values are made and each is dropped once (99), when the
+    // accessor's inlined body exits and before the caller reads the place.
+    let mut p = P { x: 7, xs: [10, 20] };
+    @dbg(p.unit_only(()) + 0);          // 7
+    @dbg(p.z_only(Z {}) + 0);           // 99 7
+    let z = Z {};
+    @dbg(p.z_only(z) + 1);              // 99 8
+    @dbg(p.z_before(Z {}, 1) + 0);      // 99 20
+    @dbg(p.z_after(0, (), Z {}) + 0);   // 99 10
+    @dbg(p.z_moved(Z {}) + 0);          // 5 99 7
+    p.unit_mut(()) = 8;
+    p.z_mut_before(Z {}, 0) = 11;       // 99
+    p.z_mut_after(1, Z {}, ()) = 21;    // 99
+    @dbg(p.x + p.xs[0] + p.xs[1]);      // 40
+    0
+}
+"""
+expected_stdout = "7\n99\n7\n99\n8\n99\n20\n99\n10\n5\n99\n7\n99\n99\n40\n"
+exit_code = 0
+opt_level = 2
+
+[[case]]
+name = "zero_width_by_value_parameters_on_borrow_and_inout_accessors_o3"
+spec = ["6.6:8", "6.6:12", "3.9:18"]
+description = "At -O3, a `()` or destructor-bearing zero-width by-value accessor parameter, alone or before or after a sized one, on a `borrow self` or `inout self` accessor, is spliced with the accessor body and dropped exactly once (RUE-2539)"
+source = """
+struct Z {}
+drop fn Z(self) { @dbg(99); }
+struct P {
+    x: i64,
+    xs: [i64; 2],
+
+    fn unit_only(borrow self, u: ()) -> borrow i64 { yield self.x; }
+    fn z_only(borrow self, z: Z) -> borrow i64 { yield self.x; }
+    fn z_before(borrow self, z: Z, i: u64) -> borrow i64 { yield self.xs[i]; }
+    fn z_after(borrow self, i: u64, u: (), z: Z) -> borrow i64 { yield self.xs[i]; }
+    fn z_moved(borrow self, z: Z) -> borrow i64 { let _k = z; @dbg(5); yield self.x; }
+    fn unit_mut(inout self, u: ()) -> inout i64 { yield self.x; }
+    fn z_mut_before(inout self, z: Z, i: u64) -> inout i64 { yield self.xs[i]; }
+    fn z_mut_after(inout self, i: u64, z: Z, u: ()) -> inout i64 { yield self.xs[i]; }
+}
+fn main() -> i32 {
+    // Seven `Z` values are made and each is dropped once (99), when the
+    // accessor's inlined body exits and before the caller reads the place.
+    let mut p = P { x: 7, xs: [10, 20] };
+    @dbg(p.unit_only(()) + 0);          // 7
+    @dbg(p.z_only(Z {}) + 0);           // 99 7
+    let z = Z {};
+    @dbg(p.z_only(z) + 1);              // 99 8
+    @dbg(p.z_before(Z {}, 1) + 0);      // 99 20
+    @dbg(p.z_after(0, (), Z {}) + 0);   // 99 10
+    @dbg(p.z_moved(Z {}) + 0);          // 5 99 7
+    p.unit_mut(()) = 8;
+    p.z_mut_before(Z {}, 0) = 11;       // 99
+    p.z_mut_after(1, Z {}, ()) = 21;    // 99
+    @dbg(p.x + p.xs[0] + p.xs[1]);      // 40
+    0
+}
+"""
+expected_stdout = "7\n99\n7\n99\n8\n99\n20\n99\n10\n5\n99\n7\n99\n99\n40\n"
+exit_code = 0
+opt_level = 3
