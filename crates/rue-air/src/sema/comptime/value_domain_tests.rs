@@ -1413,6 +1413,15 @@ impl ComptimeTypeAlgebra for FakeHost {
         METHOD_FAILURES.with(|failures| failures.borrow_mut().push("non_function"));
         FakeFailure::NonFunctionMethod
     }
+    fn type_contains_slice(&self, _ty: &Self::Type) -> bool {
+        false
+    }
+    fn slice_return_anon_method(
+        &self,
+        _site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> Self::Failure {
+        unreachable!("the fake host has no slice types")
+    }
     fn resolve_named_array_length(
         &mut self,
         _name: &Self::Name,

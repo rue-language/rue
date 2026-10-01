@@ -624,6 +624,29 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeTypeAlgebra
         ))
     }
 
+    fn type_contains_slice(&self, ty: &Self::Type) -> bool {
+        fn contains_slice(ty: &DurableType) -> bool {
+            match ty {
+                DurableType::Slice { .. } => true,
+                DurableType::Array { element, .. }
+                | DurableType::PtrConst(element)
+                | DurableType::PtrMut(element) => contains_slice(element),
+                _ => false,
+            }
+        }
+        contains_slice(&ty.0)
+    }
+
+    fn slice_return_anon_method(
+        &self,
+        site: &rue_air::ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> Self::Failure {
+        durable_host_failure(DurableComptimeFailure::kind_at_site(
+            &self.diagnostic_site(site),
+            rue_error::ErrorKind::SliceReturnNotAllowed,
+        ))
+    }
+
     fn resolve_named_array_length(
         &mut self,
         name: &Self::Name,
