@@ -2023,16 +2023,9 @@ impl ValidatedAir {
         air.finish(AirValidationContext::Semantic(pool))
     }
 
-    pub(crate) fn from_semantic_air_with_symbols(
-        air: Air,
-        pool: &TypeInternPool,
-        interner: &ThreadedRodeo,
-    ) -> Result<Self, AirValidationError> {
-        air.finish(AirValidationContext::SemanticWithSymbols(pool, interner))
-    }
-
-    /// [`Self::from_semantic_air_with_symbols`], also checking each direct
-    /// call's arguments against the parameters `callees` declares for it.
+    /// Validate a semantic body against its pool and interner, also checking
+    /// each direct call's arguments against the parameters `callees` declares
+    /// for it (RUE-2452).
     pub(crate) fn from_semantic_air_with_callees(
         air: Air,
         pool: &TypeInternPool,
