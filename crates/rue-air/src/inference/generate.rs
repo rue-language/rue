@@ -5117,7 +5117,14 @@ impl<'a> ConstraintGenerator<'a> {
         let InstData::VarRef { name, .. } = self.rir.get(inst).data else {
             return false;
         };
+        // A local, or a parameter that is not itself a `comptime T: type`
+        // parameter, shadows the enclosing specialization's type parameter:
+        // `fn g(self, T: i32)` in a generic struct's method reads a value.
+        let shadowed_by_param = ctx
+            .lookup_param(name)
+            .is_some_and(|param| param.ty != InferType::Concrete(Type::COMPTIME_TYPE));
         !ctx.locals.contains_key(&name)
+            && !shadowed_by_param
             && self
                 .type_subst
                 .is_some_and(|subst| subst.contains_key(&name))

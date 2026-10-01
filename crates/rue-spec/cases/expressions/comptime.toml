@@ -5052,7 +5052,7 @@ exit_code = 42
 
 [[case]]
 name = "comptime_type_argument_inline_array_of_type_parameter"
-spec = ["4.14:5a", "4.14:16"]
+spec = ["4.14:5a"]
 description = "An array type over the enclosing specialization's type parameter at a type argument is substituted at each specialization (RUE-2574)"
 source = """
 fn size(comptime T: type) -> i32 { @size_of(T) }
@@ -5763,7 +5763,7 @@ exit_code = 42
 
 [[case]]
 name = "generic_signature_module_qualified_callee_resolves_in_its_module"
-spec = ["4.14:5a", "4.14:16"]
+spec = ["4.14:5a"]
 description = "A module-qualified generic callee's signature resolves in its own module: the caller's `let T = i64;` and its file-level `K` do not reach `m.rep`'s `-> [T; K]`, which sees the callee module's `K` (RUE-2422)"
 source = """
 const m = @import("rep.rue");
@@ -6625,3 +6625,57 @@ fn main() -> i32 {
 """
 compile_fail = true
 error_contains = ["E1200", "a parameter type that depends on a comptime value parameter is not supported on a method or associated function"]
+
+[[case]]
+name = "value_repeat_of_a_method_parameter_shadowing_a_type_parameter"
+spec = ["4.14:5a", "7.1:36"]
+description = "A method parameter `T: i32` shadows its generic struct's type parameter `T`, so `[T; 3]` repeats the value (RUE-2574)"
+source = """
+fn Wrap(comptime T: type) -> type {
+    struct {
+        v: i32,
+        fn g(self, T: i32) -> i32 {
+            let a = [T; 3];
+            a[0] + a[1]
+        }
+    }
+}
+fn main() -> i32 { let w = Wrap(i64) { v: 1 }; w.g(21) }
+"""
+exit_code = 42
+
+[[case]]
+name = "value_repeat_of_an_associated_function_parameter_shadowing_a_type_parameter"
+spec = ["4.14:5a", "7.1:36"]
+description = "An associated function parameter `T: i32` shadows the type parameter, so `[T; 2]` repeats the value (RUE-2574)"
+source = """
+fn Wrap(comptime T: type) -> type {
+    struct {
+        v: i32,
+        fn g(T: i32) -> i32 {
+            let a = [T; 2];
+            a[0] + a[1]
+        }
+    }
+}
+fn main() -> i32 { let W = Wrap(i64); W.g(21) }
+"""
+exit_code = 42
+
+[[case]]
+name = "value_repeat_of_a_comptime_value_parameter_shadowing_a_type_parameter"
+spec = ["4.14:5a", "7.1:36"]
+description = "A `comptime T: i32` method parameter shadows the type parameter, so `[T; 2]` repeats the value (RUE-2574)"
+source = """
+fn Wrap(comptime T: type) -> type {
+    struct {
+        v: i32,
+        fn g(self, comptime T: i32) -> i32 {
+            let a = [T; 2];
+            a[0] + a[1]
+        }
+    }
+}
+fn main() -> i32 { let w = Wrap(i64) { v: 1 }; w.g(21) }
+"""
+exit_code = 42
