@@ -5001,6 +5001,88 @@ pub fn first(comptime T: type, a: T, b: T) -> T { a }
 exit_code = 42
 
 [[case]]
+name = "comptime_type_argument_inline_array_type"
+spec = ["4.14:5a"]
+description = "An array type written at a `comptime T: type` argument binds `T` to that array type, as a const alias of it does (RUE-2574)"
+source = """
+fn identity(comptime T: type, x: T) -> T { x }
+
+const A = [i32; 2];
+
+fn main() -> i32 {
+    let a = identity([i32; 2], [20, 1]);
+    let b = identity(A, [21, 0]);
+    a[0] + a[1] + b[0]
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "comptime_type_argument_inline_array_type_shapes"
+spec = ["4.14:5a"]
+description = "Zero-length, nested and constructor-element array types at a type argument are the types they spell (RUE-2574)"
+source = """
+fn Box(comptime T: type) -> type { struct { v: T } }
+fn size(comptime T: type) -> i32 { @size_of(T) }
+
+fn main() -> i32 {
+    // 0 + 24 + 16
+    size([u8; 0]) + size([[i32; 2]; 3]) + size([Box(i64); 2]) + 2
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "comptime_type_argument_inline_array_type_named_length"
+spec = ["4.14:5a", "7.1:37"]
+description = "A const or comptime value parameter as the length of an array type at a type argument is its value (RUE-2574)"
+source = """
+fn identity(comptime T: type, x: T) -> T { x }
+fn size(comptime T: type) -> i32 { @size_of(T) }
+fn bytes(comptime N: i32) -> i32 { size([u8; N]) }
+
+const N: i32 = 3;
+
+fn main() -> i32 {
+    let a = identity([[u8; N]; 2], [[1, 2, 3], [4, 5, 30]]);
+    @intCast(a[1][2]) + bytes(12)
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "comptime_type_argument_inline_array_of_type_parameter"
+spec = ["4.14:5a", "4.14:16"]
+description = "An array type over the enclosing specialization's type parameter at a type argument is substituted at each specialization (RUE-2574)"
+source = """
+fn size(comptime T: type) -> i32 { @size_of(T) }
+fn triple(comptime T: type) -> i32 { size([T; 3]) }
+
+fn main() -> i32 {
+    // 3 * 2 + 3 * 8 + 12
+    triple(i16) + triple(u64) + 12
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "comptime_type_argument_inline_array_type_module_qualified_call"
+spec = ["4.14:5a"]
+description = "A module-qualified call binds the type parameter to an array type written at the argument (RUE-2574)"
+source = """
+const m = @import("pick.rue");
+
+fn main() -> i32 {
+    let x = m.first([i32; 2], [40, 2], [0, 0]);
+    x[0] + x[1]
+}
+"""
+aux_files = { "pick.rue" = """
+pub fn first(comptime T: type, a: T, b: T) -> T { a }
+""" }
+exit_code = 42
+
+[[case]]
 name = "comptime_type_argument_type_qualified_call"
 spec = ["4.14:5a", "4.14:22"]
 description = "A const alias of a primitive reaches an associated function of a type built from it, through a type-qualified call"
