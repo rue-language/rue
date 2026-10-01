@@ -1348,44 +1348,50 @@ where
                     .map_err(|_| IdentityMintError::InvalidStructuralType)?
             }
             S::Slice { element, name } => {
-                // A slice view is a generated fat-pointer struct. Registered
-                // exactly as `SemanticImportedProgram::import_type_local`
-                // registers it (ptr + len, builtin, copy).
                 let element = self.resolve(element)?;
-                let symbol = self
-                    .intern_name(name.as_ref())
-                    .map_err(IdentityMintError::Interner)?;
-                let pointer = self.type_pool.intern_ptr_const_from_type(element);
-                let (id, _) = self.type_pool.register_struct(
-                    symbol,
-                    StructDef {
-                        name: Arc::from(name.as_ref()),
-                        fields: vec![
-                            StructField {
-                                name: "ptr".to_owned(),
-                                ty: Type::new_ptr_const(pointer),
-                            },
-                            StructField {
-                                name: "len".to_owned(),
-                                ty: Type::U64,
-                            },
-                        ],
-                        is_copy: true,
-                        is_linear: false,
-                        declared_linear: false,
-                        destructor: None,
-                        is_builtin: true,
-                        is_pub: true,
-                        file_id: FileId::DEFAULT,
-                    },
-                );
-                Type::new_struct(id)
+                self.mint_slice_view(element, name)?
             }
             S::Module(_) => return Err(IdentityMintError::Deferred("module identity")),
             S::GenericParameter(_) => {
                 return Err(IdentityMintError::Deferred("generic parameter"));
             }
         })
+    }
+
+    /// Mint (or dedup) the generated fat-pointer struct of one slice view over
+    /// an already-resolved `element`, registered exactly as
+    /// `SemanticImportedProgram::import_type_local` registers it (ptr + len,
+    /// builtin, copy). The view's `name` is its identity
+    /// ([`crate::types::slice_view_name`]).
+    fn mint_slice_view(&mut self, element: Type, name: &str) -> Result<Type, IdentityMintError> {
+        let symbol = self
+            .intern_name(name)
+            .map_err(IdentityMintError::Interner)?;
+        let pointer = self.type_pool.intern_ptr_const_from_type(element);
+        let (id, _) = self.type_pool.register_struct(
+            symbol,
+            StructDef {
+                name: Arc::from(name),
+                fields: vec![
+                    StructField {
+                        name: "ptr".to_owned(),
+                        ty: Type::new_ptr_const(pointer),
+                    },
+                    StructField {
+                        name: "len".to_owned(),
+                        ty: Type::U64,
+                    },
+                ],
+                is_copy: true,
+                is_linear: false,
+                declared_linear: false,
+                destructor: None,
+                is_builtin: true,
+                is_pub: true,
+                file_id: FileId::DEFAULT,
+            },
+        );
+        Ok(Type::new_struct(id))
     }
 
     /// Resolve a durable type returned by an exact provider query, minting any
@@ -1434,6 +1440,12 @@ where
                 self.type_pool
                     .try_intern_function(crate::FunctionTypeDef { params, result })
                     .map_err(|_| IdentityMintError::InvalidStructuralType)
+            }
+            // A view's element may be an anonymous nominal this pool has not
+            // minted yet, exactly as an array's may (RUE-2575).
+            SemanticImportType::Slice { element, name } => {
+                let element = self.resolve_provider_type(element)?;
+                self.mint_slice_view(element, name)
             }
             _ => self.resolve(value),
         }
@@ -2903,6 +2915,10 @@ where
                 self.type_pool
                     .try_intern_function(crate::FunctionTypeDef { params, result })
                     .map_err(|_| IdentityMintError::InvalidStructuralType)
+            }
+            SemanticImportType::Slice { element, name } => {
+                let element = self.resolve_callable_type(key, element)?;
+                self.mint_slice_view(element, name)
             }
             SemanticImportType::AnonymousNominal(identity) => {
                 let canonical = identity.with_canonical_producer();
