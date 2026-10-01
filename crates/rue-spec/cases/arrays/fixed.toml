@@ -1844,6 +1844,280 @@ fn main() -> i32 {
 """
 compile_fail = true
 
+# A length or count names whatever binds the name at that point, by the same
+# lexical scoping as an expression (5.1:10): a runtime parameter, a local, a
+# `comptime` type parameter or a type alias shadows a same-named file-level
+# `const`. None of those is a compile-time integer constant, so each is E0481.
+# The length used to resolve straight to the shadowed `const` (RUE-2446).
+[[case]]
+name = "array_length_runtime_param_shadows_const"
+error_contains = "[E0481]"
+spec = ["3.5:2"]
+source = """
+const n: i32 = 2;
+fn f(n: i32) -> i32 {
+    let a: [i32; n] = [7, 7];
+    a[1]
+}
+fn main() -> i32 {
+    f(9)
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "array_repeat_runtime_param_count_shadows_const"
+error_contains = "[E0481]"
+spec = ["7.1:37"]
+source = """
+const n: i32 = 2;
+fn f(n: i32) -> i32 {
+    let a: [i32; 2] = [7; n];
+    a[1]
+}
+fn main() -> i32 {
+    f(9)
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "array_length_local_shadows_const"
+error_contains = "[E0481]"
+spec = ["3.5:2"]
+source = """
+const N: i32 = 2;
+fn main() -> i32 {
+    let N = 5;
+    let a: [i32; N] = [7, 7];
+    a[1] + N
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "array_repeat_local_count_shadows_const"
+error_contains = "[E0481]"
+spec = ["7.1:37"]
+source = """
+const N: i32 = 2;
+fn main() -> i32 {
+    let N = 5;
+    let a: [i32; 2] = [7; N];
+    a[1]
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "array_repeat_unannotated_local_count_shadows_const"
+error_contains = "[E0481]"
+spec = ["7.1:37"]
+description = "A loop binder shadows the `const` too, with no annotation to take a length from"
+source = """
+const i: i32 = 2;
+fn main() -> i32 {
+    let mut total = 0;
+    for i in [1, 2] {
+        let a = [7; i];
+        total = total + a[0];
+    }
+    total
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "array_length_comptime_type_param_shadows_const"
+error_contains = "[E0481]"
+spec = ["3.5:2"]
+source = """
+const N: i32 = 2;
+fn f(comptime N: type) -> i32 {
+    let a: [i32; N] = [7, 7];
+    a[1]
+}
+fn main() -> i32 {
+    f(i32)
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "array_repeat_comptime_type_param_count_shadows_const"
+error_contains = "[E0481]"
+spec = ["7.1:37"]
+source = """
+const N: i32 = 2;
+fn f(comptime N: type) -> i32 {
+    let a = [7; N];
+    a[1]
+}
+fn main() -> i32 {
+    f(i32)
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "array_repeat_type_alias_count_shadows_const"
+error_contains = "[E0481]"
+spec = ["7.1:37"]
+source = """
+const N: i32 = 2;
+fn main() -> i32 {
+    let N = i32;
+    let a = [7; N];
+    a[1]
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "array_length_local_shadows_comptime_value_param"
+error_contains = "[E0481]"
+spec = ["3.5:2"]
+description = "A local shadows an enclosing `comptime` value parameter of the same name as it shadows a `const`"
+source = """
+fn f(comptime n: i32) -> i32 {
+    let n = 5;
+    let a: [i32; n] = [7, 7, 7];
+    a[1] + n
+}
+fn main() -> i32 {
+    f(3)
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "array_repeat_local_count_shadows_comptime_value_param"
+error_contains = "[E0481]"
+spec = ["7.1:37"]
+source = """
+fn f(comptime n: i32) -> i32 {
+    let n = 5;
+    let a: [i32; 3] = [7; n];
+    a[1]
+}
+fn main() -> i32 {
+    f(3)
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "array_length_comptime_value_param_shadows_const"
+spec = ["3.5:2", "7.1:37"]
+description = "A `comptime` value parameter shadows a same-named `const` and is itself a compile-time constant"
+source = """
+const n: i32 = 9;
+fn make(comptime n: i32) -> i32 {
+    let a: [i32; n] = [7; n];
+    let b = [1; n];
+    a[2] + b[2] + @intCast(@size_of([u8; n]))
+}
+fn main() -> i32 {
+    make(3)
+}
+"""
+exit_code = 11
+
+[[case]]
+name = "array_length_captured_comptime_param_shadows_const"
+spec = ["3.5:2", "7.1:37"]
+description = "A method of a generic type reads the captured `comptime` parameter, not the shadowed `const`"
+source = """
+const N: i32 = 9;
+fn Buf(comptime N: i32) -> type {
+    struct {
+        a: [i32; N],
+        fn last(self) -> i32 {
+            let c: [i32; N] = [1; N];
+            self.a[N - 1] + c[N - 1]
+        }
+    }
+}
+fn main() -> i32 {
+    let b = Buf(2) { a: [5; 2] };
+    b.last()
+}
+"""
+exit_code = 6
+
+[[case]]
+name = "array_length_const_before_a_later_shadow"
+spec = ["3.5:2", "7.1:37"]
+description = "A binding declared after the array does not shadow the `const` yet (5.1:12)"
+source = """
+const N: i32 = 2;
+fn main() -> i32 {
+    let a: [i32; N] = [7; N];
+    let N = 5;
+    a[1] + N
+}
+"""
+exit_code = 12
+
+[[case]]
+name = "array_length_const_after_a_shadow_goes_out_of_scope"
+spec = ["3.5:2", "7.1:37"]
+description = "A shadow in an inner block ends with the block, and the `const` is the length again"
+source = """
+const N: i32 = 2;
+fn main() -> i32 {
+    let mut t = 0;
+    {
+        let N = 5;
+        t = N;
+    }
+    let a: [i32; N] = [7; N];
+    a[1] + t
+}
+"""
+exit_code = 12
+
+[[case]]
+name = "array_length_const_not_shadowed_by_another_functions_param"
+spec = ["3.5:2", "7.1:37"]
+description = "A parameter of one function does not shadow the `const` in another function"
+source = """
+const n: i32 = 2;
+fn other(n: i32) -> i32 {
+    n
+}
+fn main() -> i32 {
+    let a: [i32; n] = [7; n];
+    a[1] + other(1)
+}
+"""
+exit_code = 8
+
+[[case]]
+name = "array_length_imported_const_unaffected_by_caller_shadow"
+spec = ["3.5:2", "7.1:37"]
+description = "A module's own `const` length is not shadowed by a same-named local of the caller, and a parameter named like the import does not shadow a `const` defined from it"
+source = """
+const m = @import("lib.rue");
+const N: i32 = m.N;
+fn f(m: i32) -> i32 {
+    let a: [i32; N] = [m; N];
+    a[2]
+}
+fn main() -> i32 {
+    let N = 1;
+    m.mk() + f(4) + N
+}
+"""
+aux_files = { "lib.rue" = """
+pub const N: i32 = 3;
+pub fn mk() -> i32 {
+    let a: [i32; N] = [2; N];
+    a[2]
+}
+""" }
+exit_code = 7
+
 [[case]]
 name = "array_repeat_valid_const_count_against_wrong_annotation"
 error_contains = "[E0901]"
