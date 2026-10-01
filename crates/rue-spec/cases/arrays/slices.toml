@@ -1115,3 +1115,113 @@ fn main() -> i32 {
 }
 """
 exit_code = 0
+
+# =============================================================================
+# Slice parameters and returns on anonymous struct methods (7.2:4, 7.2:7)
+# =============================================================================
+
+[[case]]
+name = "anonymous_method_generic_slice_parameter"
+spec = ["7.2:7"]
+description = "RUE-2567: a method of a type-constructor result takes `borrow s: [T]` at the constructor's `T`; the producer and the method body project one anonymous fact."
+source = """
+fn H(comptime T: type) -> type {
+    struct {
+        b: T,
+        fn sum(self, borrow s: [T]) -> T { s[0] + self.b }
+    }
+}
+fn main() -> i32 {
+    let a: [i64; 1] = [40];
+    let h = H(i64) { b: 2 };
+    @intCast(h.sum(borrow a))
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "anonymous_method_concrete_slice_parameter_in_generic_producer"
+spec = ["7.2:7", "7.2:8"]
+description = "RUE-2567: a `borrow s: [i64]` method parameter of a type-constructor result views fixed arrays of two lengths."
+source = """
+fn H(comptime T: type) -> type {
+    struct {
+        b: T,
+        fn total(self, borrow s: [i64]) -> i64 {
+            let mut acc: i64 = 0;
+            let mut i: u64 = 0;
+            while i < s.len() {
+                acc = acc + s[i];
+                i = i + 1;
+            }
+            acc
+        }
+    }
+}
+fn main() -> i32 {
+    let a: [i64; 3] = [10, 20, 7];
+    let b: [i64; 5] = [1, 1, 1, 1, 1];
+    let h = H(u8) { b: 0 };
+    @intCast(h.total(borrow a) + h.total(borrow b))
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "anonymous_method_slice_parameter_in_nongeneric_constructor"
+spec = ["7.2:7"]
+description = "RUE-2567: a `borrow s: [i64]` method parameter of an anonymous struct returned by a constructor with no comptime parameter."
+source = """
+fn K() -> type {
+    struct {
+        k: i64,
+        fn f(self, borrow s: [i64]) -> i64 { s[1] + self.k }
+    }
+}
+fn main() -> i32 {
+    let a: [i64; 2] = [1, 40];
+    let v = K() { k: 2 };
+    @intCast(v.f(borrow a))
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "anonymous_method_slice_return_rejected"
+spec = ["7.2:4"]
+compile_fail = true
+error_contains = ["E0487", "cannot be returned"]
+description = "RUE-2567: an anonymous method may not return a slice view, as a named function may not; the call that reduces the producer reports it."
+source = """
+fn H(comptime T: type) -> type {
+    struct {
+        b: T,
+        fn give(self, borrow s: [T]) -> [T] { s }
+    }
+}
+fn main() -> i32 {
+    let a: [i64; 1] = [42];
+    let h = H(i64) { b: 2 };
+    let v = h.give(borrow a);
+    @intCast(v[0])
+}
+"""
+
+[[case]]
+name = "anonymous_method_array_of_slice_return_rejected"
+spec = ["7.2:4"]
+compile_fail = true
+error_contains = ["E0487", "cannot be returned"]
+description = "RUE-2567: an anonymous method's return type may not hold a slice view either, here as an array element."
+source = """
+fn K() -> type {
+    struct {
+        k: i64,
+        fn give(self, borrow s: [i64]) -> [[i64]; 1] { [s] }
+    }
+}
+fn main() -> i32 {
+    let v = K() { k: 2 };
+    0
+}
+"""
