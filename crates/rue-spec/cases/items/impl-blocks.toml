@@ -432,6 +432,146 @@ fn main() -> i32 {
 exit_code = 42
 
 [[case]]
+name = "self_type_in_anonymous_method_slice_parameter"
+spec = ["6.4:18"]
+description = "Self inside a slice parameter of an anonymous struct's method denotes the struct each instantiation produces, so two instantiations view different structs (RUE-2579)"
+source = """
+fn Cell(comptime T: type) -> type {
+    struct {
+        v: T,
+
+        fn sum(self, borrow s: [Self]) -> T { s[0].v + s[1].v + self.v }
+    }
+}
+
+fn main() -> i32 {
+    let S = Cell(i64);
+    let U = Cell(u64);
+    let a: [S; 2] = [S { v: 10 }, S { v: 20 }];
+    let u: [U; 2] = [U { v: 1 }, U { v: 2 }];
+    let x = S { v: 3 }.sum(borrow a);
+    let y = U { v: 6 }.sum(borrow u);
+    @intCast(x + @intCast(y))
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "self_type_in_anonymous_method_array_and_pointer_parameters"
+spec = ["6.4:18"]
+description = "Self resolves inside an array parameter and a pointer parameter of an anonymous struct's method (RUE-2579)"
+source = """
+fn Cell(comptime T: type) -> type {
+    struct {
+        v: T,
+
+        fn add(self, s: [Self; 1]) -> T { s[0].v + self.v }
+        fn read(self, p: ptr const Self) -> T {
+            let o: Self = checked { @ptr_read(p) };
+            o.v + self.v
+        }
+    }
+}
+
+fn main() -> i32 {
+    let S = Cell(i64);
+    let a = S { v: 20 };
+    let b = S { v: 1 };
+    @intCast(b.add([S { v: 20 }]) + b.read(checked { @raw(a) }))
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "self_type_in_anonymous_method_array_result"
+spec = ["6.4:18"]
+description = "Self resolves inside an anonymous struct method's composite return type (RUE-2579)"
+source = """
+fn Cell(comptime T: type) -> type {
+    struct {
+        v: T,
+
+        fn twice(self) -> [Self; 2] { [Self { v: self.v }, Self { v: self.v + 1 }] }
+    }
+}
+
+fn main() -> i32 {
+    let S = Cell(i64);
+    let r = S { v: 20 }.twice();
+    @intCast(r[0].v + r[1].v + 1)
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "self_type_in_non_generic_constructor_slice_parameter"
+spec = ["6.4:18"]
+description = "Self inside a slice parameter of a non-generic type constructor's struct method: the view is named by the struct's identity wherever it is produced (RUE-2579)"
+source = """
+fn Pair() -> type {
+    struct {
+        a: i64,
+        b: i64,
+
+        fn pick(self, borrow s: [Self]) -> i64 { s[1].b + s[0].a + self.a }
+    }
+}
+
+fn main() -> i32 {
+    let P = Pair();
+    let w: [P; 2] = [P { a: 3, b: 100 }, P { a: 4, b: 38 }];
+    @intCast(P { a: 1, b: 0 }.pick(borrow w))
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "self_type_nested_in_anonymous_method_slice_elements"
+spec = ["6.4:18"]
+description = "Self resolves inside a pointer or array slice element of an anonymous struct's method (RUE-2579)"
+source = """
+fn Cell(comptime T: type) -> type {
+    struct {
+        v: T,
+
+        fn first(self, borrow s: [ptr const Self]) -> T {
+            let o: Self = checked { @ptr_read(s[0]) };
+            o.v + self.v
+        }
+        fn corner(self, borrow s: [[Self; 2]]) -> T { s[0][1].v + self.v }
+    }
+}
+
+fn main() -> i32 {
+    let S = Cell(i64);
+    let x = S { v: 30 };
+    let ps: [ptr const S; 1] = [checked { @raw(x) }];
+    let grid: [[S; 2]; 1] = [[S { v: 1 }, S { v: 8 }]];
+    let b = S { v: 2 };
+    @intCast(b.first(borrow ps) + b.corner(borrow grid))
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "self_type_in_const_bound_anonymous_struct_method"
+spec = ["6.4:18"]
+description = "Self inside a slice parameter of a constant-bound anonymous struct's method denotes that struct (RUE-2579)"
+source = """
+const Cell = struct {
+    v: i64,
+
+    fn sum(self, borrow s: [Self]) -> i64 { s[0].v + self.v }
+};
+
+fn main() -> i32 {
+    let a: [Cell; 1] = [Cell { v: 40 }];
+    @intCast(Cell { v: 2 }.sum(borrow a))
+}
+"""
+exit_code = 42
+
+[[case]]
 name = "self_type_in_type_valued_associated_constant"
 spec = ["6.4:18"]
 preview = "interfaces"
