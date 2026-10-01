@@ -248,7 +248,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let value_type = value_result.ty;
 
         // Check that value type matches pointee type
-        if !self.types_compatible(value_type, pointee_type) {
+        if !self.operand_fits_slot(pointee_type, value_type, value_result.continues) {
             return Err(CompileError::new(
                 ErrorKind::TypeMismatch {
                     expected: self.format_type_name(pointee_type),

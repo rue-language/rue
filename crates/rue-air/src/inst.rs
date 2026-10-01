@@ -282,8 +282,11 @@ impl AirValidationContext<'_> {
     ///   literal whose elements all diverge (`[return 42; 0]`,
     ///   `[return 5; 3]`). Its element operand never produces a value, so
     ///   building the array never completes. It is accepted only into an
-    ///   array slot of the same length (at every nesting level), the rule
-    ///   sema applies at every slot ([`Type::diverging_array_fits`]).
+    ///   array slot of the same length (at every nesting level)
+    ///   ([`Type::diverging_array_fits`]). AIR carries no continuation fact,
+    ///   so this admits the shape sema admits; sema admits it only for an
+    ///   operand that does not continue, and gives every continuing value,
+    ///   including one of a written `[!; N]` type, the exact-type check.
     fn slot_accepts(&self, slot: Type, value: Type) -> bool {
         value.can_coerce_to(&slot)
             || slot.is_error()

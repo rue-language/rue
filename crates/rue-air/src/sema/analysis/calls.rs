@@ -172,11 +172,12 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // such a head never reaches code generation, so its operands keep
         // that one stable diagnostic rather than an argument mismatch.
         if check_operand_types && !ctx.recover_missing_ctor_head_arguments {
-            for (((arg, air_arg), expected), mode) in args
+            for ((((arg, air_arg), expected), mode), &continues) in args
                 .iter()
                 .zip(&operands.args)
                 .zip(param_types)
                 .zip(param_modes)
+                .zip(&operands.operand_continues)
             {
                 // An `inout str` view keeps its source's own type as the
                 // operand; `validate_inout_str_operand` is that position's
@@ -184,9 +185,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 if self.is_inout_str_param(*mode, *expected) {
                     continue;
                 }
-                self.require_slot_type(
+                self.require_operand_slot_type(
                     *expected,
                     air.get(air_arg.value).ty,
+                    continues,
                     self.body_rir_ref().get(arg.value).span,
                 )?;
             }
@@ -691,6 +693,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             args: air_args,
             temp_scope,
             continues,
+            operand_continues,
         } = self.analyze_call_operands(
             air,
             args_range,
@@ -870,7 +873,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     value_arg_index += 1;
                 }
                 let found = air.get(air_arg.value).ty;
-                if !self.types_compatible(found, expected) && !expected.is_error() {
+                if !self.operand_fits_slot(expected, found, operand_continues[i]) {
                     let arg_span = self.body_rir_ref().get(args.get(i).unwrap().value).span;
                     // A named function bound to a `fn` parameter whose type
                     // mentions a comptime type parameter is checked here,
@@ -1688,6 +1691,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             args: air_args,
             temp_scope,
             continues,
+            ..
         } = self.analyze_call_operands(
             air,
             args_range,
@@ -1872,6 +1876,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             args: air_args,
             temp_scope,
             continues,
+            ..
         } = self.analyze_call_operands(
             air,
             args_range,

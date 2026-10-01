@@ -916,6 +916,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             args: operand_args,
             temp_scope,
             continues,
+            ..
         } = self.analyze_call_args_coerced(
             air,
             args.iter().copied(),
