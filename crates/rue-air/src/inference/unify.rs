@@ -132,11 +132,6 @@ impl Default for Unifier {
 }
 
 impl Unifier {
-    /// Whether a resolved type is the never type `!`.
-    fn is_never(ty: &InferType) -> bool {
-        matches!(ty, InferType::Concrete(t) if t.is_never())
-    }
-
     /// Create a new unifier with an empty substitution.
     pub fn new() -> Self {
         Unifier {
@@ -280,14 +275,6 @@ impl Unifier {
                         expected: *len2,
                         found: *len1,
                     }
-                } else if Self::is_never(elem1) || Self::is_never(elem2) {
-                    // A `!` element is the array form of the never coercion
-                    // (`Type::diverging_array_fits`, RUE-2538): it fits any
-                    // element type and constrains none. Unifying it would
-                    // bind the peer's element variable to `!`, so in
-                    // `[[2], [return 5; 1]]` the literal `2` was typed `!`
-                    // (E0800).
-                    UnifyResult::Ok
                 } else {
                     // Recursively unify element types
                     self.unify_with(elem1, elem2, concrete_types_equal)
@@ -2047,41 +2034,6 @@ mod tests {
         };
         let result = unifier.unify(&arr1, &arr2);
         assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_unify_diverging_array_leaves_peer_element_free() {
-        // `[[2], [return 5; 1]]`: the `[!; 1]` element constrains no element
-        // type, so the literal's variable is not bound to `!` (RUE-2538).
-        let mut unifier = Unifier::new();
-        let v0 = TypeVarId::new(0);
-        unifier.mark_int_literal_vars(&[v0]);
-        let literal = InferType::Array {
-            element: Box::new(InferType::Var(v0)),
-            length: 1,
-        };
-        let diverging = InferType::Array {
-            element: Box::new(InferType::Concrete(Type::NEVER)),
-            length: 1,
-        };
-        assert!(unifier.unify(&diverging, &literal).is_ok());
-        assert_eq!(
-            unifier.substitution.apply(&InferType::Var(v0)),
-            InferType::Var(v0)
-        );
-
-        // The lengths must still agree.
-        let longer = InferType::Array {
-            element: Box::new(InferType::Concrete(Type::I32)),
-            length: 2,
-        };
-        assert!(matches!(
-            unifier.unify(&diverging, &longer),
-            UnifyResult::ArrayLengthMismatch {
-                expected: 2,
-                found: 1
-            }
-        ));
     }
 
     #[test]

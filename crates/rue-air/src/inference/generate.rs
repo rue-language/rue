@@ -3395,16 +3395,19 @@ impl<'a> ConstraintGenerator<'a> {
                     // element that is not `!` supplies the type: in
                     // `[return 15, 1]` the literal is typed by its context,
                     // not by the `return`. A diverging array literal
-                    // (`[!; N]`) coerces the same way to an array of its
-                    // length (RUE-2538), so in `[[return 5; 1], [2]]` the
-                    // second element supplies the type; it is still
-                    // constrained against the first, which checks the length.
+                    // (`[!; N]`, an element that does not continue) is typed
+                    // the same way at an array of its length (RUE-2538), so
+                    // in `[[return 5; 1], [2]]` the second element supplies
+                    // the type. The later element is still constrained
+                    // against the first's shape, which checks the length.
                     let first_info =
                         self.generate_sequenced_operand(elements.get(0).unwrap(), ctx, true);
                     continues &= first_info.continues;
                     if self.was_canceled() {
                         return ExprInfo::diverged(InferType::Concrete(Type::ERROR), span);
                     }
+                    let mut element_diverges =
+                        !first_info.continues && Self::is_diverging_array(&first_info.ty);
                     let mut element_ty = first_info.ty;
                     for elem_ref in elements.values().skip(1) {
                         let elem_info = self.generate_sequenced_operand(elem_ref, ctx, continues);
@@ -3412,15 +3415,19 @@ impl<'a> ConstraintGenerator<'a> {
                         if self.was_canceled() {
                             break;
                         }
+                        let elem_diverges =
+                            !elem_info.continues && Self::is_diverging_array(&elem_info.ty);
                         if Self::is_never_concrete(&element_ty) {
                             element_ty = elem_info.ty;
-                        } else if Self::is_diverging_array(&element_ty) {
-                            self.add_peer_equal(
-                                elem_info.ty.clone(),
-                                element_ty.clone(),
-                                elem_info.span,
-                            );
+                            element_diverges = elem_diverges;
+                        } else if element_diverges && !elem_diverges {
+                            let shape = self.diverging_array_shape(&element_ty);
+                            self.add_peer_equal(elem_info.ty.clone(), shape, elem_info.span);
                             element_ty = elem_info.ty;
+                            element_diverges = false;
+                        } else if elem_diverges {
+                            let shape = self.diverging_array_shape(&elem_info.ty);
+                            self.add_peer_equal(shape, element_ty.clone(), elem_info.span);
                         } else {
                             self.add_peer_equal(elem_info.ty, element_ty.clone(), elem_info.span);
                         }
@@ -4156,6 +4163,21 @@ impl<'a> ConstraintGenerator<'a> {
                 Self::is_never_concrete(element) || Self::is_diverging_array(element)
             }
             _ => false,
+        }
+    }
+
+    /// The shape of a diverging array type: the same lengths at every level,
+    /// with a fresh variable in place of the `!` element. A peer element is
+    /// constrained against it, so the lengths must agree while the `!`
+    /// constrains no element type (RUE-2538).
+    fn diverging_array_shape(&mut self, ty: &InferType) -> InferType {
+        match ty {
+            InferType::Array { element, length } => InferType::Array {
+                element: Box::new(self.diverging_array_shape(element)),
+                length: *length,
+            },
+            InferType::Concrete(t) if t.is_never() => InferType::Var(self.fresh_var()),
+            other => other.clone(),
         }
     }
 
