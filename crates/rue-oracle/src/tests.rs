@@ -2134,6 +2134,69 @@ fn promoted_zst_parameter_leaves_the_inout_neighbour_writeback_intact() {
     assert_eq!(run(src).stdout, "11\n22\n");
 }
 
+// ---- zero-sized parameters keyed past the ABI range (RUE-2534) -------------
+//
+// A zero-sized by-value parameter's `Param { index }` is its key past the
+// ABI range, not a slot. Every path that asks whether a parameter read is a
+// place must still take it as one.
+
+#[test]
+fn whole_zst_parameter_at_its_key_is_an_intrinsic_place() {
+    // `@raw` of the whole parameter hands the oracle a bare `Param` at the
+    // key, in the middle and last positions.
+    let src = "struct Empty {}
+    fn middle(v: i64, z: Empty, w: i64) -> i64 {
+        let _pointer: ptr const Empty = checked { @raw(z) };
+        v + w
+    }
+    fn last(v: i64, z: Empty) -> i64 {
+        let _pointer: ptr const Empty = checked { @raw(z) };
+        v
+    }
+    fn main() -> i32 {
+        @dbg(middle(3, Empty {}, 4));
+        @dbg(last(5, Empty {}));
+        0
+    }";
+    assert_eq!(run(src).stdout, "7\n5\n");
+}
+
+#[test]
+fn zst_mut_self_at_its_key_is_an_inout_writeback_place() {
+    // Passing the receiver `inout` writes the callee's final value back to
+    // the parameter at its key, alone and before a sized parameter.
+    let src = "struct M {
+        fn only(mut self) -> i64 { reset(inout self); 1 }
+        fn first(mut self, x: i64) -> i64 { reset(inout self); x }
+    }
+    drop fn M(self) { @dbg(98); }
+    fn reset(inout m: M) { m = M {}; }
+    fn main() -> i32 {
+        @dbg(M {}.only());
+        @dbg(M {}.first(2));
+        0
+    }";
+    assert_eq!(run(src).stdout, "98\n98\n1\n98\n98\n2\n");
+}
+
+#[test]
+fn zst_parameter_at_its_key_drops_once_beside_its_neighbour() {
+    // The issue's repros: each by-value parameter drops once, whatever its
+    // width, and moving the zero-sized one never moves its neighbour.
+    let src = "struct S { v: i64 }
+    drop fn S(self) { @dbg(self.v); }
+    struct Z {}
+    drop fn Z(self) { @dbg(99); }
+    fn f(c: bool, z: Z, x: S) {
+        if c { @drop(z); } else { () };
+        if !c { @drop(x); } else { () };
+        @dbg(2);
+    }
+    fn d(z: Z) { @dbg(7); }
+    fn main() -> i32 { f(true, Z {}, S { v: 1 }); f(false, Z {}, S { v: 3 }); d(Z {}); 0 }";
+    assert_eq!(run(src).stdout, "99\n2\n1\n3\n2\n99\n7\n99\n");
+}
+
 // ---- one representation for the unit value (RUE-2156) ---------------------
 //
 // A unit-typed value is `Value::Unit`, wherever it comes from: the memory
