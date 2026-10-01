@@ -440,6 +440,15 @@ const ENTRIES: &[Entry] = &[
         external(ExternalDependencyKind::ArgCount),
         &[],
     ),
+    // RUE-2545: the chain reads `@arg_count()` so the optimizer cannot fold
+    // `x` and only CSE can prove each link's equality; the differential_opt
+    // levels still compare the native outputs against each other.
+    Entry::new(
+        "cli.cfg_cleanup_convergence",
+        "cse_exposed_equality_chain",
+        external(ExternalDependencyKind::ArgCount),
+        &[],
+    ),
     Entry::new(
         "cli.std_env",
         "var_absent_returns_none",

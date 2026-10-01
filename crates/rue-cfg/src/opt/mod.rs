@@ -121,6 +121,16 @@ pub enum CfgOptimizationError {
     Edit(CfgEditError),
     /// The optimized graph failed the publication-time verification boundary.
     Verification(CfgVerificationError),
+    /// A structurally bounded cleanup site (ControlFlow or Forwarding) was
+    /// still changing the graph when it reached [`MAX_CLEANUP_ROUNDS`].
+    /// Program size does not reach that bound at those sites (see its docs);
+    /// hitting it means a pass keeps undoing or re-exposing work, which is a
+    /// compiler bug (RUE-2545).
+    CleanupDidNotConverge {
+        function: String,
+        sequence: &'static str,
+        rounds: usize,
+    },
 }
 
 /// Bounded optimizer work published alongside the optimized CFG.
@@ -129,6 +139,27 @@ pub struct OptimizationStats {
     pub constopt_fold_attempts: u64,
     pub constopt_folded: u64,
     pub constopt_loads_rewritten: u64,
+    /// Block parameters constopt replaced by the constant every live edge
+    /// passes (RUE-2545).
+    pub constopt_params_resolved: u64,
+    /// Values constopt recorded as always equal to another value.
+    pub constopt_aliases_recorded: u64,
+    /// Edges constopt proved never taken.
+    pub constopt_edges_pruned: u64,
+    /// Blocks constopt proved never executed.
+    pub constopt_blocks_proven_dead: u64,
+    /// Constopt walks over live edges that retire dead cycles.
+    pub constopt_reachability_walks: u64,
+    /// Rounds run by the cleanup fixpoint sites, including each site's final
+    /// no-progress round.
+    pub cleanup_rounds: u64,
+    /// The most rounds any one cleanup site needed in this invocation. Work
+    /// items sum it across functions, so there it reads as a total of
+    /// per-invocation maxima.
+    pub cleanup_rounds_max: u64,
+    /// Unrolling cleanup sites that reached [`MAX_CLEANUP_ROUNDS`] still
+    /// changing the graph and published it as it stood (RUE-2545).
+    pub cleanup_bound_exhaustions: u64,
     pub peephole_divmods_reduced: u64,
     pub peephole_identities_rewired: u64,
     pub simplify_blocks_scanned: u64,
@@ -191,6 +222,11 @@ impl OptimizationStats {
         self.constopt_fold_attempts += pass.fold_attempts;
         self.constopt_folded += pass.folded;
         self.constopt_loads_rewritten += pass.loads_rewritten;
+        self.constopt_params_resolved += pass.params_resolved;
+        self.constopt_aliases_recorded += pass.aliases_recorded;
+        self.constopt_edges_pruned += pass.edges_pruned;
+        self.constopt_blocks_proven_dead += pass.blocks_proven_dead;
+        self.constopt_reachability_walks += pass.reachability_walks;
     }
 
     fn add_peephole(&mut self, pass: peephole::Stats) {
@@ -268,12 +304,27 @@ impl OptimizationStats {
 
 /// Maximum number of cleanup rounds in one optimizer cleanup site.
 ///
-/// Every progress event is a finite CFG mutation: an instruction is rewritten,
-/// an edge or terminator is replaced, or blocks are merged. Sixty-four rounds
-/// therefore bounds adversarial work while leaving ample headroom for deeply
-/// nested constant-control-flow exposure. A release build stops at the bound;
-/// debug/asserting builds diagnose a still-mutating final round so corpus growth
-/// cannot silently make the bound insufficient.
+/// What reaching the bound means depends on the site.
+///
+/// - **ControlFlow** (DCE, constopt, peephole, simplify) and **Forwarding**
+///   (constopt, simplify) are structurally bounded. Constopt carries constants
+///   through the branches, block parameters, dead writes, dead loops, and
+///   identities it exposes (see `constopt`'s module docs), so the passes after
+///   it only rewrite what it already decided: simplify folds the terminators
+///   whose edges constopt pruned and merges blocks whose parameters it
+///   resolved or aliased, peephole rewires identities constopt already folded
+///   through, and DCE removes what both left behind. One round does the work,
+///   at most one more sweeps up, and a final round changes nothing, whatever
+///   the program's size. The tests below and the `cfg_cleanup_convergence`
+///   CLI cases pin that on chains far longer than this bound, so reaching it
+///   at these sites means a pass that does not converge: an internal error
+///   naming the function.
+/// - **Unrolling** also revisits forwarding and CSE, whose equalities
+///   (`x * (0 + 3)` deduplicated against `x * 3`) constopt does not
+///   anticipate, so a chain of those costs one round per link and a valid
+///   program can reach the bound. Every round leaves a verifier-valid graph,
+///   so this site stops and publishes the graph as it stands, counting the
+///   exhaustion in [`OptimizationStats::cleanup_bound_exhaustions`].
 const MAX_CLEANUP_ROUNDS: usize = 64;
 
 /// The pass order owned by each existing cleanup site.
@@ -292,8 +343,18 @@ enum CleanupSequence {
     Unrolling { revisit_clones: bool },
 }
 
+impl CleanupSequence {
+    fn name(self) -> &'static str {
+        match self {
+            Self::ControlFlow => "ControlFlow",
+            Self::Forwarding => "Forwarding",
+            Self::Unrolling { .. } => "Unrolling",
+        }
+    }
+}
+
 fn constopt_made_progress(stats: constopt::Stats) -> bool {
-    stats.folded > 0 || stats.loads_rewritten > 0
+    stats.made_progress()
 }
 
 fn peephole_made_progress(stats: peephole::Stats) -> bool {
@@ -333,14 +394,15 @@ fn run_cleanup_to_fixpoint_with_limit(
     sequence: CleanupSequence,
     max_rounds: usize,
 ) -> Result<(), CfgOptimizationError> {
-    let mut final_round_made_progress = false;
-    for _ in 0..max_rounds {
-        final_round_made_progress = match sequence {
+    for round in 1..=max_rounds {
+        stats.cleanup_rounds += 1;
+        stats.cleanup_rounds_max = stats.cleanup_rounds_max.max(round as u64);
+        let made_progress = match sequence {
             CleanupSequence::ControlFlow => {
                 let dce_stats = dce::run(cfg);
                 let dce_progress = dce_stats.made_progress();
                 stats.add_dce(dce_stats);
-                let constopt_stats = constopt::run(cfg);
+                let constopt_stats = constopt::run(cfg)?;
                 let constopt_progress = constopt_made_progress(constopt_stats);
                 stats.add_constopt(constopt_stats);
                 let peephole_stats = peephole::run(cfg)?;
@@ -352,7 +414,7 @@ fn run_cleanup_to_fixpoint_with_limit(
                 dce_progress || constopt_progress || peephole_progress || simplify_progress
             }
             CleanupSequence::Forwarding => {
-                let constopt_stats = constopt::run(cfg);
+                let constopt_stats = constopt::run(cfg)?;
                 let constopt_progress = constopt_made_progress(constopt_stats);
                 stats.add_constopt(constopt_stats);
                 let simplify_stats = simplify::run(cfg)?;
@@ -361,7 +423,7 @@ fn run_cleanup_to_fixpoint_with_limit(
                 constopt_progress || simplify_progress
             }
             CleanupSequence::Unrolling { revisit_clones } => {
-                let constopt_stats = constopt::run(cfg);
+                let constopt_stats = constopt::run(cfg)?;
                 let constopt_progress = constopt_made_progress(constopt_stats);
                 stats.add_constopt(constopt_stats);
                 let simplify_stats = simplify::run(cfg)?;
@@ -392,16 +454,29 @@ fn run_cleanup_to_fixpoint_with_limit(
                     || dce_progress
             }
         };
-        if !final_round_made_progress {
+        if !made_progress {
             return Ok(());
         }
     }
 
-    debug_assert!(
-        !final_round_made_progress,
-        "CFG optimizer cleanup sequence {sequence:?} still made progress after the maximum of {max_rounds} rounds"
-    );
-    Ok(())
+    match sequence {
+        // Not structurally bounded: forwarding and CSE expose equalities
+        // (`x * (0 + 3)` deduplicated against `x * 3`) that constopt does not
+        // anticipate, so a chain of them costs one round per link. Every round
+        // leaves a verifier-valid graph, so the site stops and publishes what
+        // it has, and the stat keeps the exhaustion visible.
+        CleanupSequence::Unrolling { .. } => {
+            stats.cleanup_bound_exhaustions += 1;
+            Ok(())
+        }
+        CleanupSequence::ControlFlow | CleanupSequence::Forwarding => {
+            Err(CfgOptimizationError::CleanupDidNotConverge {
+                function: cfg.fn_name().to_owned(),
+                sequence: sequence.name(),
+                rounds: max_rounds,
+            })
+        }
+    }
 }
 
 /// Exact growth attributed to one bounded transform operation.
@@ -507,6 +582,14 @@ impl std::fmt::Display for CfgOptimizationError {
         match self {
             Self::Edit(error) => write!(f, "CFG optimizer edit was rejected: {error}"),
             Self::Verification(error) => error.fmt(f),
+            Self::CleanupDidNotConverge {
+                function,
+                sequence,
+                rounds,
+            } => write!(
+                f,
+                "CFG optimizer cleanup sequence {sequence} still changed function `{function}` after the maximum of {rounds} rounds"
+            ),
         }
     }
 }
@@ -521,7 +604,7 @@ impl CfgOptimizationError {
     pub fn error_kind(&self, context: &str) -> rue_error::ErrorKind {
         match self {
             Self::Edit(error) => error.error_kind(context),
-            Self::Verification(_) => {
+            Self::Verification(_) | Self::CleanupDidNotConverge { .. } => {
                 rue_error::ErrorKind::InternalError(format!("{context}: {self}"))
             }
         }
@@ -627,7 +710,7 @@ pub fn optimize_with_budget(
                 // instruction only when one of its inputs becomes constant, so
                 // deep chains stay linear instead of forcing quadratic full-CFG
                 // rescans (RUE-794).
-                let constopt_stats = constopt::run(&mut cfg);
+                let constopt_stats = constopt::run(&mut cfg)?;
                 stats.add_constopt(constopt_stats);
 
                 // Peephole algebraic simplification (RUE-912): rewire trap-free
@@ -913,6 +996,38 @@ mod tests {
     }
 
     #[test]
+    fn cleanup_round_count_does_not_grow_with_chain_length() {
+        // RUE-2545: every generation used to cost one ControlFlow round, so
+        // 64 generations exhausted the bound. Constopt now proves the dead
+        // arms itself, and the round count is the same at every length.
+        for generations in [2, 64, 200, 1000] {
+            let (cfg, pool) = cleanup_generation_cfg(generations);
+            for level in [OptLevel::O1, OptLevel::O2, OptLevel::O3] {
+                let (optimized, stats) = optimize_with_stats(cfg.clone(), level, &pool).unwrap();
+                assert!(
+                    stats.cleanup_rounds_max <= 2,
+                    "{generations} generations at {level}: {} rounds",
+                    stats.cleanup_rounds_max
+                );
+                assert!(optimized.blocks().iter().all(|block| !matches!(
+                    block.terminator,
+                    Terminator::Branch { .. } | Terminator::Switch { .. }
+                )));
+            }
+
+            // Run directly, the site needs one round that does the work, one
+            // in which DCE sweeps the folded arms, and one that changes
+            // nothing.
+            let mut editor = cfg.into_editor();
+            let mut stats = OptimizationStats::default();
+            run_cleanup_to_fixpoint(&mut editor, &pool, &mut stats, CleanupSequence::ControlFlow)
+                .unwrap();
+            assert_eq!(stats.cleanup_rounds, 3, "{generations} generations");
+            assert_eq!(stats.simplify_branches_folded, generations as u64 + 1);
+        }
+    }
+
+    #[test]
     fn forwarding_cleanup_remains_an_o2_distinction() {
         let pool = rue_air::TypeInternPool::new().freeze();
         let mut cfg = Cfg::new(Type::I32, 1, 1, "forwarding_level".to_string(), vec![false]);
@@ -1069,7 +1184,12 @@ mod tests {
         assert_eq!(
             stats,
             OptimizationStats {
-                constopt_fold_attempts: 15,
+                // The `load | 0` identity is recorded as an alias and its one
+                // foldable user re-attempted through it.
+                constopt_fold_attempts: 16,
+                constopt_aliases_recorded: 1,
+                cleanup_rounds: 2,
+                cleanup_rounds_max: 2,
                 peephole_identities_rewired: 1,
                 simplify_blocks_scanned: 2,
                 dce_instructions_removed: 4,
@@ -1106,6 +1226,8 @@ mod tests {
         assert_eq!(
             stats,
             OptimizationStats {
+                cleanup_rounds: 1,
+                cleanup_rounds_max: 1,
                 simplify_blocks_scanned: 1,
                 ..OptimizationStats::default()
             }
@@ -1138,6 +1260,8 @@ mod tests {
         assert_eq!(
             stats,
             OptimizationStats {
+                cleanup_rounds: 2,
+                cleanup_rounds_max: 2,
                 simplify_blocks_scanned: 2,
                 dce_instructions_removed: 1,
                 forward_insts_scanned: 1,
@@ -1150,37 +1274,49 @@ mod tests {
     }
 
     #[test]
-    #[cfg(debug_assertions)]
-    #[should_panic(expected = "still made progress after the maximum of 1 rounds")]
+    fn unrolling_cleanup_publishes_a_valid_graph_at_the_bound() {
+        // The Unrolling site is not structurally bounded (forwarding and CSE
+        // can expose one link per round), so reaching the bound stops and
+        // publishes instead of failing the compile.
+        let (cfg, pool) = cleanup_generation_cfg(2);
+        let mut cfg = cfg.into_editor();
+        let mut stats = OptimizationStats::default();
+        run_cleanup_to_fixpoint_with_limit(
+            &mut cfg,
+            &pool,
+            &mut stats,
+            CleanupSequence::Unrolling {
+                revisit_clones: true,
+            },
+            1,
+        )
+        .expect("the Unrolling site publishes at the bound");
+        assert_eq!(stats.cleanup_rounds, 1);
+        assert_eq!(stats.cleanup_bound_exhaustions, 1);
+        assert!(stats.simplify_branches_folded > 0);
+        cfg.finish_after_optimization(&pool)
+            .expect("every cleanup round leaves a verifier-valid graph");
+    }
+
+    #[test]
     fn cleanup_reports_bound_exhaustion_after_mutating_final_round() {
         let (cfg, pool) = cleanup_generation_cfg(2);
         let mut cfg = cfg.into_editor();
         let mut stats = OptimizationStats::default();
-        run_cleanup_to_fixpoint_with_limit(
+        let error = run_cleanup_to_fixpoint_with_limit(
             &mut cfg,
             &pool,
             &mut stats,
             CleanupSequence::ControlFlow,
             1,
         )
-        .unwrap();
-    }
-
-    #[test]
-    #[cfg(not(debug_assertions))]
-    fn cleanup_release_build_stops_at_bound_after_mutating_final_round() {
-        let (cfg, pool) = cleanup_generation_cfg(2);
-        let mut cfg = cfg.into_editor();
-        let mut stats = OptimizationStats::default();
-        run_cleanup_to_fixpoint_with_limit(
-            &mut cfg,
-            &pool,
-            &mut stats,
-            CleanupSequence::ControlFlow,
-            1,
-        )
-        .unwrap();
+        .expect_err("a bound reached by a mutating round is an internal error");
         assert!(stats.simplify_branches_folded > 0);
+        assert!(matches!(
+            error.error_kind("CFG optimization failed"),
+            rue_error::ErrorKind::InternalError(message)
+                if message.contains("cleanup sequence ControlFlow still changed function `cleanup_generations` after the maximum of 1 rounds")
+        ));
     }
 
     #[test]

@@ -3202,10 +3202,17 @@ pub(crate) fn apply_general_inlining(
         ) {
             Ok(result) => result,
             Err(error) => {
-                output[index] = internal_failure(
-                    format!("general inline reoptimization failed: {error:?}"),
-                    record.body_span,
-                );
+                // Classified like the O3 path's optimization failure: an
+                // implementation limit stays E1401, and everything else is an
+                // internal error rendered with its Display text.
+                output[index] = CfgValue::Failure {
+                    errors: crate::CompileError::new(
+                        error.error_kind("general inline reoptimization failed"),
+                        record.body_span,
+                    )
+                    .into(),
+                    body_span: record.body_span,
+                };
                 continue;
             }
         };
@@ -3610,6 +3617,14 @@ fn record_optimization_stats(
     record!("constopt.fold-attempts", constopt_fold_attempts);
     record!("constopt.folded", constopt_folded);
     record!("constopt.loads-rewritten", constopt_loads_rewritten);
+    record!("constopt.params-resolved", constopt_params_resolved);
+    record!("constopt.aliases-recorded", constopt_aliases_recorded);
+    record!("constopt.edges-pruned", constopt_edges_pruned);
+    record!("constopt.blocks-proven-dead", constopt_blocks_proven_dead);
+    record!("constopt.reachability-walks", constopt_reachability_walks);
+    record!("cleanup.rounds", cleanup_rounds);
+    record!("cleanup.rounds-max", cleanup_rounds_max);
+    record!("cleanup.bound-exhaustions", cleanup_bound_exhaustions);
     record!("peephole.divmods-reduced", peephole_divmods_reduced);
     record!("peephole.identities-rewired", peephole_identities_rewired);
     record!("simplify.blocks-scanned", simplify_blocks_scanned);

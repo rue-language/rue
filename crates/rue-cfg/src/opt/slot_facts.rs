@@ -104,11 +104,11 @@
 //! forwarding it would violate the Rule 1 dominance invariant (it tripped the
 //! debug assertion — 2026-07-16 optimizer hunt), and an unreachable store
 //! must not count against (or for) a slot's classification either.
-//! [`super::constopt`] runs before simplify has folded anything, scans all
-//! blocks, and needs no dominator reasoning for its rewrite — an unreachable
-//! write can only *narrow* its result (disqualify a slot or leave a dead
-//! constant unpropagated), never unsoundly widen it — so it deliberately
-//! passes `None` rather than paying for a reachability computation.
+//! [`super::constopt`] proves blocks dead itself as it folds branch
+//! conditions, before simplify rewrites any terminator, so it counts writes
+//! through [`LiveSlotWrites`] instead: the same per-instruction rule, kept
+//! current as blocks die. It needs no dominator reasoning for its rewrite,
+//! because it propagates only a constant, which is available everywhere.
 
 use super::dce::BitSet;
 use crate::{BlockId, Cfg, CfgInstData, CfgValue, PlaceBase};
@@ -312,12 +312,10 @@ pub(super) enum SlotWrites {
 
 /// Classify every local slot by the writes it receives.
 ///
-/// `reachable` selects which blocks the scan observes: `None` scans all
-/// blocks (`constopt`'s semantics), `Some(set)` only the blocks in the set
-/// (`forward`'s semantics — see "Why callers differ on reachability" in the
-/// module docs). Nothing here depends on which values are constant or on any
+/// Only the blocks in `reachable` are observed (see "Why callers differ on
+/// reachability" in the module docs). Nothing here depends on which values are constant or on any
 /// later rewriting, so one scan per pass run suffices.
-pub(super) fn classify_slot_writes(cfg: &Cfg, reachable: Option<&BitSet>) -> Vec<SlotWrites> {
+pub(super) fn classify_slot_writes(cfg: &Cfg, reachable: &BitSet) -> Vec<SlotWrites> {
     let num_locals = cfg.num_locals() as usize;
     let mut slot_writes = vec![SlotWrites::None; num_locals];
 
@@ -345,68 +343,210 @@ pub(super) fn classify_slot_writes(cfg: &Cfg, reachable: Option<&BitSet>) -> Vec
     }
 
     for block in cfg.blocks() {
-        if let Some(reachable) = reachable
-            && !reachable.contains(block.id.as_u32())
-        {
+        if !reachable.contains(block.id.as_u32()) {
             continue;
         }
         for &value in &block.insts {
-            match &cfg.get_inst(value).data {
-                CfgInstData::Alloc { slot, init } | CfgInstData::Store { slot, value: init } => {
-                    record_write(&mut slot_writes, *slot, Some((*init, block.id)));
+            visit_local_slot_writes(cfg, value, |write| match write {
+                LocalSlotWrite::Whole { slot, value } => {
+                    record_write(&mut slot_writes, slot, Some((value, block.id)));
                 }
-                CfgInstData::PlaceWrite { place, .. } => {
-                    if let PlaceBase::Local(slot) = place.base {
-                        record_write(&mut slot_writes, slot, None);
-                    }
-                }
-                // By-ref arguments on either call form pass the ADDRESS of
-                // the argument place: disqualify any local the argument
-                // roots (module docs).
-                CfgInstData::Call { args, .. }
-                | CfgInstData::AccessorCall { args, .. }
-                | CfgInstData::CallIndirect { args, .. } => {
-                    for arg in cfg.call_args(args) {
-                        if !arg.is_by_ref() {
-                            continue;
-                        }
-                        match &cfg.get_inst(arg.value).data {
-                            CfgInstData::Load { slot } => {
-                                record_write(&mut slot_writes, *slot, None);
-                            }
-                            CfgInstData::PlaceRead { place } => match place.base {
-                                PlaceBase::Local(slot) => {
-                                    record_write(&mut slot_writes, slot, None);
-                                }
-                                // A parameter root hands over a parameter
-                                // slot's address, which cannot alias a local.
-                                PlaceBase::Param(_) => {}
-                                PlaceBase::Accessor(_) | PlaceBase::Indirect(_) => {
-                                    slot_writes.fill(SlotWrites::Disqualified);
-                                }
-                            },
-                            // A bare scalar parameter has no backing local, so
-                            // its ABI slot's address cannot alias one: this is
-                            // the mirror of the rule
-                            // `classify_never_written_params` states for a
-                            // local root handed to a callee.
-                            CfgInstData::Param { .. } => {}
-                            // A by-ref root this scan cannot resolve to a
-                            // specific slot: the address handed over may be
-                            // any local's, so disqualify every one. This is
-                            // the same fail-closed rule
-                            // `classify_never_written_params` applies to
-                            // parameters (RUE-2262).
-                            _ => slot_writes.fill(SlotWrites::Disqualified),
-                        }
-                    }
-                }
-                _ => {}
-            }
+                LocalSlotWrite::Partial { slot } => record_write(&mut slot_writes, slot, None),
+                LocalSlotWrite::AnyLocal => slot_writes.fill(SlotWrites::Disqualified),
+            });
         }
     }
 
     slot_writes
+}
+
+/// One write channel an instruction opens onto local slots.
+#[derive(Clone, Copy)]
+enum LocalSlotWrite {
+    /// A whole-slot write (`Alloc` or `Store`) of `value`.
+    Whole { slot: u32, value: CfgValue },
+    /// A projected write, or a by-ref call argument rooted at the slot.
+    Partial { slot: u32 },
+    /// A by-ref argument whose root cannot be resolved to one slot: it may
+    /// hand over any local's address.
+    AnyLocal,
+}
+
+/// Report every local-slot write channel one instruction opens. This is the
+/// per-instruction rule both [`classify_slot_writes`] and [`LiveSlotWrites`]
+/// count, so the two classifiers cannot disagree on what a write is.
+fn visit_local_slot_writes(cfg: &Cfg, value: CfgValue, mut visit: impl FnMut(LocalSlotWrite)) {
+    match &cfg.get_inst(value).data {
+        CfgInstData::Alloc { slot, init } | CfgInstData::Store { slot, value: init } => {
+            visit(LocalSlotWrite::Whole {
+                slot: *slot,
+                value: *init,
+            });
+        }
+        CfgInstData::PlaceWrite { place, .. } => {
+            if let PlaceBase::Local(slot) = place.base {
+                visit(LocalSlotWrite::Partial { slot });
+            }
+        }
+        // By-ref arguments on either call form pass the ADDRESS of
+        // the argument place: disqualify any local the argument
+        // roots (module docs).
+        CfgInstData::Call { args, .. }
+        | CfgInstData::AccessorCall { args, .. }
+        | CfgInstData::CallIndirect { args, .. } => {
+            for arg in cfg.call_args(args) {
+                if !arg.is_by_ref() {
+                    continue;
+                }
+                match &cfg.get_inst(arg.value).data {
+                    CfgInstData::Load { slot } => visit(LocalSlotWrite::Partial { slot: *slot }),
+                    CfgInstData::PlaceRead { place } => match place.base {
+                        PlaceBase::Local(slot) => visit(LocalSlotWrite::Partial { slot }),
+                        // A parameter root hands over a parameter
+                        // slot's address, which cannot alias a local.
+                        PlaceBase::Param(_) => {}
+                        PlaceBase::Accessor(_) | PlaceBase::Indirect(_) => {
+                            visit(LocalSlotWrite::AnyLocal);
+                        }
+                    },
+                    // A bare scalar parameter has no backing local, so
+                    // its ABI slot's address cannot alias one: this is
+                    // the mirror of the rule
+                    // `classify_never_written_params` states for a
+                    // local root handed to a callee.
+                    CfgInstData::Param { .. } => {}
+                    // A by-ref root this scan cannot resolve to a
+                    // specific slot: the address handed over may be
+                    // any local's, so disqualify every one. This is
+                    // the same fail-closed rule
+                    // `classify_never_written_params` applies to
+                    // parameters (RUE-2262).
+                    _ => visit(LocalSlotWrite::AnyLocal),
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// [`classify_slot_writes`] kept current while blocks are proven dead.
+///
+/// The sparse constant driver ([`super::constopt`]) discovers dead blocks as
+/// it folds branch conditions. A write in a block that never executes cannot
+/// be observed by any load, so it must stop counting against its slot the
+/// moment the block is proven dead: otherwise a slot whose only competing
+/// write sat in a dead arm would qualify only after DCE deleted that arm, one
+/// cleanup round per dependent branch (RUE-2545).
+///
+/// Counts only ever decrease, so a slot qualifies at most once and stays
+/// qualified. The qualifying condition is [`classify_slot_writes`]'s
+/// [`SlotWrites::One`] restricted to the live blocks: exactly one live
+/// whole-slot write, no live partial write or by-ref escape, no live
+/// unresolvable by-ref root, and no address escape. Discounting a dead write
+/// is sound for the same reason the module docs give for a single write: a
+/// definitely-initialized load executes after an execution of some write,
+/// and a dead write never executes, so the one live write is the write every
+/// executed load observes.
+pub(super) struct LiveSlotWrites {
+    slots: Vec<LiveSlot>,
+    /// Live by-ref arguments whose root may be any local.
+    any_local: u32,
+}
+
+#[derive(Clone, Copy, Default)]
+struct LiveSlot {
+    /// Live whole-slot writes.
+    whole: u32,
+    /// Live partial writes and by-ref escapes.
+    partial: u32,
+    /// Sum of the live whole-slot writes' value indices: while `whole` is 1
+    /// it is exactly the one live write's value, with no per-write list.
+    whole_values: u64,
+}
+
+impl LiveSlotWrites {
+    /// Count the writes in every block `live` accepts.
+    pub(super) fn new(cfg: &Cfg, live: impl Fn(BlockId) -> bool) -> Self {
+        let mut slots = vec![LiveSlot::default(); cfg.num_locals() as usize];
+        let mut any_local = 0u32;
+        for block in cfg.blocks() {
+            if !live(block.id) {
+                continue;
+            }
+            for &value in &block.insts {
+                visit_local_slot_writes(cfg, value, |write| match write {
+                    LocalSlotWrite::Whole { slot, value } => {
+                        if let Some(state) = slots.get_mut(slot as usize) {
+                            state.whole += 1;
+                            state.whole_values += u64::from(value.as_u32());
+                        }
+                    }
+                    LocalSlotWrite::Partial { slot } => {
+                        if let Some(state) = slots.get_mut(slot as usize) {
+                            state.partial += 1;
+                        }
+                    }
+                    LocalSlotWrite::AnyLocal => any_local += 1,
+                });
+            }
+        }
+        Self { slots, any_local }
+    }
+
+    /// Stop counting the writes in `block`, which was counted live and is now
+    /// proven dead. Pushes each slot whose counts changed onto `touched`, and
+    /// returns `true` when the last unresolvable by-ref root died, which can
+    /// requalify every slot.
+    ///
+    /// The plain decrements cannot underflow because retiring re-reads the
+    /// same instructions [`Self::new`] counted and classifies each exactly as
+    /// it did then. The one classification that reads another value's data
+    /// is a by-ref call argument's root (`Load`/`PlaceRead` versus anything
+    /// else), and that root keeps its data while its call is live: constopt
+    /// rewrites a `Load` only for a slot with no live partial write, and the
+    /// by-ref argument is itself a live partial write of that slot. So a
+    /// block's writes count the same when it dies as when it was counted.
+    pub(super) fn retire_block(
+        &mut self,
+        cfg: &Cfg,
+        block: BlockId,
+        touched: &mut Vec<u32>,
+    ) -> bool {
+        let mut any_local_cleared = false;
+        for &value in &cfg.get_block(block).insts {
+            visit_local_slot_writes(cfg, value, |write| match write {
+                LocalSlotWrite::Whole { slot, value } => {
+                    if let Some(state) = self.slots.get_mut(slot as usize) {
+                        state.whole -= 1;
+                        state.whole_values -= u64::from(value.as_u32());
+                        touched.push(slot);
+                    }
+                }
+                LocalSlotWrite::Partial { slot } => {
+                    if let Some(state) = self.slots.get_mut(slot as usize) {
+                        state.partial -= 1;
+                        touched.push(slot);
+                    }
+                }
+                LocalSlotWrite::AnyLocal => {
+                    self.any_local -= 1;
+                    any_local_cleared |= self.any_local == 0;
+                }
+            });
+        }
+        any_local_cleared
+    }
+
+    /// The value of `slot`'s single live whole-slot write, when the slot
+    /// qualifies (see the type docs).
+    pub(super) fn single_live_write(&self, cfg: &Cfg, slot: u32) -> Option<CfgValue> {
+        let state = self.slots.get(slot as usize)?;
+        (self.any_local == 0
+            && state.partial == 0
+            && state.whole == 1
+            && !cfg.is_address_taken(slot))
+        .then(|| CfgValue::from_raw(state.whole_values as u32))
+    }
 }
 
 /// Classify every parameter ABI slot as *never written*: `true` means every
