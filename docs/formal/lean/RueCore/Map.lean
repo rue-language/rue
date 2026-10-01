@@ -240,7 +240,9 @@ def dedupStr (xs : Array String) : Array String :=
 
 /-- (helper) The `§N.M` (and `§N.M–§N.M'`) section citations a doc-comment
 contains, as written, in the doc-comment convention's first spelling
-(`../../README.md`, "Doc-comment convention"). Informational only: unlike the
+(`../../README.md`, "Doc-comment convention"), and the section of each
+calculus paragraph id it cites (`core:N.M:K` cites `§N.M`, RUE-2511), in the
+order they are written. Informational only: unlike the
 index generator (`scripts/validate-lean-xref-index.py`), this does not check
 the label against the calculus, so it is read as a pointer for a reviewer,
 not as a citation gate. -/
@@ -259,6 +261,19 @@ partial def sectionCitations (doc : String) : Array String := Id.run do
         text := text.push cs[j]!
         j := j + 1
       if text.size > 1 then out := out.push (String.ofList text.toList)
+      i := j
+    else if cs[i]! == 'c' && cs[i+1]? == some 'o' && cs[i+2]? == some 'r' &&
+        cs[i+3]? == some 'e' && cs[i+4]? == some ':' &&
+        (i == 0 || !(cs[i-1]!.isAlphanum)) then
+      -- a paragraph id `core:N.M:K` cites its section `§N.M`
+      let mut j := i + 5
+      let mut text : Array Char := #['§']
+      while j < cs.size && (cs[j]!.isDigit ||
+          (cs[j]! == '.' && (cs[j+1]?.map Char.isDigit).getD false)) do
+        text := text.push cs[j]!
+        j := j + 1
+      if text.size > 1 && cs[j]? == some ':' && (cs[j+1]?.map Char.isDigit).getD false then
+        out := out.push (String.ofList text.toList)
       i := j
     else i := i + 1
   return dedupStr out
