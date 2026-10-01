@@ -6066,28 +6066,6 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             return Ok(());
         }
 
-        // A struct pattern's temporary over a declared-`linear` struct was
-        // taken apart whole by the pattern (RUE-2540), so its obligation is
-        // the residue of its fields, exactly as for a declared-linear
-        // `@drop` operand: none for a field-less struct, and otherwise a
-        // linear field the pattern's own reads left unconsumed.
-        if ctx.linear_pattern_temporaries.contains(&symbol)
-            && let Some(struct_id) = local.ty.as_struct()
-        {
-            let Some(residue) = self.residual_linear_fields(struct_id, state, &mut Vec::new())?
-            else {
-                return Ok(());
-            };
-            let name = self.body_interner().resolve(&symbol);
-            let err = linear_not_consumed_error(
-                name,
-                local.span,
-                Self::residue_consumed_on_some_path(state, &residue),
-            );
-            let err = self.note_residual_linear_place(err, symbol, &residue);
-            return Err(self.attach_infectious_linear_note(err, local.ty));
-        }
-
         // Per-place residue (core §5.6, spec 3.8:60, RUE-1591): consuming
         // exactly the linear sub-places of an infectious carrier
         // discharges its obligation, and the non-linear residue is left
@@ -6096,7 +6074,19 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // element-wise consumption of a root linear array (RUE-186, spec
         // 3.8:71) and of an array field consumed through per-element field
         // moves.
-        let Some(residue) = self.residual_linear_place(local.ty, state, &mut Vec::new())? else {
+        //
+        // A struct pattern's temporary over a declared-`linear` struct was
+        // taken apart whole by the pattern (RUE-2540), so its obligation is
+        // the residue of its fields, exactly as for a declared-linear
+        // `@drop` operand: none for a field-less struct, and otherwise a
+        // linear field the pattern's own reads left unconsumed.
+        let residue = match local.ty.as_struct() {
+            Some(struct_id) if ctx.linear_pattern_temporaries.contains(&symbol) => {
+                self.residual_linear_fields(struct_id, state, &mut Vec::new())?
+            }
+            _ => self.residual_linear_place(local.ty, state, &mut Vec::new())?,
+        };
+        let Some(residue) = residue else {
             return Ok(());
         };
 
