@@ -439,6 +439,49 @@ impl SemanticNucleusTypeProvider<'_> {
         ))
     }
 
+    /// The declared type of a type constructor's comptime value parameter at
+    /// `parameter_index`, with the type arguments bound so far substituted.
+    /// `None` when that type still names a type parameter of the signature
+    /// being resolved, which only a call site fixes.
+    fn constructor_value_parameter_type(
+        &mut self,
+        head: &rue_air::SemanticTypeConstructorHead<
+            StableDefinitionKey,
+            Arc<str>,
+            StableDefinitionKey,
+        >,
+        parameter_index: usize,
+        type_arguments: &[(Arc<str>, crate::durable_semantics::DurableType)],
+    ) -> Result<
+        Option<crate::durable_semantics::DurableType>,
+        rue_air::SemanticProviderError<
+            QueryAbort,
+            crate::semantic_query_nucleus::SemanticNucleusFailure,
+        >,
+    > {
+        let crate::semantic_query_nucleus::DeclarationSignatureProjection::Callable {
+            parameters,
+            ..
+        } = self.signature(constructor_declaration(head))?
+        else {
+            return Self::provider_failure("type constructor has a non-callable signature");
+        };
+        let Some(parameter) = parameters.get(parameter_index) else {
+            return Self::provider_failure("comptime value argument has no parameter");
+        };
+        let concrete_type_arguments = type_arguments
+            .iter()
+            .map(|(_, ty)| ty.clone())
+            .collect::<Vec<_>>();
+        let expected = substitute_durable_generics(&parameter.ty, &concrete_type_arguments);
+        Ok((!matches!(
+            expected,
+            crate::durable_semantics::DurableType::GenericParameter(_)
+                | crate::durable_semantics::DurableType::ComptimeType
+        ))
+        .then_some(expected))
+    }
+
     fn provider_domain_failure<T>(
         failure: crate::semantic_query_nucleus::SemanticNucleusFailure,
     ) -> Result<
@@ -2189,20 +2232,35 @@ impl rue_air::SemanticTypeSyntaxProvider<ModuleId, ModuleId, StableDefinitionKey
         {
             return Ok(V::Type(ty.clone()));
         }
-        if let Some(ty) = self.deferred_value_parameters.get(syntax) {
-            if crate::durable_comptime::durable_int_width(ty).is_some() {
-                return self.defer_value_parameter(syntax);
-            }
-            return match ty {
-                crate::durable_semantics::DurableType::Bool
-                | crate::durable_semantics::DurableType::Unit => {
-                    self.defer_value_parameter(syntax)
-                }
-                _ => Self::provider_failure(format!(
+        if let Some(ty) = self.deferred_value_parameters.get(syntax).cloned() {
+            use crate::durable_semantics::DurableType as T;
+            if crate::durable_comptime::durable_int_width(&ty).is_none()
+                && !matches!(ty, T::Bool | T::Unit)
+            {
+                return Self::provider_failure(format!(
                     "comptime parameter `{syntax}` has unsupported declared type {}",
-                    durable_type_diagnostic_name(ty),
-                )),
-            };
+                    durable_type_diagnostic_name(&ty),
+                ));
+            }
+            // The value is unknown here, but its declared type is not: an
+            // argument whose type can never fit the constructor's parameter
+            // is rejected with the declaration, called or not. Only a value
+            // range check waits for the call.
+            let expected =
+                self.constructor_value_parameter_type(head, parameter_index, type_arguments)?;
+            if let Some(expected) = expected
+                && !deferred_value_type_fits(&ty, &expected)
+            {
+                return Self::provider_domain_failure(
+                    crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
+                        rue_error::ErrorKind::TypeMismatch {
+                            expected: durable_type_diagnostic_name(&expected),
+                            found: durable_type_diagnostic_name(&ty),
+                        },
+                    ),
+                );
+            }
+            return self.defer_value_parameter(syntax);
         }
         if let Some(value) = self.value_substitutions.get(syntax) {
             return Ok(value.clone());
@@ -2253,13 +2311,7 @@ impl rue_air::SemanticTypeSyntaxProvider<ModuleId, ModuleId, StableDefinitionKey
         for (_, ty) in type_arguments {
             reject_function_child(ty, "a type argument")?;
         }
-        let declaration = crate::declaration_candidate::DeclarationCandidateKey {
-            module: head.key.module().clone(),
-            category: crate::declaration_candidate::DeclarationCandidateCategory::Function,
-            name: Arc::from(head.key.name()),
-            owner: None,
-            duplicate_discriminator: 0,
-        };
+        let declaration = constructor_declaration(head);
         let signature = self.signature(declaration.clone())?;
         let crate::semantic_query_nucleus::DeclarationSignatureProjection::Callable {
             parameters,
@@ -2388,6 +2440,32 @@ struct ConstructorHeadSite {
     /// `Some` only for an alias: the constant's own `pub`-ness governs the
     /// access, so a `pub` alias re-exports a private constructor.
     visibility: Option<bool>,
+}
+
+/// The function declaration a type-constructor call head names.
+fn constructor_declaration(
+    head: &rue_air::SemanticTypeConstructorHead<StableDefinitionKey, Arc<str>, StableDefinitionKey>,
+) -> crate::declaration_candidate::DeclarationCandidateKey {
+    crate::declaration_candidate::DeclarationCandidateKey {
+        module: head.key.module().clone(),
+        category: crate::declaration_candidate::DeclarationCandidateCategory::Function,
+        name: Arc::from(head.key.name()),
+        owner: None,
+        duplicate_discriminator: 0,
+    }
+}
+
+/// Whether some value of a deferred comptime value parameter's declared type
+/// can fit a constructor parameter of type `expected`. Integers of any width
+/// may: whether this call's value is in range is checked when the call
+/// supplies it.
+fn deferred_value_type_fits(
+    declared: &crate::durable_semantics::DurableType,
+    expected: &crate::durable_semantics::DurableType,
+) -> bool {
+    declared == expected
+        || (crate::durable_comptime::durable_int_width(declared).is_some()
+            && crate::durable_comptime::durable_int_width(expected).is_some())
 }
 
 pub(in crate::revisioned_query_database) enum ResolveSemanticSignatureError {
