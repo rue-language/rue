@@ -17,7 +17,7 @@ counting from 1. `core:5.3:4` is the fourth paragraph of §5.3,
 What gets a number is a prose paragraph, a top-level list item, a quoted
 block, or a rule display together with the paragraph that leads into it; a
 rule display with no lead-in paragraph belongs to the preceding paragraph's
-id. The `core:` prefix keeps these apart from the prose specification's
+id. The leading `core:` keeps these apart from the prose specification's
 `X.Y:Z` ids. Ids are append-only, as the specification's are: a paragraph
 inserted mid-section takes a letter suffix after the number it follows (`4a`
 after `4`), and a deleted paragraph's id is retired, not reused. A

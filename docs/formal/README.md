@@ -123,7 +123,7 @@ replace it; it *grounds* it. Concretely:
   is a feature. Such proposals are filed to Backlog for a maintainer decision,
   never enacted unilaterally.
 - The calculus's own §5, §6 and §7 paragraphs are cited by id, written
-  `core:X.Y:Z`; the `core:` prefix keeps them apart from the prose spec's ids,
+  `core:X.Y:Z`; the leading `core:` keeps them apart from the prose spec's ids,
   written `X.Y:Z` here and `§X.Y:Z` in the spec's own prose: `core:5.3:4` is
   the fourth paragraph of the calculus's §5.3, where `5.3:4` is a prose-spec
   paragraph, and `§5.3` alone cites the calculus's section. The ids are
