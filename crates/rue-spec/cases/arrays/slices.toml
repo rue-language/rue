@@ -1243,3 +1243,157 @@ fn main() -> i32 {
 }
 """
 exit_code = 42
+
+# =============================================================================
+# A slice view is named by its element type, not its spelling (7.2:2, RUE-2571)
+# =============================================================================
+
+[[case]]
+name = "slice_parameter_of_two_element_types_in_one_body"
+spec = ["7.2:2", "7.2:7"]
+description = "Control: one body passes views over two element types to two named functions (RUE-2571)."
+source = """
+fn first(borrow s: [u64]) -> u64 { s[0] }
+fn second(borrow s: [i64]) -> i64 { s[1] }
+fn main() -> i32 {
+    let a: [i64; 2] = [1, 40];
+    let c: [u64; 2] = [2, 9];
+    let x: i64 = second(borrow a);
+    let y: u64 = first(borrow c);
+    @intCast(x + @intCast(y))
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "anonymous_method_generic_slice_parameter_at_two_instances"
+spec = ["7.2:2", "7.2:7"]
+description = "`[T]` in a constructor's method is a different slice type at `T = i64` and at `T = u64` (RUE-2571)."
+source = """
+fn H(comptime T: type) -> type {
+    struct {
+        b: T,
+        fn sum(self, borrow s: [T]) -> T { s[0] + self.b }
+    }
+}
+fn main() -> i32 {
+    let a: [i64; 2] = [40, 1];
+    let h = H(i64) { b: 2 };
+    let c: [u64; 2] = [3, 4];
+    let k = H(u64) { b: 5 };
+    let x: i64 = h.sum(borrow a);
+    let y: u64 = k.sum(borrow c);
+    @intCast(x + @intCast(y))
+}
+"""
+exit_code = 50
+
+[[case]]
+name = "slice_of_named_struct_t_and_generic_t_are_distinct"
+spec = ["7.2:2", "7.2:7"]
+description = "A named struct `T` and a constructor parameter `T` spell `[T]` alike but are different element types (RUE-2571)."
+source = """
+struct T { v: i64 }
+fn first(borrow s: [T]) -> i64 { s[0].v }
+fn H(comptime T: type) -> type {
+    struct {
+        b: T,
+        fn sum(self, borrow s: [T]) -> T { s[1] + self.b }
+    }
+}
+fn useh() -> i64 {
+    let a: [i64; 2] = [30, 10];
+    let k = H(i64) { b: 0 };
+    k.sum(borrow a)
+}
+fn uset() -> i64 {
+    let ts: [T; 1] = [T { v: 2 }];
+    first(borrow ts)
+}
+fn main() -> i32 { @intCast(useh() + uset()) }
+"""
+exit_code = 12
+
+[[case]]
+name = "slice_of_type_alias_is_slice_of_its_target"
+spec = ["7.2:2"]
+description = "`[X]` for `const X = i64` is the slice type `[i64]` (RUE-2571)."
+source = """
+const X = i64;
+fn f(borrow s: [X]) -> i64 { s[0] }
+fn g(borrow s: [i64]) -> i64 { f(borrow s) }
+fn main() -> i32 {
+    let a: [i64; 2] = [42, 1];
+    @intCast(g(borrow a))
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "slices_of_same_named_structs_in_two_modules_are_distinct"
+spec = ["7.2:2", "7.2:7"]
+description = "Two modules' structs named `P` give two different slice types `[P]` (RUE-2571)."
+source = """
+const a = @import("a.rue");
+struct P { v: i64 }
+fn g(borrow s: [P]) -> i64 { s[1].v }
+fn main() -> i32 {
+    let ps: [P; 2] = [P { v: 1 }, P { v: 30 }];
+    let qs: [a.P; 2] = [a.mk(1, 2), a.mk(3, 12)];
+    @intCast(g(borrow ps) + a.f(borrow qs))
+}
+"""
+aux_files = { "a.rue" = """
+pub struct P { x: i64, y: i64 }
+pub fn f(borrow s: [P]) -> i64 { s[1].y }
+pub fn mk(x: i64, y: i64) -> P { P { x: x, y: y } }
+""" }
+exit_code = 42
+
+[[case]]
+name = "slice_of_anonymous_const_struct"
+spec = ["7.2:2", "7.2:7"]
+description = "A function takes a view over an anonymous struct bound to a const (RUE-2575)."
+source = """
+const B = struct { v: i64 };
+fn total(borrow s: [B]) -> i64 { s[0].v + s[1].v }
+fn main() -> i32 {
+    let a: [B; 2] = [B { v: 30 }, B { v: 12 }];
+    @intCast(total(borrow a))
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "slice_of_type_constructor_result"
+spec = ["7.2:2", "7.2:7"]
+description = "A function takes a view over a type constructor's result (RUE-2575)."
+source = """
+fn Box(comptime T: type) -> type { struct { v: T } }
+fn total(borrow s: [Box(i64)]) -> i64 { s[0].v + s[1].v }
+fn main() -> i32 {
+    let a: [Box(i64); 2] = [Box(i64) { v: 30 }, Box(i64) { v: 12 }];
+    @intCast(total(borrow a))
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "anonymous_method_slice_of_type_constructor_result"
+spec = ["7.2:2", "7.2:7"]
+description = "A constructor's method takes a view over another constructor's result at the outer `T` (RUE-2575)."
+source = """
+fn Box(comptime T: type) -> type { struct { v: T } }
+fn H(comptime T: type) -> type {
+    struct {
+        b: i64,
+        fn sum(self, borrow s: [Box(T)]) -> i64 { s[0].v + s[1].v + self.b }
+    }
+}
+fn main() -> i32 {
+    let a: [Box(i64); 2] = [Box(i64) { v: 30 }, Box(i64) { v: 10 }];
+    let h = H(i64) { b: 2 };
+    @intCast(h.sum(borrow a))
+}
+"""
+exit_code = 42
