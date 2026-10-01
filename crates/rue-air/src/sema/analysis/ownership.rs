@@ -2079,10 +2079,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // Inference may defer an annotation or allow contextual
         // materialization. Validate the actual value before registering the
         // binding, including a wildcard or a comptime type-valued binding.
-        // A non-continuing initializer has no value to bind; aggregate
-        // construction can carry an array type even when an element diverges.
+        // An initializer whose array elements all diverge is `[!; N]`, which
+        // `types_compatible` admits at the annotation as every other slot
+        // does (RUE-2538).
         if let Some(annotation) = annotation_type
-            && init_result.continues
             && !self.types_compatible(var_type, annotation)
         {
             return Err(self.type_mismatch_error(annotation, var_type, span));
