@@ -3385,6 +3385,26 @@ where
         local
     }
 
+    /// Register each of `local`, anonymous nominals this body declares, in
+    /// the identity pool under its durable key, so a durable type a reduction
+    /// returns over one materializes with the body's own type. False when one
+    /// has no durable key or the pool is unavailable.
+    fn alias_local_anonymous_types(&self, local: &[Type]) -> bool {
+        for ty in local {
+            let Some(crate::SemanticImportType::AnonymousNominal(key)) =
+                self.local_durable_type(*ty)
+            else {
+                return false;
+            };
+            let context = self.state.identity_context();
+            let Some(mut pool) = context.pool_mut() else {
+                return false;
+            };
+            pool.alias_local_anonymous(&key, *ty);
+        }
+        true
+    }
+
     /// Reduce a comptime call whose type arguments reach anonymous nominals
     /// this runtime body declares itself (`let I = struct { .. }; W(I)`,
     /// RUE-2590), or `None` when they reach none.
@@ -3404,10 +3424,23 @@ where
         concrete_types: impl IntoIterator<Item = Type>,
     ) -> Option<DurableComptimeCallOutcome<K, M>> {
         let local = self.reached_local_anonymous_types(concrete_types);
-        // A type constructor's own nominals are published by the comptime
-        // evaluation of its call, which the reduction reads.
-        if local.is_empty() || self.body_is_type_constructor() {
+        if local.is_empty() {
             return None;
+        }
+        // A type constructor's own nominals are published by the comptime
+        // evaluation of its call, which the reduction reads. The result still
+        // names them by their durable identities (`Arr(L)` is `[L; 3]`), so
+        // each declared local is aliased first: the result materializes with
+        // the body's own `L`, not a second type for its identity (RUE-2608).
+        if self.body_is_type_constructor() {
+            let declared = local
+                .into_iter()
+                .filter(|ty| self.canonical_anonymous_types.contains_key(ty))
+                .collect::<Vec<_>>();
+            // Without the alias the result would mint a second `L`, so a
+            // failure here leaves the call unreduced.
+            return (!self.alias_local_anonymous_types(&declared))
+                .then_some(DurableComptimeCallOutcome::NotReduced);
         }
         // A local still being declared has no export yet.
         if local
@@ -3419,17 +3452,8 @@ where
         let Ok(exports) = self.anonymous_nominal_exports(|ty, _| local.contains(&ty)) else {
             return Some(DurableComptimeCallOutcome::NotReduced);
         };
-        for ty in &local {
-            let Some(crate::SemanticImportType::AnonymousNominal(key)) =
-                self.local_durable_type(*ty)
-            else {
-                return Some(DurableComptimeCallOutcome::NotReduced);
-            };
-            let context = self.state.identity_context();
-            let Some(mut pool) = context.pool_mut() else {
-                return Some(DurableComptimeCallOutcome::NotReduced);
-            };
-            pool.alias_local_anonymous(&key, *ty);
+        if !self.alias_local_anonymous_types(&local) {
+            return Some(DurableComptimeCallOutcome::NotReduced);
         }
         let definitions = self
             .function_tokens
