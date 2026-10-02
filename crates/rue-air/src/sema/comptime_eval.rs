@@ -62,11 +62,11 @@ use super::comptime::{
     ComptimeCallPreparation, ComptimeCallProtocol, ComptimeDiagnosticSite, ComptimeDomain,
     ComptimeEngine, ComptimeEnv as GenericComptimeEnv, ComptimeFile, ComptimeFrame, ComptimeHost,
     ComptimeHostError, ComptimeHostResult, ComptimeIdentity, ComptimeInterrupts,
-    ComptimeMethodDescriptor, ComptimeName, ComptimeNamedValueResolution, ComptimeOutcome,
-    ComptimeProgramFacts, ComptimeRejections, ComptimeSelection, ComptimeSemanticRejection,
-    ComptimeStructuredTypeResolution, ComptimeStructuredTypes, ComptimeTrap, ComptimeType,
-    ComptimeTypeAlgebra, ComptimeValue, ComptimeValueAlgebra, comptime_arithmetic_overflow_reason,
-    comptime_untyped_integer_result,
+    ComptimeLiteralShape, ComptimeMethodDescriptor, ComptimeName, ComptimeNamedValueResolution,
+    ComptimeOutcome, ComptimeProgramFacts, ComptimeRejections, ComptimeSelection,
+    ComptimeSemanticRejection, ComptimeStructuredTypeResolution, ComptimeStructuredTypes,
+    ComptimeTrap, ComptimeType, ComptimeTypeAlgebra, ComptimeValue, ComptimeValueAlgebra,
+    comptime_arithmetic_overflow_reason, comptime_untyped_integer_result,
 };
 use super::context::{
     AnalysisContext, CheckedConstIndexCandidate, ConstAggregate, ConstAggregateKind, ConstValue,
@@ -3517,6 +3517,34 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeValueAlgebra for OrdinaryBodyEngin
         }
         ConstValue::aggregate_array(ty, elements)
             .map_or(ComptimeOutcome::RuntimeDependent, ComptimeOutcome::Known)
+    }
+    fn admit_comptime_literal_shape(
+        &mut self,
+        ty: &Type,
+        shape: ComptimeLiteralShape<'_, Spur>,
+        _declared: Option<&Type>,
+        site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> ComptimeHostResult<(), Self::Failure> {
+        // Type inference checks an array literal's length against its
+        // declared type only when the walk before it resolved the length. A
+        // length naming a `let` of the evaluation that the walk could not
+        // evaluate is known only here, so a literal that does not fill it is
+        // the same E0901 (7.1:4, RUE-2546), as for a repeat (RUE-2542).
+        if let ComptimeLiteralShape::Array { len } = shape
+            && let TypeKind::Array(id) = ty.kind()
+        {
+            let (_, declared) = self.body_type_pool().array_def(id);
+            if declared != len {
+                return Err(ComptimeHostError::HostFailure(CompileError::new(
+                    ErrorKind::ArrayLengthMismatch {
+                        expected: declared,
+                        found: len,
+                    },
+                    site.span(),
+                )));
+            }
+        }
+        Ok(())
     }
     fn resolve_comptime_array_repeat(
         &mut self,
