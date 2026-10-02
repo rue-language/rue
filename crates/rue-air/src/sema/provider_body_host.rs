@@ -1114,6 +1114,7 @@ where
                 if let Some(identity) = self.issued_anonymous_identity_for_type(ty) {
                     T::AnonymousNominal(identity)
                 } else if let Some((name, kind)) = self.builtin_nominal_identity(ty) {
+                    self.record_exported_slice_view(id, &name);
                     T::BuiltinNominal { name, kind }
                 } else {
                     let (token, _) = self.ensure_named_nominal_identity(ty, &def.name)?;
@@ -1217,6 +1218,16 @@ where
     fn body_struct_symbol(&self, id: StructId) -> String {
         self.type_pool.struct_symbol_name(id)
     }
+
+    fn exported_slice_views(
+        &self,
+    ) -> Vec<crate::SemanticImportType<SemanticDefinitionToken, SemanticModuleToken>> {
+        self.exported_slice_views
+            .borrow()
+            .values()
+            .cloned()
+            .collect()
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -1269,6 +1280,14 @@ struct ProviderBodyHost<'a, P, S, K, M> {
         RefCell<AHashMap<Spur, FunctionInstanceKey<SemanticDefinitionToken, SemanticModuleToken>>>,
     observed_comptime_producers:
         RefCell<AHashSet<FunctionInstanceKey<SemanticDefinitionToken, SemanticModuleToken>>>,
+    /// The slice views this body's export named by builtin name, keyed by
+    /// that name, each with its element (see `SemanticBody::slice_views`).
+    exported_slice_views: RefCell<
+        std::collections::BTreeMap<
+            Arc<str>,
+            crate::SemanticImportType<SemanticDefinitionToken, SemanticModuleToken>,
+        >,
+    >,
     anonymous_function_identities:
         RefCell<AHashMap<Spur, FunctionInstanceKey<SemanticDefinitionToken, SemanticModuleToken>>>,
     durable_comptime_type_flags: RefCell<AHashMap<ParamRange, Vec<bool>>>,
@@ -1487,6 +1506,7 @@ where
             function_alias_keys: RefCell::new(AHashMap::new()),
             specialized_function_identities: RefCell::new(AHashMap::new()),
             observed_comptime_producers: RefCell::new(AHashSet::new()),
+            exported_slice_views: RefCell::new(std::collections::BTreeMap::new()),
             anonymous_function_identities: RefCell::new(AHashMap::new()),
             durable_comptime_type_flags: RefCell::new(AHashMap::new()),
             durable_callable_type_syntax: RefCell::new(AHashMap::new()),
@@ -3161,6 +3181,31 @@ where
             }
             _ => None,
         }
+    }
+
+    /// Record the slice view `id`, which the export names by `name`, with its
+    /// element, so code generation can rebuild it even when no declaration
+    /// signature names the same view (RUE-2555). Any other builtin is not
+    /// recorded. An element that has no stable export leaves the view
+    /// unrecorded rather than failing the body: a declaration signature is
+    /// then the view's only source, as it is without this record.
+    fn record_exported_slice_view(&self, id: StructId, name: &Arc<str>) {
+        if self.exported_slice_views.borrow().contains_key(name) {
+            return;
+        }
+        let Some(element) = self.type_pool.slice_view_element(id) else {
+            return;
+        };
+        let Ok(element) = self.export_body_type(element) else {
+            return;
+        };
+        self.exported_slice_views.borrow_mut().insert(
+            name.clone(),
+            crate::SemanticImportType::Slice {
+                element: Arc::new(element),
+                name: name.clone(),
+            },
+        );
     }
 
     /// `element` relocated to stable content for naming its slice view, for an

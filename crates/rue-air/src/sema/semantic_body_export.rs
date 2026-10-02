@@ -45,6 +45,12 @@ pub(crate) trait SemanticBodyExportHost {
     /// anonymous nominals). Used only to order the recorded method-reference
     /// payload deterministically across sessions and revisions.
     fn body_struct_symbol(&self, id: crate::StructId) -> String;
+    /// The slice views [`Self::export_body_type`] has named by their builtin
+    /// name so far, each a [`SemanticImportType::Slice`] with its element,
+    /// ordered by name.
+    fn exported_slice_views(
+        &self,
+    ) -> Vec<SemanticImportType<SemanticDefinitionToken, SemanticModuleToken>>;
 }
 
 pub(crate) fn export_body<H: SemanticBodyExportHost>(
@@ -565,11 +571,18 @@ pub(crate) fn export_body<H: SemanticBodyExportHost>(
         .into_iter()
         .map(|(_, _, reference)| reference)
         .collect::<Vec<_>>();
+    let return_type = host.export_body_type(body.return_type())?;
+    let cleanup_owner = analyzed
+        .cleanup_owner
+        .map(|ty| host.export_body_type(ty))
+        .transpose()?;
+    // Read last: every type the body names has been exported by now.
+    let slice_views = host.exported_slice_views();
     Ok(SemanticBodyExport {
         owner,
         body: SemanticBody {
             is_accessor: analyzed.callable_kind == crate::AnalyzedCallableKind::Accessor,
-            return_type: host.export_body_type(body.return_type())?,
+            return_type,
             instructions: Arc::from(instructions),
             places: Arc::from(places),
             strings: strings
@@ -586,13 +599,11 @@ pub(crate) fn export_body<H: SemanticBodyExportHost>(
                 .collect(),
             param_drops: Arc::from(param_drops),
             comptime_param_types: Arc::from(comptime_param_types),
+            slice_views: Arc::from(slice_views),
             borrow_slots: Arc::from(borrow_slots),
             num_locals: analyzed.num_locals,
             num_param_slots: analyzed.num_param_slots,
-            cleanup_owner: analyzed
-                .cleanup_owner
-                .map(|ty| host.export_body_type(ty))
-                .transpose()?,
+            cleanup_owner,
             param_by_ref: Arc::from(analyzed.param_modes.by_ref()),
             param_writable: Arc::from(analyzed.param_modes.writable()),
             allow_unreachable_code: analyzed.allow_unreachable_code,

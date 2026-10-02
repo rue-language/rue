@@ -322,6 +322,7 @@ pub(crate) fn synthesize_test_dispatcher(table: &[Option<crate::FunctionInstance
         local_atoms: Arc::new([]),
         param_drops: Arc::new([]),
         comptime_param_types: Arc::new([]),
+        slice_views: Arc::new([]),
         borrow_slots: Arc::new([]),
         num_locals: LOCAL_SLOTS,
         num_param_slots: 0,

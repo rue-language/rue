@@ -1512,11 +1512,14 @@ pub(crate) fn select_materialization_facts(
         callables: std::collections::BTreeSet<FunctionInstanceKey>,
         modules: std::collections::BTreeSet<ModuleId>,
         builtins: std::collections::BTreeSet<LocalBuiltinNominalRequest>,
-        // A slice view named by an anonymous method signature has no
-        // declaration to source it: the selected anonymous fact is its only
-        // signature. Those views resolve once the nominal worklist has drained,
-        // because a body names the view before the walk reaches its owner.
-        anonymous_slice_sources: AHashMap<Arc<str>, crate::TypeInstanceKey>,
+        // A slice view that no declaration signature names is sourced here:
+        // from the body's own record of the views it names, which is a
+        // specialization's only signature (`borrow s: [T]`, RUE-2555), and
+        // from an anonymous method signature, which the selected anonymous
+        // fact carries. Those views resolve once the nominal worklist has
+        // drained, because a body names the view before the walk reaches its
+        // owner.
+        local_slice_sources: AHashMap<Arc<str>, crate::TypeInstanceKey>,
         pending_slice_builtins: Vec<(crate::AnonymousNominalKind, Arc<str>)>,
         seen_semantic_types: AHashSet<crate::durable_semantics::DurableType>,
         seen_opaque_types: AHashSet<crate::durable_semantics::DurableType>,
@@ -1861,7 +1864,7 @@ pub(crate) fn select_materialization_facts(
                                     for (ty, _, _) in method.parameters.iter() {
                                         if let crate::durable_semantics::DurableAnonymousMethodType::Concrete(ty) = ty {
                                             let mut work = LocalFactSelectionIndexWork::default();
-                                            collect_slice_sources(ty, &mut self.anonymous_slice_sources, &mut work);
+                                            collect_slice_sources(ty, &mut self.local_slice_sources, &mut work);
                                             self.semantic_type(ty);
                                         }
                                     }
@@ -1902,7 +1905,7 @@ pub(crate) fn select_materialization_facts(
             while !self.pending_slice_builtins.is_empty() {
                 for (kind, name) in std::mem::take(&mut self.pending_slice_builtins) {
                     let query_ty = self
-                        .anonymous_slice_sources
+                        .local_slice_sources
                         .get(&name)
                         .cloned()
                         .unwrap_or_else(|| crate::TypeInstanceKey::BuiltinNominal {
@@ -2001,11 +2004,15 @@ pub(crate) fn select_materialization_facts(
         callables: std::collections::BTreeSet::new(),
         modules: std::collections::BTreeSet::new(),
         builtins: std::collections::BTreeSet::new(),
-        anonymous_slice_sources: AHashMap::new(),
+        local_slice_sources: AHashMap::new(),
         pending_slice_builtins: Vec::new(),
         seen_semantic_types: AHashSet::new(),
         seen_opaque_types: AHashSet::new(),
     };
+    for view in body.slice_views.iter() {
+        let mut work = LocalFactSelectionIndexWork::default();
+        collect_slice_sources(view, &mut selection.local_slice_sources, &mut work);
+    }
     selection.callable(identity);
     let mut required_types = Vec::with_capacity(
         1 + body.instructions.len()
@@ -2166,6 +2173,7 @@ pub(crate) fn select_drop_glue_materialization_facts(
         local_atoms: Arc::new([]),
         param_drops: roots.into(),
         comptime_param_types: Arc::new([]),
+        slice_views: Arc::new([]),
         borrow_slots: Arc::new([]),
         num_locals: 0,
         num_param_slots: 0,
@@ -2694,6 +2702,7 @@ mod tests {
             local_atoms: Arc::new([]),
             param_drops: Arc::new([]),
             comptime_param_types: Arc::new([]),
+            slice_views: Arc::new([]),
             borrow_slots: Arc::new([]),
             num_locals: 0,
             num_param_slots: 0,
