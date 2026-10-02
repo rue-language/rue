@@ -213,3 +213,26 @@ fn main() -> i32 {
 }
 """ }]
 exit_code = 1
+
+# ── (c) a read at an uninhabited pointee (RUE-2556) ──────────────────────────
+
+# A `ptr mut !` read diverges, so the statements after it never run; the read
+# ends in `Terminator::Unreachable`, whose trap kills the process (SIGTRAP from
+# `brk #1` on AArch64, SIGILL from `ud2` on x86-64).
+[[case]]
+name = "ptr_read_never_pointee_traps"
+description = "A ptr mut ! read prints nothing after it and dies by its target's trap signal rather than exiting."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let mut x: i32 = 7;
+    @dbg(x);
+    checked {
+        let p: ptr mut ! = @int_to_ptr(@ptr_to_int(@raw_mut(x)));
+        @ptr_read(p);
+    };
+    @dbg(8);
+    0
+}
+""" }]
+stdout = "7\n"
+unreachable_trap = true
