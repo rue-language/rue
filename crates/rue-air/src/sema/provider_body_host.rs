@@ -3388,7 +3388,10 @@ where
     /// Register each of `local`, anonymous nominals this body declares, in
     /// the identity pool under its durable key, so a durable type a reduction
     /// returns over one materializes with the body's own type. False when one
-    /// has no durable key or the pool is unavailable.
+    /// has no durable key or the pool is unavailable; callers then leave the
+    /// call unreduced rather than mint a second type for the local. No source
+    /// program is known to reach that: callers pass only already-declared
+    /// locals, and a declared local always has a durable key (RUE-2608 review).
     fn alias_local_anonymous_types(&self, local: &[Type]) -> bool {
         for ty in local {
             let Some(crate::SemanticImportType::AnonymousNominal(key)) =
