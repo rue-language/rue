@@ -128,8 +128,19 @@ structure Case where
 
 /-- The fuel every exported case is evaluated at. Deep enough for every seed
 case by a wide margin; a case the bound does not complete is left out of the
-export rather than given an outcome (module docstring). -/
-def exportFuel : Nat := 100000
+export rather than given an outcome (module docstring).
+
+Fuel bounds nesting depth and loop turns, not steps (a loop's body runs at the
+turn's own fuel), so what a case needs is small: at most 31 for the seeds and
+3,000 generated cases (`--gen 1000` at seeds 1, 2 and 7) when RUE-2488
+measured it. The bound was 100,000 until then. Unspent fuel is free, but a
+case that does *not* finish spends all of it, and one whose loop allocates a
+cell per turn costs time quadratic in the bound (the store grows by a cell a
+turn, and each turn walks it): about 6 s at 10,000, and over half an hour per
+run at 100,000, which is what a mutant with a diverging seed hit (RUE-2465's
+`operand-swap`). By `fuel_mono` a case that completes here has the same
+outcome at every larger bound, so lowering it changed no exported case. -/
+def exportFuel : Nat := 10000
 
 /-- The model every exported case is evaluated at: `Float.exactOps`
 (`Float.lean`), the constructive instance whose `σ_NaN` is **positive** — the
@@ -1286,11 +1297,11 @@ There is deliberately no `def json : String := jsonOf cases` beside it
 (RUE-2488). A compiled constant with no arguments is evaluated when its module
 is initialized, which is before `main` and on the process's own main thread,
 whose stack (8 MB on macOS) is far smaller than the one the Lean runtime gives
-`main` (about 1 GB, `LEAN_STACK_SIZE_KB`). `eval` nests about one native frame
-group per unit of fuel — about 12 to 18 MB at `exportFuel` for the shapes
-`divergent` measures — so a seed that does not complete overflowed that stack
-at start-up, before `main` could report it, which is how mutation analysis
-(RUE-2465's `operand-swap`) first met one. `ruecore-corpus` calls `jsonOf` from
+`main` (about 1 GB, `LEAN_STACK_SIZE_KB`). `eval` nests one native frame
+group per unit of fuel, 120 to 180 bytes for the shapes `divergent` has — 12
+to 18 MB at the 100,000 `exportFuel` then was — so a seed that does not
+complete overflowed that stack at start-up, before `main` could report it,
+which is how mutation analysis (RUE-2465's `operand-swap`) first met one. `ruecore-corpus` calls `jsonOf` from
 `main` instead. -/
 def jsonOf (cs : List Case) : String :=
   "[\n" ++ String.intercalate ",\n" ((cs.filter completed).map caseJson) ++ "\n]\n"
