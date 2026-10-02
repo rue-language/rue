@@ -592,6 +592,9 @@ pub struct SemanticProducedAnonymousNominal {
             crate::CanonicalArgumentValue<SemanticDefinitionToken, SemanticModuleToken>,
         )],
     >,
+    /// The `let` name the producer bound this nominal's literal to, if any.
+    /// Presentation only (RUE-2589): diagnostics call the nominal by it.
+    pub binding: Option<Arc<str>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -1325,6 +1328,13 @@ struct ProviderBodyHost<'a, P, S, K, M> {
     anon_struct_captured_values: AHashMap<StructId, AHashMap<Spur, ConstValue>>,
     anon_struct_type_subst: AHashMap<StructId, AHashMap<Spur, Type>>,
     anon_transfer_metadata: AHashMap<StructId, (bool, Option<Arc<str>>)>,
+    /// The `let` name each anonymous literal this body evaluated is bound
+    /// to, keyed by canonical-producer identity. Presentation only
+    /// (RUE-2589); exported beside the produced nominal's shape.
+    anon_bindings: AHashMap<super::anon_structs::IssuedAnonymousNominalKey, Arc<str>>,
+    /// Anonymous types whose structural display is being rendered, so a
+    /// field that names the type itself renders as `Self`.
+    structural_display_stack: RefCell<Vec<Type>>,
     active_anonymous_producer: Option<super::anon_structs::IssuedStableProducerId>,
     body_work: BodyAnalysisWork,
     expression_breakdown: Option<ExpressionAnalysisBreakdown>,
@@ -1510,6 +1520,8 @@ where
             anon_struct_captured_values: AHashMap::new(),
             anon_struct_type_subst: AHashMap::new(),
             anon_transfer_metadata: AHashMap::new(),
+            anon_bindings: AHashMap::new(),
+            structural_display_stack: RefCell::new(Vec::new()),
             active_anonymous_producer: None,
             body_work: BodyAnalysisWork::default(),
             expression_breakdown: None,
@@ -3696,11 +3708,21 @@ where
                 }
                 _ => return Err(crate::SemanticBodyExportFailure::UnsupportedType),
             };
+            let binding = self
+                .anon_bindings
+                .get(identity.with_canonical_producer().as_ref())
+                .cloned()
+                .or_else(|| {
+                    self.durable_anonymous_types
+                        .get(&ty)
+                        .and_then(|identity| self.source.anonymous_binding(identity))
+                });
             Ok(crate::SemanticProducedAnonymousNominal {
                 identity,
                 shape,
                 type_captures: type_captures.into(),
                 value_captures: value_captures.into(),
+                binding,
             })
         });
         super::anon_structs::collect_anonymous_exports(exports)
@@ -5037,9 +5059,7 @@ where
             T::BuiltinNominal { name, .. } => name.to_string(),
             T::Nominal(N::Builtin { name, .. }) => name.to_string(),
             T::Nominal(N::Named(key)) => self.source.definition_name(key)?.to_string(),
-            T::Nominal(N::Anonymous(identity)) => {
-                self.friendly_durable_anonymous_display(identity)?
-            }
+            T::Nominal(N::Anonymous(identity)) => self.anonymous_display(identity, None)?.0,
             T::Array { element, len } => {
                 crate::types::array_type_name(&self.friendly_durable_type_display(element)?, *len)
             }
@@ -5068,6 +5088,247 @@ where
             T::Module(module) => self.source.module_path(module),
             T::GenericParameter(index) => format!("T{index}"),
         })
+    }
+
+    /// The display of an anonymous nominal (RUE-2589). A literal its producer
+    /// binds with `let` is called by that name, qualified by the producer's
+    /// application when the producer was specialized (`A(i64).B`), so two
+    /// constructors' locals never read alike. An unbound literal that is a
+    /// type constructor's result keeps the constructor's spelling (`F(i64)`);
+    /// any other unbound literal -- a `comptime` block's, or one written
+    /// inline in a runtime body -- is spelled by its shape.
+    fn friendly_anonymous_display(
+        &self,
+        ty: Type,
+        identity: &crate::AnonymousNominalKey<K, M>,
+    ) -> Option<String> {
+        self.anonymous_display(identity, Some(ty))
+            .map(|(display, _)| display)
+    }
+
+    /// [`Self::friendly_anonymous_display`] for an identity met inside
+    /// another type's spelling (`Inner(B)`), with or without its live type.
+    /// The flag says whether the display names a literal local to its
+    /// producer's body -- one no module-level item can name -- rather than a
+    /// constructor application or a module constant.
+    fn anonymous_display(
+        &self,
+        identity: &crate::AnonymousNominalKey<K, M>,
+        ty: Option<Type>,
+    ) -> Option<(String, bool)> {
+        if matches!(identity.producer, crate::StableProducerId::Definition(_)) {
+            return self
+                .friendly_durable_anonymous_display(identity)
+                .map(|display| (display, false));
+        }
+        let ty = ty.or_else(|| self.local_anonymous_type(identity));
+        // A nominal minted from a durable fact carries its producer's name
+        // there; one this body produces is named by this body's own record,
+        // and asking the source about it would ask for this body's output.
+        let binding = match ty {
+            Some(ty)
+                if !self.durable_anonymous_types.contains_key(&ty)
+                    && self.endpoint.durable_anonymous_identity(ty).is_none() =>
+            {
+                self.issued_anonymous_identity(ty).and_then(|issued| {
+                    self.anon_bindings
+                        .get(issued.with_canonical_producer().as_ref())
+                        .cloned()
+                })
+            }
+            _ => self.source.anonymous_binding(identity),
+        };
+        if let Some(binding) = binding {
+            let specialized = identity.producer_arguments().is_some_and(|arguments| {
+                !arguments.types.is_empty() || !arguments.values.is_empty()
+            });
+            if specialized && let Some(producer) = self.friendly_durable_anonymous_display(identity)
+            {
+                return Some((format!("{producer}.{binding}"), true));
+            }
+            return Some((binding.to_string(), true));
+        }
+        if self.anonymous_producer_is_type_constructor(identity) {
+            return self
+                .friendly_durable_anonymous_display(identity)
+                .map(|display| (display, false));
+        }
+        let display = match ty {
+            Some(ty) => self.structural_anonymous_display(ty),
+            None => match identity.kind {
+                crate::AnonymousNominalKind::Struct => "anonymous struct".to_owned(),
+                crate::AnonymousNominalKind::Enum => "anonymous enum".to_owned(),
+            },
+        };
+        Some((display, true))
+    }
+
+    /// Whether `ty` is an anonymous nominal local to its producer's body
+    /// (see [`Self::anonymous_display`]).
+    fn is_body_local_anonymous_type(&self, ty: Type) -> bool {
+        if !(matches!(ty.kind(), TypeKind::Struct(id) if self.type_pool.is_anonymous_struct(id))
+            || matches!(ty.kind(), TypeKind::Enum(id) if self.type_pool.is_anonymous_enum(id)))
+        {
+            return false;
+        }
+        let identity = self.endpoint.durable_anonymous_identity(ty).or_else(|| {
+            match self.local_durable_type(ty)? {
+                crate::SemanticImportType::AnonymousNominal(identity) => Some(identity),
+                _ => None,
+            }
+        });
+        identity
+            .and_then(|identity| self.anonymous_display(&identity, Some(ty)))
+            .is_some_and(|(_, local)| local)
+    }
+
+    /// The issued identity of an anonymous type this body holds: registered,
+    /// or still being declared.
+    fn issued_anonymous_identity(
+        &self,
+        ty: Type,
+    ) -> Option<&super::anon_structs::IssuedAnonymousNominalKey> {
+        self.canonical_anonymous_types.get(&ty).or_else(|| {
+            let id = ty.as_struct()?;
+            self.anon_struct_declarations
+                .iter()
+                .find_map(|(identity, declared)| (*declared == id).then_some(identity))
+        })
+    }
+
+    /// The live type this body holds for a durable anonymous identity, if
+    /// any. Presentation only: a linear scan, filtered by anchor first.
+    fn local_anonymous_type(&self, identity: &crate::AnonymousNominalKey<K, M>) -> Option<Type> {
+        let canonical = identity.with_canonical_producer();
+        if let Some((ty, _)) = self
+            .durable_anonymous_types
+            .iter()
+            .find(|(_, durable)| durable.with_canonical_producer() == canonical)
+        {
+            return Some(*ty);
+        }
+        self.canonical_anonymous_types
+            .iter()
+            .map(|(ty, issued)| (*ty, issued))
+            .chain(
+                self.anon_struct_declarations
+                    .iter()
+                    .map(|(issued, id)| (Type::new_struct(*id), issued)),
+            )
+            .filter(|(_, issued)| issued.anchor == identity.anchor && issued.kind == identity.kind)
+            .find_map(|(ty, _)| match self.local_durable_type(ty)? {
+                crate::SemanticImportType::AnonymousNominal(local)
+                    if local.with_canonical_producer() == canonical =>
+                {
+                    Some(ty)
+                }
+                _ => None,
+            })
+    }
+
+    /// Whether `identity`'s producer is a function returning `type`, whose
+    /// unbound literal is the type the constructor builds.
+    fn anonymous_producer_is_type_constructor(
+        &self,
+        identity: &crate::AnonymousNominalKey<K, M>,
+    ) -> bool {
+        fn base<K, M>(function: &crate::FunctionInstanceKey<K, M>) -> Option<&K> {
+            match function {
+                crate::FunctionInstanceKey::Definition(definition) => Some(definition),
+                crate::FunctionInstanceKey::Specialization { base: inner, .. } => base(inner),
+                crate::FunctionInstanceKey::AnonymousMember { .. }
+                | crate::FunctionInstanceKey::DropGlue(_)
+                | crate::FunctionInstanceKey::ErrorPrinter(_)
+                | crate::FunctionInstanceKey::TestDispatcher => None,
+            }
+        }
+        let crate::StableProducerId::Function(function) = &identity.producer else {
+            return false;
+        };
+        let Some(definition) = base(function) else {
+            return false;
+        };
+        let result = match self.source.function(definition) {
+            Some(function) => function.result,
+            None => match self.source.method(definition) {
+                Some(method) => method.result,
+                None => return false,
+            },
+        };
+        matches!(result, crate::SemanticImportType::ComptimeType)
+    }
+
+    /// An unbound, non-constructor anonymous nominal spelled by its shape:
+    /// `struct { v: i64, w: [Self; 1] }`, at most three members before `..`.
+    /// A member naming the nominal itself reads `Self`; a struct still
+    /// resolving its own fields has no shape yet and reads `anonymous struct`.
+    fn structural_anonymous_display(&self, ty: Type) -> String {
+        const SHOWN: usize = 3;
+        if self.structural_display_stack.borrow().contains(&ty) {
+            return "Self".to_owned();
+        }
+        self.structural_display_stack.borrow_mut().push(ty);
+        let members = |items: Vec<String>| {
+            let more = items.len() > SHOWN;
+            let mut shown = items.into_iter().take(SHOWN).collect::<Vec<_>>();
+            if more {
+                shown.push("..".to_owned());
+            }
+            shown.join(", ")
+        };
+        let display = match ty.kind() {
+            TypeKind::Struct(id)
+                if self
+                    .anon_struct_declarations
+                    .values()
+                    .any(|declared| *declared == id) =>
+            {
+                "anonymous struct".to_owned()
+            }
+            TypeKind::Struct(id) => {
+                let fields = self
+                    .type_pool
+                    .struct_def(id)
+                    .fields
+                    .iter()
+                    .map(|field| {
+                        format!("{}: {}", field.name, self.friendly_type_display(field.ty))
+                    })
+                    .collect::<Vec<_>>();
+                if fields.is_empty() {
+                    "struct {}".to_owned()
+                } else {
+                    format!("struct {{ {} }}", members(fields))
+                }
+            }
+            TypeKind::Enum(id) => {
+                let definition = self.type_pool.enum_def(id);
+                let variants = definition
+                    .variants
+                    .iter()
+                    .enumerate()
+                    .map(|(index, name)| {
+                        let payload = definition.variant_payload(index);
+                        if payload.is_empty() {
+                            name.to_string()
+                        } else {
+                            format!(
+                                "{name}({})",
+                                payload
+                                    .iter()
+                                    .map(|ty| self.friendly_type_display(*ty))
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            )
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                format!("enum {{ {} }}", members(variants))
+            }
+            _ => ty.safe_name_with_pool(Some(&self.type_pool)),
+        };
+        self.structural_display_stack.borrow_mut().pop();
+        display
     }
 
     fn friendly_durable_anonymous_display(
@@ -5126,11 +5387,24 @@ where
     }
 
     fn friendly_type_display(&self, ty: Type) -> String {
+        let declared = || {
+            ty.as_struct()
+                .is_some_and(|id| self.anon_struct_declarations.values().any(|d| *d == id))
+        };
         if matches!(ty.kind(), TypeKind::Struct(id) if self.type_pool.is_anonymous_struct(id))
             || matches!(ty.kind(), TypeKind::Enum(id) if self.type_pool.is_anonymous_enum(id))
+            || declared()
         {
-            if let Some(identity) = self.endpoint.durable_anonymous_identity(ty)
-                && let Some(display) = self.friendly_durable_anonymous_display(&identity)
+            // A nominal this body is still producing has no durable entry
+            // yet; its issued identity reverses to the durable one.
+            let identity = self.endpoint.durable_anonymous_identity(ty).or_else(|| {
+                match self.local_durable_type(ty)? {
+                    crate::SemanticImportType::AnonymousNominal(identity) => Some(identity),
+                    _ => None,
+                }
+            });
+            if let Some(identity) = identity
+                && let Some(display) = self.friendly_anonymous_display(ty, &identity)
             {
                 return display;
             }
@@ -6814,6 +7088,19 @@ where
 
     fn friendly_type_display(&self, ty: Type) -> String {
         Self::friendly_type_display(self, ty)
+    }
+
+    fn is_body_local_anonymous_type(&self, ty: Type) -> bool {
+        Self::is_body_local_anonymous_type(self, ty)
+    }
+
+    fn record_anonymous_binding(
+        &mut self,
+        identity: &super::anon_structs::IssuedAnonymousNominalKey,
+        binding: Arc<str>,
+    ) {
+        self.anon_bindings
+            .insert(identity.with_canonical_producer().into_owned(), binding);
     }
 }
 

@@ -38,6 +38,9 @@ fn arm_enum_variant_child_tripwire() {
 #[allow(dead_code)] // consumed by the canonical durable AIR host
 pub(crate) struct DurableComptimeHost<'a, A: DurableComptimeHostAuthority + ?Sized> {
     services: DurableComptimeServices<'a, A>,
+    /// The `let` name each anonymous literal this host evaluated is bound
+    /// to, by canonical identity (RUE-2589). Presentation only.
+    anonymous_bindings: std::collections::BTreeMap<crate::AnonymousNominalKey, Arc<str>>,
 }
 
 impl<'a, A: DurableComptimeHostAuthority + ?Sized> DurableComptimeHost<'a, A> {
@@ -45,7 +48,26 @@ impl<'a, A: DurableComptimeHostAuthority + ?Sized> DurableComptimeHost<'a, A> {
     pub(crate) fn new(authority: &'a mut A) -> Self {
         Self {
             services: DurableComptimeServices::new(authority),
+            anonymous_bindings: std::collections::BTreeMap::new(),
         }
+    }
+
+    /// A type's diagnostic spelling, naming each anonymous literal this root
+    /// has seen bound by `let` by that name (RUE-2589).
+    fn display_type(&self, ty: &DurableType) -> String {
+        super::projection::durable_type_diagnostic_name_with_bindings(ty, &|key| {
+            let key = key.with_canonical_producer();
+            self.anonymous_bindings
+                .get(key.as_ref())
+                .cloned()
+                .or_else(|| {
+                    self.services
+                        .durable_session()
+                        .observed_anonymous_nominals()
+                        .find(|nominal| nominal.identity.with_canonical_producer() == key)
+                        .and_then(|nominal| nominal.binding.clone())
+                })
+        })
     }
 
     /// Validate a durable structural value against its complete declared
@@ -825,6 +847,17 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeTypeAlgebra
         ))))
     }
 
+    fn record_anonymous_binding(
+        &mut self,
+        identity: &Self::AnonymousIdentity,
+        binding: &Self::Name,
+    ) {
+        self.anonymous_bindings.insert(
+            identity.key().with_canonical_producer().into_owned(),
+            binding.0.clone(),
+        );
+    }
+
     fn find_or_create_anon_struct(
         &mut self,
         identity: Self::AnonymousIdentity,
@@ -913,6 +946,10 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeTypeAlgebra
                 },
                 type_captures: type_captures.into(),
                 value_captures: value_captures.into(),
+                binding: self
+                    .anonymous_bindings
+                    .get(identity.key().with_canonical_producer().as_ref())
+                    .cloned(),
             },
         )
         .map_err(durable_host_error)?;
@@ -964,6 +1001,10 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeTypeAlgebra
                 },
                 type_captures: type_captures.into(),
                 value_captures: value_captures.into(),
+                binding: self
+                    .anonymous_bindings
+                    .get(identity.key().with_canonical_producer().as_ref())
+                    .cloned(),
             },
         )
         .map(DurableComptimeType)
@@ -1039,7 +1080,7 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeTypeAlgebra
     }
 
     fn type_name(&self, ty: &Self::Type) -> String {
-        DurableComptimeScalarPolicy::type_name(ty.as_ref())
+        self.display_type(ty.as_ref())
     }
     fn type_is_enum(&self, ty: &Self::Type) -> bool {
         // A declared enum, or an anonymous one from a type constructor such as
@@ -3028,10 +3069,10 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeRejections
         let Some(mut cursor) = closing else {
             return Ok(());
         };
-        let name = DurableComptimeScalarPolicy::type_name(self_ty.as_ref());
+        let name = self.display_type(self_ty.as_ref());
         let mut inner = Vec::new();
         while let Some(index) = cursor {
-            inner.push(DurableComptimeScalarPolicy::type_name(&nodes[index].0));
+            inner.push(self.display_type(&nodes[index].0));
             cursor = nodes[index].1;
         }
         let cycle = std::iter::once(name.clone())
@@ -3042,7 +3083,7 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeRejections
         Err(rue_air::ComptimeHostError::HostFailure(
             durable_diagnostic_failure(
                 &self.diagnostic_site(site),
-                rue_error::ErrorKind::RecursiveTypeInfiniteSize { name, cycle },
+                rue_error::ErrorKind::RecursiveAnonymousTypeInfiniteSize { name, cycle },
             ),
         ))
     }

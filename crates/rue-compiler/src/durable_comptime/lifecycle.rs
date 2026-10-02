@@ -2780,6 +2780,7 @@ mod effect_lifecycle_tests {
                 },
                 type_captures: Arc::from([(Arc::from("T"), DurableType::U64)]),
                 value_captures: Arc::from([(Arc::from("n"), DurableConstValue::Integer(9))]),
+                binding: None,
             },
         )
         .unwrap();
@@ -2860,6 +2861,7 @@ mod effect_lifecycle_tests {
                 },
                 type_captures: Arc::from([]),
                 value_captures: Arc::from([]),
+                binding: None,
             },
         )
         .unwrap();
@@ -2908,6 +2910,7 @@ mod effect_lifecycle_tests {
                     },
                     type_captures,
                     value_captures,
+                    binding: None,
                 },
             )
             .unwrap()
@@ -2983,6 +2986,7 @@ mod effect_lifecycle_tests {
                 },
                 type_captures: Arc::from([]),
                 value_captures: Arc::from([]),
+                binding: None,
             },
         );
         assert!(result.is_err());
@@ -3020,6 +3024,7 @@ mod effect_lifecycle_tests {
                 },
                 type_captures: Arc::from([]),
                 value_captures: Arc::from([]),
+                binding: None,
             },
         )
         .unwrap();
@@ -3045,6 +3050,7 @@ mod effect_lifecycle_tests {
             },
             type_captures: Arc::from([]),
             value_captures: Arc::from([]),
+            binding: None,
         };
 
         let mut known = DurableComptimeSession::new(parent.clone(), declaration.clone()).unwrap();

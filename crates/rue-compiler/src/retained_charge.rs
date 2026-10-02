@@ -1603,6 +1603,10 @@ impl RetainedCharge for rue_error::ErrorKind {
                 name: left,
                 cycle: right,
             }
+            | E::RecursiveAnonymousTypeInfiniteSize {
+                name: left,
+                cycle: right,
+            }
             | E::DuplicateVariant {
                 enum_name: left,
                 variant_name: right,

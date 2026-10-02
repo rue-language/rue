@@ -64,6 +64,50 @@ fn type_syntax_build_error(error: crate::RirTypeSyntaxBuildError) -> crate::RirP
     crate::RirPayloadBuildError::ResourceLimitExceeded { family }
 }
 
+/// The span of the anonymous `struct`/`enum` literal `expr` evaluates to:
+/// the literal itself, or the value of a parenthesized, block or `comptime`
+/// expression ending in one. A `let` naming such an initializer names the
+/// type in diagnostics (RUE-2589).
+fn anonymous_type_literal_span(expr: &Expr) -> Option<rue_span::Span> {
+    match expr {
+        Expr::TypeLit(type_lit)
+            if matches!(
+                type_lit.type_expr.as_ref(),
+                TypeExpr::AnonymousStruct { .. } | TypeExpr::AnonymousEnum { .. }
+            ) =>
+        {
+            Some(type_lit.span)
+        }
+        Expr::Paren(paren) => anonymous_type_literal_span(&paren.inner),
+        Expr::Comptime(comptime) => anonymous_type_literal_span(&comptime.expr),
+        Expr::Block(block) => anonymous_type_literal_span(&block.expr),
+        _ => None,
+    }
+}
+
+/// The `let` statement of a producer body that binds the body's result: the
+/// last `let` of the name the body's final expression reads
+/// (`let L = struct { .. }; L`).
+fn result_let(root: &Expr) -> Option<rue_span::Span> {
+    let Expr::Block(block) = root else {
+        return None;
+    };
+    let Expr::Ident(result) = block.expr.as_ref() else {
+        return None;
+    };
+    block
+        .statements
+        .iter()
+        .rev()
+        .find_map(|statement| match statement {
+            Statement::Let(let_stmt) => match &let_stmt.pattern {
+                LetPattern::Ident(ident) if ident.name == result.name => Some(let_stmt.span),
+                _ => None,
+            },
+            _ => None,
+        })
+}
+
 /// Generates RIR from an AST.
 pub struct AstGen<'a> {
     /// String interner for symbols (thread-safe, takes shared reference)
@@ -120,6 +164,15 @@ pub struct AstGen<'a> {
     /// inside an anonymous type are independent producers and obtain their
     /// anchors from the shared frontend walk when their root is entered.
     producer_root_depth: usize,
+    /// The `let` binding whose initializer is being lowered, keyed by the
+    /// span of the anonymous type literal that initializer evaluates to
+    /// (`let I = struct { .. };`). The literal records the name for
+    /// diagnostics only (RUE-2589); identity stays its anchor.
+    anonymous_binding: Option<(rue_span::Span, Spur)>,
+    /// The `let` statement whose binding is the current producer body's
+    /// result (`let L = struct { .. }; L`). Its literal is the constructor's
+    /// result and keeps the constructor's display, so it records no binding.
+    result_let: Option<rue_span::Span>,
     /// Fixed compiler spellings are interned on first use and cached for the
     /// rest of this lowering session. Names carrying a counter remain
     /// dynamically interned at their call sites.
@@ -261,6 +314,8 @@ impl<'a> AstGen<'a> {
             anonymous_anchors: AHashMap::new(),
             authoritative_anonymous_anchors: false,
             producer_root_depth: 0,
+            anonymous_binding: None,
+            result_let: None,
             self_symbol: None,
             u64_symbol: None,
             type_symbol: None,
@@ -610,15 +665,31 @@ impl<'a> AstGen<'a> {
                     .insert(site.span, (site.kind, site.anchor));
             }
         }
+        let outer_binding = self.anonymous_binding.take();
+        let outer_result_let = std::mem::replace(&mut self.result_let, result_let(root));
         self.producer_root_depth += 1;
         let result = action(self);
         self.producer_root_depth -= 1;
+        self.anonymous_binding = outer_binding;
+        self.result_let = outer_result_let;
         self.structural_path = outer_path;
         self.for_counter = outer_for_counter;
         self.compound_counter = outer_compound_counter;
         self.mutable_place_names = outer_mutable_place_names;
         self.mutable_place_names_added = outer_mutable_place_names_added;
         result
+    }
+
+    /// The `let` name the anonymous type literal at `span` initializes, if
+    /// the statement being lowered binds one (RUE-2589).
+    fn take_anonymous_binding(&mut self, span: rue_span::Span) -> Option<Spur> {
+        match self.anonymous_binding {
+            Some((site, name)) if site == span => {
+                self.anonymous_binding = None;
+                Some(name)
+            }
+            _ => None,
+        }
     }
 
     /// Run one body-less semantic producer (an `extern` foreign function) with a
@@ -2034,6 +2105,7 @@ impl<'a> AstGen<'a> {
                         metadata,
                         ..
                     } => {
+                        let binding = self.take_anonymous_binding(type_lit.span);
                         let anchor = self.anonymous_type_anchor(
                             type_lit.type_expr.span(),
                             AnonymousTypeSiteKind::Struct,
@@ -2072,11 +2144,13 @@ impl<'a> AstGen<'a> {
                                     .unchecked_transfer_reason
                                     .map(|reason| self.symbol(reason)),
                                 anchor,
+                                binding,
                                 type_lit.span,
                             )
                             .record_failure(&mut self.payload_error)
                     }
                     TypeExpr::AnonymousEnum { variants, .. } => {
+                        let binding = self.take_anonymous_binding(type_lit.span);
                         // Generate an anonymous enum type instruction. Variant
                         // names and tuple-variant payloads are encoded exactly
                         // as `gen_enum` does for a top-level `enum` declaration
@@ -2108,10 +2182,11 @@ impl<'a> AstGen<'a> {
                             AnonymousTypeSiteKind::Enum,
                         );
                         self.rir
-                            .add_anon_enum_type(
+                            .add_anon_enum_type_with_binding(
                                 &variant_syms,
                                 &payload_types,
                                 anchor,
+                                binding,
                                 type_lit.span,
                             )
                             .record_failure(&mut self.payload_error)
@@ -2788,8 +2863,13 @@ impl<'a> AstGen<'a> {
                     .ty
                     .as_ref()
                     .map(|ty| self.intern_type_at(crate::RirStructuralPathSegment::ReturnType, ty));
+                let binding = name
+                    .filter(|_| self.result_let != Some(let_stmt.span))
+                    .and_then(|name| Some((anonymous_type_literal_span(&let_stmt.init)?, name)));
+                let outer_binding = std::mem::replace(&mut self.anonymous_binding, binding);
                 let init =
                     self.gen_expr_at(crate::RirStructuralPathSegment::Operand(0), &let_stmt.init);
+                self.anonymous_binding = outer_binding;
                 // The binding is not in scope in its own initializer. Record
                 // its mutability only after lowering that initializer so a
                 // same-spelled outer const or immutable local keeps its

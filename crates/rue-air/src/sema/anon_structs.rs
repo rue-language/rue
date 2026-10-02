@@ -237,6 +237,7 @@ mod tests {
             },
             type_captures: Arc::new([]),
             value_captures: Arc::new([]),
+            binding: None,
         }
     }
 

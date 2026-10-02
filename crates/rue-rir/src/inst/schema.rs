@@ -1022,6 +1022,11 @@ pub enum InstData {
         unchecked_transfer_reason: Option<Spur>,
         /// Structural occurrence relative to the producing definition body.
         anchor: RirStructuralAnchor,
+        /// The `let` name this type expression is bound to (`let I = struct
+        /// { .. };`), or `None`. Presentation only: diagnostics name the type
+        /// by it (RUE-2589). It is no part of the type's identity, which is
+        /// the producer and `anchor` alone.
+        binding: Option<Spur>,
     },
 
     /// Anonymous enum type: an enum (sum) type used as a value expression
@@ -1039,5 +1044,8 @@ pub enum InstData {
         payloads: RirAnonEnumPayloadsRange,
         /// Structural occurrence relative to the producing definition body.
         anchor: RirStructuralAnchor,
+        /// The `let` name this type expression is bound to; presentation only,
+        /// as for [`InstData::AnonStructType`].
+        binding: Option<Spur>,
     },
 }

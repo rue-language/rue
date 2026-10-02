@@ -3691,6 +3691,13 @@ pub enum ErrorKind {
         "recursive type '{name}' has infinite size (contains itself by value: {cycle}); break the cycle with a pointer (`ptr const {name}` / `ptr mut {name}`)"
     )]
     RecursiveTypeInfiniteSize { name: String, cycle: String },
+    /// [`ErrorKind::RecursiveTypeInfiniteSize`] for an anonymous struct, which
+    /// names itself only as `Self`, so the pointer it is told to hold is
+    /// spelled that way (RUE-2589).
+    #[error(
+        "recursive type '{name}' has infinite size (contains itself by value: {cycle}); break the cycle with a pointer (`ptr const Self` / `ptr mut Self`)"
+    )]
+    RecursiveAnonymousTypeInfiniteSize { name: String, cycle: String },
     /// A value constant declared without a type annotation. Annotations are
     /// required on value constants (spec 6.5:4, RUE-179); only module
     /// bindings (`const m = @import(...)` and aliases) are exempt.
@@ -4558,7 +4565,10 @@ impl ErrorKind {
             ErrorKind::DuplicateConstant { .. } => ErrorCode::DUPLICATE_CONSTANT,
             ErrorKind::ConstExprNotSupported { .. } => ErrorCode::CONST_EXPR_NOT_SUPPORTED,
             ErrorKind::ConstInitializerCycle { .. } => ErrorCode::CONST_INITIALIZER_CYCLE,
-            ErrorKind::RecursiveTypeInfiniteSize { .. } => ErrorCode::RECURSIVE_TYPE_INFINITE_SIZE,
+            ErrorKind::RecursiveTypeInfiniteSize { .. }
+            | ErrorKind::RecursiveAnonymousTypeInfiniteSize { .. } => {
+                ErrorCode::RECURSIVE_TYPE_INFINITE_SIZE
+            }
             ErrorKind::ConstMissingTypeAnnotation { .. } => {
                 ErrorCode::CONST_MISSING_TYPE_ANNOTATION
             }

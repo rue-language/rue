@@ -338,6 +338,17 @@ pub trait ComptimeTypeAlgebra: ComptimeDomain {
     ) -> ComptimeHostResult<Option<Self::Type>, Self::Failure> {
         Ok(None)
     }
+    /// Record the `let` name an anonymous nominal's literal is bound to
+    /// (`let I = struct { .. };`), before its shape resolves, so every
+    /// diagnostic that names the nominal -- including one raised while its
+    /// fields resolve -- can call it by that name (RUE-2589). Presentation
+    /// only: the identity is unaffected. The default keeps no names.
+    fn record_anonymous_binding(
+        &mut self,
+        _identity: &Self::AnonymousIdentity,
+        _binding: &Self::Name,
+    ) {
+    }
     fn find_or_create_anon_struct(
         &mut self,
         identity: Self::AnonymousIdentity,
@@ -5160,6 +5171,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 anchor,
                 thread_bound,
                 unchecked_transfer_reason,
+                binding,
             } => {
                 if *thread_bound || unchecked_transfer_reason.is_some() {
                     host_value!(
@@ -5191,6 +5203,10 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                         anchor,
                     )
                 });
+                if let (Some(identity), Some(binding)) = (&self_identity, binding) {
+                    let binding = self.name_from_rir((*binding).into());
+                    self.host.record_anonymous_binding(identity, &binding);
+                }
                 let self_name = self_identity.as_ref().and_then(|_| {
                     let program = self.program_key();
                     let roots = self.anon_struct_type_syntax_roots(
@@ -5287,6 +5303,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 variants,
                 payloads,
                 anchor,
+                binding,
             } => {
                 let variant_syms = self.program_rir().anon_enum_variants(variants).to_vec();
                 let payload_symbols: Vec<Vec<rue_rir::RirTypeSyntaxRef>> = self
@@ -5331,6 +5348,10 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                     &producer,
                     anchor,
                 );
+                if let Some(binding) = binding {
+                    let binding = self.name_from_rir((*binding).into());
+                    self.host.record_anonymous_binding(&identity, &binding);
+                }
                 for ty in variant_payloads.iter().flatten() {
                     host_value!(self.host.reject_unstorable_member(
                         ty,

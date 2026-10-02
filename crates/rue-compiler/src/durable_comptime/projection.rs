@@ -21,6 +21,8 @@ pub(crate) struct DurableAnonymousNominalDescriptor {
     pub(crate) shape: DurableAnonymousNominalDescriptorShape,
     pub(crate) type_captures: Arc<[(Arc<str>, DurableType)]>,
     pub(crate) value_captures: Arc<[(Arc<str>, DurableConstValue)]>,
+    /// The `let` name the producer bound the literal to; presentation only.
+    pub(crate) binding: Option<Arc<str>>,
 }
 
 #[derive(Debug, Clone)]
@@ -117,12 +119,15 @@ pub(crate) fn project_durable_anonymous_nominal(
             crate::durable_semantics::DurableAnonymousNominalShape::Enum { variants }
         }
     };
-    session.observe_anonymous_nominal(DurableAnonymousNominal::new(
-        descriptor.identity.clone(),
-        shape,
-        type_captures,
-        value_captures,
-    ));
+    session.observe_anonymous_nominal(
+        DurableAnonymousNominal::new(
+            descriptor.identity.clone(),
+            shape,
+            type_captures,
+            value_captures,
+        )
+        .with_binding(descriptor.binding),
+    );
     Ok(DurableType::AnonymousNominal(descriptor.identity))
 }
 
@@ -154,6 +159,17 @@ fn durable_parameter_mode(
 }
 
 fn durable_type_diagnostic_name_kernel(ty: &DurableType) -> String {
+    durable_type_diagnostic_name_with_bindings(ty, &|_| None)
+}
+
+/// [`durable_type_diagnostic_name`] with the `let` names producers bound
+/// anonymous literals to (RUE-2589): such a nominal reads by its name,
+/// qualified by its producer's application when the producer was
+/// specialized (`A(i64).B`). An unbound one keeps its producer's spelling.
+pub(crate) fn durable_type_diagnostic_name_with_bindings(
+    ty: &DurableType,
+    binding: &dyn Fn(&crate::AnonymousNominalKey) -> Option<Arc<str>>,
+) -> String {
     use crate::durable_semantics::DurableType as T;
 
     fn function_name(function: &crate::FunctionInstanceKey) -> Option<&str> {
@@ -189,7 +205,7 @@ fn durable_type_diagnostic_name_kernel(ty: &DurableType) -> String {
                             .types
                             .iter()
                             .map(crate::semantic_identity::semantic_type_from_instance)
-                            .map(|ty| durable_type_diagnostic_name(&ty))
+                            .map(|ty| durable_type_diagnostic_name_with_bindings(&ty, binding))
                             .collect::<Vec<_>>()
                     })
                     .unwrap_or_default();
@@ -201,10 +217,11 @@ fn durable_type_diagnostic_name_kernel(ty: &DurableType) -> String {
                             crate::CanonicalArgumentValue::Integer(value) => value.to_string(),
                             crate::CanonicalArgumentValue::Bool(value) => value.to_string(),
                             crate::CanonicalArgumentValue::Type(value) => {
-                                durable_type_diagnostic_name(
+                                durable_type_diagnostic_name_with_bindings(
                                     &crate::semantic_identity::semantic_type_from_instance(
                                         value.as_ref(),
                                     ),
+                                    binding,
                                 )
                             }
                             crate::CanonicalArgumentValue::Function(_) => "function".to_owned(),
@@ -216,30 +233,46 @@ fn durable_type_diagnostic_name_kernel(ty: &DurableType) -> String {
                             crate::CanonicalArgumentValue::Aggregate(_) => "<aggregate>".to_owned(),
                         }),
                 );
-                if arguments.is_empty() {
+                let producer = if arguments.is_empty() {
                     name.to_owned()
                 } else {
                     format!("{name}({})", arguments.join(", "))
+                };
+                match binding(key) {
+                    Some(binding) if arguments.is_empty() => binding.to_string(),
+                    Some(binding) => format!("{producer}.{binding}"),
+                    None => producer,
                 }
             }
         },
-        T::Array { element, len } => {
-            rue_air::array_type_name(&durable_type_diagnostic_name(element), *len)
-        }
+        T::Array { element, len } => rue_air::array_type_name(
+            &durable_type_diagnostic_name_with_bindings(element, binding),
+            *len,
+        ),
         // A view's name is an identity spelling (RUE-2571); present the view
         // from its element.
-        T::Slice { element, .. } => {
-            rue_air::slice_struct_name(&durable_type_diagnostic_name(element))
-        }
+        T::Slice { element, .. } => rue_air::slice_struct_name(
+            &durable_type_diagnostic_name_with_bindings(element, binding),
+        ),
         T::PtrConst(pointee) => {
-            format!("ptr const {}", durable_type_diagnostic_name(pointee))
+            format!(
+                "ptr const {}",
+                durable_type_diagnostic_name_with_bindings(pointee, binding)
+            )
         }
-        T::PtrMut(pointee) => format!("ptr mut {}", durable_type_diagnostic_name(pointee)),
+        T::PtrMut(pointee) => format!(
+            "ptr mut {}",
+            durable_type_diagnostic_name_with_bindings(pointee, binding)
+        ),
         T::Function { params, result } => rue_air::function_type_name(
-            params
-                .iter()
-                .map(|(mode, ty)| (*mode, durable_type_diagnostic_name(ty))),
-            (**result != T::Unit).then(|| durable_type_diagnostic_name(result)),
+            params.iter().map(|(mode, ty)| {
+                (
+                    *mode,
+                    durable_type_diagnostic_name_with_bindings(ty, binding),
+                )
+            }),
+            (**result != T::Unit)
+                .then(|| durable_type_diagnostic_name_with_bindings(result, binding)),
         ),
         T::Module(module) => module.to_string(),
         T::GenericParameter(index) => format!("T{index}"),

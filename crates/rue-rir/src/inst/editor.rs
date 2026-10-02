@@ -619,7 +619,9 @@ impl RirEditor {
         anchor: RirStructuralAnchor,
         span: Span,
     ) -> Result<InstRef, RirPayloadBuildError> {
-        self.add_anon_struct_type_with_transfer_metadata(fields, methods, false, None, anchor, span)
+        self.add_anon_struct_type_with_transfer_metadata(
+            fields, methods, false, None, anchor, None, span,
+        )
     }
 
     pub fn add_anon_struct_type_with_transfer_metadata(
@@ -629,6 +631,7 @@ impl RirEditor {
         thread_bound: bool,
         unchecked_transfer_reason: Option<Spur>,
         anchor: RirStructuralAnchor,
+        binding: Option<Spur>,
         span: Span,
     ) -> Result<InstRef, RirPayloadBuildError> {
         self.atomic(|rir| {
@@ -641,6 +644,7 @@ impl RirEditor {
                     thread_bound,
                     unchecked_transfer_reason,
                     anchor,
+                    binding,
                 },
                 span,
             }))
@@ -652,6 +656,17 @@ impl RirEditor {
         variants: &[Spur],
         payloads: &[Vec<RirTypeSyntaxRef>],
         anchor: RirStructuralAnchor,
+        span: Span,
+    ) -> Result<InstRef, RirPayloadBuildError> {
+        self.add_anon_enum_type_with_binding(variants, payloads, anchor, None, span)
+    }
+
+    pub fn add_anon_enum_type_with_binding(
+        &mut self,
+        variants: &[Spur],
+        payloads: &[Vec<RirTypeSyntaxRef>],
+        anchor: RirStructuralAnchor,
+        binding: Option<Spur>,
         span: Span,
     ) -> Result<InstRef, RirPayloadBuildError> {
         self.atomic(|rir| {
@@ -668,6 +683,7 @@ impl RirEditor {
                     variants,
                     payloads,
                     anchor,
+                    binding,
                 },
                 span,
             }))
@@ -1618,6 +1634,7 @@ impl RirEditor {
                         thread_bound,
                         unchecked_transfer_reason,
                         anchor,
+                        binding,
                     } => {
                         let fields = source
                             .anon_struct_fields(fields)
@@ -1635,6 +1652,7 @@ impl RirEditor {
                             *thread_bound,
                             *unchecked_transfer_reason,
                             anchor.clone(),
+                            binding.map(&mut symbol),
                             span,
                         )?
                     }
@@ -1642,6 +1660,7 @@ impl RirEditor {
                         variants: variant_range,
                         payloads,
                         anchor,
+                        binding,
                     } => {
                         let variants = source
                             .anon_enum_variants(variant_range)
@@ -1652,7 +1671,13 @@ impl RirEditor {
                             .anon_enum_payloads(payloads, variant_range)
                             .map(|payload| payload.values().map(remap_type).collect())
                             .collect::<Vec<Vec<_>>>();
-                        self.add_anon_enum_type(&variants, &payloads, anchor.clone(), span)?
+                        self.add_anon_enum_type_with_binding(
+                            &variants,
+                            &payloads,
+                            anchor.clone(),
+                            binding.map(&mut symbol),
+                            span,
+                        )?
                     }
                 };
                 if let Some(anchor) = source.deferred_structural_anchor(source_instruction) {
