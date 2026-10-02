@@ -15,6 +15,31 @@ use crate::sema::context::DivergenceKind;
 use crate::sema::info::FunctionCallInfo;
 use ahash::AHashMap;
 
+/// The result of a `-> type` call whose body reduced at compile time (4.14:28).
+///
+/// A body that reduces to a module (`fn m() -> type { @import("x.rue") }`)
+/// yields that module exactly as the `@import` it evaluates does: a
+/// compile-time-only placeholder typed as the module, so the call is a module
+/// expression in every position a module path is — a `let` binding, a member
+/// access head, or a nested `m().sub` (spec 10.4:8, 10.4:10; RUE-2420). Any
+/// other type is a `TypeConst`.
+fn reduced_type_call_result(air: &mut Air, ty: Type, span: Span) -> AnalysisResult {
+    if ty.is_module() {
+        let air_ref = air.add_inst(AirInst {
+            data: AirInstData::UnitConst,
+            ty,
+            span,
+        });
+        return AnalysisResult::new(air_ref, ty);
+    }
+    let air_ref = air.add_inst(AirInst {
+        data: AirInstData::TypeConst(ty),
+        ty: Type::COMPTIME_TYPE,
+        span,
+    });
+    AnalysisResult::new(air_ref, Type::COMPTIME_TYPE)
+}
+
 /// Reject a runtime call whose result is a comptime-only value.
 ///
 /// A `type` (or module) value cannot exist at runtime (spec 4.14:6), so a call
@@ -769,12 +794,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 .map_err(|e| Self::label_ctor_instantiation_site(e, span))?
             {
                 // Success! Return a TypeConst instruction instead of a runtime call
-                let air_ref = air.add_inst(AirInst {
-                    data: AirInstData::TypeConst(ty),
-                    ty: Type::COMPTIME_TYPE,
-                    span,
-                });
-                return Ok(AnalysisResult::new(air_ref, Type::COMPTIME_TYPE));
+                return Ok(reduced_type_call_result(air, ty, span));
             }
             // A body that does not reduce falls through to the runtime call
             // emission below, which rejects its `type` result (RUE-2417).
@@ -1116,12 +1136,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     // parameter is `comptime`, and a `comptime` parameter takes
                     // an unmarked argument (4.10:3), so `temp_scope` is
                     // necessarily empty here — there is no call left to wrap.
-                    let air_ref = air.add_inst(AirInst {
-                        data: AirInstData::TypeConst(ty),
-                        ty: Type::COMPTIME_TYPE,
-                        span,
-                    });
-                    return Ok(AnalysisResult::new(air_ref, Type::COMPTIME_TYPE));
+                    return Ok(reduced_type_call_result(air, ty, span));
                 }
                 // A body that does not reduce falls through to the emission
                 // below, which rejects the runtime `type` result (RUE-2417).
