@@ -2446,6 +2446,16 @@ impl rue_air::SemanticTypeSyntaxProvider<ModuleId, ModuleId, StableDefinitionKey
         };
         for (_, ty) in type_arguments {
             reject_function_child(ty, "a type argument")?;
+            // `Box([type])` would specialize over a type the pool cannot
+            // hold (4.14:6, RUE-2606). A type argument reading a deferred
+            // value parameter holds the deferred placeholder, not `type`.
+            if !self.deferred_value_read
+                && let Some(kind) = crate::durable_semantics::durable_type_value_child(ty)
+            {
+                return Err(rue_air::SemanticProviderError::Failure(
+                    crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(kind),
+                ));
+            }
         }
         if self.comptime_call_is_deferred(type_arguments, value_arguments) {
             return Ok(Some(if head.returns_type {
@@ -3458,19 +3468,18 @@ pub(in crate::revisioned_query_database) fn resolve_parsed_semantic_signature(
                     if parameter.is_comptime {
                         fn_type_position(&ty, "a `comptime` parameter")?;
                     }
-                    // A runtime parameter's type can hold no type value, which
-                    // cannot exist at run time (4.14:6): not as an array
-                    // element, pointee, or slice element (RUE-2606), and not
-                    // as a callback's parameter or result, since a callback is
-                    // a runtime value (6.1:47) and a function returning `type`
-                    // is a `-> type` constructor (6.1:50). Reported at the
-                    // parameter rather than leaving the function without a
-                    // signature, which made every call to it an undefined
-                    // function (RUE-2420). A `comptime` parameter is not asked:
-                    // its value never exists at run time.
-                    if !parameter.is_comptime
-                        && let Some(kind) = crate::durable_semantics::durable_type_value_child(&ty)
-                    {
+                    // A parameter's type can hold no type value, which cannot
+                    // exist at run time (4.14:6): not as an array element,
+                    // pointee, or slice element (RUE-2606), and not as a
+                    // callback's parameter or result, since a callback is a
+                    // runtime value (6.1:47) and a function returning `type`
+                    // is a `-> type` constructor (6.1:50). A `comptime`
+                    // parameter is asked too: `[type]` and `ptr const type` are
+                    // no types at all, and its signature could not be imported
+                    // at a call. Reported at the parameter rather than leaving
+                    // the function without a signature, which made every call
+                    // to it an undefined function (RUE-2420).
+                    if let Some(kind) = crate::durable_semantics::durable_type_value_child(&ty) {
                         return Err(ResolveSemanticSignatureError::failure(
                             crate::semantic_query_nucleus::SemanticNucleusFailure::DiagnosticAtSignatureType {
                                 kind,
