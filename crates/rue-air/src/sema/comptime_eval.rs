@@ -1112,16 +1112,25 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// The engine has already decoded the RIR spine and applied lexical
     /// shadowing. `Ok(None)` is a path that does not name a module; walk
     /// failures (an unknown member, a non-module segment, privacy) are
-    /// non-evaluable here, and sema's other paths carry their diagnostics.
-    /// A comptime callable's receiver and a qualified struct literal's
-    /// module base both resolve through it.
+    /// non-evaluable for a comptime callable's receiver, whose diagnostics
+    /// sema's other paths carry. A qualified struct literal's module base
+    /// passes `report_walk_errors` instead, so a comptime literal reports the
+    /// walk's diagnostic as the runtime literal does (RUE-2440).
     fn resolve_comptime_module_path(
         &mut self,
         file_id: FileId,
         root_module: Option<Type>,
         segments: &[Spur],
+        report_walk_errors: bool,
         span: Span,
     ) -> CompileResult<Option<(crate::types::ModuleId, FileId)>> {
+        let walked =
+            |walk: CompileResult<(crate::types::ModuleId, Option<FileId>, String)>| match walk {
+                Ok((module, Some(module_file_id), _)) => Ok(Some((module, module_file_id))),
+                Ok((_, None, _)) => Ok(None),
+                Err(error) if report_walk_errors => Err(error),
+                Err(_) => Ok(None),
+            };
         let Some(&recv_name) = segments.first() else {
             return Ok(None);
         };
@@ -1139,12 +1148,12 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 .map(|s| self.body_interner().resolve(s).to_owned())
                 .collect();
             let segments: Vec<&str> = segment_strings.iter().map(String::as_str).collect();
-            return Ok(
-                match self.resolve_type_module_prefix_from(file_id, Some(module), &segments, span) {
-                    Ok((module, Some(module_file_id), _)) => Some((module, module_file_id)),
-                    _ => None,
-                },
-            );
+            return walked(self.resolve_type_module_prefix_from(
+                file_id,
+                Some(module),
+                &segments,
+                span,
+            ));
         }
         if segments.len() == 1 {
             // Resolve through the declaration namespace, not the raw binding
@@ -1169,12 +1178,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             .map(|s| self.body_interner().resolve(s).to_owned())
             .collect();
         let segments: Vec<&str> = segment_strings.iter().map(String::as_str).collect();
-        Ok(
-            match self.resolve_type_module_prefix_in_file(file_id, &segments, span) {
-                Ok((module, Some(module_file_id), _)) => Some((module, module_file_id)),
-                _ => None,
-            },
-        )
+        walked(self.resolve_type_module_prefix_in_file(file_id, &segments, span))
     }
 
     /// Resolve a decoded module path to its semantic callable key. The engine
@@ -1189,7 +1193,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         span: Span,
     ) -> CompileResult<Option<Spur>> {
         let Some((_, module_file_id)) =
-            self.resolve_comptime_module_path(file_id, root_module, segments, span)?
+            self.resolve_comptime_module_path(file_id, root_module, segments, false, span)?
         else {
             return Ok(None);
         };
@@ -3610,6 +3614,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeTypeAlgebra for OrdinaryBodyEngine
             file,
             root_module.copied(),
             segments,
+            true,
             span,
         )?
         else {
