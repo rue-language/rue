@@ -7429,3 +7429,18 @@ pub fn Box(comptime T: type) -> type { struct { inner: T, fn take(self) -> T { s
 pub fn wrap(comptime T: type, x: T) -> Box(T) { Box(T) { inner: x } }
 """ }
 exit_code = 88
+
+[[case]]
+name = "inline_self_referential_constructor_over_a_local_argument"
+spec = ["4.14:22", "4.14:23"]
+description = "An inline type-syntax head applies a constructor whose field names another constructor over `ptr const Self` to a local anonymous struct, as the `let`-bound spelling does (RUE-2590)"
+source = """
+fn Opt(comptime T: type) -> type { enum { Some(T), None } }
+fn L(comptime T: type) -> type { struct { v: T, next: Opt(ptr const Self) } }
+fn main() -> i32 {
+    let I = struct { s: i64, t: i8 };
+    let N = L(I);
+    @size_of(L(I)) + @size_of(N) - 32
+}
+"""
+exit_code = 32
