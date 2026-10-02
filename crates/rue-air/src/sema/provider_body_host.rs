@@ -5786,17 +5786,15 @@ fn recover_body_analysis<T>(
     match result {
         Ok(value) if recovered_errors.is_empty() => Ok(value),
         Ok(_) => Err(recovered_errors.into()),
+        // The first-error attempt returns the ledger's first entry as its
+        // terminal sentinel, and a statement that stopped the body before
+        // independent inference failures records itself ahead of them. Avoid
+        // duplicating it when the ledger already owns the complete batch.
+        Err(error) if recovered_errors.contains(&error) => Err(recovered_errors.into()),
         Err(error) if is_statement_recoverable(&error) => {
-            // The first-error attempt returns the ledger's first entry as its
-            // terminal sentinel. Avoid duplicating it when the ledger already
-            // owns the complete batch from the recovery attempt.
-            if recovered_errors.iter().any(|recovered| recovered == &error) {
-                Err(recovered_errors.into())
-            } else {
-                let mut errors = recovered_errors;
-                errors.push(error);
-                Err(errors.into())
-            }
+            let mut errors = recovered_errors;
+            errors.push(error);
+            Err(errors.into())
         }
         Err(error) => {
             // A fatal query failure has authority over statement recovery.

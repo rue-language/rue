@@ -112,6 +112,66 @@ fn statement_recovery_facts(
     facts
 }
 
+/// Whether a statement reads one of `names`, or a poisoned local `rebound`
+/// does not shadow, by the name forms the poison model tracks: a variable
+/// read or assignment, or a call through a local.
+fn statement_reads_names(
+    rir: &rue_rir::Rir,
+    root: InstRef,
+    names: &AHashSet<Spur>,
+    rebound: &AHashSet<Spur>,
+    ctx: &AnalysisContext<'_>,
+) -> bool {
+    let mut pending = vec![root];
+    let mut visited = AHashSet::new();
+    while let Some(instruction) = pending.pop() {
+        if !visited.insert(instruction) {
+            continue;
+        }
+        let name = match &rir.get(instruction).data {
+            InstData::VarRef { name, .. }
+            | InstData::Assign { name, .. }
+            | InstData::Call { name, .. } => Some(*name),
+            _ => None,
+        };
+        if let Some(name) = name
+            && (names.contains(&name)
+                || (!rebound.contains(&name)
+                    && ctx
+                        .locals
+                        .get(&name)
+                        .is_some_and(|local| local.ty.is_error())))
+        {
+            return true;
+        }
+        rir.child_instructions(instruction, &mut pending);
+    }
+    false
+}
+
+/// The poisoned locals a statement reads or assigns.
+fn poisoned_uses(rir: &rue_rir::Rir, root: InstRef, ctx: &AnalysisContext<'_>) -> AHashSet<Spur> {
+    let mut names = AHashSet::new();
+    let mut pending = vec![root];
+    let mut visited = AHashSet::new();
+    while let Some(instruction) = pending.pop() {
+        if !visited.insert(instruction) {
+            continue;
+        }
+        if let InstData::VarRef { name, .. } | InstData::Assign { name, .. } =
+            &rir.get(instruction).data
+            && ctx
+                .locals
+                .get(name)
+                .is_some_and(|local| local.ty.is_error())
+        {
+            names.insert(*name);
+        }
+        rir.child_instructions(instruction, &mut pending);
+    }
+    names
+}
+
 /// The failure kind a test body's `?` reports (ADR-0083 §1).
 const TEST_FAILURE_KIND: &str = "unhandled_error";
 /// The failure message a test body's `?` reports.
@@ -4572,6 +4632,91 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         Ok(AnalysisResult::new(air_ref, Type::ERROR))
     }
 
+    /// The error a failed top-level body statement stops the body with.
+    ///
+    /// Body-wide inference has already typed the statements after it, so
+    /// their inference failures are independent of the stop unless they read
+    /// a binding the stopped statement, or a later failed statement, would
+    /// have poisoned. Those independent failures follow the stopping error in
+    /// the recovery ledger, which then owns the error as its terminal entry.
+    /// Only a statement diagnostic is ordered this way: a statement-recoverable
+    /// error the statement could not be rolled back from, or a comptime
+    /// evaluation failure at the statement. Every other error keeps its
+    /// authority as the body's first error.
+    fn stop_body_statement(
+        &mut self,
+        error: CompileError,
+        stopped: &[InstRef],
+        ctx: &AnalysisContext,
+    ) -> CompileError {
+        let Some((&stopped_statement, later)) = stopped.split_first() else {
+            return error;
+        };
+        if ctx.statement_recovery_depth != 1
+            || ctx.inference_statement_errors.is_empty()
+            || !(self.body_analysis_error_is_recoverable(&error)
+                || matches!(error.kind, ErrorKind::ComptimeEvaluationFailed { .. }))
+        {
+            return error;
+        }
+        let bound_name =
+            |engine: &Self, statement: InstRef| match engine.body_rir_ref().get(statement).data {
+                InstData::Alloc { name, .. } => name,
+                _ => None,
+            };
+        let mut tainted = AHashSet::new();
+        let mut rebound = AHashSet::new();
+        tainted.extend(bound_name(self, stopped_statement));
+        let mut trailing = Vec::new();
+        for &statement in later {
+            let failures = ctx.inference_statement_errors.failures.get(&statement);
+            let reads_tainted =
+                statement_reads_names(self.body_rir_ref(), statement, &tainted, &rebound, ctx);
+            if let Some(failures) = failures
+                && !reads_tainted
+            {
+                trailing.extend(failures.iter().cloned());
+            }
+            if let Some(name) = bound_name(self, statement) {
+                rebound.insert(name);
+                if reads_tainted || failures.is_some() {
+                    tainted.insert(name);
+                } else {
+                    tainted.remove(&name);
+                }
+            }
+        }
+        let recovered_errors = self.body_analysis_recovered_errors_mut();
+        if trailing.is_empty()
+            || recovered_errors.len() + 1 + trailing.len()
+                > super::ordinary_engine::BODY_ANALYSIS_DIAGNOSTIC_BUDGET
+        {
+            return error;
+        }
+        recovered_errors.push(error.clone());
+        recovered_errors.extend(trailing);
+        error
+    }
+
+    /// The source-first recovered inference failure the recovery ledger does
+    /// not hold yet, or the source-first failure when it holds them all.
+    fn first_unreported_inference_failure(&mut self, ctx: &AnalysisContext) -> CompileError {
+        let mut failures = ctx
+            .inference_statement_errors
+            .failures
+            .values()
+            .flatten()
+            .collect::<Vec<_>>();
+        failures.sort_by_key(|error| error.span().map(|span| span.start));
+        let recovered_errors = self.body_analysis_recovered_errors_mut();
+        failures
+            .iter()
+            .find(|error| !recovered_errors.contains(error))
+            .or(failures.first())
+            .map(|error| (*error).clone())
+            .expect("a poisoned statement implies a recovered inference failure")
+    }
+
     /// Analyze a block expression.
     fn analyze_block(
         &mut self,
@@ -4594,13 +4739,16 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let mut diverged = false;
         let mut reachable_divergence = DivergenceKinds::NONE;
         let mut diverged_context: Option<AnalysisContext> = None;
+        // Top-level bindings poisoned only because inference recovery
+        // decided their types.
+        let mut recovery_poisoned_names = AHashSet::new();
         let num_insts = inst_refs.len();
         for (i, inst_ref) in inst_refs.iter().copied().enumerate() {
             let is_last = i == num_insts - 1;
-            // Statement recovery starts after body-wide inference has
-            // succeeded. Inference failures use the exact selections observed
-            // during constraint generation instead; substitution-dependent
-            // selections make that transaction non-terminal.
+            // Statement recovery runs over the types body-wide inference
+            // resolved. Inference failures it recovered from are attributed
+            // to the top-level statements containing them and reported below
+            // in place of analyzing those statements.
             // Each statement is its own sequencing boundary. Clear the
             // transient edge classification so a dead suffix cannot change
             // the kind captured at the first reachable divergence.
@@ -4613,14 +4761,102 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // require resolved types. A safe dependent statement can retain a
             // placeholder; control flow or ownership effects instead end this
             // recovery attempt with the diagnostic that owns the poison.
-            if recovery_facts
-                .as_ref()
-                .is_some_and(|facts| facts.reads_poison)
-                && let Some(error) = self.body_analysis_recovered_errors_mut().first().cloned()
+            //
+            // A binding poisoned only because inference recovery decided its
+            // type owns no diagnostic; the failure that decided it does. A
+            // statement with inference failures is silenced by the failed
+            // bindings it reads or assigns, and by no other poison.
+            let inference_failures = (ctx.statement_recovery_depth == 1)
+                .then(|| ctx.inference_statement_errors.failures.get(&inst_ref))
+                .flatten();
+            let reads_poison = match inference_failures {
+                Some(_) => !poisoned_uses(self.body_rir_ref(), inst_ref, ctx)
+                    .is_subset(&recovery_poisoned_names),
+                None => recovery_facts
+                    .as_ref()
+                    .is_some_and(|facts| facts.reads_poison),
+            };
+            if reads_poison
+                && let Some(error) = match self.body_analysis_recovered_errors_mut().first() {
+                    Some(error) => Some(error.clone()),
+                    None if !ctx.inference_statement_errors.is_empty() => {
+                        Some(self.first_unreported_inference_failure(ctx))
+                    }
+                    None => None,
+                }
             {
                 if !recovery_facts.as_ref().expect("recovery facts").safe {
                     return Err(error);
                 }
+                let result = self.recover_statement_placeholder(air, inst_ref, ctx)?;
+                if is_last {
+                    last_result = Some(result);
+                } else {
+                    statements.push(result.air_ref);
+                }
+                continue;
+            }
+            // A statement inference failed in is reported with inference's
+            // diagnostics and poisoned like any failed statement: its types
+            // carry the unifier's ERROR recovery, which no semantic consumer
+            // may read. A statement whose types that recovery decided is
+            // poisoned silently; its cause is reported at its own statement.
+            // A statement recovery cannot represent stops the body at its
+            // first failure, or at the first failure still unreported.
+            let representable = recovery_facts.as_ref().is_some_and(|facts| facts.safe)
+                && !matches!(
+                    self.body_rir_ref().get(inst_ref).data,
+                    rue_rir::InstData::Ret(_)
+                        | rue_rir::InstData::Break { .. }
+                        | rue_rir::InstData::Continue
+                );
+            if ctx.statement_recovery_depth == 1
+                && ctx.inference_statement_errors.poisoned.contains(&inst_ref)
+            {
+                if !representable {
+                    return Err(self.first_unreported_inference_failure(ctx));
+                }
+                let result = self.recover_statement_placeholder(air, inst_ref, ctx)?;
+                if let InstData::Alloc {
+                    name: Some(name), ..
+                } = self.body_rir_ref().get(inst_ref).data
+                {
+                    recovery_poisoned_names.insert(name);
+                }
+                if is_last {
+                    last_result = Some(result);
+                } else {
+                    statements.push(result.air_ref);
+                }
+                continue;
+            }
+            if ctx.statement_recovery_depth == 1
+                && let InstData::Alloc {
+                    name: Some(name), ..
+                } = self.body_rir_ref().get(inst_ref).data
+            {
+                recovery_poisoned_names.remove(&name);
+            }
+            if let Some(failures) = inference_failures {
+                let first = failures
+                    .first()
+                    .cloned()
+                    .expect("an attributed statement has an inference failure");
+                if !representable {
+                    return Err(self.stop_body_statement(first, &inst_refs[i..], ctx));
+                }
+                let recovered_errors = self.body_analysis_recovered_errors_mut();
+                if recovered_errors.len() + failures.len()
+                    > super::ordinary_engine::BODY_ANALYSIS_DIAGNOSTIC_BUDGET
+                {
+                    return Err(CompileError::without_span(
+                        ErrorKind::CompilerResourceLimit(format!(
+                            "body analysis exceeded the recovery diagnostic limit of {}",
+                            super::ordinary_engine::BODY_ANALYSIS_DIAGNOSTIC_BUDGET
+                        )),
+                    ));
+                }
+                recovered_errors.extend(failures.iter().cloned());
                 let result = self.recover_statement_placeholder(air, inst_ref, ctx)?;
                 if is_last {
                     last_result = Some(result);
@@ -4683,7 +4919,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     recovered_errors.push(error);
                     self.recover_statement_placeholder(air, inst_ref, ctx)?
                 }
-                Err(error) => return Err(error),
+                Err(error) => return Err(self.stop_body_statement(error, &inst_refs[i..], ctx)),
             };
 
             let mut statement_divergence = ctx.divergence_kinds;

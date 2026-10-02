@@ -25,6 +25,26 @@ use crate::types::{StructId, Type};
 /// unresolved integer-literal join its class carries.
 pub(crate) type FloatLiteralJoins = AHashMap<InstRef, CompileError>;
 
+/// What inference recovered from in a body analyzed under statement
+/// recovery, keyed by the body block's top-level statements. Semantic
+/// analysis reports each statement's failures, in source order, in place of
+/// analyzing it, so they interleave with semantic errors in source order; it
+/// poisons each recovery-typed statement without a diagnostic of its own.
+#[derive(Debug, Default)]
+pub(crate) struct InferenceStatementErrors {
+    /// The inference failures inside each statement, in source order.
+    pub failures: AHashMap<InstRef, Vec<CompileError>>,
+    /// Statements without a failure whose types the unifier's recovery
+    /// decided, or that hold a constraint the recovery silenced.
+    pub poisoned: AHashSet<InstRef>,
+}
+
+impl InferenceStatementErrors {
+    pub fn is_empty(&self) -> bool {
+        self.failures.is_empty()
+    }
+}
+
 /// Information about a local variable.
 #[derive(Debug, Clone)]
 pub(crate) struct LocalVar {
@@ -313,6 +333,9 @@ pub(crate) struct AnalysisContext<'a> {
     /// that join. Materializing such a literal reports the join rather than
     /// the defaulted type it cannot take (RUE-2573).
     pub float_literal_joins: &'a FloatLiteralJoins,
+    /// Inference failures that statement recovery reports at the body's
+    /// top-level statements. Empty unless inference failed under recovery.
+    pub inference_statement_errors: &'a InferenceStatementErrors,
     /// Canonical compile-time selector facts produced by the bounded inference
     /// probe. Semantic control-flow analysis consumes these facts directly so
     /// branch and match selection has one evaluator-owned decision path.
@@ -804,6 +827,7 @@ impl<'a> AnalysisContext<'a> {
             resolved_types: self.resolved_types,
             resolved_continues: self.resolved_continues,
             float_literal_joins: self.float_literal_joins,
+            inference_statement_errors: self.inference_statement_errors,
             comptime_selections: self.comptime_selections,
             divergence_kinds: self.divergence_kinds,
             ownership: self.ownership.fork_for_recheck(),
