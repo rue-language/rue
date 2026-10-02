@@ -7444,3 +7444,123 @@ fn main() -> i32 {
 }
 """
 exit_code = 32
+
+[[case]]
+name = "type_constructor_wraps_its_own_local_in_another_constructor"
+spec = ["4.14:8", "4.14:22", "4.14:25"]
+description = "A type constructor whose body applies another constructor to its own `let`-bound anonymous struct reduces; applying it twice to one argument selects one type, and to another argument a second (RUE-2608)"
+source = """
+fn W(comptime T: type) -> type {
+    struct { v: T, fn make(n: i64) -> Self { Self { v: T.new(n) } } fn get(self) -> i64 { self.v.val() } }
+}
+fn G(comptime T: type) -> type {
+    let L = struct { s: T, fn new(n: i64) -> Self { Self { s: @intCast(n) } } fn val(self) -> i64 { @intCast(self.s) } };
+    W(L)
+}
+fn main() -> i32 {
+    let A = G(i64);
+    let B = G(i64);
+    let C = G(i32);
+    let a: A = B.make(4);
+    let b: B = a;
+    let c = C.make(3);
+    @intCast(b.get() + c.get()) + @size_of(A) + @size_of(C)
+}
+"""
+exit_code = 19
+
+[[case]]
+name = "type_constructor_wrapping_its_own_local_is_distinct_per_argument"
+spec = ["4.14:8", "4.14:25"]
+description = "The local a type constructor wraps in another constructor is a different type under each of its own specializations, so the two wrapped results are different types (RUE-2608)"
+source = """
+fn W(comptime T: type) -> type {
+    struct { v: T, fn make(n: i64) -> Self { Self { v: T.new(n) } } }
+}
+fn G(comptime T: type) -> type {
+    let L = struct { s: T, fn new(n: i64) -> Self { Self { s: @intCast(n) } } };
+    W(L)
+}
+fn main() -> i32 {
+    let A = G(i64);
+    let C = G(i32);
+    let a: A = C.make(3);
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0206", "W(G(i64).L)", "W(G(i32).L)"]
+
+[[case]]
+name = "type_constructor_wraps_its_own_local_over_a_callers_local"
+spec = ["4.14:22", "4.14:25"]
+description = "A type constructor that wraps its own local in another constructor reduces over a caller's local anonymous struct, in a plain body and in each specialization of a generic one (RUE-2608)"
+source = """
+fn W(comptime T: type) -> type { struct { v: T } }
+fn G(comptime T: type) -> type { let L = struct { s: T }; W(L) }
+fn f(comptime U: type) -> i32 { let J = struct { u: U, w: U }; let X = G(J); @size_of(X) }
+fn main() -> i32 {
+    let I = struct { q: i64, r: i64 };
+    let X = G(I);
+    @size_of(X) + f(i64) + f(i8)
+}
+"""
+exit_code = 34
+
+[[case]]
+name = "type_constructor_wraps_its_own_local_through_nested_constructors"
+spec = ["4.14:22", "4.14:25"]
+description = "A type constructor's own local reaches a constructor through another constructor layer, including one that drops its argument, and through a second constructor's local (RUE-2608)"
+source = """
+fn W(comptime T: type) -> type { struct { v: T } }
+fn V(comptime T: type) -> type { struct { u: T, k: i64 } }
+fn K(comptime T: type) -> type { struct { x: i32 } }
+fn G(comptime T: type) -> type { let L = struct { s: T }; W(V(L)) }
+fn D(comptime T: type) -> type { let L = struct { s: T }; W(K(L)) }
+fn H(comptime T: type) -> type { let M = struct { a: T, b: T }; G(M) }
+fn main() -> i32 {
+    let I = struct { q: i8 };
+    @size_of(G(i32)) + @size_of(D(I)) + @size_of(H(i64)) + @size_of(H(I))
+}
+"""
+exit_code = 60
+
+[[case]]
+name = "type_constructor_wraps_its_own_local_with_methods"
+spec = ["4.14:22"]
+description = "The constructed type's methods reach the methods of the local a type constructor wrapped (RUE-2608)"
+source = """
+fn W(comptime T: type) -> type {
+    struct { v: T, fn get(self) -> i64 { self.v.twice() } fn make(n: i64) -> Self { Self { v: T.new(n) } } }
+}
+fn G(comptime T: type) -> type {
+    let L = struct { s: T, fn twice(self) -> i64 { @intCast(self.s * 2) } fn new(n: i64) -> Self { Self { s: @intCast(n) } } };
+    W(L)
+}
+fn main() -> i32 { let X = G(i32); let x = X.make(21); @intCast(x.get()) }
+"""
+exit_code = 42
+
+[[case]]
+name = "type_constructor_wrapping_its_own_local_from_another_module"
+spec = ["4.14:22", "4.14:25"]
+description = "Another module's type constructor that wraps its own local in a private constructor reduces at the importer, once per argument (RUE-2608)"
+source = """
+const lib = @import("sub/lib.rue");
+fn main() -> i32 {
+    let X = lib.G(i64);
+    let Y = lib.G(i64);
+    let x: X = Y.make(5);
+    @intCast(x.get()) + @size_of(X) + @size_of(lib.G(i8))
+}
+"""
+aux_files = { "sub/lib.rue" = """
+fn W(comptime T: type) -> type {
+    struct { v: T, w: T, fn make(n: i64) -> Self { Self { v: T.new(n), w: T.new(n + 1) } } fn get(self) -> i64 { self.v.val() + self.w.val() } }
+}
+pub fn G(comptime T: type) -> type {
+    let L = struct { s: T, fn new(n: i64) -> Self { Self { s: @intCast(n) } } fn val(self) -> i64 { @intCast(self.s) } };
+    W(L)
+}
+""" }
+exit_code = 29
