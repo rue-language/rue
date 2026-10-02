@@ -1549,6 +1549,13 @@ impl CompilerBodyDurableSource<'_> {
             .anonymous_nominals
             .iter()
             .any(|nominal| !argument_nominals.contains(&nominal.identity));
+        // An associated function (`S.md()`) reduces only to a module
+        // (RUE-2602): a member callable has no specialized producer body to
+        // publish a minted nominal's facts, so such a reduction stays
+        // unreduced before it can reference one.
+        if minted && definition.kind() == crate::StableDefinitionKind::AssociatedFunction {
+            return rue_air::DurableComptimeCallOutcome::NotReduced;
+        }
         if minted {
             let producer = match crate::durable_comptime::canonical_specialized_function_instance(
                 definition,
