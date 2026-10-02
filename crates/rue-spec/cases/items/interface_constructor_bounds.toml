@@ -253,3 +253,112 @@ const C: i32 = f(Yes, 2, A);
 fn main() -> i32 { let x: T2 = 1; x + C }
 """
 exit_code = 3
+
+[[case]]
+name = "applied_parameter_bound_is_checked_at_a_const_call"
+spec = ["6.8:15", "6.8:24"]
+preview = "interfaces"
+preview_should_pass = true
+description = "A comptime parameter typed `W(T, 2)` applies `W`'s bound to the callee's own `T`; the declaration-time call `K(No, A)` checks it with `No` (RUE-2596)"
+source = """
+interface Equatable { fn equals(borrow self, borrow other: Self) -> bool; }
+struct No { n: i64 }
+fn W(comptime T: Equatable, comptime N: i32) -> type { [i32; N] }
+fn K(comptime T: type, comptime a: W(T, 2)) -> type { i32 }
+const A: [i32; 2] = [1, 2];
+const T2 = K(No, A);
+fn main() -> i32 { let x: T2 = 1; x }
+"""
+compile_fail = true
+error_contains = ["E0305", "No", "Equatable"]
+
+[[case]]
+name = "applied_parameter_bound_is_checked_at_a_runtime_call"
+spec = ["6.8:15", "6.8:24"]
+preview = "interfaces"
+preview_should_pass = true
+description = "A runtime parameter typed `W(T, 2)` checks `W`'s bound at an ordinary call `f(No, [1, 2])` (RUE-2596)"
+source = """
+interface Equatable { fn equals(borrow self, borrow other: Self) -> bool; }
+struct No { n: i64 }
+fn W(comptime T: Equatable, comptime N: i32) -> type { [i32; N] }
+fn f(comptime T: type, a: W(T, 2)) -> i32 { a[1] }
+fn main() -> i32 { f(No, [1, 2]) }
+"""
+compile_fail = true
+error_contains = ["E0305", "No", "Equatable"]
+
+[[case]]
+name = "applied_parameter_bound_is_checked_through_a_forwarding_call"
+spec = ["6.8:15", "6.8:24"]
+preview = "interfaces"
+preview_should_pass = true
+description = "A generic function forwarding its unbounded `T` to `f` checks `W`'s bound in its specialization for `No` (RUE-2596)"
+source = """
+interface Equatable { fn equals(borrow self, borrow other: Self) -> bool; }
+struct No { n: i64 }
+fn W(comptime T: Equatable, comptime N: i32) -> type { [i32; N] }
+fn f(comptime T: type, a: W(T, 2)) -> i32 { a[1] }
+fn h(comptime T: type) -> i32 { f(T, [1, 2]) }
+fn main() -> i32 { h(No) }
+"""
+compile_fail = true
+error_contains = ["E0305", "No", "Equatable"]
+
+[[case]]
+name = "applied_bound_through_a_nested_constructor_is_checked_at_the_call"
+spec = ["6.8:15", "6.8:24"]
+preview = "interfaces"
+preview_should_pass = true
+description = "`V(T)` reduces to `W(T, 2)`: the inner bound reaches the callee's parameter type and is checked at `f(No, [1, 2])` (RUE-2596)"
+source = """
+interface Equatable { fn equals(borrow self, borrow other: Self) -> bool; }
+struct No { n: i64 }
+fn W(comptime T: Equatable, comptime N: i32) -> type { [i32; N] }
+fn V(comptime U: type) -> type { W(U, 2) }
+fn f(comptime T: type, a: V(T)) -> i32 { a[1] }
+fn main() -> i32 { f(No, [1, 2]) }
+"""
+compile_fail = true
+error_contains = ["E0305", "No", "Equatable"]
+
+[[case]]
+name = "applied_result_bound_is_checked_at_the_call"
+spec = ["6.8:15", "6.8:24"]
+preview = "interfaces"
+preview_should_pass = true
+description = "A result type `W(T, 2)` applies `W`'s bound to the callee's `T`, checked at `g(No)` (RUE-2596)"
+source = """
+interface Equatable { fn equals(borrow self, borrow other: Self) -> bool; }
+struct No { n: i64 }
+fn W(comptime T: Equatable, comptime N: i32) -> type { [i32; N] }
+fn g(comptime T: type) -> W(T, 2) { [8, 9] }
+fn main() -> i32 { g(No)[0] }
+"""
+compile_fail = true
+error_contains = ["E0305", "No", "Equatable"]
+
+[[case]]
+name = "applied_parameter_bound_accepts_a_conforming_argument"
+spec = ["6.8:15", "6.8:24"]
+preview = "interfaces"
+preview_should_pass = true
+description = "The same applications accept a conforming `Yes` in a const call, a body call, a `comptime` block and through a bounded forwarding parameter (RUE-2596)"
+source = """
+interface Equatable { fn equals(borrow self, borrow other: Self) -> bool; }
+struct Yes { n: i64, fn equals(borrow self, borrow other: Yes) -> bool { self.n == other.n } }
+Yes is Equatable;
+fn W(comptime T: Equatable, comptime N: i32) -> type { [i32; N] }
+fn K(comptime T: type, comptime a: W(T, 2)) -> type { i32 }
+fn f(comptime T: type, a: W(T, 2)) -> i32 { a[1] }
+fn c(comptime T: type, comptime a: W(T, 2)) -> i32 { a[0] }
+fn h(comptime T: Equatable) -> i32 { f(T, [3, 4]) }
+const A: [i32; 2] = [1, 2];
+const T2 = K(Yes, A);
+const C: i32 = c(Yes, A);
+fn main() -> i32 {
+    let x: T2 = 10;
+    x + C + f(Yes, [1, 2]) + comptime { c(Yes, [5, 6]) } + h(Yes)
+}
+"""
+exit_code = 22
