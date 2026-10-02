@@ -170,7 +170,7 @@ fn main() -> i32 {
 
 {{ rule(id="4.14:16", cat="normative") }}
 
-A type parameter may appear anywhere within a composite parameter or return type — as an array element type (`[T; N]`), a pointer pointee (`ptr const T`, `ptr mut T`), or a nesting of these (`[[T; 2]; 3]`) — and is substituted recursively at each call site, in both parameter and return position.
+A type parameter may appear anywhere within a composite parameter or return type — as an array element type (`[T; N]`), a slice element type (`[T]`, rule 7.2:10), a pointer pointee (`ptr const T`, `ptr mut T`), or a nesting of these (`[[T; 2]; 3]`) — and is substituted recursively at each call site, in both parameter and return position.
 
 ```rue
 fn first(comptime T: type, a: [T; 3]) -> T {

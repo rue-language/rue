@@ -1397,3 +1397,118 @@ fn main() -> i32 {
 }
 """
 exit_code = 42
+
+# =============================================================================
+# Slice parameters whose type depends on a comptime argument (4.14:16, 7.2:10)
+# =============================================================================
+
+[[case]]
+name = "generic_slice_parameter_two_specializations"
+spec = ["4.14:16", "7.2:10", "7.2:12"]
+description = "`fn first(comptime T: type, borrow s: [T]) -> T` specialized at `i64` and at `u64` reads each caller's view (RUE-2555)."
+source = """
+fn first(comptime T: type, borrow s: [T]) -> T { s[0] }
+fn main() -> i32 {
+    let a: [i64; 3] = [-7, 8, 9];
+    let b: [u64; 2] = [3000000000, 1];
+    @dbg(first(i64, borrow a));
+    @dbg(first(u64, borrow b));
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "-7\n3000000000\n"
+
+[[case]]
+name = "generic_slice_parameter_struct_element"
+spec = ["4.14:16", "7.2:10", "7.2:12"]
+description = "A view over a struct array through `borrow s: [T]` at `T = P` reads fields by index and its length (RUE-2555)."
+source = """
+struct P { x: i64, y: i64 }
+fn sum_y(comptime T: type, borrow s: [T]) -> i64 {
+    let mut total: i64 = 0;
+    let mut i: u64 = 0;
+    while i < s.len() {
+        total = total + s[i].y;
+        i = i + 1;
+    }
+    total
+}
+fn main() -> i32 {
+    let ps: [P; 3] = [P { x: 1, y: 2 }, P { x: 3, y: 4 }, P { x: 5, y: 36 }];
+    @intCast(sum_y(P, borrow ps))
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "generic_slice_parameter_forwarded_to_specialization"
+spec = ["4.14:16", "7.2:10"]
+description = "A specialization forwards its `[T]` view to another specialization at the same `T`, an anonymous struct, whose view exists in no declaration signature (RUE-2555)."
+source = """
+fn Pt() -> type { struct { a: i64 } }
+fn last(comptime T: type, borrow s: [T]) -> T { s[s.len() - 1] }
+fn outer(comptime T: type, borrow s: [T]) -> T { last(T, borrow s) }
+fn main() -> i32 {
+    let q: [Pt(); 2] = [Pt() { a: 5 }, Pt() { a: 42 }];
+    let r = outer(Pt(), borrow q);
+    @intCast(r.a)
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "generic_slice_parameter_shares_declared_view"
+spec = ["4.14:16", "7.2:10"]
+description = "A specialization's `[T]` at `T = i64` is the view a non-generic `borrow s: [i64]` declares: the specialization passes its view to that function, which `main` also calls directly (RUE-2555)."
+source = """
+fn total(borrow s: [i64]) -> i64 {
+    let mut t: i64 = 0;
+    let mut i: u64 = 0;
+    while i < s.len() {
+        t = t + s[i];
+        i = i + 1;
+    }
+    t
+}
+fn total_plus_len(comptime T: type, borrow s: [T]) -> i64 { total(borrow s) + @intCast(s.len()) }
+fn main() -> i32 {
+    let a: [i64; 3] = [10, 20, 3];
+    @dbg(total_plus_len(i64, borrow a));
+    @dbg(total(borrow a));
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "36\n33\n"
+
+[[case]]
+name = "value_dependent_slice_parameter_two_specializations"
+spec = ["4.14:5", "7.2:10", "7.2:12"]
+description = "`borrow s: Wrap([i64], N)` specialized at two values of `N` names one view, `[i64]`, in both (RUE-2555)."
+source = """
+fn Wrap(comptime T: type, comptime N: i32) -> type { T }
+fn pick(comptime N: i32, borrow s: Wrap([i64], N)) -> i64 {
+    let i: u64 = @intCast(N);
+    s[i]
+}
+fn main() -> i32 {
+    let a: [i64; 3] = [2, 30, 10];
+    @intCast(pick(1, borrow a) + pick(2, borrow a) + pick(0, borrow a))
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "generic_inout_slice_parameter_rejected"
+spec = ["7.2:10"]
+description = "An `inout s: [T]` parameter is uncallable at `T = i64` exactly as `inout s: [i64]` is: only the shared view form exists (RUE-2555)."
+source = """
+fn g(comptime T: type, inout s: [T]) -> i32 { 0 }
+fn main() -> i32 {
+    let mut a: [i64; 2] = [1, 2];
+    g(i64, inout a)
+}
+"""
+compile_fail = true
+error_contains = ["E0432"]
