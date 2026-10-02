@@ -1280,11 +1280,46 @@ def caseJson (c : Case) : String :=
   "  }"
 
 /-- A list of cases as one JSON document, the cases the export fuel did not
-complete left out. -/
+complete left out.
+
+There is deliberately no `def json : String := jsonOf cases` beside it
+(RUE-2488). A compiled constant with no arguments is evaluated when its module
+is initialized, which is before `main` and on the process's own main thread,
+whose stack (8 MB on macOS) is far smaller than the one the Lean runtime gives
+`main` (about 1 GB, `LEAN_STACK_SIZE_KB`). `eval` nests about one native frame
+group per unit of fuel — about 12 to 18 MB at `exportFuel` for the shapes
+`divergent` measures — so a seed that does not complete overflowed that stack
+at start-up, before `main` could report it, which is how mutation analysis
+(RUE-2465's `operand-swap`) first met one. `ruecore-corpus` calls `jsonOf` from
+`main` instead. -/
 def jsonOf (cs : List Case) : String :=
   "[\n" ++ String.intercalate ",\n" ((cs.filter completed).map caseJson) ++ "\n]\n"
 
-/-- The seed corpus as one JSON document. -/
-def json : String := jsonOf cases
+/-! ## Expected divergence (RUE-2488)
+
+Programs that never terminate, kept beside the corpus rather than in it: the
+export fuel cannot complete them, so `jsonOf` would leave them out anyway.
+`lake exe ruecore-corpus` runs each at the export fuel on every invocation and
+fails unless it is reported as not completed, so the path a diverging case
+takes — fuel exhausted at full nesting depth, then left out — is exercised on
+every run, not only when a mutant happens to reach it. The two shapes are the
+two ways the calculus diverges: a loop whose body always completes, and a
+call that never returns, here with the recursive call as an operand's
+continuation, the deepest native stack per unit of fuel among the shapes
+measured for RUE-2488. -/
+
+/-- The non-terminating programs `ruecore-corpus` checks are reported as not
+completed at the export fuel (above). -/
+def divergent : List Case := [
+  { name := "diverge_loop",
+    description := "A loop with no break whose body, an assignment, always completes: every turn spends a unit of fuel, so the export fuel runs out.",
+    rules := ["(D-Loop-Enter) §6.10", "(D-Loop-Iter) §6.10"],
+    prog := Examples.scalarProg Examples.tI64
+      (letIn true (Examples.lit 0) (loop (assign (.var 0) (binop .add (use (.var 0)) (Examples.lit 0))))) },
+  { name := "diverge_recursion",
+    description := "main calls itself as the right operand of an addition, so no call returns and the activation records nest until the export fuel runs out.",
+    rules := ["(D-Call) §6.9", "(D-Arith) §6.4"],
+    prog := Examples.scalarProg Examples.tI64 (binop .add (Examples.lit 1) (.call 0 [])) }
+]
 
 end RueCore.Corpus
