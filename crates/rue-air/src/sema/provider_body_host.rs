@@ -3143,30 +3143,45 @@ where
     }
 
     /// `element` relocated to stable content for naming its slice view, for an
-    /// element holding an anonymous nominal this body produces: registered,
-    /// or still being declared because its own signature names `Self`. Such a
-    /// nominal has no durable key in this body's maps, so its issued identity
-    /// is reversed to the durable one through the tokens it was issued from;
-    /// every nominal then relocates exactly as [`crate::types::slice_view_name`]
-    /// relocates it, so the view gets the one name every producer gives it
-    /// (RUE-2571, RUE-2579).
+    /// element holding an anonymous nominal this body produces (see
+    /// [`Self::local_durable_type`]). Every nominal relocates exactly as
+    /// [`crate::types::slice_view_name`] relocates it, so the view gets the
+    /// one name every producer gives it (RUE-2571, RUE-2579).
     fn local_slice_element(
         &self,
         element: Type,
     ) -> Option<crate::SemanticImportType<String, String>> {
+        self.local_durable_type(element)?
+            .try_map_identities::<String, String, std::convert::Infallible>(
+                &|key| Ok(self.source.definition_symbol_component(key)),
+                &|module| Ok(self.source.module_symbol_component(module)),
+            )
+            .ok()
+    }
+
+    /// The durable form of `ty` when it holds an anonymous nominal this body
+    /// produces: registered, or still being declared because its own
+    /// signature names `Self`. Such a nominal has no durable key in this
+    /// body's maps, so its issued identity is reversed to the durable one
+    /// through the tokens it was issued from. This lets a still-declared
+    /// shell be named by its durable identity wherever a durable type is
+    /// asked of it: the canonical name of a slice view over it, and the
+    /// arguments of a type constructor applied to it (`Inner(ptr const
+    /// Self)`, RUE-2579, RUE-2588).
+    fn local_durable_type(&self, ty: Type) -> Option<crate::SemanticImportType<K, M>> {
         use crate::SemanticImportType as T;
         let local = self
             .canonical_anonymous_types
-            .get(&element)
+            .get(&ty)
             .cloned()
             .or_else(|| {
-                let id = element.as_struct()?;
+                let id = ty.as_struct()?;
                 self.anon_struct_declarations
                     .iter()
                     .find_map(|(identity, declared)| (*declared == id).then(|| identity.clone()))
             });
         if let Some(identity) = local {
-            let durable = identity
+            return identity
                 .try_map_identities::<K, M, ()>(
                     &|token| self.endpoint.definition_key_for_token(*token).ok_or(()),
                     &|token| {
@@ -3177,28 +3192,22 @@ where
                             .ok_or(())
                     },
                 )
-                .ok()?;
-            return durable
-                .try_map_identities::<String, String, std::convert::Infallible>(
-                    &|key| Ok(self.source.definition_symbol_component(key)),
-                    &|module| Ok(self.source.module_symbol_component(module)),
-                )
                 .ok()
                 .map(T::AnonymousNominal);
         }
-        Some(match element.kind() {
+        Some(match ty.kind() {
             TypeKind::Array(id) => {
                 let (inner, len) = self.type_pool.array_def(id);
                 T::Array {
-                    element: Arc::new(self.local_slice_element(inner)?),
+                    element: Arc::new(self.local_durable_type(inner)?),
                     len,
                 }
             }
             TypeKind::PtrConst(id) => T::PtrConst(Arc::new(
-                self.local_slice_element(self.type_pool.ptr_const_def(id))?,
+                self.local_durable_type(self.type_pool.ptr_const_def(id))?,
             )),
             TypeKind::PtrMut(id) => T::PtrMut(Arc::new(
-                self.local_slice_element(self.type_pool.ptr_mut_def(id))?,
+                self.local_durable_type(self.type_pool.ptr_mut_def(id))?,
             )),
             // An inner slice view (`[[Self]]`) is a builtin struct over an
             // element that may itself be the struct still being produced.
@@ -3211,18 +3220,12 @@ where
                 };
                 T::Slice {
                     element: Arc::new(
-                        self.local_slice_element(self.type_pool.ptr_const_def(pointer))?,
+                        self.local_durable_type(self.type_pool.ptr_const_def(pointer))?,
                     ),
-                    name: Arc::from(&*def.name),
+                    name: def.name.clone(),
                 }
             }
-            _ => self
-                .durable_type_from_concrete(element)?
-                .try_map_identities::<String, String, std::convert::Infallible>(
-                    &|key| Ok(self.source.definition_symbol_component(key)),
-                    &|module| Ok(self.source.module_symbol_component(module)),
-                )
-                .ok()?,
+            _ => self.durable_type_from_concrete(ty)?,
         })
     }
 
@@ -4808,7 +4811,13 @@ where
         }
         let mut durable_types = Vec::with_capacity(type_arguments.len());
         for &(name, value) in type_arguments {
-            let Some(value) = self.durable_type_from_concrete(value) else {
+            // An argument naming an anonymous nominal this body is still
+            // producing (`Inner(ptr const Self)`) has no durable form in this
+            // body's maps; its identity is recovered from the issued one.
+            let Some(value) = self
+                .durable_type_from_concrete(value)
+                .or_else(|| self.local_durable_type(value))
+            else {
                 return Ok(None);
             };
             durable_types.push((Arc::from(self.interner.resolve(&name)), value));
