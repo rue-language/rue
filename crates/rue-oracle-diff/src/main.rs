@@ -154,6 +154,7 @@ enum IneligibleReason {
     AuxiliaryFiles,
     GoldenIrOnly,
     TargetPinned,
+    UnreachableTrap,
     MissingExecutionExpectation,
     KnownOracleGap,
 }
@@ -189,6 +190,7 @@ impl fmt::Display for IneligibleReason {
             Self::AuxiliaryFiles => f.write_str("auxiliary source files"),
             Self::GoldenIrOnly => f.write_str("golden IR only"),
             Self::TargetPinned => f.write_str("target-pinned execution"),
+            Self::UnreachableTrap => f.write_str("unreachable trap signal"),
             Self::MissingExecutionExpectation => f.write_str("missing execution expectation"),
             Self::KnownOracleGap => f.write_str("known oracle gap"),
         }
@@ -1169,6 +1171,13 @@ fn check_spec_case_with_known_gap_and_configuration(
     if case.target.is_some() {
         return CaseOutcome::Ineligible(IneligibleReason::TargetPinned);
     }
+    // An `unreachable_trap` case pins the death of the process by the signal
+    // its target's trap instruction raises (SIGTRAP or SIGILL). That is a
+    // property of the native machine code, not an exit status or a typed
+    // runtime trap the oracle reports, so there is no observation to compare.
+    if case.unreachable_trap {
+        return CaseOutcome::Ineligible(IneligibleReason::UnreachableTrap);
+    }
 
     // The exit code the compiled binary is expected to produce. A runtime-error
     // case exits with its runtime exit code (101 by convention); otherwise the
@@ -1476,6 +1485,7 @@ fn unsupported_corpus_field(case: &Case) -> Option<IneligibleReason> {
         driver_exit_code,
         capture_fd3,
         fd3_empty,
+        unreachable_trap,
     } = case;
 
     // Descriptor 3's contents are a property of the *process* the CLI suite
@@ -1514,6 +1524,12 @@ fn unsupported_corpus_field(case: &Case) -> Option<IneligibleReason> {
     // context to reproduce it with.
     if executable_target.is_some() || *execute_if_native {
         return Some(IneligibleReason::TargetPinned);
+    }
+    // The case pins the process's death by its target's trap signal, which
+    // the oracle, reporting exit statuses and typed runtime traps, has no
+    // observation of.
+    if *unreachable_trap {
+        return Some(IneligibleReason::UnreachableTrap);
     }
     None
 }
@@ -2684,6 +2700,9 @@ files = [{ path = "probe.rue", source = "not Rue" }]
         case.executable_target = Some("x86-64-linux".to_string());
         assert_cli_ineligible(&case, IneligibleReason::TargetPinned);
         case.executable_target = None;
+        case.unreachable_trap = true;
+        assert_cli_ineligible(&case, IneligibleReason::UnreachableTrap);
+        case.unreachable_trap = false;
         assert_cli_ineligible(&case, IneligibleReason::StandardInput);
         case.stdin = None;
         assert_cli_ineligible(&case, IneligibleReason::CompilerEnvironment);
@@ -2746,6 +2765,9 @@ files = [{ path = "probe.rue", source = "not Rue" }]
         case.expected_ast = None;
         assert_spec_ineligible(&case, IneligibleReason::TargetPinned);
         case.target = None;
+        case.unreachable_trap = true;
+        assert_spec_ineligible(&case, IneligibleReason::UnreachableTrap);
+        case.unreachable_trap = false;
         assert_spec_ineligible(&case, IneligibleReason::MissingExecutionExpectation);
     }
 

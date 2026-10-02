@@ -2145,6 +2145,7 @@ fn case_runs_prebuilt_program(case: &Case) -> bool {
         stdout_contains: _,
         runtime_error_contains: _,
         exit_code: _,
+        unreachable_trap: _,
         // Descriptor 3 is attached by the shared run phase, so a staged
         // executable inherits it on the same terms as its argv and stdin.
         capture_fd3: _,
@@ -4346,7 +4347,9 @@ fn run_case_program(
     let run_stdout = String::from_utf8_lossy(&run_output.stdout).to_string();
     let run_stderr = String::from_utf8_lossy(&run_output.stderr).to_string();
 
-    if run_output.status.code().is_none() {
+    if case.unreachable_trap {
+        rue_test_runner::check_unreachable_trap(&run_output.status, &run_stderr)?;
+    } else if run_output.status.code().is_none() {
         return Err(TestFailure::fatal(format!(
             "TEST PROGRAM CRASH: process killed by signal ({:?})\n--- program stderr ---\n{}",
             run_output.status, run_stderr
@@ -4355,7 +4358,7 @@ fn run_case_program(
 
     let expected_exit = case.exit_code.unwrap_or(0);
     let actual_exit = run_output.status.code();
-    if actual_exit != Some(expected_exit) {
+    if !case.unreachable_trap && actual_exit != Some(expected_exit) {
         return Err(TestFailure::assertion(format!(
             "program exit code mismatch:\n  expected: {}\n  actual: {:?}\n--- program stdout ---\n{}\n--- program stderr ---\n{}",
             expected_exit, actual_exit, run_stdout, run_stderr
@@ -4863,6 +4866,22 @@ fn compile_fail_has_exit_code(case: &Case) -> bool {
     case.compile_fail && case.exit_code.is_some()
 }
 
+/// `unreachable_trap` asserts the program is killed by a signal, so it
+/// excludes both a compile failure and an exit code. Returns the conflicting
+/// fields, in a stable order.
+fn unreachable_trap_conflicts(case: &Case) -> Vec<&'static str> {
+    if !case.unreachable_trap {
+        return Vec::new();
+    }
+    [
+        ("compile_fail", case.compile_fail),
+        ("exit_code", case.exit_code.is_some()),
+    ]
+    .into_iter()
+    .filter_map(|(field, present)| present.then_some(field))
+    .collect()
+}
+
 /// `driver_exit_code` asserts an exact status; `compile_fail` asserts only
 /// "nonzero". Declaring both means the case's author wanted one of them, and
 /// the harness cannot tell which — so it says so rather than silently
@@ -4919,6 +4938,7 @@ fn compile_only_runtime_fields(case: &Case) -> Vec<&'static str> {
             !case.runtime_error_contains.is_empty(),
         ),
         ("exit_code", case.exit_code.is_some()),
+        ("unreachable_trap", case.unreachable_trap),
         ("capture_fd3", case.capture_fd3),
         ("fd3_empty", case.fd3_empty),
     ]
@@ -5168,6 +5188,20 @@ fn load_cases(cases_dir: &Path) -> LoadedCorpus {
                             ),
                             path.display(),
                             case.name
+                        );
+                        std::process::exit(1);
+                    }
+                    let trap_conflicts = unreachable_trap_conflicts(case);
+                    if !trap_conflicts.is_empty() {
+                        eprintln!(
+                            "error: {}: case '{}' declares `unreachable_trap` with {} — a program killed by the unreachable trap neither fails to compile nor exits with a code; remove those fields",
+                            path.display(),
+                            case.name,
+                            trap_conflicts
+                                .iter()
+                                .map(|field| format!("`{field}`"))
+                                .collect::<Vec<_>>()
+                                .join(", "),
                         );
                         std::process::exit(1);
                     }
@@ -7236,6 +7270,39 @@ mod tests {
         assert!(unknown_known_bug_on_platforms(&case).is_empty());
     }
 
+    /// A trap death is neither a compile failure nor an exit status, so a
+    /// case pinning it may declare neither.
+    #[test]
+    fn unreachable_trap_excludes_compile_fail_and_exit_code() {
+        assert_eq!(
+            unreachable_trap_conflicts(&Case {
+                name: "both".to_string(),
+                unreachable_trap: true,
+                compile_fail: true,
+                exit_code: Some(0),
+                ..Default::default()
+            }),
+            vec!["compile_fail", "exit_code"]
+        );
+        assert!(
+            unreachable_trap_conflicts(&Case {
+                name: "trap".to_string(),
+                unreachable_trap: true,
+                stdout: Some("before\n".to_string()),
+                ..Default::default()
+            })
+            .is_empty()
+        );
+        assert!(
+            unreachable_trap_conflicts(&Case {
+                name: "exit".to_string(),
+                exit_code: Some(0),
+                ..Default::default()
+            })
+            .is_empty()
+        );
+    }
+
     #[test]
     fn compile_fail_case_rejects_runtime_exit_code() {
         let case = Case {
@@ -7290,6 +7357,7 @@ mod tests {
             "stdout_contains",
             "runtime_error_contains",
             "exit_code",
+            "unreachable_trap",
             "capture_fd3",
             "fd3_empty",
         ] {
@@ -7309,6 +7377,7 @@ mod tests {
                 "stdout_contains" => case.stdout_contains = vec!["output".to_string()],
                 "runtime_error_contains" => case.runtime_error_contains = vec!["panic".to_string()],
                 "exit_code" => case.exit_code = Some(0),
+                "unreachable_trap" => case.unreachable_trap = true,
                 "capture_fd3" => case.capture_fd3 = true,
                 "fd3_empty" => case.fd3_empty = true,
                 _ => unreachable!(),
