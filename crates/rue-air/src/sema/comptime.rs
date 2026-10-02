@@ -918,6 +918,22 @@ pub trait ComptimeCallProtocol: ComptimeDomain {
     > {
         ComptimeOutcome::RuntimeDependent
     }
+    /// Admit an associated-function call on a type the receiver names
+    /// syntactically (`S.md()`), for a host that reads receivers as module
+    /// paths. A host admits only a callee that reduces as a free call does;
+    /// the default admits none, leaving the call to the module-path reading
+    /// (RUE-2602).
+    fn admit_associated_comptime_call(
+        &mut self,
+        _owner: Self::Type,
+        _function: Self::Name,
+        _arg_count: usize,
+    ) -> ComptimeHostResult<
+        Option<ComptimeCallAdmission<Self::CallAdmission, Self::Name>>,
+        Self::Failure,
+    > {
+        Ok(None)
+    }
     fn admit_comptime_call(
         &mut self,
         name: Self::Name,
@@ -2777,6 +2793,18 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                     return self.host.resolve_comptime_enum_variant_with_payload(
                         type_value, method, payload, &site, span,
                     );
+                }
+                // A struct receiver names an associated function, which the
+                // host admits when it reduces as a free call does (a
+                // zero-parameter `-> type` function, RUE-2602). One it does
+                // not admit keeps the module-path reading below.
+                let admission = host_value!(self.host.admit_associated_comptime_call(
+                    type_value,
+                    method.clone(),
+                    args.len()
+                ));
+                if let Some(admission) = admission {
+                    return self.evaluate_admitted_call(admission, &args, env, span);
                 }
             }
         }
