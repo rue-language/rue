@@ -1,0 +1,207 @@
+# Uses of a `!` value the compiler treats as continuing (RUE-2595).
+#
+# A `!` parameter, a `!` field, and an element of a `[!; N]` array type as `!`
+# but are reads, not diverging expressions such as `return` or `@panic`. Each
+# used to reach a consumer that needs storage for the value: a comparison
+# panicked codegen ("scalar comparison requires an integer or bool type"), an
+# array literal tripped an aggregate slot-count assertion, and a branch,
+# arithmetic operand, `let` initializer or return failed CFG verification
+# (E9000). The CFG builder now ends the block in `Terminator::Unreachable`
+# after such a read, as it does after a `-> !` call.
+#
+# A function taking a `!` parameter can never be called (no argument value
+# exists), so the first cases only compile such functions, reachable from
+# `main`, and run a program that never enters them. The `@ptr_read` cases
+# reach a `!` value at run time through a pointer to an uninhabited type. That
+# read is undefined behaviour under Appendix B (B.3:2): no pointer addresses
+# valid, live storage for `!`. These cases pin the compiler's current
+# behaviour, not a language guarantee: the use of the read value ends in the
+# Unreachable trap (SIGTRAP on AArch64, SIGILL on x86-64), after the output
+# that precedes it.
+
+[section]
+id = "cli.never_value_use"
+name = "Uses of a never-typed value"
+description = "A ! parameter, field or uninhabited-pointee read used as an operand compiles and lowers to unreachable code (RUE-2595)."
+
+# ── (a) `!` parameters and fields, never entered at run time ─────────────────
+
+[[case]]
+name = "never_param_comparison_and_array_literal_compile"
+description = "A ! parameter compared with a string literal or placed in an array literal compiles; the program never calls the function."
+files = [{ path = "main.rue", source = """
+fn g(x: !) -> bool { x == "x" }
+fn h(x: !) -> i32 { let _a = [x, "x"]; 0 }
+fn lt(x: !) -> bool { x < 1 }
+
+fn main() -> i32 {
+    if false {
+        let _b = g(@panic("unreached"));
+        let _n = h(@panic("unreached"));
+        let _c = lt(@panic("unreached"));
+    }
+    @dbg(1);
+    0
+}
+""" }]
+differential_opt = true
+stdout = "1\n"
+exit_code = 0
+
+[[case]]
+name = "never_param_operand_positions_compile"
+description = "A ! parameter as an if condition, arithmetic operand, cast operand, index, let initializer, loop condition and return value compiles at every optimization level."
+files = [{ path = "main.rue", source = """
+fn cond(x: !) -> i32 { if x { 1 } else { 2 } }
+fn arith(x: !) -> i32 { x + 1 }
+fn cast(x: !) -> i64 { @intCast(x) }
+fn index(x: !) -> i32 { let a = [1, 2]; a[x] }
+fn bind(x: !) -> i32 { let v: i32 = x; v }
+fn ret(x: !) -> i32 { return x }
+fn loop_cond(x: !) -> i32 { while x { } 0 }
+fn diverge(x: !) -> ! { x }
+
+fn main() -> i32 {
+    if false {
+        let _a = cond(@panic("unreached"));
+        let _b = arith(@panic("unreached"));
+        let _c = cast(@panic("unreached"));
+        let _d = index(@panic("unreached"));
+        let _e = bind(@panic("unreached"));
+        let _f = ret(@panic("unreached"));
+        let _g = loop_cond(@panic("unreached"));
+        diverge(@panic("unreached"));
+    }
+    3
+}
+""" }]
+differential_opt = true
+stdout = ""
+exit_code = 3
+
+[[case]]
+name = "never_field_operands_compile"
+description = "A ! struct field used as an arithmetic operand, a comparison operand and a return value compiles; the program never builds the struct."
+files = [{ path = "main.rue", source = """
+struct S {
+    f: !,
+    fn next(self) -> i32 { self.f + 1 }
+}
+
+fn same(s: S) -> bool { s.f == 4 }
+fn take(s: S) -> i32 { s.f }
+
+fn main() -> i32 {
+    if false {
+        let s = S { f: @panic("unreached") };
+        let _a = s.next();
+    }
+    if false {
+        let _b = same(S { f: @panic("unreached") });
+        let _c = take(S { f: @panic("unreached") });
+    }
+    4
+}
+""" }]
+differential_opt = true
+stdout = ""
+exit_code = 4
+
+[[case]]
+name = "never_param_joined_with_string_compiles"
+description = "An if or match joining a ! parameter arm with a string-literal arm compiles; the program never calls the function."
+files = [{ path = "main.rue", source = """
+fn pick(x: !, c: bool) -> i32 {
+    let s = if c { x } else { "x" };
+    @dbg(s);
+    0
+}
+
+fn choose(x: !, c: i32) -> i32 {
+    let s = match c { 0 => x, _ => "y" };
+    @dbg(s);
+    0
+}
+
+fn main() -> i32 {
+    if false {
+        let _a = pick(@panic("unreached"), true);
+        let _b = choose(@panic("unreached"), 0);
+    }
+    5
+}
+""" }]
+differential_opt = true
+stdout = ""
+exit_code = 5
+
+# ── (b) a `!` value read through a pointer to an uninhabited type ────────────
+
+[[case]]
+name = "never_array_read_element_traps"
+description = "An element of a [!; 1] read through a pointer (undefined behaviour under Appendix B) used as an i32 ends in the target's trap after the preceding output."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let mut x: i32 = 7;
+    @dbg(x);
+    let p: ptr mut [!; 1] = checked { @int_to_ptr(@ptr_to_int(@raw_mut(x))) };
+    let a = checked { @ptr_read(p) };
+    let n: i32 = a[0];
+    @dbg(8);
+    n
+}
+""" }]
+stdout = "7\n"
+unreachable_trap = true
+
+[[case]]
+name = "never_array_read_comparison_traps"
+description = "A [!; 1] element read through a pointer (undefined behaviour under Appendix B) compared with an integer ends in the target's trap at -O1 rather than taking a branch."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let mut x: i32 = 7;
+    @dbg(x);
+    let p: ptr mut [!; 1] = checked { @int_to_ptr(@ptr_to_int(@raw_mut(x))) };
+    let a = checked { @ptr_read(p) };
+    if a[0] == 3 { 1 } else { 2 }
+}
+""" }]
+args = ["-O1", "main.rue", "-o", "prog"]
+stdout = "7\n"
+unreachable_trap = true
+
+[[case]]
+name = "never_field_read_arithmetic_traps"
+description = "A ! field of a struct read through a pointer (undefined behaviour under Appendix B) used as an arithmetic operand ends in the target's trap rather than producing a value."
+files = [{ path = "main.rue", source = """
+struct S { f: ! }
+
+fn main() -> i32 {
+    let mut x: i32 = 7;
+    @dbg(x);
+    let p: ptr mut S = checked { @int_to_ptr(@ptr_to_int(@raw_mut(x))) };
+    let s = checked { @ptr_read(p) };
+    let n = s.f + 1;
+    @dbg(n);
+    0
+}
+""" }]
+stdout = "7\n"
+unreachable_trap = true
+
+# ── (c) a `!` binding still runs its diverging initializer ──────────────────
+
+# The storage of a `!` binding opens before its initializer runs; ending the
+# block there would skip the `return`.
+[[case]]
+name = "never_binding_initializer_still_returns"
+description = "let y = return 7 opens storage typed ! and then still runs the return; the program exits with 7."
+files = [{ path = "main.rue", source = """
+fn early() -> i32 {
+    let y = return 7;
+    y
+}
+
+fn main() -> i32 { early() }
+""" }]
+exit_code = 7
