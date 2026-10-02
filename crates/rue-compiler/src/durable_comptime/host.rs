@@ -851,6 +851,7 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeTypeAlgebra
         &mut self,
         identity: &Self::AnonymousIdentity,
         binding: &Self::Name,
+        _span: rue_span::Span,
     ) {
         self.anonymous_bindings.insert(
             identity.key().with_canonical_producer().into_owned(),

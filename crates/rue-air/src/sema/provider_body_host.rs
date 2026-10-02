@@ -1331,7 +1331,8 @@ struct ProviderBodyHost<'a, P, S, K, M> {
     /// The `let` name each anonymous literal this body evaluated is bound
     /// to, keyed by canonical-producer identity. Presentation only
     /// (RUE-2589); exported beside the produced nominal's shape.
-    anon_bindings: AHashMap<super::anon_structs::IssuedAnonymousNominalKey, Arc<str>>,
+    anon_bindings:
+        AHashMap<super::anon_structs::IssuedAnonymousNominalKey, (Arc<str>, Option<u32>)>,
     /// Anonymous types whose structural display is being rendered, so a
     /// field that names the type itself renders as `Self`.
     structural_display_stack: RefCell<Vec<Type>>,
@@ -3577,6 +3578,26 @@ where
             .filter(|(_, identity)| !initial.contains(*identity))
             .map(|(ty, identity)| (*ty, identity.clone()))
             .collect::<Vec<_>>();
+        let mut bindings: AHashMap<
+            super::anon_structs::IssuedAnonymousNominalKey,
+            Option<Arc<str>>,
+        > = AHashMap::new();
+        for (ty, identity) in &identities {
+            let canonical = identity.with_canonical_producer().into_owned();
+            let binding = self
+                .anon_bindings
+                .get(&canonical)
+                .map(|(binding, _)| binding.clone())
+                .or_else(|| {
+                    self.durable_anonymous_types
+                        .get(ty)
+                        .and_then(|identity| self.source.anonymous_binding(identity))
+                });
+            let slot = bindings.entry(canonical).or_insert(None);
+            if slot.is_none() {
+                *slot = binding;
+            }
+        }
         let exports = identities.into_iter().map(|(ty, identity)| {
             let (shape, type_captures, value_captures) = match ty.kind() {
                 TypeKind::Struct(struct_id) => {
@@ -3708,15 +3729,13 @@ where
                 }
                 _ => return Err(crate::SemanticBodyExportFailure::UnsupportedType),
             };
-            let binding = self
-                .anon_bindings
+            // One binding per canonical identity, whichever live type
+            // aliases it, so the exact-equality dedup below never splits an
+            // identity over this presentation field.
+            let binding = bindings
                 .get(identity.with_canonical_producer().as_ref())
                 .cloned()
-                .or_else(|| {
-                    self.durable_anonymous_types
-                        .get(&ty)
-                        .and_then(|identity| self.source.anonymous_binding(identity))
-                });
+                .flatten();
             Ok(crate::SemanticProducedAnonymousNominal {
                 identity,
                 shape,
@@ -5107,51 +5126,79 @@ where
     }
 
     /// [`Self::friendly_anonymous_display`] for an identity met inside
-    /// another type's spelling (`Inner(B)`), with or without its live type.
-    /// The flag says whether the display names a literal local to its
-    /// producer's body -- one no module-level item can name -- rather than a
-    /// constructor application or a module constant.
+    /// another type's spelling (`Inner(B)`), with or without its live type,
+    /// with where the display's literal lives: a module-nameable constructor
+    /// application or constant, or a literal local to a function's or a type
+    /// constructor's body that no module-level item can name.
     fn anonymous_display(
         &self,
         identity: &crate::AnonymousNominalKey<K, M>,
         ty: Option<Type>,
-    ) -> Option<(String, bool)> {
+    ) -> Option<(String, super::AnonymousLocality)> {
+        use super::AnonymousLocality as L;
         if matches!(identity.producer, crate::StableProducerId::Definition(_)) {
             return self
                 .friendly_durable_anonymous_display(identity)
-                .map(|display| (display, false));
+                .map(|display| (display, L::Nameable));
         }
         let ty = ty.or_else(|| self.local_anonymous_type(identity));
         // A nominal minted from a durable fact carries its producer's name
         // there; one this body produces is named by this body's own record,
         // and asking the source about it would ask for this body's output.
-        let binding = match ty {
-            Some(ty)
-                if !self.durable_anonymous_types.contains_key(&ty)
-                    && self.endpoint.durable_anonymous_identity(ty).is_none() =>
-            {
-                self.issued_anonymous_identity(ty).and_then(|issued| {
-                    self.anon_bindings
-                        .get(issued.with_canonical_producer().as_ref())
-                        .cloned()
-                })
-            }
-            _ => self.source.anonymous_binding(identity),
+        let local = ty.filter(|ty| {
+            !self.durable_anonymous_types.contains_key(ty)
+                && self.endpoint.durable_anonymous_identity(*ty).is_none()
+        });
+        let (binding, line, canonical) = match local {
+            Some(ty) => match self.issued_anonymous_identity(ty) {
+                Some(issued) => {
+                    let canonical = issued.with_canonical_producer().into_owned();
+                    match self.anon_bindings.get(&canonical) {
+                        Some((binding, line)) => (Some(binding.clone()), *line, Some(canonical)),
+                        None => (None, None, Some(canonical)),
+                    }
+                }
+                None => (None, None, None),
+            },
+            None => (self.source.anonymous_binding(identity), None, None),
         };
+        let constructor = self.anonymous_producer_is_type_constructor(identity);
         if let Some(binding) = binding {
+            // A type constructor's local is qualified by the application
+            // that produced it, so two constructors' `I`s never read alike.
             let specialized = identity.producer_arguments().is_some_and(|arguments| {
                 !arguments.types.is_empty() || !arguments.values.is_empty()
             });
-            if specialized && let Some(producer) = self.friendly_durable_anonymous_display(identity)
+            if (constructor || specialized)
+                && let Some(producer) = self.friendly_durable_anonymous_display(identity)
             {
-                return Some((format!("{producer}.{binding}"), true));
+                return Some((format!("{producer}.{binding}"), L::ConstructorLocal));
             }
-            return Some((binding.to_string(), true));
+            // A function's local whose name another type in this body also
+            // answers to (a shadowed `let`, a module struct) is told apart by
+            // where it is declared.
+            let ambiguous = canonical.as_ref().is_some_and(|canonical| {
+                self.anon_bindings
+                    .iter()
+                    .any(|(other, (name, _))| other != canonical && *name == binding)
+                    || DurableBodyLookupSource::nominal(&self.source, &self.key, &binding).is_some()
+            });
+            let display = match line {
+                Some(line) if ambiguous => format!(
+                    "{binding} (local {} at line {line})",
+                    match identity.kind {
+                        crate::AnonymousNominalKind::Struct => "struct",
+                        crate::AnonymousNominalKind::Enum => "enum",
+                    }
+                ),
+                _ => binding.to_string(),
+            };
+            return Some((display, L::FunctionLocal));
         }
-        if self.anonymous_producer_is_type_constructor(identity) {
+        if constructor {
             return self
                 .friendly_durable_anonymous_display(identity)
-                .map(|display| (display, false));
+                .map(|display| (display, L::Nameable));
         }
         let display = match ty {
             Some(ty) => self.structural_anonymous_display(ty),
@@ -5160,16 +5207,16 @@ where
                 crate::AnonymousNominalKind::Enum => "anonymous enum".to_owned(),
             },
         };
-        Some((display, true))
+        Some((display, L::FunctionLocal))
     }
 
-    /// Whether `ty` is an anonymous nominal local to its producer's body
-    /// (see [`Self::anonymous_display`]).
-    fn is_body_local_anonymous_type(&self, ty: Type) -> bool {
+    /// Where an anonymous type's literal lives (see
+    /// [`Self::anonymous_display`]); `Nameable` for any other type.
+    fn anonymous_type_locality(&self, ty: Type) -> super::AnonymousLocality {
         if !(matches!(ty.kind(), TypeKind::Struct(id) if self.type_pool.is_anonymous_struct(id))
             || matches!(ty.kind(), TypeKind::Enum(id) if self.type_pool.is_anonymous_enum(id)))
         {
-            return false;
+            return super::AnonymousLocality::Nameable;
         }
         let identity = self.endpoint.durable_anonymous_identity(ty).or_else(|| {
             match self.local_durable_type(ty)? {
@@ -5179,7 +5226,7 @@ where
         });
         identity
             .and_then(|identity| self.anonymous_display(&identity, Some(ty)))
-            .is_some_and(|(_, local)| local)
+            .map_or(super::AnonymousLocality::Nameable, |(_, locality)| locality)
     }
 
     /// The issued identity of an anonymous type this body holds: registered,
@@ -7090,17 +7137,20 @@ where
         Self::friendly_type_display(self, ty)
     }
 
-    fn is_body_local_anonymous_type(&self, ty: Type) -> bool {
-        Self::is_body_local_anonymous_type(self, ty)
+    fn anonymous_type_locality(&self, ty: Type) -> super::AnonymousLocality {
+        Self::anonymous_type_locality(self, ty)
     }
 
     fn record_anonymous_binding(
         &mut self,
         identity: &super::anon_structs::IssuedAnonymousNominalKey,
         binding: Arc<str>,
+        line: Option<u32>,
     ) {
-        self.anon_bindings
-            .insert(identity.with_canonical_producer().into_owned(), binding);
+        self.anon_bindings.insert(
+            identity.with_canonical_producer().into_owned(),
+            (binding, line),
+        );
     }
 }
 

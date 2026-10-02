@@ -473,7 +473,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     anchor: anchor.clone(),
                 };
                 if let Some(binding) = binding {
-                    self.record_anonymous_binding(&self_identity, *binding);
+                    self.record_anonymous_binding(&self_identity, *binding, inst.span);
                 }
                 let self_name = {
                     let engine = ComptimeEngine::new(self);
@@ -761,7 +761,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     anchor: anchor.clone(),
                 };
                 if let Some(binding) = binding {
-                    self.record_anonymous_binding(&identity, *binding);
+                    self.record_anonymous_binding(&identity, *binding, inst.span);
                 }
                 let enum_ty =
                     self.find_or_create_anon_enum(identity, &variant_names, &variant_payloads)?;
