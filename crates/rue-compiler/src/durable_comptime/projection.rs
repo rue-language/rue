@@ -164,8 +164,8 @@ fn durable_type_diagnostic_name_kernel(ty: &DurableType) -> String {
 
 /// [`durable_type_diagnostic_name`] with the `let` names producers bound
 /// anonymous literals to (RUE-2589): such a nominal reads by its name,
-/// qualified by its producer's application when the producer was
-/// specialized (`A(i64).B`). An unbound one keeps its producer's spelling.
+/// qualified by its producer's application (`A(i64).B`, `P.I`). An unbound
+/// one keeps its producer's spelling.
 pub(crate) fn durable_type_diagnostic_name_with_bindings(
     ty: &DurableType,
     binding: &dyn Fn(&crate::AnonymousNominalKey) -> Option<Arc<str>>,
@@ -238,8 +238,11 @@ pub(crate) fn durable_type_diagnostic_name_with_bindings(
                 } else {
                     format!("{name}({})", arguments.join(", "))
                 };
+                // Declaration-time evaluation reaches a function's body only
+                // through a comptime call, so a bound literal here is a
+                // constructor's local: qualified by the application, so two
+                // constructors' `I`s never read alike.
                 match binding(key) {
-                    Some(binding) if arguments.is_empty() => binding.to_string(),
                     Some(binding) => format!("{producer}.{binding}"),
                     None => producer,
                 }

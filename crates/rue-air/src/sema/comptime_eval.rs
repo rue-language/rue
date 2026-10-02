@@ -3396,8 +3396,13 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeTypeAlgebra for OrdinaryBodyEngine
             .map(Some)
             .map_err(Into::into)
     }
-    fn record_anonymous_binding(&mut self, identity: &Self::AnonymousIdentity, binding: &Spur) {
-        OrdinaryBodyEngine::record_anonymous_binding(self, identity, *binding)
+    fn record_anonymous_binding(
+        &mut self,
+        identity: &Self::AnonymousIdentity,
+        binding: &Spur,
+        span: Span,
+    ) {
+        OrdinaryBodyEngine::record_anonymous_binding(self, identity, *binding, span)
     }
     fn find_or_create_anon_struct(
         &mut self,

@@ -104,24 +104,35 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     // A literal local to a body has no name a module-level
                     // assertion could use, and an anonymous type has no
                     // header to carry one (RUE-2589).
-                    None if self.is_body_local_anonymous_type(argument) => format!(
-                        "an anonymous type local to a function body cannot be named by a conformance assertion; declare it at module scope as `struct Name is {interface} {{ .. }}`"
-                    ),
-                    None if match argument.kind() {
-                        crate::types::TypeKind::Struct(id) => {
-                            self.body_type_pool().is_anonymous_struct(id)
+                    None => match self.anonymous_type_locality(argument) {
+                        super::super::AnonymousLocality::FunctionLocal => format!(
+                            "an anonymous type local to a function body cannot be named by a conformance assertion; declare it at module scope as `{} Name is {interface} {{ .. }}`",
+                            if argument.as_enum().is_some() {
+                                "enum"
+                            } else {
+                                "struct"
+                            }
+                        ),
+                        super::super::AnonymousLocality::ConstructorLocal => format!(
+                            "an anonymous type local to a type constructor's body cannot be named by a conformance assertion; build it with a type constructor of its own and assert `Constructor(..) is {interface};` for the arguments it is applied to"
+                        ),
+                        super::super::AnonymousLocality::Nameable
+                            if matches!(
+                                argument.kind(),
+                                crate::types::TypeKind::Struct(id)
+                                    if self.body_type_pool().is_anonymous_struct(id)
+                            ) || matches!(
+                                argument.kind(),
+                                crate::types::TypeKind::Enum(id)
+                                    if self.body_type_pool().is_anonymous_enum(id)
+                            ) =>
+                        {
+                            format!("add `{ty} is {interface};` to assert the conformance")
                         }
-                        crate::types::TypeKind::Enum(id) => {
-                            self.body_type_pool().is_anonymous_enum(id)
-                        }
-                        _ => false,
-                    } =>
-                    {
-                        format!("add `{ty} is {interface};` to assert the conformance")
-                    }
-                    None => format!(
-                        "add `{ty} is {interface};` to assert the conformance, or a `struct {ty} is {interface}` header"
-                    ),
+                        super::super::AnonymousLocality::Nameable => format!(
+                            "add `{ty} is {interface};` to assert the conformance, or a `struct {ty} is {interface}` header"
+                        ),
+                    },
                 };
                 return Err(CompileError::new(
                     ErrorKind::InterfaceBoundNotSatisfied { ty, interface },

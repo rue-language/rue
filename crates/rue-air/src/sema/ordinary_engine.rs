@@ -596,6 +596,19 @@ pub(crate) trait AnalysisLedgers {
     fn deferred_requirements_gates_mut(&mut self) -> &mut Vec<super::DeferredRequirement>;
 }
 
+/// Where an anonymous type's literal lives, for diagnostics that suggest
+/// naming the type (RUE-2589).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AnonymousLocality {
+    /// A named type, a constructor application or a module constant: a
+    /// module-level item can name it.
+    Nameable,
+    /// A literal local to a function body.
+    FunctionLocal,
+    /// A literal local to a type constructor's body (`A(i64).B`).
+    ConstructorLocal,
+}
+
 /// The presentation authority for type names in body diagnostics.
 pub(crate) trait DiagnosticPresentation {
     fn has_ctor_type_display(&self, ty: Type) -> bool;
@@ -604,9 +617,8 @@ pub(crate) trait DiagnosticPresentation {
 
     fn friendly_type_display(&self, ty: Type) -> String;
 
-    /// Whether `ty` is an anonymous nominal local to its producer's body,
-    /// which no module-level item can name (RUE-2589).
-    fn is_body_local_anonymous_type(&self, ty: Type) -> bool;
+    /// Where `ty`'s literal lives, if it is an anonymous nominal (RUE-2589).
+    fn anonymous_type_locality(&self, ty: Type) -> AnonymousLocality;
 
     /// Record the `let` name the anonymous nominal `identity` is bound to,
     /// for presentation only (RUE-2589).
@@ -614,6 +626,7 @@ pub(crate) trait DiagnosticPresentation {
         &mut self,
         identity: &super::anon_structs::IssuedAnonymousNominalKey,
         binding: Arc<str>,
+        line: Option<u32>,
     );
 }
 
@@ -1108,10 +1121,10 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         self.storage.friendly_type_display(ty)
     }
 
-    /// Whether `ty` is an anonymous struct or enum local to the body that
-    /// produced it, so no module-level item can name it (RUE-2589).
-    pub(crate) fn is_body_local_anonymous_type(&self, ty: Type) -> bool {
-        self.storage.is_body_local_anonymous_type(ty)
+    /// Where `ty`'s literal lives, if it is an anonymous struct or enum
+    /// (RUE-2589).
+    pub(crate) fn anonymous_type_locality(&self, ty: Type) -> AnonymousLocality {
+        self.storage.anonymous_type_locality(ty)
     }
 
     /// Record the `let` name an anonymous struct or enum literal is bound to
@@ -1121,9 +1134,12 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         &mut self,
         identity: &super::anon_structs::IssuedAnonymousNominalKey,
         binding: Spur,
+        span: Span,
     ) {
         let binding = Arc::from(self.body_interner().resolve(&binding));
-        self.storage.record_anonymous_binding(identity, binding);
+        let line = self.body_source_coordinate(span).map(|(_, line, _)| line);
+        self.storage
+            .record_anonymous_binding(identity, binding, line);
     }
 
     /// Render an inference type through the same presentation authority as

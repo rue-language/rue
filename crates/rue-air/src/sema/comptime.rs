@@ -347,6 +347,7 @@ pub trait ComptimeTypeAlgebra: ComptimeDomain {
         &mut self,
         _identity: &Self::AnonymousIdentity,
         _binding: &Self::Name,
+        _span: Span,
     ) {
     }
     fn find_or_create_anon_struct(
@@ -5205,7 +5206,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 });
                 if let (Some(identity), Some(binding)) = (&self_identity, binding) {
                     let binding = self.name_from_rir((*binding).into());
-                    self.host.record_anonymous_binding(identity, &binding);
+                    self.host.record_anonymous_binding(identity, &binding, span);
                 }
                 let self_name = self_identity.as_ref().and_then(|_| {
                     let program = self.program_key();
@@ -5350,7 +5351,8 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 );
                 if let Some(binding) = binding {
                     let binding = self.name_from_rir((*binding).into());
-                    self.host.record_anonymous_binding(&identity, &binding);
+                    self.host
+                        .record_anonymous_binding(&identity, &binding, span);
                 }
                 for ty in variant_payloads.iter().flatten() {
                     host_value!(self.host.reject_unstorable_member(
