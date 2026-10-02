@@ -362,3 +362,84 @@ fn read_unit(value: Witness((), U)) -> i32 { value.marker }
 fn main() -> i32 { 42 }
 """ }]
 exit_code = 42
+
+# A type-constructor call's value arguments are checked against the
+# constructor's parameters wherever the call is written, including a body
+# annotation and a deferred signature type resolved at its call (RUE-2550).
+
+[[case]]
+name = "body_annotation_constructor_argument_above_range_rejected"
+description = "`let x: K(300)` for `K(comptime n: u8)` is rejected: the annotation's constructor argument is range-checked as a call's is (RUE-2550)."
+files = [{ path = "main.rue", source = """
+fn K(comptime n: u8) -> type { i32 }
+fn main() -> i32 { let x: K(300) = 1; x }
+""" }]
+compile_fail = true
+error_contains = ["E1200", "outside the range of u8"]
+
+[[case]]
+name = "body_annotation_constructor_argument_below_range_rejected"
+description = "`let x: K(-1)` for `K(comptime n: u8)` is rejected (RUE-2550)."
+files = [{ path = "main.rue", source = """
+fn K(comptime n: u8) -> type { i32 }
+fn main() -> i32 { let x: K(-1) = 1; x }
+""" }]
+compile_fail = true
+error_contains = ["E1200", "outside the range of u8"]
+
+[[case]]
+name = "forwarded_annotation_constructor_argument_range_rejected"
+description = "A comptime parameter forwarded into a body annotation `K8(m)` is range-checked at the specialization `g(300)` (RUE-2550)."
+files = [{ path = "main.rue", source = """
+fn K8(comptime n: u8) -> type { i32 }
+fn g(comptime m: i32) -> i32 { let a: K8(m) = 1; a }
+fn main() -> i32 { g(300) }
+""" }]
+compile_fail = true
+error_contains = ["E1200", "outside the range of u8"]
+
+[[case]]
+name = "deferred_return_constructor_argument_range_rejected_at_call"
+description = "`fn f(comptime n: i32) -> K(n)` called as `f(300)` for `K(comptime n: u8)` is a range error at the call, not an internal error at the specialized signature (RUE-2550)."
+files = [{ path = "main.rue", source = """
+fn K(comptime n: u8) -> type { i32 }
+fn f(comptime n: i32) -> K(n) { 1 }
+fn main() -> i32 { let x: i32 = f(300); x }
+""" }]
+compile_fail = true
+error_contains = ["E1200", "outside the range of u8"]
+compile_stderr_not_contains = ["internal compiler error"]
+
+[[case]]
+name = "dependent_scalar_comptime_parameter_in_comptime_block"
+description = "`comptime v: Sel(B)` takes its call-resolved scalar type inside a `comptime { }` call and across a module boundary, never the `type` placeholder (RUE-2550)."
+files = [
+    { path = "main.rue", source = """
+const lib = @import("lib.rue");
+fn Sel(comptime B: bool) -> type { if B { i64 } else { u8 } }
+fn g(comptime B: bool, comptime v: Sel(B)) -> u8 { v + 10 }
+const Y: u8 = 20;
+fn main() -> i32 {
+    let a: u8 = comptime { g(false, Y) };
+    let b: u8 = comptime { lib.f(false, Y) };
+    @intCast(a + b)
+}
+""" },
+    { path = "lib.rue", source = """
+pub fn Sel(comptime B: bool) -> type { if B { i64 } else { u8 } }
+pub fn f(comptime B: bool, comptime v: Sel(B)) -> u8 { v + 2 }
+""" },
+]
+exit_code = 52
+
+[[case]]
+name = "dependent_scalar_comptime_parameter_overflows_at_its_type"
+description = "Arithmetic on `comptime v: Sel(false)` (`u8`) in a `comptime { }` call overflows at `u8` (RUE-2550)."
+files = [{ path = "main.rue", source = """
+fn Sel(comptime B: bool) -> type { if B { i64 } else { u8 } }
+fn g(comptime B: bool, comptime v: Sel(B)) -> u8 { v + 100 }
+const Y: u8 = 200;
+fn main() -> i32 { let a: u8 = comptime { g(false, Y) }; 0 }
+""" }]
+compile_fail = true
+error_contains = ["E1200", "does not fit in u8"]

@@ -7047,3 +7047,41 @@ fn main() -> i32 {
 """
 compile_fail = true
 expected_error_code = "E0206"
+
+[[case]]
+name = "dependent_constructor_parameter_in_signature"
+spec = ["4.14:5", "4.14:23"]
+description = "A constructor whose own parameter has a dependent type, `Pick(comptime N: i32, comptime a: [i32; N])`, is applied in a return type, a parameter type and through a forwarded length (RUE-2550)"
+source = """
+fn Pick(comptime N: i32, comptime a: [i32; N]) -> type { if a[0] == 1 { i32 } else { i64 } }
+fn f(comptime b: [i32; 2]) -> Pick(2, b) { 7 }
+fn g(comptime M: i32, comptime b: [i32; M]) -> Pick(M, b) { 3 }
+fn h(comptime b: [i32; 2], x: Pick(2, b)) -> i32 { @intCast(x) }
+
+fn main() -> i32 {
+    let x: i32 = f([1, 2]);
+    let y: i64 = f([2, 2]);
+    let z: i32 = g(3, [1, 0, 0]);
+    x + @intCast(y) + z + h([1, 2], 5)
+}
+"""
+exit_code = 22
+
+[[case]]
+name = "dependent_constructor_parameter_const_argument"
+spec = ["4.14:5", "4.14:23"]
+description = "`Pick(2, B)` with a `const B: [i32; 2]` names a type in a return type, a struct field and a type alias (RUE-2550)"
+source = """
+fn Pick(comptime N: i32, comptime a: [i32; N]) -> type { if a[0] == 1 { i32 } else { i64 } }
+const B: [i32; 2] = [1, 2];
+const T = Pick(2, B);
+struct S { v: Pick(2, B) }
+fn f() -> Pick(2, B) { 9 }
+
+fn main() -> i32 {
+    let s = S { v: 4 };
+    let t: T = 1;
+    f() + s.v + t
+}
+"""
+exit_code = 14
