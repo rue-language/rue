@@ -7232,3 +7232,114 @@ fn g(comptime n: i32) -> i32 {
 fn main() -> i32 { g(7) }
 """
 exit_code = 5
+
+[[case]]
+name = "type_constructor_reduces_at_let_bound_local_struct_argument"
+spec = ["4.14:22"]
+description = "A type constructor applied to a `let`-bound anonymous struct of the calling body reduces as at a declared type, bound by `let` and as an inline literal head (RUE-2590)"
+source = """
+fn W(comptime T: type) -> type { struct { v: T } }
+fn main() -> i32 {
+    let I = struct { s: i64 };
+    let T = W(I);
+    let w = T { v: I { s: 4 } };
+    let x = W(I) { v: I { s: 2 } };
+    @intCast(w.v.s + x.v.s)
+}
+"""
+exit_code = 6
+
+[[case]]
+name = "type_constructor_reduces_at_local_enum_in_nested_and_comptime_blocks"
+spec = ["4.14:22", "4.14:28"]
+description = "A `let`-bound anonymous enum local to a nested block, and an anonymous struct local to a `comptime` block, are type-constructor arguments like a declared type (RUE-2590)"
+source = """
+fn W(comptime T: type) -> type { struct { v: T } }
+fn three(comptime T: type) -> i32 { 3 }
+fn main() -> i32 {
+    let r = {
+        let E = enum { A, B(i32) };
+        let w = W(E) { v: E.B(7) };
+        match w.v { E.A => 1, E.B(n) => n }
+    };
+    let n = comptime {
+        let I = struct { s: i64 };
+        three(W(I))
+    };
+    r + n
+}
+"""
+exit_code = 10
+
+[[case]]
+name = "type_constructor_layers_over_a_local_argument"
+spec = ["4.14:22", "4.14:25"]
+description = "A local anonymous struct passed through two constructor layers, `W(V(I))`, reduces to one type whichever body evaluates the inner layer (RUE-2590)"
+source = """
+fn W(comptime T: type) -> type { struct { v: T } }
+fn V(comptime T: type) -> type { struct { u: T, k: i64 } }
+fn Both(comptime T: type) -> type { W(V(T)) }
+fn main() -> i32 {
+    let I = struct { s: i64 };
+    let T = W(V(I));
+    let w = T { v: V(I) { u: I { s: 6 }, k: 1 } };
+    let b: Both(I) = w;
+    @intCast(b.v.u.s + b.v.k)
+}
+"""
+exit_code = 7
+
+[[case]]
+name = "same_local_argument_selects_one_specialization"
+spec = ["4.14:25"]
+description = "Applying a type constructor twice to the same local anonymous struct selects one specialization, so the two results are one type (RUE-2590)"
+source = """
+fn W(comptime T: type) -> type { struct { v: T, fn get(self) -> i64 { self.v.s } } }
+fn main() -> i32 {
+    let I = struct { s: i64 };
+    let A = W(I);
+    let B = W(I);
+    let a: A = B { v: I { s: 3 } };
+    let b: B = a;
+    @intCast(b.get())
+}
+"""
+exit_code = 3
+
+[[case]]
+name = "distinct_local_arguments_select_distinct_specializations"
+spec = ["4.14:8", "4.14:25"]
+description = "Two local anonymous structs with equal fields are different types, so a type constructor applied to each selects two specializations (RUE-2590)"
+source = """
+fn W(comptime T: type) -> type { struct { v: T } }
+fn main() -> i32 {
+    let I = struct { s: i64 };
+    let J = struct { s: i64 };
+    let a = W(I) { v: I { s: 3 } };
+    let b: W(J) = a;
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0206", "W(J)", "W(I)"]
+
+[[case]]
+name = "local_argument_in_generic_body_reaches_constructed_methods"
+spec = ["4.14:22", "4.14:25"]
+description = "A generic body's local anonymous struct is a constructor argument in each specialization of the body, and the constructed type's methods use it (RUE-2590)"
+source = """
+fn W(comptime T: type) -> type {
+    struct {
+        v: T,
+        fn get(self) -> T { self.v }
+        fn twice(self) -> i64 { self.v.wide() * 2 }
+    }
+}
+fn f(comptime U: type, x: U) -> i64 {
+    let I = struct { s: U, fn wide(self) -> i64 { @intCast(self.s) } };
+    let w = W(I) { v: I { s: x } };
+    w.get().wide() + w.twice()
+}
+fn main() -> i32 { @intCast(f(i32, 2) + f(u8, 3)) }
+"""
+exit_code = 15
