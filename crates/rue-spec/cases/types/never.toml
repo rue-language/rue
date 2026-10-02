@@ -620,3 +620,18 @@ fn k(f: F) -> u8 { match f { F.A(x) => pick(x, true), F.B(b) => if b { 20 } else
 fn main() -> i32 { let v: i32 = @intCast(k(F.B(false))); v - 190 }
 """
 exit_code = 10
+
+[[case]]
+name = "never_typed_local_in_an_if_branch_takes_a_string_sibling_type"
+spec = ["3.4:3", "3.4:4", "3.4:6a"]
+description = "RUE-2610: a local bound to a diverging expression has type !, and its read in an `if` branch coerces to the string sibling's type"
+source = """
+fn f(c: bool) -> i32 {
+    let v = return 5;
+    let s: str = if c { v } else { "xy" };
+    let n: i32 = @intCast(s.len());
+    n
+}
+fn main() -> i32 { f(false) }
+"""
+exit_code = 5
