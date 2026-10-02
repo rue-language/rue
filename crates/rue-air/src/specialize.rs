@@ -228,6 +228,10 @@ where
                     crate::SemanticImportConstValue::Function(host.function_identity(value.spur())?)
                 }
                 ConstValue::Unit => crate::SemanticImportConstValue::Unit,
+                // A module is never a comptime argument (10.4:6, RUE-2420).
+                ConstValue::Module(_) => {
+                    return Err(crate::SemanticBodyExportFailure::UnsupportedType);
+                }
                 ConstValue::String(content) => crate::SemanticImportConstValue::String(
                     std::sync::Arc::from(host.resolve_publication_symbol(&content.spur())),
                 ),
@@ -281,6 +285,9 @@ where
                                         host.resolve_publication_symbol(&value.spur()),
                                     ),
                                 ));
+                            }
+                            ConstValue::Module(_) => {
+                                return Err(crate::SemanticBodyExportFailure::UnsupportedType);
                             }
                             ConstValue::Aggregate(_) => {}
                         }
@@ -768,6 +775,9 @@ fn mangle_const_value(interner: &ThreadedRodeo, value: &ConstValue) -> String {
         ConstValue::String(content) => mangle_string_const(interner.resolve(&content.spur())),
         ConstValue::Float(content) => format!("vfloat{}", interner.resolve(&content.spur())),
         ConstValue::Aggregate(aggregate) => mangle_aggregate_value(aggregate, interner),
+        // Never a comptime argument (10.4:6, RUE-2420); spelled distinctly
+        // all the same, so no two values share a fragment.
+        ConstValue::Module(module) => format!("vmod{}", module.0),
     }
 }
 

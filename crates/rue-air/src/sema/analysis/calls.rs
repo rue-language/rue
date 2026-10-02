@@ -15,29 +15,27 @@ use crate::sema::context::DivergenceKind;
 use crate::sema::info::FunctionCallInfo;
 use ahash::AHashMap;
 
-/// The result of a `-> type` call whose body reduced at compile time (4.14:28).
+/// The result of a `-> type` call whose body reduced at compile time (4.14:28),
+/// or `None` when the reduced value is neither a type nor a module.
 ///
 /// A body that reduces to a module (`fn m() -> type { @import("x.rue") }`)
 /// yields that module exactly as the `@import` it evaluates does: a
 /// compile-time-only placeholder typed as the module, so the call is a module
 /// expression in every position a module path is — a `let` binding, a member
-/// access head, or a nested `m().sub` (spec 10.4:8, 10.4:10; RUE-2420). Any
-/// other type is a `TypeConst`.
-fn reduced_type_call_result(air: &mut Air, ty: Type, span: Span) -> AnalysisResult {
-    if ty.is_module() {
-        let air_ref = air.add_inst(AirInst {
-            data: AirInstData::UnitConst,
-            ty,
-            span,
-        });
-        return AnalysisResult::new(air_ref, ty);
-    }
-    let air_ref = air.add_inst(AirInst {
-        data: AirInstData::TypeConst(ty),
-        ty: Type::COMPTIME_TYPE,
-        span,
-    });
-    AnalysisResult::new(air_ref, Type::COMPTIME_TYPE)
+/// access head, or a nested `m().sub` (spec 10.4:8, 10.4:10; RUE-2420). A type
+/// is a `TypeConst`.
+fn reduced_type_call_result(
+    air: &mut Air,
+    value: ConstValue,
+    span: Span,
+) -> Option<AnalysisResult> {
+    let (data, ty) = match value {
+        ConstValue::Module(module) => (AirInstData::UnitConst, Type::new_module(module)),
+        ConstValue::Type(ty) => (AirInstData::TypeConst(ty), Type::COMPTIME_TYPE),
+        _ => return None,
+    };
+    let air_ref = air.add_inst(AirInst { data, ty, span });
+    Some(AnalysisResult::new(air_ref, ty))
 }
 
 /// Reject a runtime call whose result is a comptime-only value.
@@ -742,12 +740,13 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // limit, RUE-261) must surface as its real diagnostic (E1200)
             // rather than being swallowed into a downstream link error, so use
             // the propagating reduction entry point.
-            if let Some(ConstValue::Type(ty)) = self
+            if let Some(value) = self
                 .reduce_type_ctor_body(name, &type_subst, &value_subst, span)
                 .map_err(|e| Self::label_ctor_instantiation_site(e, span))?
+                && let Some(result) = reduced_type_call_result(air, value, span)
             {
                 // Success! Return a TypeConst instruction instead of a runtime call
-                return Ok(reduced_type_call_result(air, ty, span));
+                return Ok(result);
             }
             // A body that does not reduce falls through to the runtime call
             // emission below, which rejects its `type` result (RUE-2417).
@@ -1071,15 +1070,16 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         }
                     }
                 }
-                if let Some(ConstValue::Type(ty)) =
+                if let Some(value) =
                     self.reduce_type_ctor_body(name, &type_subst, &value_subst, span)?
+                    && let Some(result) = reduced_type_call_result(air, value, span)
                 {
                     // Success! Return a TypeConst instruction instead of a
                     // runtime call. This arm is reached only when every
                     // parameter is `comptime`, and a `comptime` parameter takes
                     // an unmarked argument (4.10:3), so `temp_scope` is
                     // necessarily empty here — there is no call left to wrap.
-                    return Ok(reduced_type_call_result(air, ty, span));
+                    return Ok(result);
                 }
                 // A body that does not reduce falls through to the emission
                 // below, which rejects the runtime `type` result (RUE-2417).

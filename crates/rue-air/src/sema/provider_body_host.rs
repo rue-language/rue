@@ -3439,6 +3439,8 @@ where
                 V::Function(definition)
             }
             ConstValue::Unit => V::Unit,
+            // A module is never a comptime argument (10.4:6, RUE-2420).
+            ConstValue::Module(_) => return None,
             ConstValue::String(symbol) => {
                 V::String(Arc::from(self.interner.resolve(&symbol.spur())))
             }
@@ -6237,7 +6239,7 @@ where
             // (RUE-2420).
             crate::SemanticComptimeCallResult::Type(crate::SemanticImportType::Module(module)) => {
                 self.register_module_target(module)
-                    .map(|(id, _)| ConstValue::Type(Type::new_module(id)))
+                    .map(|(id, _)| ConstValue::Module(id))
             }
             crate::SemanticComptimeCallResult::Type(ty) => {
                 self.materialize_durable_type(&ty).map(ConstValue::Type)
@@ -6989,6 +6991,8 @@ where
             ConstValue::Function(symbol) => CanonicalArgumentValue::Function(Node::new(
                 FunctionInstanceKey::Definition(self.function_identity(symbol.spur())?),
             )),
+            // A module is never a comptime argument (10.4:6, RUE-2420).
+            ConstValue::Module(_) => return Err(crate::SemanticBodyExportFailure::UnsupportedType),
             ConstValue::String(symbol) => {
                 CanonicalArgumentValue::String(self.interner.resolve(&symbol.spur()).into())
             }
