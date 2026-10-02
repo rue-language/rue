@@ -4639,10 +4639,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// a binding the stopped statement, or a later failed statement, would
     /// have poisoned. Those independent failures follow the stopping error in
     /// the recovery ledger, which then owns the error as its terminal entry.
-    /// Only a statement diagnostic is ordered this way: a statement-recoverable
-    /// error the statement could not be rolled back from, or a comptime
-    /// evaluation failure at the statement. Every other error keeps its
-    /// authority as the body's first error.
+    /// Only a source diagnostic is ordered this way. Cancellation, resource,
+    /// input, publication and internal failures keep their authority as the
+    /// body's first error.
     fn stop_body_statement(
         &mut self,
         error: CompileError,
@@ -4654,8 +4653,17 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         };
         if ctx.statement_recovery_depth != 1
             || ctx.inference_statement_errors.is_empty()
-            || !(self.body_analysis_error_is_recoverable(&error)
-                || matches!(error.kind, ErrorKind::ComptimeEvaluationFailed { .. }))
+            || matches!(
+                error.kind,
+                ErrorKind::InvalidCompilerInput(_)
+                    | ErrorKind::CompilerResourceLimit(_)
+                    | ErrorKind::CompilerResourceExhaustion(_)
+                    | ErrorKind::OutputPublication(_)
+                    | ErrorKind::UnsatisfiedTrustedToolchainInput(_)
+                    | ErrorKind::CompilerProducerInvariant(_)
+                    | ErrorKind::InternalError(_)
+                    | ErrorKind::InternalCodegenError(_)
+            )
         {
             return error;
         }
@@ -4776,6 +4784,15 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     .as_ref()
                     .is_some_and(|facts| facts.reads_poison),
             };
+            // This statement's binding, whatever becomes of it, shadows a
+            // recovery-poisoned binding of the same name.
+            if ctx.statement_recovery_depth == 1
+                && let InstData::Alloc {
+                    name: Some(name), ..
+                } = self.body_rir_ref().get(inst_ref).data
+            {
+                recovery_poisoned_names.remove(&name);
+            }
             if reads_poison
                 && let Some(error) = match self.body_analysis_recovered_errors_mut().first() {
                     Some(error) => Some(error.clone()),
@@ -4829,13 +4846,6 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     statements.push(result.air_ref);
                 }
                 continue;
-            }
-            if ctx.statement_recovery_depth == 1
-                && let InstData::Alloc {
-                    name: Some(name), ..
-                } = self.body_rir_ref().get(inst_ref).data
-            {
-                recovery_poisoned_names.remove(&name);
             }
             if let Some(failures) = inference_failures {
                 let first = failures

@@ -1,0 +1,195 @@
+[section]
+id = "diagnostics.inference_recovery"
+name = "Inference Recovery"
+description = "A body's independent inference failures are reported beside its semantic errors in source order, without cascades from failed or recovery-typed bindings (RUE-2614)."
+
+[[case]]
+name = "arity_error_then_inference_mismatch_both_reported"
+description = "An arity error stops its statement, and the independent type mismatch in the next statement is still reported after it."
+source = """
+fn f(a: i32) -> i32 { a }
+fn main() -> i32 { let x = f(1, 2); let z: bool = 1; 0 }
+"""
+compile_fail = true
+expected_error = """
+error: [E0207]: expected 1 argument, found 2
+ --> test.rue:2:28
+  |
+2 | fn main() -> i32 { let x = f(1, 2); let z: bool = 1; 0 }
+  |                            ^^^^^^^
+  |
+error: [E0206]: type mismatch: expected bool, found {integer}
+ --> test.rue:2:37
+  |
+2 | fn main() -> i32 { let x = f(1, 2); let z: bool = 1; 0 }
+  |                                     ^^^^^^^^^^^^^^^^
+  |
+error: aborting due to 2 previous errors
+"""
+
+[[case]]
+name = "inference_mismatch_then_arity_error_both_reported"
+description = "A type mismatch found by inference is reported at its statement, and analysis continues to the arity error after it."
+source = """
+fn f(a: i32) -> i32 { a }
+fn main() -> i32 { let z: bool = 1; let x = f(1, 2); 0 }
+"""
+compile_fail = true
+expected_error = """
+error: [E0206]: type mismatch: expected bool, found {integer}
+ --> test.rue:2:20
+  |
+2 | fn main() -> i32 { let z: bool = 1; let x = f(1, 2); 0 }
+  |                    ^^^^^^^^^^^^^^^^
+  |
+error: [E0207]: expected 1 argument, found 2
+ --> test.rue:2:45
+  |
+2 | fn main() -> i32 { let z: bool = 1; let x = f(1, 2); 0 }
+  |                                             ^^^^^^^
+  |
+error: aborting due to 2 previous errors
+"""
+
+[[case]]
+name = "two_inference_mismatches_both_reported"
+description = "Two independent mismatches in one body are both reported, in source order."
+source = """
+fn main() -> i32 { let y: bool = 2; let z: bool = 1; 0 }
+"""
+compile_fail = true
+expected_error = """
+error: [E0206]: type mismatch: expected bool, found {integer}
+ --> test.rue:1:20
+  |
+1 | fn main() -> i32 { let y: bool = 2; let z: bool = 1; 0 }
+  |                    ^^^^^^^^^^^^^^^^
+  |
+error: [E0206]: type mismatch: expected bool, found {integer}
+ --> test.rue:1:37
+  |
+1 | fn main() -> i32 { let y: bool = 2; let z: bool = 1; 0 }
+  |                                     ^^^^^^^^^^^^^^^^
+  |
+error: aborting due to 2 previous errors
+"""
+
+[[case]]
+name = "comptime_failure_then_inference_mismatch_both_reported"
+description = "A comptime evaluation failure at a call stops its statement, and the independent mismatch after it is still reported."
+source = """
+fn Bad() -> type { Bad() }
+fn main() -> i32 { Bad(); let z: bool = 1; 0 }
+"""
+compile_fail = true
+expected_error = """
+error: [E1200]: comptime evaluation failed: specialization of 'Bad' depends on its own result: reducing this call with these compile-time arguments requires that same call, so the recursion has no base case to start from
+ --> test.rue:2:20
+  |
+2 | fn main() -> i32 { Bad(); let z: bool = 1; 0 }
+  |                    ^^^^^
+  |
+error: [E0206]: type mismatch: expected bool, found {integer}
+ --> test.rue:2:27
+  |
+2 | fn main() -> i32 { Bad(); let z: bool = 1; 0 }
+  |                           ^^^^^^^^^^^^^^^^
+  |
+error: aborting due to 2 previous errors
+"""
+
+[[case]]
+name = "inference_mismatch_then_comptime_failure_both_reported"
+description = "A mismatch found by inference is reported before the comptime evaluation failure at a later call."
+source = """
+fn Bad() -> type { Bad() }
+fn main() -> i32 { let z: bool = 1; Bad(); 0 }
+"""
+compile_fail = true
+expected_error = """
+error: [E0206]: type mismatch: expected bool, found {integer}
+ --> test.rue:2:20
+  |
+2 | fn main() -> i32 { let z: bool = 1; Bad(); 0 }
+  |                    ^^^^^^^^^^^^^^^^
+  |
+error: [E1200]: comptime evaluation failed: specialization of 'Bad' depends on its own result: reducing this call with these compile-time arguments requires that same call, so the recursion has no base case to start from
+ --> test.rue:2:37
+  |
+2 | fn main() -> i32 { let z: bool = 1; Bad(); 0 }
+  |                                     ^^^^^
+  |
+error: aborting due to 2 previous errors
+"""
+
+[[case]]
+name = "failed_binding_read_by_later_mismatch_is_not_reported_again"
+description = "A statement that reads a binding whose initializer failed is poisoned, not reported."
+source = """
+fn main() -> i32 { let y: bool = 2; let z: i32 = y; 0 }
+"""
+compile_fail = true
+expected_error = """
+error: [E0206]: type mismatch: expected bool, found {integer}
+ --> test.rue:1:20
+  |
+1 | fn main() -> i32 { let y: bool = 2; let z: i32 = y; 0 }
+  |                    ^^^^^^^^^^^^^^^^
+  |
+"""
+
+[[case]]
+name = "binding_typed_by_recovery_keeps_its_reader_reported"
+description = "A binding whose type only the failed constraint decided is poisoned silently, so the statement whose failure decided it is still reported, and so is a later independent mismatch."
+source = """
+fn main() -> i32 { let w = 5; let z: bool = w; let y: bool = 2; 0 }
+"""
+compile_fail = true
+expected_error = """
+error: [E0206]: type mismatch: expected bool, found {integer}
+ --> test.rue:1:31
+  |
+1 | fn main() -> i32 { let w = 5; let z: bool = w; let y: bool = 2; 0 }
+  |                               ^^^^^^^^^^^^^^^^
+  |
+error: [E0206]: type mismatch: expected bool, found {integer}
+ --> test.rue:1:48
+  |
+1 | fn main() -> i32 { let w = 5; let z: bool = w; let y: bool = 2; 0 }
+  |                                                ^^^^^^^^^^^^^^^^
+  |
+error: aborting due to 2 previous errors
+"""
+
+[[case]]
+name = "literal_class_poisoned_by_failed_assignment_reports_only_the_assignment"
+description = "A literal whose class a failed assignment joined is not checked against the recovery type, and the later reader of the binding is not reported."
+source = """
+fn main() -> i32 { let mut a = 1; a = true; let b: bool = a; 0 }
+"""
+compile_fail = true
+expected_error = """
+error: [E0206]: type mismatch: expected integer type, found bool
+ --> test.rue:1:39
+  |
+1 | fn main() -> i32 { let mut a = 1; a = true; let b: bool = a; 0 }
+  |                                       ^^^^
+  |
+"""
+
+[[case]]
+name = "arity_failed_binding_read_by_later_mismatch_is_not_reported"
+description = "A mismatch that reads the binding of a statement which stopped with an arity error is suppressed with that binding."
+source = """
+fn f(a: i32) -> i32 { a }
+fn main() -> i32 { let x = f(1, 2); let z: bool = x; 0 }
+"""
+compile_fail = true
+expected_error = """
+error: [E0207]: expected 1 argument, found 2
+ --> test.rue:2:28
+  |
+2 | fn main() -> i32 { let x = f(1, 2); let z: bool = x; 0 }
+  |                            ^^^^^^^
+  |
+"""

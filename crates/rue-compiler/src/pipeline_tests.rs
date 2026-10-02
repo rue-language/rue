@@ -5147,6 +5147,48 @@ mod tests {
     }
 
     #[test]
+    fn inference_recovery_reports_independent_failures_beside_semantic_errors_in_source_order() {
+        let source = "fn helper() -> i32 { let a: bool = 1; let first = missing; let b: bool = 2; 0 } fn main() -> i32 { helper() }";
+        let errors = match test_cfg(source) {
+            Ok(_) => panic!("independent failures must reject the program"),
+            Err(errors) => errors,
+        };
+        let kinds = errors
+            .iter()
+            .map(|error| match &error.kind {
+                ErrorKind::TypeMismatch { .. } => "mismatch",
+                ErrorKind::UndefinedVariable(_) => "undefined",
+                other => panic!("unexpected error {other:?}"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(kinds, ["mismatch", "undefined", "mismatch"], "{errors:?}");
+        let starts = errors
+            .iter()
+            .map(|error| error.span().expect("body error span").start)
+            .collect::<Vec<_>>();
+        assert!(
+            starts.windows(2).all(|pair| pair[0] < pair[1]),
+            "{starts:?}"
+        );
+    }
+
+    #[test]
+    fn inference_recovery_poisons_types_the_failed_constraint_decided() {
+        // The failed assignment binds the literal's class to the recovery
+        // type; neither the literal nor the later reader may be reported.
+        let source = "fn main() -> i32 { let mut a = 1; a = true; let b: bool = a; 0 }";
+        let errors = match test_cfg(source) {
+            Ok(_) => panic!("the failed assignment must reject the program"),
+            Err(errors) => errors,
+        };
+        assert_eq!(errors.len(), 1, "recovery emitted a cascade: {errors:?}");
+        assert!(matches!(
+            &errors.iter().next().expect("one error").kind,
+            ErrorKind::TypeMismatch { .. }
+        ));
+    }
+
+    #[test]
     fn failed_shadowing_binding_poison_prevents_outer_binding_cascade() {
         let source = "fn main() -> i32 { let value = 1; let value = missing; value + true }";
         let errors = match test_cfg(source) {
