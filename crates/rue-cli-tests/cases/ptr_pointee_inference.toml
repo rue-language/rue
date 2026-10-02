@@ -312,7 +312,7 @@ struct Holder {
 }
 fn main() -> i32 {
     let mut value: u8 = 1;
-    let mut holder = Holder { slot: @raw_mut(value) };
+    let mut holder = Holder { slot: checked { @raw_mut(value) } };
     holder.slot_mut() = @raw(value);
     0
 }
@@ -369,7 +369,7 @@ struct Holder {
 }
 fn main() -> i32 {
     let mut value: u8 = 1;
-    let mut holder = Holder { slot: @raw(value) };
+    let mut holder = Holder { slot: checked { @raw(value) } };
     holder.slot_const() = @raw_mut(value);
     0
 }
