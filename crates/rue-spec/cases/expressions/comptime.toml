@@ -7343,3 +7343,89 @@ fn f(comptime U: type, x: U) -> i64 {
 fn main() -> i32 { @intCast(f(i32, 2) + f(u8, 3)) }
 """
 exit_code = 15
+
+[[case]]
+name = "local_argument_inside_an_anonymous_struct_method"
+spec = ["4.14:22"]
+description = "A method of a `let`-bound anonymous struct applies a type constructor to its own local, as a named struct's method does (RUE-2590)"
+source = """
+fn W(comptime T: type) -> type { struct { v: T, fn get(self) -> i64 { self.v.s } } }
+fn main() -> i32 {
+    let I = struct {
+        s: i64,
+        fn go(self) -> i64 {
+            let K = struct { s: i64 };
+            let w = W(K) { v: K { s: self.s * 3 } };
+            w.get()
+        }
+    };
+    let i = I { s: 5 };
+    let w = W(I) { v: i };
+    @intCast(w.get() + w.v.go())
+}
+"""
+exit_code = 20
+
+[[case]]
+name = "local_argument_whose_methods_name_other_locals"
+spec = ["4.14:22"]
+description = "A local passed to a type constructor may name another local in its method signatures, as a result and as a parameter (RUE-2590)"
+source = """
+fn W(comptime T: type) -> type { struct { v: T, fn get(self) -> i64 { self.v.mk().b } } }
+fn main() -> i32 {
+    let J = struct { b: i64 };
+    let I = struct {
+        s: i64,
+        fn mk(self) -> J { J { b: self.s + 1 } }
+        fn add(self, j: J) -> i64 { self.s + j.b }
+    };
+    let w = W(I) { v: I { s: 4 } };
+    @intCast(w.get() + w.v.add(J { b: 2 }))
+}
+"""
+exit_code = 11
+
+[[case]]
+name = "shadowed_local_arguments_select_distinct_specializations"
+spec = ["4.14:8", "4.14:25"]
+description = "A shadowing `let` of the same name is a different local, so a type constructor applied before and after the shadow selects two specializations with their own methods (RUE-2590)"
+source = """
+fn W(comptime T: type) -> type { struct { v: T, fn get(self) -> i64 { self.v.val() } } }
+fn main() -> i32 {
+    let I = struct { x: i64, fn val(self) -> i64 { self.x + 1 } };
+    let w1 = W(I) { v: I { x: 10 } };
+    let I = struct { a: i8, x: i64, fn val(self) -> i64 { self.x * 2 + @intCast(self.a) } };
+    let w2 = W(I) { v: I { a: 5, x: 10 } };
+    @intCast(w1.get() + w2.get())
+}
+"""
+exit_code = 36
+
+[[case]]
+name = "local_argument_to_another_directory_constructor"
+spec = ["4.14:22", "4.14:25"]
+description = "A local passed to a generic function and a type constructor of another directory's module round-trips through them, and the constructed types' methods reach the local's methods (RUE-2590)"
+source = """
+const lib = @import("sub/lib.rue");
+fn main() -> i32 {
+    let I = struct { s: i64, pad: i8, fn twice(self) -> i64 { self.s * 5 } };
+    let w = lib.mk(I, I { pad: 1, s: 3 });
+    let b = lib.wrap(I, I { pad: 2, s: 4 });
+    let back = b.take();
+    @intCast(w.get() + back.twice() + b.inner.s)
+}
+"""
+aux_files = { "sub/lib.rue" = """
+pub fn W(comptime T: type) -> type {
+    struct {
+        v: T,
+        priv: i64,
+        fn get(self) -> i64 { self.v.s * 3 + self.priv + helper() }
+    }
+}
+fn helper() -> i64 { 50 }
+pub fn mk(comptime T: type, x: T) -> W(T) { W(T) { v: x, priv: 5 } }
+pub fn Box(comptime T: type) -> type { struct { inner: T, fn take(self) -> T { self.inner } } }
+pub fn wrap(comptime T: type, x: T) -> Box(T) { Box(T) { inner: x } }
+""" }
+exit_code = 88
