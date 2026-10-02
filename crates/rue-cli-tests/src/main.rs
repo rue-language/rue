@@ -3314,6 +3314,14 @@ fn run_daemon_steps(
                 "daemon step {index} declares concurrency 0"
             )));
         }
+        for write in &step.writes {
+            std::fs::write(dir.join(&write.path), &write.source).map_err(|error| {
+                TestFailure::fatal(format!(
+                    "daemon step {index} could not write `{}`: {error}",
+                    write.path
+                ))
+            })?;
+        }
         let outputs: Vec<TestResult<Output>> = std::thread::scope(|scope| {
             let workers: Vec<_> = (0..step.concurrency)
                 .map(|_| {

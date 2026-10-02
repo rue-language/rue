@@ -403,6 +403,19 @@ pub struct DaemonStep {
     pub run_output_exit_code: i32,
     #[serde(default)]
     pub run_output_stdout_contains: Vec<String>,
+    /// Rewrite these case files before the invocation, so a later build sees
+    /// an edited source. It is how a service's rebuild after an edit is
+    /// compared with a direct build of the same text.
+    #[serde(default)]
+    pub writes: Vec<DaemonWrite>,
+}
+
+/// One case file a daemon step rewrites before it runs.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DaemonWrite {
+    pub path: String,
+    pub source: String,
 }
 
 fn one() -> usize {
