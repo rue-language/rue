@@ -800,6 +800,66 @@ impl Unifier {
         self.unify_with(lhs, rhs, concrete_types_equal)
     }
 
+    /// Unify two peer types (see [`Constraint::PeerEqual`]).
+    ///
+    /// `bind` lets an integer literal take `!`, so that a literal where a
+    /// parameter or annotation declares `!` is range-checked there (E0800,
+    /// RUE-2375). A peer is not such a declaration: the never coercion
+    /// (3.4:3) re-types a diverging *expression*, and a peer whose type
+    /// merely contains `!` as an array element is a completing value that no
+    /// rule accepts at another array type (7.1:2a). So when the two sides
+    /// are arrays whose elements pair an integer literal with `!`, at any
+    /// nesting depth, the join is a mismatch of the two array types, in the
+    /// constraint's (found, expected) direction (RUE-2559). A top-level `!`
+    /// never reaches here: the peer sites drop it before constraining.
+    fn unify_peer(
+        &mut self,
+        lhs: &InferType,
+        rhs: &InferType,
+        concrete_types_equal: &dyn Fn(Type, Type) -> bool,
+    ) -> UnifyResult {
+        let lhs_applied = self.substitution.apply(lhs);
+        let rhs_applied = self.substitution.apply(rhs);
+        if self.array_pairs_int_literal_with_never(&lhs_applied, &rhs_applied) {
+            return UnifyResult::TypeMismatch {
+                expected: self.render_for_error(&rhs_applied),
+                found: self.render_for_error(&lhs_applied),
+            };
+        }
+        self.unify_with(lhs, rhs, concrete_types_equal)
+    }
+
+    /// Whether `lhs` and `rhs` are arrays of one length whose elements, at
+    /// some depth, pair an integer literal with `!`. Both are already
+    /// resolved through the substitution.
+    fn array_pairs_int_literal_with_never(&self, lhs: &InferType, rhs: &InferType) -> bool {
+        let (
+            InferType::Array {
+                element: lhs_element,
+                length: lhs_length,
+            },
+            InferType::Array {
+                element: rhs_element,
+                length: rhs_length,
+            },
+        ) = (lhs, rhs)
+        else {
+            return false;
+        };
+        if lhs_length != rhs_length {
+            return false;
+        }
+        let is_never = |ty: &InferType| matches!(ty, InferType::Concrete(t) if t.is_never());
+        let is_int_literal = |ty: &InferType| match ty {
+            InferType::IntLiteral => true,
+            InferType::Var(var) => self.int_literal_vars.contains(var),
+            InferType::Concrete(_) | InferType::Array { .. } => false,
+        };
+        (is_never(lhs_element) && is_int_literal(rhs_element))
+            || (is_int_literal(lhs_element) && is_never(rhs_element))
+            || self.array_pairs_int_literal_with_never(lhs_element, rhs_element)
+    }
+
     fn register_string_context_types(
         &mut self,
         ty: &InferType,
@@ -873,6 +933,17 @@ impl Unifier {
                 }
                 Constraint::Equal(lhs, rhs, span) => {
                     let result = self.unify_with(lhs, rhs, concrete_types_equal);
+                    self.attribute_literal_joins(*span);
+                    if !result.is_ok() {
+                        // On error, try to bind any unbound type variables to Error
+                        // for recovery
+                        self.recover_from_error(lhs, rhs);
+                        errors.push(UnificationError::new(result, *span));
+                    }
+                    continue;
+                }
+                Constraint::PeerEqual(lhs, rhs, span) => {
+                    let result = self.unify_peer(lhs, rhs, concrete_types_equal);
                     self.attribute_literal_joins(*span);
                     if !result.is_ok() {
                         // On error, try to bind any unbound type variables to Error
