@@ -412,6 +412,35 @@ class GateTests(unittest.TestCase):
             ["RueCore/Corpus.lean:4: `description` cites `3.8:6`, which is not a paragraph `docs/spec/src` declares"],
         )
 
+    def test_corpus_description_after_an_escaped_quote_is_checked(self) -> None:
+        self.corpus(('"say \\"x\\" then 3.8:999"', '"3.8:5"'))
+        _, _, errors = self.collect()
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("`description` cites `3.8:999`", errors[0])
+
+    def test_corpus_trailing_comment_is_accepted_and_still_checked(self) -> None:
+        self.write(
+            "Corpus.lean",
+            '/-! (`xref: examples`) -/\ndef cases := [\n  { name := "c",\n    description := "d", -- why\n'
+            '    rules := ["3.8:999"], -- why\n    x := 1 }]\n',
+        )
+        _, _, errors = self.collect()
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("`rules` cites `3.8:999`", errors[0])
+
+    def test_corpus_multiline_fields_are_errors_not_skipped(self) -> None:
+        self.write(
+            "Corpus.lean",
+            '/-! (`xref: examples`) -/\ndef cases := [\n  { name := "c",\n    description :=\n      "3.8:999",\n'
+            '    rules := ["3.8:5",\n      "3.8:999"],\n    x := 1 }]\n',
+        )
+        _, _, errors = self.collect()
+        cannot = "a `rules`/`description` field the gate cannot parse; keep it on one line"
+        self.assertEqual(
+            errors,
+            [f"RueCore/Corpus.lean:4: {cannot}", f"RueCore/Corpus.lean:6: {cannot}"],
+        )
+
     def test_corpus_letter_suffix_is_its_own_id(self) -> None:
         self.corpus(('"fine"', '"3.8:50a"'))
         _, _, errors = self.collect()
