@@ -3781,6 +3781,15 @@ impl TypeInternPool {
         crate::types::text_view_struct_kind(self.try_struct_def(struct_id)?.as_ref())
     }
 
+    /// The element type of a generated slice view, or `None` for any other
+    /// struct.
+    pub(crate) fn slice_view_element(&self, struct_id: StructId) -> Option<Type> {
+        self.inner
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .slice_view_element(struct_id)
+    }
+
     /// Whether a nominal is the canonical trusted standard-library StrBuf.
     pub fn is_strbuf(&self, struct_id: StructId) -> bool {
         let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);

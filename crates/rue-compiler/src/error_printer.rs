@@ -1208,6 +1208,7 @@ pub(crate) fn synthesize_error_printer(
         // protect (ADR-0083 §1 accepts exactly this).
         param_drops: Arc::new([]),
         comptime_param_types: Arc::new([]),
+        slice_views: Arc::new([]),
         // A payload binding aliases the parameter's own storage, and a staged
         // element is a bitwise copy of storage the container still owns;
         // neither takes ownership. This body has no drop schedule at all, so

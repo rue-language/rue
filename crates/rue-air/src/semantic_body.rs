@@ -1030,6 +1030,15 @@ pub struct SemanticBody<K, M> {
     /// the callee classifies them as the caller does (RUE-2563); drop
     /// elaboration never reads it.
     pub comptime_param_types: Arc<[(u32, SemanticImportType<K, M>)]>,
+    /// Each slice view the body names by its builtin name, as a
+    /// [`SemanticImportType::Slice`] carrying its element, ordered by name.
+    ///
+    /// The body's own types name a view only by that name, and code
+    /// generation rebuilds the view's generated struct from its element. A
+    /// declaration signature that names the view supplies the element too,
+    /// but a view that exists only in a specialization (`borrow s: [T]` at
+    /// `T = i64`) has no such signature, so the body carries it (RUE-2555).
+    pub slice_views: Arc<[SemanticImportType<K, M>]>,
     pub borrow_slots: Arc<[u32]>,
     pub num_locals: u32,
     pub num_param_slots: u32,
@@ -1146,6 +1155,12 @@ impl<K, M> SemanticBody<K, M> {
                 .comptime_param_types
                 .iter()
                 .map(|(slot, value)| Ok((*slot, value.try_map_identities(key, module)?)))
+                .collect::<Result<Vec<_>, E>>()?
+                .into(),
+            slice_views: self
+                .slice_views
+                .iter()
+                .map(|ty| ty.try_map_identities(key, module))
                 .collect::<Result<Vec<_>, E>>()?
                 .into(),
             borrow_slots: self.borrow_slots.clone(),
