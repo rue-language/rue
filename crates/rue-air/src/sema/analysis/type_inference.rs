@@ -96,6 +96,51 @@ impl InferenceBreakdown {
     }
 }
 
+/// The work counters of staged fact walks.
+#[derive(Default)]
+struct StagedWalkWork {
+    fact_nodes: u64,
+    canonical_evaluations: u64,
+    scope_nodes: u64,
+    scope_materializations: u64,
+}
+
+impl StagedWalkWork {
+    fn accrue(&mut self, other: Self) {
+        self.fact_nodes = self.fact_nodes.saturating_add(other.fact_nodes);
+        self.canonical_evaluations = self
+            .canonical_evaluations
+            .saturating_add(other.canonical_evaluations);
+        self.scope_nodes = self.scope_nodes.saturating_add(other.scope_nodes);
+        self.scope_materializations = self
+            .scope_materializations
+            .saturating_add(other.scope_materializations);
+    }
+}
+
+/// What one staged fact walk produced.
+struct StagedFacts {
+    selections: AHashMap<InstRef, crate::sema::ComptimeSelection>,
+    call_facts: GenericCallFacts,
+    frontier: VecDeque<ComptimeInferenceFrontier>,
+    work: StagedWalkWork,
+    /// The walk stopped at a selector whose staged types predate a typed
+    /// call's facts; see `collect_staged_facts`.
+    deferred: bool,
+}
+
+/// What one staged fact walk collects.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FactWalk {
+    /// Generic-call facts and comptime selections, queueing each selected
+    /// body as a frontier.
+    Select,
+    /// Generic-call facts only, over the code the staged pass just typed: no
+    /// selector is evaluated, and no branch or match body is entered, since
+    /// a staged pass stops at every selector of a value-specialized body.
+    CallsOnly,
+}
+
 /// A body whose constraints become reachable after a canonical comptime
 /// selector has been evaluated.  Staged inference consumes these frontiers
 /// once, preserving the already-generated probe rather than replaying the
@@ -382,12 +427,48 @@ struct GenericCallFacts {
     /// generation cannot reduce itself: a type-function application such as
     /// `-> Box(T)` (RUE-2425).
     return_types: AHashMap<InstRef, Type>,
+    /// Each runtime argument's parameter type with the call's comptime
+    /// arguments substituted, keyed by the argument's `InstRef`, for a
+    /// declared parameter type constraint generation cannot reduce itself: a
+    /// dependent type-function application such as `v: Sel(B)` (RUE-2436).
+    param_types: AHashMap<InstRef, Type>,
 }
 
 impl GenericCallFacts {
     fn extend(&mut self, other: Self) {
         self.argument_values.extend(other.argument_values);
         self.return_types.extend(other.return_types);
+        self.param_types.extend(other.param_types);
+    }
+
+    /// The facts that retype a call's result or runtime arguments. An
+    /// argument value alone retypes nothing: a call whose signature depends
+    /// on it has a substituted return or parameter type here as well.
+    fn typing_facts(&self) -> usize {
+        self.return_types.len() + self.param_types.len()
+    }
+
+    /// Whether this set retypes `call`'s result or a runtime argument where
+    /// `staged` did not.
+    fn retypes_beyond(
+        &self,
+        staged: &Self,
+        call: InstRef,
+        call_args: &[rue_rir::RirCallArg],
+    ) -> bool {
+        (self.return_types.contains_key(&call) && !staged.return_types.contains_key(&call))
+            || call_args.iter().any(|arg| {
+                self.param_types.contains_key(&arg.value)
+                    && !staged.param_types.contains_key(&arg.value)
+            })
+    }
+
+    /// Merge `other`, reporting whether it added a typing fact this set
+    /// lacked.
+    fn absorb(&mut self, other: Self) -> bool {
+        let before = self.typing_facts();
+        self.extend(other);
+        self.typing_facts() != before
     }
 }
 
@@ -458,7 +539,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             )?;
             return Ok((result.0, result.1, AHashMap::new(), result.2, result.4));
         }
-        let (probe_types, _probe_continues, probe_breakdown, precompute_snapshot, _) = self
+        let (mut probe_types, _probe_continues, mut probe_breakdown, precompute_snapshot, _) = self
             .run_type_inference_pass(
                 infer_ctx,
                 return_type,
@@ -473,24 +554,37 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 None,
                 None,
             )?;
-        let facts = self.collect_comptime_facts(
-            &probe_types,
+        let mut call_facts = GenericCallFacts::default();
+        let (facts, refreshed) = self.collect_staged_facts(
+            infer_ctx,
+            return_type,
             params,
             body,
             type_subst,
             value_subst,
             None,
-            &precompute_snapshot.comptime_local_bindings,
+            &precompute_snapshot,
+            None,
+            &mut call_facts,
+            &mut probe_types,
         )?;
-        let (
+        if let Some(refreshed) = refreshed {
+            probe_breakdown.accrue(refreshed);
+        }
+        let StagedFacts {
             mut selections,
-            mut call_facts,
+            call_facts: selected_call_facts,
             mut frontier,
-            mut fact_nodes,
-            mut canonical_evaluations,
-            mut scope_nodes,
-            mut scope_materializations,
-        ) = facts;
+            work:
+                StagedWalkWork {
+                    mut fact_nodes,
+                    mut canonical_evaluations,
+                    mut scope_nodes,
+                    mut scope_materializations,
+                },
+            ..
+        } = facts;
+        call_facts.extend(selected_call_facts);
         // A selected body can contain another selector whose arithmetic type
         // is established by that body's constraints.  Consume a source-graph
         // frontier: each newly reachable body is generated exactly once, and
@@ -516,7 +610,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 }
                 scope_materializations = scope_materializations.saturating_add(1);
                 self.staged_frontier_started();
-                let staged = self.run_type_inference_pass(
+                let mut staged = self.run_type_inference_pass(
                     infer_ctx,
                     return_type,
                     params,
@@ -536,33 +630,32 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     .staged_frontier_instructions
                     .saturating_add(u64::try_from(staged.0.len()).unwrap_or(u64::MAX));
                 staged_breakdown.accrue(staged.2);
-                staged_resolved_types.extend(staged.0.iter().map(|(inst, ty)| (*inst, *ty)));
-                let (
-                    nested_selections,
-                    nested_call_facts,
-                    nested_frontier,
-                    nested_fact_nodes,
-                    nested_canonical_evaluations,
-                    nested_scope_nodes,
-                    nested_scope_materializations,
-                ) = self.collect_comptime_facts(
-                    &staged.0,
+                let (nested, refreshed) = self.collect_staged_facts(
+                    infer_ctx,
+                    return_type,
                     params,
                     front.body,
                     type_subst,
                     value_subst,
-                    front.bindings.clone(),
-                    &precompute_snapshot.comptime_local_bindings,
+                    Some(&selections),
+                    &precompute_snapshot,
+                    Some(&front.bindings),
+                    &mut call_facts,
+                    &mut staged.0,
                 )?;
-                selections.extend(nested_selections);
-                call_facts.extend(nested_call_facts);
-                frontier.extend(nested_frontier);
-                fact_nodes = fact_nodes.saturating_add(nested_fact_nodes);
+                if let Some(refreshed) = refreshed {
+                    staged_breakdown.accrue(refreshed);
+                }
+                staged_resolved_types.extend(staged.0.iter().map(|(inst, ty)| (*inst, *ty)));
+                selections.extend(nested.selections);
+                call_facts.extend(nested.call_facts);
+                frontier.extend(nested.frontier);
+                fact_nodes = fact_nodes.saturating_add(nested.work.fact_nodes);
                 canonical_evaluations =
-                    canonical_evaluations.saturating_add(nested_canonical_evaluations);
-                scope_nodes = scope_nodes.saturating_add(nested_scope_nodes);
+                    canonical_evaluations.saturating_add(nested.work.canonical_evaluations);
+                scope_nodes = scope_nodes.saturating_add(nested.work.scope_nodes);
                 scope_materializations =
-                    scope_materializations.saturating_add(nested_scope_materializations);
+                    scope_materializations.saturating_add(nested.work.scope_materializations);
             }
         }
         let result = self.run_type_inference_pass(
@@ -862,7 +955,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 .with_comptime_selections(selections, staged)
                 .with_comptime_frontier_mode(frontier_mode)
                 .with_comptime_argument_values(call_facts.map(|facts| &facts.argument_values))
-                .with_generic_call_return_types(call_facts.map(|facts| &facts.return_types));
+                .with_generic_call_return_types(call_facts.map(|facts| &facts.return_types))
+                .with_generic_call_param_types(call_facts.map(|facts| &facts.param_types));
 
             // Build parameter map for constraint context.
             // Convert Type to InferType so arrays are represented structurally.
@@ -1269,6 +1363,98 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         compile_error
     }
 
+    /// Collect the comptime facts of one staged pass, selecting its comptime
+    /// branches and matches at the types the final pass will give them.
+    ///
+    /// A staged pass runs before the canonical evaluator has produced the
+    /// argument facts of the generic calls it reaches, so such a call's result
+    /// is a fresh variable there, and an integer literal joined with it takes
+    /// the `i32` default. Selection evaluates a selector's operands at the
+    /// staged pass's types, so in a value-specialized body
+    /// `if id(i64, x) == 3000000000` reported the literal out of range for
+    /// `i32` (E0800) where the final pass, which has the facts, types it `i64`
+    /// (RUE-2436). When the walk reaches a selector after a typed call whose
+    /// result or argument types the pass lacked, it stops; the call facts of
+    /// the typed code are collected, the pass runs again with them, replacing
+    /// `staged_types`, and the walk restarts. A body without such a call pays
+    /// nothing. Each restart adds a typing fact, so the loop is bounded; were
+    /// one to add none, the walk runs once more without stopping.
+    ///
+    /// `call_facts` holds the facts the staged pass was generated with and
+    /// gains those of each refresh; the returned breakdown is the refresh
+    /// passes' work.
+    fn collect_staged_facts(
+        &mut self,
+        infer_ctx: &InferenceContext,
+        return_type: Type,
+        params: &[(Spur, Type, RirParamMode, bool)],
+        body: InstRef,
+        type_subst: Option<&AHashMap<Spur, Type>>,
+        value_subst: Option<&AHashMap<Spur, ConstValue>>,
+        selections: Option<&AHashMap<InstRef, crate::sema::ComptimeSelection>>,
+        precompute_snapshot: &PrecomputeSnapshot,
+        frontier_scope: Option<&FrontierScope>,
+        call_facts: &mut GenericCallFacts,
+        staged_types: &mut AHashMap<InstRef, Type>,
+    ) -> CompileResult<(StagedFacts, Option<InferenceBreakdown>)> {
+        let mut work = StagedWalkWork::default();
+        let mut refreshed: Option<InferenceBreakdown> = None;
+        let mut defer_stale_selectors = true;
+        loop {
+            let mut facts = self.collect_comptime_facts(
+                staged_types,
+                params,
+                body,
+                type_subst,
+                value_subst,
+                frontier_scope.cloned().flatten(),
+                &precompute_snapshot.comptime_local_bindings,
+                FactWalk::Select,
+                defer_stale_selectors.then_some(&*call_facts),
+            )?;
+            work.accrue(std::mem::take(&mut facts.work));
+            if !facts.deferred {
+                facts.work = work;
+                return Ok((facts, refreshed));
+            }
+            let typed = self.collect_comptime_facts(
+                staged_types,
+                params,
+                body,
+                type_subst,
+                value_subst,
+                frontier_scope.cloned().flatten(),
+                &precompute_snapshot.comptime_local_bindings,
+                FactWalk::CallsOnly,
+                None,
+            )?;
+            work.accrue(typed.work);
+            if !call_facts.absorb(typed.call_facts) {
+                defer_stale_selectors = false;
+                continue;
+            }
+            let (types, _, breakdown, _, _) = self.run_type_inference_pass(
+                infer_ctx,
+                return_type,
+                params,
+                body,
+                type_subst,
+                value_subst,
+                selections,
+                Some(call_facts),
+                true,
+                frontier_scope.is_some(),
+                Some(precompute_snapshot),
+                frontier_scope,
+            )?;
+            *staged_types = types;
+            match &mut refreshed {
+                Some(total) => total.accrue(breakdown),
+                None => refreshed = Some(breakdown),
+            }
+        }
+    }
+
     fn collect_comptime_facts(
         &mut self,
         resolved_types: &AHashMap<InstRef, Type>,
@@ -1278,15 +1464,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         value_subst: Option<&AHashMap<Spur, ConstValue>>,
         inherited_scope: FrontierScope,
         comptime_local_bindings: &AHashMap<InstRef, Type>,
-    ) -> CompileResult<(
-        AHashMap<InstRef, crate::sema::ComptimeSelection>,
-        GenericCallFacts,
-        VecDeque<ComptimeInferenceFrontier>,
-        u64,
-        u64,
-        u64,
-        u64,
-    )> {
+        walk: FactWalk,
+        staged_call_facts: Option<&GenericCallFacts>,
+    ) -> CompileResult<StagedFacts> {
         let value_visible = value_visible_type_subst(params, type_subst, value_subst);
         let type_subst = value_visible
             .as_ref()
@@ -1317,7 +1497,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let mut selections = AHashMap::new();
         let mut call_facts = GenericCallFacts::default();
         let mut frontier = VecDeque::new();
-        let can_select = value_subst.is_some_and(|values| !values.is_empty());
+        let can_select =
+            walk == FactWalk::Select && value_subst.is_some_and(|values| !values.is_empty());
         enum FactTask {
             Visit {
                 inst_ref: InstRef,
@@ -1355,6 +1536,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let mut fact_nodes = 0_u64;
         let mut canonical_evaluations = 0_u64;
         let mut scope_materializations = 0_u64;
+        // A typed call whose result or argument types `staged_call_facts`
+        // lacked makes every later selector's staged types suspect.
+        let mut stale = false;
+        let mut deferred = false;
         while let Some(task) = tasks.pop() {
             self.check_canceled()?;
             fact_nodes = fact_nodes.saturating_add(1);
@@ -1364,6 +1549,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     condition,
                     bindings,
                 } => {
+                    if can_select && stale {
+                        deferred = true;
+                        break;
+                    }
                     if can_select {
                         canonical_evaluations = canonical_evaluations.saturating_add(1);
                         scope_materializations = scope_materializations.saturating_add(1);
@@ -1486,6 +1675,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     arms,
                     bindings,
                 } => {
+                    if can_select && stale {
+                        deferred = true;
+                        break;
+                    }
                     if can_select {
                         canonical_evaluations = canonical_evaluations.saturating_add(1);
                         scope_materializations = scope_materializations.saturating_add(1);
@@ -1523,6 +1716,20 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         (inst.data.clone(), inst.span)
                     };
                     match &inst_data {
+                        rue_rir::InstData::Branch { cond, .. } if walk == FactWalk::CallsOnly => {
+                            tasks.push(FactTask::Visit {
+                                inst_ref: *cond,
+                                bindings: bindings.clone(),
+                            });
+                        }
+                        rue_rir::InstData::Match { scrutinee, .. }
+                            if walk == FactWalk::CallsOnly =>
+                        {
+                            tasks.push(FactTask::Visit {
+                                inst_ref: *scrutinee,
+                                bindings: bindings.clone(),
+                            });
+                        }
                         rue_rir::InstData::Branch {
                             cond,
                             then_block,
@@ -1583,6 +1790,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                                         &mut call_facts,
                                     ),
                                 );
+                                stale |= staged_call_facts.is_some_and(|staged| {
+                                    resolved_types.contains_key(&inst_ref)
+                                        && call_facts.retypes_beyond(staged, inst_ref, &call_args)
+                                });
                             }
                         }
                         _ => {}
@@ -1636,15 +1847,18 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 }
             }
         }
-        Ok((
+        Ok(StagedFacts {
             selections,
             call_facts,
             frontier,
-            fact_nodes,
-            canonical_evaluations,
-            scope_nodes,
-            scope_materializations,
-        ))
+            work: StagedWalkWork {
+                fact_nodes,
+                canonical_evaluations,
+                scope_nodes,
+                scope_materializations,
+            },
+            deferred,
+        })
     }
 
     /// The callee key one call instruction would specialize, for the two call
@@ -1945,8 +2159,37 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             .iter()
             .filter(|is_comptime| **is_comptime)
             .count();
+        let all_comptime_known = callee_types.len() + callee_values.len() == comptime_params;
+        // A runtime parameter whose type depends on a comptime argument
+        // (`v: Sel(B)`) is a type-function application inference cannot reduce
+        // either; its substituted type types the argument, so a literal there
+        // is checked against the parameter rather than defaulted (RUE-2436).
+        if all_comptime_known {
+            for (index, arg) in call_args.iter().enumerate() {
+                let Some(declared) = param_data.types().get(index).copied() else {
+                    continue;
+                };
+                if param_data.comptime().get(index).copied().unwrap_or(false)
+                    || !declared.is_comptime_type()
+                {
+                    continue;
+                }
+                if let Ok(param_type) = self.resolve_substituted_param_type(
+                    &function,
+                    index,
+                    declared,
+                    &callee_types,
+                    &callee_values,
+                    call_span,
+                ) && !param_type.is_comptime_type()
+                    && !param_type.is_error()
+                {
+                    call_facts.param_types.insert(arg.value, param_type);
+                }
+            }
+        }
         if function.return_type.is_comptime_type()
-            && callee_types.len() + callee_values.len() == comptime_params
+            && all_comptime_known
             && let Ok(return_type) = self.resolve_substituted_return_type(
                 &function,
                 &callee_types,

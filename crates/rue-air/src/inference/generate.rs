@@ -562,6 +562,11 @@ pub struct ConstraintGenerator<'a> {
     /// it with the call analysis's own substitution after the staged probe;
     /// `None` in the probe and in bodies without generic calls (RUE-2425).
     generic_call_return_types: Option<&'a AHashMap<InstRef, Type>>,
+    /// A generic call's runtime parameter type with its comptime arguments
+    /// substituted, keyed by the argument's `InstRef`, where the declared
+    /// parameter type is one constraint generation cannot reduce itself
+    /// (`v: Sel(B)`). Supplied with the return types above (RUE-2436).
+    generic_call_param_types: Option<&'a AHashMap<InstRef, Type>>,
     /// Optional query-owned cancellation probe. It is checked at every
     /// generated instruction so a canceled staged frontier cannot continue
     /// producing constraints or publish partial facts.
@@ -758,6 +763,7 @@ impl<'a> ConstraintGenerator<'a> {
             comptime_frontier_mode: false,
             comptime_argument_values: None,
             generic_call_return_types: None,
+            generic_call_param_types: None,
             cancel_check: None,
             sibling_attempt_hook: None,
             canceled: false,
@@ -825,6 +831,7 @@ impl<'a> ConstraintGenerator<'a> {
             comptime_frontier_mode: false,
             comptime_argument_values: None,
             generic_call_return_types: None,
+            generic_call_param_types: None,
             cancel_check: None,
             sibling_attempt_hook: None,
             canceled: false,
@@ -1223,6 +1230,16 @@ impl<'a> ConstraintGenerator<'a> {
         return_types: Option<&'a AHashMap<InstRef, Type>>,
     ) -> Self {
         self.generic_call_return_types = return_types;
+        self
+    }
+
+    /// Provide sema's substituted generic-call parameter types. See the
+    /// `generic_call_param_types` field (RUE-2436).
+    pub fn with_generic_call_param_types(
+        mut self,
+        param_types: Option<&'a AHashMap<InstRef, Type>>,
+    ) -> Self {
+        self.generic_call_param_types = param_types;
         self
     }
 
@@ -5171,11 +5188,22 @@ impl<'a> ConstraintGenerator<'a> {
                 }
                 // Generic parameter like `x: T`, or a composite mentioning a
                 // type parameter like `a: [T; 3]` (RUE-172) - substitute T.
-                match func.param_type_syntax.get(i).and_then(|syntax| {
-                    syntax.as_ref().and_then(|syntax| {
-                        self.infer_structured_type_hint(func, syntax, &type_subst, &value_subst)
+                // A dependent application such as `v: Sel(B)` reduces only in
+                // sema, whose staged pre-pass supplies it (RUE-2436).
+                match func
+                    .param_type_syntax
+                    .get(i)
+                    .and_then(|syntax| {
+                        syntax.as_ref().and_then(|syntax| {
+                            self.infer_structured_type_hint(func, syntax, &type_subst, &value_subst)
+                        })
                     })
-                }) {
+                    .or_else(|| {
+                        let arg = args.get(i)?;
+                        self.generic_call_param_types
+                            .and_then(|types| types.get(&arg.value).copied())
+                            .map(|ty| self.type_to_infer(ty))
+                    }) {
                     Some(ty) => ty,
                     // Unknown type parameter - checked in sema.
                     None => continue,
