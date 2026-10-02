@@ -4568,8 +4568,8 @@ fn drop_glue_semantics_have_one_air_policy_owner() {
         ordinary
             .matches("drop_glue::is_anonymous_destructor(")
             .count(),
-        1,
-        "ordinary anonymous materialization must use the canonical predicate"
+        2,
+        "ordinary anonymous materialization and member registration must use the canonical predicate"
     );
     assert_eq!(
         identity
