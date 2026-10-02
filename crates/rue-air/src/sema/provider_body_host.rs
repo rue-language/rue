@@ -361,6 +361,7 @@ mod type_syntax_provider_trace_tests {
         fn type_syntax_reduce_constructor(
             &mut self,
             _head: &crate::SemanticTypeConstructorHead<Spur, Spur, FileId>,
+            _constructor: &str,
             _type_arguments: &[(Spur, Type)],
             _value_arguments: &[(Spur, ConstValue)],
             _span: Span,
@@ -4800,6 +4801,7 @@ where
     fn type_syntax_reduce_constructor(
         &mut self,
         head: &crate::SemanticTypeConstructorHead<Spur, Spur, FileId>,
+        constructor: &str,
         type_arguments: &[(Spur, Type)],
         value_arguments: &[(Spur, ConstValue)],
         span: Span,
@@ -4858,8 +4860,11 @@ where
             // here and fail only at the specialized signature downstream.
             let callee_types = type_arguments.iter().copied().collect();
             let callee_values = value_arguments.iter().cloned().collect();
+            // Diagnostics name the constructor as the source wrote it
+            // (`lib.K`), never by its internal symbol.
+            let display = self.intern_name_at(constructor, span)?;
             OrdinaryBodyEngine::new(self).validate_comptime_call_substitutions(
-                head.key,
+                display,
                 &function,
                 &callee_types,
                 &callee_values,

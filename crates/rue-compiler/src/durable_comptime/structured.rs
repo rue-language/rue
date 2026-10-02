@@ -547,6 +547,7 @@ pub(super) mod structured_type_adapter_tests {
                 Arc<str>,
                 crate::StableDefinitionKey,
             >,
+            _constructor: &str,
             _type_arguments: &[(Arc<str>, DurableType)],
             _value_arguments: &[(Arc<str>, DurableConstValue)],
         ) -> rue_air::SemanticProviderResult<

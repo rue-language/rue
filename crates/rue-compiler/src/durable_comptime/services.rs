@@ -352,15 +352,18 @@ pub(crate) trait DurableComptimeSemanticAuthority {
     /// The type, at one call, of a callable's comptime value parameter whose
     /// declared type reads another comptime parameter (`comptime a: [i32;
     /// N]`). The admitted signature carries only the deferred placeholder for
-    /// it (RUE-2550); the call's arguments resolve the retained syntax.
+    /// it (RUE-2550); the call's arguments resolve the retained syntax. The
+    /// effects the resolution observed are returned for the caller's scope.
     fn resolve_dependent_parameter_type(
         &self,
         _declaration: &DeclarationCandidateKey,
         _parameter_index: usize,
         _type_arguments: &[(Arc<str>, DurableType)],
         _value_arguments: &[(Arc<str>, DurableConstValue)],
-    ) -> Result<DurableType, rue_air::SemanticProviderError<QueryAbort, SemanticNucleusFailure>>
-    {
+    ) -> Result<
+        (DurableType, DurableComptimeEffects),
+        rue_air::SemanticProviderError<QueryAbort, SemanticNucleusFailure>,
+    > {
         Err(rue_air::SemanticProviderError::Failure(
             SemanticNucleusFailure::Resolution(Arc::from(
                 "this comptime authority cannot resolve a dependent parameter type",
@@ -647,8 +650,10 @@ impl<A: DurableComptimeSemanticAuthority + ?Sized> DurableComptimeServices<'_, A
         parameter_index: usize,
         type_arguments: &[(Arc<str>, DurableType)],
         value_arguments: &[(Arc<str>, DurableConstValue)],
-    ) -> Result<DurableType, rue_air::SemanticProviderError<QueryAbort, SemanticNucleusFailure>>
-    {
+    ) -> Result<
+        (DurableType, DurableComptimeEffects),
+        rue_air::SemanticProviderError<QueryAbort, SemanticNucleusFailure>,
+    > {
         self.authority.resolve_dependent_parameter_type(
             declaration,
             parameter_index,

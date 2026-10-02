@@ -607,9 +607,12 @@ pub trait SemanticTypeSyntaxProvider<S, M, A, K, N, T, V>:
         syntax: SemanticValueSyntax<'_>,
     ) -> SemanticProviderResult<V, Self::Abort, Self::Failure>;
 
+    /// Reduce one admitted constructor call. `constructor` is the call's
+    /// source spelling (`lib.K`), for a diagnostic that names it.
     fn reduce_comptime_call(
         &mut self,
         head: &SemanticTypeConstructorHead<K, N, A>,
+        constructor: &str,
         type_arguments: &[(N, T)],
         value_arguments: &[(N, V)],
     ) -> SemanticProviderResult<Option<SemanticComptimeCallResult<T, V>>, Self::Abort, Self::Failure>;
@@ -882,6 +885,7 @@ struct SemanticComptimeCallRequest<K, N, A, T, V> {
 }
 
 struct SemanticComptimeCallRequestView<'a, K, N, A, T, V> {
+    constructor: &'a str,
     head: &'a SemanticTypeConstructorHead<K, N, A>,
     type_arguments: &'a [(N, T)],
     value_arguments: &'a [(N, V)],
@@ -890,6 +894,10 @@ struct SemanticComptimeCallRequestView<'a, K, N, A, T, V> {
 impl<'a, K, N, A, T, V> SemanticComptimeCallRequestView<'a, K, N, A, T, V> {
     fn head(&self) -> &SemanticTypeConstructorHead<K, N, A> {
         self.head
+    }
+
+    fn constructor(&self) -> &str {
+        self.constructor
     }
 
     fn type_arguments(&self) -> &[(N, T)] {
@@ -1072,6 +1080,7 @@ where
 impl<K, N, A, T, V> SemanticComptimeCallRequest<K, N, A, T, V> {
     fn view(&self) -> SemanticComptimeCallRequestView<'_, K, N, A, T, V> {
         SemanticComptimeCallRequestView {
+            constructor: &self.constructor,
             head: &self.head,
             type_arguments: &self.type_arguments,
             value_arguments: &self.value_arguments,
@@ -1351,6 +1360,7 @@ where
             head,
             type_arguments,
             value_arguments,
+            ..
         } = self.suspension.request();
         ComptimeStructuredTypeRequest {
             program: &self.authority.program,
@@ -1371,6 +1381,12 @@ where
     pub fn head(&self) -> &SemanticTypeConstructorHead<C, N, A> {
         let SemanticComptimeCallRequestView { head, .. } = self.suspension.request();
         head
+    }
+
+    /// The constructor call's source spelling (`lib.K`).
+    pub fn constructor(&self) -> &str {
+        let SemanticComptimeCallRequestView { constructor, .. } = self.suspension.request();
+        constructor
     }
 
     pub fn type_arguments(&self) -> &[(N, T)] {
@@ -1640,6 +1656,7 @@ where
                 let request = suspension.request();
                 let reduced = provider.reduce_comptime_call(
                     request.head(),
+                    request.constructor(),
                     request.type_arguments(),
                     request.value_arguments(),
                 );
@@ -2535,6 +2552,7 @@ mod tests {
         fn reduce_comptime_call(
             &mut self,
             head: &Head,
+            _constructor: &str,
             type_arguments: &[(&'static str, &'static str)],
             value_arguments: &[(&'static str, i64)],
         ) -> FixtureResult<Option<SemanticComptimeCallResult<&'static str, i64>>> {
@@ -2764,6 +2782,7 @@ mod tests {
                     request_sites.push(request.head().site);
                     let reduced = fixture.reduce_comptime_call(
                         request.head(),
+                        request.constructor(),
                         request.type_arguments(),
                         request.value_arguments(),
                     );
@@ -2912,6 +2931,7 @@ mod tests {
         let request = suspension.request();
         let reduced = fixture.reduce_comptime_call(
             request.head(),
+            request.constructor(),
             request.type_arguments(),
             request.value_arguments(),
         );
@@ -3217,6 +3237,7 @@ mod tests {
         let request = state.into_request();
         let reduced = fixture.reduce_comptime_call(
             &request.head,
+            &request.constructor,
             &request.type_arguments,
             &request.value_arguments,
         );
@@ -3597,6 +3618,7 @@ mod tests {
         assert_eq!(request.type_arguments(), &[("T", "primitive:i32")]);
         let reduced = fixture.reduce_comptime_call(
             request.head(),
+            job.constructor(),
             request.type_arguments(),
             request.value_arguments(),
         );
