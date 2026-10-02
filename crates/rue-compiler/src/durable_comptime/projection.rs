@@ -327,6 +327,32 @@ pub(crate) fn suggested_durable_const_type_name(value: &DurableConstValue) -> St
     }
 }
 
+/// The declared types of a reduced call's comptime value parameters, in
+/// parameter order, under the call's type arguments.
+///
+/// A parameter whose declared type reads another comptime value parameter
+/// (`comptime a: [i32; N]`) has only the deferred `ComptimeType` placeholder
+/// in its signature (RUE-2550). Its argument was already checked against the
+/// type the call resolves for it, so an aggregate argument's own type is that
+/// type; any other argument keeps the placeholder.
+pub(crate) fn comptime_value_parameter_types(
+    parameters: &[crate::durable_semantics::DurableSemanticParameter],
+    value_arguments: &[(Arc<str>, DurableConstValue)],
+    type_arguments: &[DurableType],
+) -> Vec<DurableType> {
+    parameters
+        .iter()
+        .filter(|parameter| !parameter.is_type_parameter())
+        .enumerate()
+        .map(
+            |(index, parameter)| match (parameter.deferred_type, value_arguments.get(index)) {
+                (true, Some((_, DurableConstValue::Aggregate(aggregate)))) => aggregate.ty.clone(),
+                _ => substitute_durable_generics(&parameter.ty, type_arguments),
+            },
+        )
+        .collect()
+}
+
 pub(crate) fn substitute_durable_generics(
     ty: &DurableType,
     type_arguments: &[DurableType],

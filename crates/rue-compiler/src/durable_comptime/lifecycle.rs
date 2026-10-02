@@ -2242,6 +2242,16 @@ pub(crate) fn bind_durable_comptime_argument(
     direct_unit_literal: bool,
 ) -> Result<(), DurableComptimeFailure> {
     let TypedSemanticConst { value, ty } = argument;
+    // A comptime value parameter whose declared type reads another comptime
+    // parameter (`comptime a: [i32; N]`) has its type only at an ordinary call
+    // site, which resolves the retained syntax (RUE-2435, RUE-2550). This
+    // binder has no such resolution, so it refuses the call rather than bind
+    // the value unchecked or misread the parameter as a type parameter.
+    if parameter.deferred_type {
+        return Err(DurableComptimeFailure::comptime_failure(format!(
+            "comptime parameter `{parameter_name}` has a type that depends on another comptime parameter, which a compile-time evaluated call does not support"
+        )));
+    }
     if parameter.ty == DurableType::ComptimeType {
         let value = match value {
             DurableConstValue::Type(ty) => ty,

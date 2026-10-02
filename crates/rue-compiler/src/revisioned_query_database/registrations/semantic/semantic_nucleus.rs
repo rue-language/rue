@@ -1414,19 +1414,12 @@ $runtime
                                                 .iter()
                                                 .map(|(_, ty)| ty.clone())
                                                 .collect::<Vec<_>>();
-                                            let value_parameter_types = callable_parameters
-                                                .iter()
-                                                .filter(|parameter| {
-                                                    parameter.ty
-                                                        != crate::durable_semantics::DurableType::ComptimeType
-                                                })
-                                                .map(|parameter| {
-                                                    substitute_durable_generics(
-                                                        &parameter.ty,
-                                                        &concrete_type_arguments,
-                                                    )
-                                                })
-                                                .collect::<Vec<_>>();
+                                            let value_parameter_types =
+                                                crate::durable_comptime::comptime_value_parameter_types(
+                                                    callable_parameters,
+                                                    &call.value_arguments,
+                                                    &concrete_type_arguments,
+                                                );
                                             let expected_type = substitute_durable_generics(
                                                 callable_result,
                                                 &concrete_type_arguments,
