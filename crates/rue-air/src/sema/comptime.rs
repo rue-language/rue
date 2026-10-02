@@ -2522,24 +2522,28 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         span: Span,
         env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
     ) -> ComptimeOutcome<H::Value, H::Failure> {
+        let element = value;
         let element_slot = host_value!(self.array_element_slot_type(env, inst_ref));
+        let typed_slot = element_slot.is_some();
         let value = outcome_value!(if hinted {
-            self.eval_hinted(value, element_slot, env)
+            self.eval_hinted(element, element_slot, env)
         } else {
-            self.eval_in_slot(value, element_slot, env)
+            self.eval_in_slot(element, element_slot, env)
         });
-        let len = match count {
-            RepeatCount::Literal(n) => n,
+        let (len, local_count) = match count {
+            RepeatCount::Literal(n) => (n, false),
             RepeatCount::Named(sym) => {
                 let name = self.name_from_rir(sym.into());
                 let site = self.diagnostic_site(span);
                 let binding = Self::classify_array_length_binding(env, &name);
-                outcome_value!(self.host.resolve_named_array_length(
+                let local_count = env.locals.contains_key(&name);
+                let len = outcome_value!(self.host.resolve_named_array_length(
                     &name,
                     &site,
                     Some(&env.value_subst),
                     binding,
-                ))
+                ));
+                (len, local_count)
             }
         };
         if let Some(elem_ty) = value.as_type() {
@@ -2550,13 +2554,28 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         // A reduced value repeat is a structural array literal. Its
         // contextual type is resolved through the same array contract
         // as ArrayInit, then the host performs one bounded admission.
-        let Some(array_ty) = self.host.resolve_comptime_array_type(
-            &self.program_key(),
-            env,
-            inst_ref,
-            Some(&value),
-            len,
-        ) else {
+        //
+        // A count naming a `let` of the evaluation itself (`let n = 3;
+        // [2; n]` in a `comptime` block) has a value only here, so type
+        // inference may have left the repeat's own type open. With no
+        // expected or inferred array type, the array is the element's type
+        // at that count, as an annotation `[i32; n]` would declare it
+        // (4.14:26, 4.14:27, RUE-2542).
+        let resolved = if local_count && !typed_slot && env.expected_result.is_none() {
+            self.host
+                .const_expr_type(&self.program_key(), env, element)
+                .or_else(|| value.value_type())
+                .map(|element_ty| self.host.get_or_create_array_type(element_ty, len))
+        } else {
+            self.host.resolve_comptime_array_type(
+                &self.program_key(),
+                env,
+                inst_ref,
+                Some(&value),
+                len,
+            )
+        };
+        let Some(array_ty) = resolved else {
             return ComptimeOutcome::RuntimeDependent;
         };
         let site = self.diagnostic_site(span);
