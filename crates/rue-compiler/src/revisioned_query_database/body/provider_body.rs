@@ -3458,6 +3458,25 @@ pub(in crate::revisioned_query_database) fn resolve_parsed_semantic_signature(
                     if parameter.is_comptime {
                         fn_type_position(&ty, "a `comptime` parameter")?;
                     }
+                    // A callback is a runtime value (6.1:47), so its `fn` type
+                    // can neither take nor return a type value, which cannot
+                    // exist at run time (4.14:6). No function could be passed
+                    // for it either: one returning `type` is a `-> type`
+                    // constructor (6.1:50). Reported at the parameter rather
+                    // than leaving the function without a signature, which
+                    // made every call to it an undefined function (RUE-2420).
+                    if fn_type_mentions_type_value(&ty) {
+                        return Err(ResolveSemanticSignatureError::failure(
+                            crate::semantic_query_nucleus::SemanticNucleusFailure::DiagnosticAtSignatureType {
+                                kind: rue_error::ErrorKind::ComptimeEvaluationFailed {
+                                    reason: "a `fn` type cannot take or return `type`: type values cannot exist at runtime".to_owned(),
+                                },
+                                anchor: crate::semantic_query_nucleus::SignatureTypeAnchor::Parameter(
+                                    ordinal as u32,
+                                ),
+                            },
+                        ));
+                    }
                     match parameter.mode {
                         crate::declaration_candidate::DeclarationParameterMode::Value => {}
                         crate::declaration_candidate::DeclarationParameterMode::Borrow => {
@@ -4174,6 +4193,19 @@ impl BodyInputResolver {
         }
         self.resolve_selected_artifact(context, key, definition, candidate)
     }
+}
+
+/// Whether `ty` is a `fn` type with `type` as a parameter or result type, at
+/// any depth of nested `fn` parameter types (RUE-2420).
+fn fn_type_mentions_type_value(ty: &crate::durable_semantics::DurableType) -> bool {
+    let crate::durable_semantics::DurableType::Function { params, result } = ty else {
+        return false;
+    };
+    let is_type_value = |ty: &crate::durable_semantics::DurableType| {
+        *ty == crate::durable_semantics::DurableType::ComptimeType
+            || fn_type_mentions_type_value(ty)
+    };
+    is_type_value(result) || params.iter().any(|(_, param)| is_type_value(param))
 }
 
 /// Refuse a `fn` type as a structural child of another type (ADR-0096, spec
