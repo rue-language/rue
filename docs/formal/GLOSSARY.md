@@ -768,7 +768,7 @@ documents rely on.
 | `Event` | `Dynamics` | One entry of the drop trace: a drop starting at a binding or temporary, a destructor run, a consume event, or a `@dbg` line | standard (FIELD §6: trace of events) | `Dynamics` |
 | `PanicKind` | `Dynamics` | The kinds of defined trap (§6.12's `↯κ`): overflow, division or remainder by zero, out-of-bounds index, explicit panic, float-to-int range | Rue-specific, grounded (spec 8.1:1) | 03 intro |
 | `Refusal` | `Dynamics` | The named refusals of the machine (use after move, use after drop, …); each §7 memory-safety bullet forbids one | ours, pending audit | 03 “Type safety”; lean/README “How to read this, with …”; GUIDE §2; `Dynamics` |
-| `Contents.getAt` | `Dynamics` | `H(ℓ)@π` (§6.3): follows a path into stored contents; reaching a moved-out position is a use after move | ours, pending audit | 03 “No use-after-move” |
+| `Contents.getAt` | `Dynamics` | `H(ℓ)@π` (§6.3): follows a path into stored contents; reaching a moved-out position is a use after move | ours, pending audit | — |
 | `inBoundsIdx` | `Dynamics` | §6.5's bounds check on a run-time index: `0 ≤ i < n` | Rue-specific, grounded (spec 7.1:11) | — |
 | `DynStep` | `Dynamics` | Where the run-time-indexed tail of a place lands: a path with constant indices, the bounds trap, or a refusal | helper | — |
 | `Contents.resolveDyn` | `Dynamics` | Resolves a place's run-time indices against the stored contents, giving a path with constant indices, trapping on an out-of-range index (§6.5) | ours, pending audit | 03 intro; `Syntax` |
