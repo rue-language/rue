@@ -548,10 +548,16 @@ $runtime
                                 // dependent retry while continuing unrelated
                                 // roots so ordinary multi-error collection is
                                 // preserved.
+                                // The suppression is transitive: a body
+                                // whose own producer failed is failed too,
+                                // so a body two constructor layers away
+                                // (`W(V(I))` over a failing body's local,
+                                // RUE-2590) is suppressed as well.
                                 if producers
                                     .iter()
                                     .any(|producer| failed_instances.contains(producer))
                                 {
+                                    failed_instances.insert(instance.clone());
                                     continue;
                                 }
                                 let mut blockers = BTreeSet::new();
