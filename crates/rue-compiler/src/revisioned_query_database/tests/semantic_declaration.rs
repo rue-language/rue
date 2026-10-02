@@ -12,6 +12,7 @@ fn foreign_signature_agreement_uses_resolved_identity_mode_and_comptime_not_name
         mode,
         is_comptime,
         bounds: Arc::from([]),
+        deferred_type: false,
     };
     let left = [parameter("left", Type::I64, Mode::Value, false)];
     let renamed = [parameter("right", Type::I64, Mode::Value, false)];

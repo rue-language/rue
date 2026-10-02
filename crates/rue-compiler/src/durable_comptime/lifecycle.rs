@@ -2412,6 +2412,7 @@ mod effect_lifecycle_tests {
             mode: DurableParameterMode::Value,
             is_comptime: true,
             bounds: Arc::from([]),
+            deferred_type: false,
         }
     }
 

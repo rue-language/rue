@@ -748,6 +748,7 @@ pub(super) mod structured_type_adapter_tests {
                     mode: crate::durable_semantics::DurableParameterMode::Value,
                     is_comptime: true,
                     bounds: Arc::from([]),
+                    deferred_type: false,
                 },
                 TypedSemanticConst {
                     value: DurableConstValue::Type(DurableType::I32),
@@ -765,6 +766,7 @@ pub(super) mod structured_type_adapter_tests {
                     mode: crate::durable_semantics::DurableParameterMode::Value,
                     is_comptime: true,
                     bounds: Arc::from([]),
+                    deferred_type: false,
                 },
                 TypedSemanticConst {
                     value: DurableConstValue::Integer(value),
@@ -858,6 +860,7 @@ pub(super) mod structured_type_adapter_tests {
                     mode: crate::durable_semantics::DurableParameterMode::Value,
                     is_comptime: true,
                     bounds: Arc::from([]),
+                    deferred_type: false,
                 },
                 crate::durable_semantics::DurableSemanticParameter {
                     name: Arc::from("x"),
@@ -865,6 +868,7 @@ pub(super) mod structured_type_adapter_tests {
                     mode: crate::durable_semantics::DurableParameterMode::Value,
                     is_comptime: true,
                     bounds: Arc::from([]),
+                    deferred_type: false,
                 },
             ]),
             result: DurableType::I32,
@@ -902,6 +906,7 @@ pub(super) mod structured_type_adapter_tests {
                 mode: DurableParameterMode::Value,
                 is_comptime: parameter.is_comptime,
                 bounds: Arc::from([]),
+                deferred_type: false,
             })
             .collect::<Vec<_>>()
             .into();
@@ -945,6 +950,7 @@ pub(super) mod structured_type_adapter_tests {
                 mode: crate::durable_semantics::DurableParameterMode::Value,
                 is_comptime: true,
                 bounds: Arc::from([]),
+                deferred_type: false,
             },
             crate::durable_semantics::DurableSemanticParameter {
                 name: Arc::from("T1"),
@@ -952,6 +958,7 @@ pub(super) mod structured_type_adapter_tests {
                 mode: crate::durable_semantics::DurableParameterMode::Value,
                 is_comptime: true,
                 bounds: Arc::from([]),
+                deferred_type: false,
             },
             crate::durable_semantics::DurableSemanticParameter {
                 name: Arc::from("x0"),
@@ -959,6 +966,7 @@ pub(super) mod structured_type_adapter_tests {
                 mode: crate::durable_semantics::DurableParameterMode::Value,
                 is_comptime: true,
                 bounds: Arc::from([]),
+                deferred_type: false,
             },
             crate::durable_semantics::DurableSemanticParameter {
                 name: Arc::from("x1"),
@@ -966,6 +974,7 @@ pub(super) mod structured_type_adapter_tests {
                 mode: crate::durable_semantics::DurableParameterMode::Value,
                 is_comptime: true,
                 bounds: Arc::from([]),
+                deferred_type: false,
             },
         ]);
         admission.shell_parameters = Arc::from([
@@ -1023,6 +1032,7 @@ pub(super) mod structured_type_adapter_tests {
                     mode: crate::durable_semantics::DurableParameterMode::Value,
                     is_comptime: true,
                     bounds: Arc::from([]),
+                    deferred_type: false,
                 },
                 TypedSemanticConst {
                     value: DurableConstValue::Type(ty),
@@ -1047,6 +1057,7 @@ pub(super) mod structured_type_adapter_tests {
                     mode: crate::durable_semantics::DurableParameterMode::Value,
                     is_comptime: true,
                     bounds: Arc::from([]),
+                    deferred_type: false,
                 },
                 TypedSemanticConst {
                     value,
@@ -2115,6 +2126,7 @@ pub(super) mod structured_type_adapter_tests {
             mode: DurableParameterMode::Value,
             is_comptime: true,
             bounds: Arc::from([]),
+            deferred_type: false,
         }]);
         fit_admission.shell_parameters =
             Arc::from([crate::declaration_candidate::DeclarationParameterHeader {
@@ -2703,6 +2715,7 @@ pub(super) mod structured_type_adapter_tests {
                                 mode: crate::durable_semantics::DurableParameterMode::Value,
                                 is_comptime: true,
                                 bounds: Arc::from([]),
+                                deferred_type: false,
                             },
                             crate::durable_semantics::DurableSemanticParameter {
                                 name: Arc::from("second"),
@@ -2710,6 +2723,7 @@ pub(super) mod structured_type_adapter_tests {
                                 mode: crate::durable_semantics::DurableParameterMode::Value,
                                 is_comptime: true,
                                 bounds: Arc::from([]),
+                                deferred_type: false,
                             },
                         ]);
                     let shell_parameters: Arc<

@@ -1689,10 +1689,7 @@ where
             function
                 .parameters
                 .iter()
-                .map(|parameter| {
-                    parameter.is_comptime
-                        && matches!(parameter.ty, crate::SemanticImportType::ComptimeType)
-                })
+                .map(|parameter| parameter.is_type_parameter())
                 .collect(),
         );
         if !retain_rir_type_syntax {
@@ -4784,7 +4781,7 @@ where
                     .get(parameter.name.as_ref())
                     .expect("signature parameter names must be admitted before analysis"),
                 is_comptime: parameter.is_comptime,
-                is_type: matches!(parameter.ty, crate::SemanticImportType::ComptimeType),
+                is_type: parameter.is_type_parameter(),
             })
             .collect::<Vec<_>>();
         Ok(Some(crate::SemanticTypeConstructorHead {
@@ -5080,7 +5077,7 @@ where
                 .iter()
                 .map(|parameter| crate::CanonicalDisplayParameter {
                     is_comptime: parameter.is_comptime,
-                    is_type: matches!(parameter.ty, crate::SemanticImportType::ComptimeType),
+                    is_type: parameter.is_type_parameter(),
                 });
         crate::format_canonical_application(
             &name,
@@ -5583,10 +5580,7 @@ where
             let flags = durable
                 .parameters
                 .iter()
-                .map(|parameter| {
-                    parameter.is_comptime
-                        && matches!(parameter.ty, crate::SemanticImportType::ComptimeType)
-                })
+                .map(|parameter| parameter.is_type_parameter())
                 .collect::<Vec<_>>();
             if flags.len() == function.params.len() {
                 return flags;
@@ -5787,9 +5781,7 @@ where
                     types: signature
                         .parameters
                         .iter()
-                        .filter(|parameter| {
-                            matches!(parameter.ty, crate::SemanticImportType::ComptimeType)
-                        })
+                        .filter(|parameter| parameter.is_type_parameter())
                         .map(|parameter| {
                             let symbol = self.interner.get(parameter.name.as_ref())?;
                             self.canonical_type_instance(*callee_types.get(&symbol)?)
@@ -5800,9 +5792,7 @@ where
                     values: signature
                         .parameters
                         .iter()
-                        .filter(|parameter| {
-                            !matches!(parameter.ty, crate::SemanticImportType::ComptimeType)
-                        })
+                        .filter(|parameter| !parameter.is_type_parameter())
                         .map(|parameter| {
                             let symbol = self.interner.get(parameter.name.as_ref())?;
                             self.canonical_argument_value(callee_values.get(&symbol)?.clone())

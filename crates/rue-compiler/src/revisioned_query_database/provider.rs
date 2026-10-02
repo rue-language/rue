@@ -4108,8 +4108,7 @@ impl<'p, 'db> SignatureFacts<'p, 'db> {
             .map(|parameter| rue_air::SemanticTypeConstructorParameter {
                 name: parameter.name.clone(),
                 is_comptime: parameter.is_comptime,
-                is_type: parameter.is_comptime
-                    && parameter.ty == crate::durable_semantics::DurableType::ComptimeType,
+                is_type: parameter.is_type_parameter(),
             })
             .collect::<Vec<_>>();
         Some(rue_air::SemanticTypeConstructorHead {

@@ -121,7 +121,7 @@ pub(in crate::revisioned_query_database) fn comptime_call_for_anonymous_function
     let mut types = Vec::new();
     let mut values = Vec::new();
     for (header, parameter) in shell.parameters.iter().zip(parameters.iter()) {
-        if parameter.ty == crate::durable_semantics::DurableType::ComptimeType
+        if parameter.is_type_parameter()
             && let Some(value) = type_arguments.next()
         {
             types.push((

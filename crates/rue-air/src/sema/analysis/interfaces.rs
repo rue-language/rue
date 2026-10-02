@@ -389,6 +389,7 @@ pub(super) mod interface_fixtures {
             mode: SemanticParameterMode::Value,
             is_comptime: true,
             bounds: bounds.to_vec().into(),
+            deferred_type: false,
         }
     }
 

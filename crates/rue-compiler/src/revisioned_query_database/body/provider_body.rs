@@ -1499,8 +1499,7 @@ impl SemanticNucleusTypeProvider<'_> {
                 |(header, parameter)| rue_air::SemanticTypeConstructorParameter {
                     name: header.name.clone(),
                     is_comptime: parameter.is_comptime,
-                    is_type: parameter.is_comptime
-                        && parameter.ty == crate::durable_semantics::DurableType::ComptimeType,
+                    is_type: parameter.is_type_parameter(),
                 },
             )
             .collect::<Vec<_>>();
@@ -3236,6 +3235,7 @@ pub(in crate::revisioned_query_database) fn resolve_parsed_semantic_signature(
                 .zip(parameter_bounds)
                 .enumerate()
                 .map(|(ordinal, (parameter, bounds))| {
+                    let mut deferred_type = false;
                     let ty = if bounds.is_empty() {
                         let ty = resolve(
                             provider,
@@ -3258,6 +3258,7 @@ pub(in crate::revisioned_query_database) fn resolve_parsed_semantic_signature(
                                 ),
                             ));
                         }
+                        deferred_type = last_deferred.get();
                         ty
                     } else {
                         // A bounded parameter is a type parameter (spec
@@ -3310,6 +3311,7 @@ pub(in crate::revisioned_query_database) fn resolve_parsed_semantic_signature(
                         },
                         is_comptime: parameter.is_comptime,
                         bounds,
+                        deferred_type,
                     })
                 })
                 .collect::<Result<Vec<_>, ResolveSemanticSignatureError>>()?;
