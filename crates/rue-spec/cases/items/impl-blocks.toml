@@ -1030,3 +1030,45 @@ fn Cell(comptime T: type) -> type {
 fn main() -> i32 { let S = Cell(i64); @intCast(S { v: 42 }.v) }
 """
 exit_code = 42
+
+[[case]]
+name = "anonymous_struct_method_types_apply_a_constructor_to_self"
+spec = ["6.4:18"]
+description = "`Self` names the anonymous struct in a type-constructor argument of its methods' parameter, slice and result types (RUE-2585)"
+source = """
+fn Inner(comptime T: type) -> type { struct { x: i64 } }
+fn A(comptime T: type) -> type {
+    struct {
+        v: T,
+        fn take(self, s: Inner(Self)) -> i64 { s.x + self.v }
+        fn sum(self, borrow s: [Inner(Self)]) -> i64 { s[0].x + s[1].x }
+        fn make(self) -> Inner(Self) { Inner(Self) { x: 20 } }
+    }
+}
+fn main() -> i32 {
+    let T = A(i64);
+    let I = Inner(T);
+    let arr: [I; 2] = [I { x: 5 }, I { x: 7 }];
+    let t = T { v: 10 };
+    @intCast(t.take(t.make()) + t.sum(borrow arr))
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "named_struct_method_returns_an_array_of_self"
+spec = ["6.4:18"]
+description = "`Self` names a named struct inside an array result type of its own method and associated function, as in a bare `-> Self` (RUE-2585)"
+source = """
+struct Pair {
+    v: i32,
+    fn split(self) -> [Self; 2] { [Pair { v: self.v }, Pair { v: self.v + 2 }] }
+    fn nest() -> [[Self; 1]; 1] { [[Pair { v: 20 }]] }
+}
+fn main() -> i32 {
+    let a = Pair { v: 10 }.split();
+    let n = Pair.nest();
+    a[0].v + a[1].v + n[0][0].v
+}
+"""
+exit_code = 42
