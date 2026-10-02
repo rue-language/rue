@@ -1449,14 +1449,16 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         // struct exports the member's producer-owned identity, exactly as a
         // call reached through a provider endpoint does; the member body is
         // then analyzed as its own anonymous-member producer (RUE-2587).
-        let owner = self.canonical_type_instance(struct_type).map_err(|failure| {
-            CompileError::new(
-                ErrorKind::InternalError(format!(
-                    "an anonymous struct's members could not name their owner: {failure:?}"
-                )),
-                struct_span,
-            )
-        })?;
+        let owner = self
+            .canonical_type_instance(struct_type)
+            .map_err(|failure| {
+                CompileError::new(
+                    ErrorKind::InternalError(format!(
+                        "an anonymous struct's members could not name their owner: {failure:?}"
+                    )),
+                    struct_span,
+                )
+            })?;
         for (key, info) in staged {
             let method_str = self.body_interner().resolve(&key.1).to_string();
             let kind = if crate::drop_glue::is_anonymous_destructor(&method_str, info.has_self) {

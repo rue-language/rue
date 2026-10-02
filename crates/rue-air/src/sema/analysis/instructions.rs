@@ -671,11 +671,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     }
                 }
                 // A runtime body's struct is complete once its declaration is
-                // reached: every member body is checked and emitted with the
-                // body that declares it, called or not, as a named struct's
-                // methods are (4.14:10). A type constructor's members stay
-                // with the producer-owned anonymous-member transaction that
-                // a use of the constructed type starts.
+                // reached, so every member body is checked and emitted with
+                // the body that declares it, called or not (4.14:10). A type
+                // constructor's members stay with the producer-owned
+                // anonymous-member transaction a use of the constructed type
+                // starts, since only a use fixes the specialization.
                 if ctx.return_type != Type::COMPTIME_TYPE {
                     for descriptor in &descriptors {
                         ctx.referenced_methods.insert((struct_id, descriptor.name));
