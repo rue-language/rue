@@ -30,6 +30,16 @@ pub enum Constraint {
     /// destination without making mixed integer/float operators coercive.
     ContextualEqual(InferType, InferType, Span),
 
+    /// Two peer types must be equal: the arms of an `if` or `match` joined
+    /// into one result, the operands of a comparison, the elements of an
+    /// array literal, the common operands of an intrinsic. Neither side is a
+    /// declared expectation, so an integer literal element is not typed `!`
+    /// because its peer is an array of `!`: a completing `[!; N]` value is
+    /// not accepted at another array type (7.1:2a), and the join is a type
+    /// mismatch (RUE-2559). Otherwise this is ordinary equality, written
+    /// (found, expected) like [`Self::Equal`].
+    PeerEqual(InferType, InferType, Span),
+
     /// A field projection whose base type was not concrete during constraint
     /// generation. The semantic field lookup is deliberately deferred until
     /// the base has been solved; this keeps joined values (if/match results)
@@ -99,6 +109,11 @@ impl Constraint {
         Constraint::ContextualEqual(lhs, rhs, span)
     }
 
+    /// Create a peer-equality constraint (see [`Constraint::PeerEqual`]).
+    pub fn peer(lhs: InferType, rhs: InferType, span: Span) -> Self {
+        Constraint::PeerEqual(lhs, rhs, span)
+    }
+
     /// Create a "must be signed" constraint.
     pub fn is_signed(ty: InferType, span: Span) -> Self {
         Constraint::IsSigned(ty, span)
@@ -123,6 +138,7 @@ impl Constraint {
         match self {
             Constraint::Equal(_, _, span)
             | Constraint::ContextualEqual(_, _, span)
+            | Constraint::PeerEqual(_, _, span)
             | Constraint::FieldGet { span, .. }
             | Constraint::FieldSet { span, .. }
             | Constraint::IndexGet { span, .. }

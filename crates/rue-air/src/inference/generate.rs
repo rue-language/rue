@@ -1555,7 +1555,9 @@ impl<'a> ConstraintGenerator<'a> {
             }
         }
         match constraint {
-            Constraint::Equal(lhs, rhs, _) | Constraint::ContextualEqual(lhs, rhs, _) => {
+            Constraint::Equal(lhs, rhs, _)
+            | Constraint::ContextualEqual(lhs, rhs, _)
+            | Constraint::PeerEqual(lhs, rhs, _) => {
                 record_type(&mut self.fixed_string_types, self.type_pool, lhs);
                 record_type(&mut self.fixed_string_types, self.type_pool, rhs);
             }
@@ -2937,14 +2939,16 @@ impl<'a> ConstraintGenerator<'a> {
                         }
                         (false, false) => {
                             // Neither diverges - both must have the same type
+                            // The arms are peers (RUE-2559): see
+                            // `Constraint::PeerEqual`.
                             let result_ty =
                                 self.join_type(&[then_info.ty.clone(), else_info.ty.clone()]);
-                            self.add_constraint(Constraint::equal(
+                            self.add_constraint(Constraint::peer(
                                 then_info.ty,
                                 result_ty.clone(),
                                 then_info.span,
                             ));
-                            self.add_constraint(Constraint::equal(
+                            self.add_constraint(Constraint::peer(
                                 else_info.ty,
                                 result_ty.clone(),
                                 else_info.span,
@@ -3164,12 +3168,13 @@ impl<'a> ConstraintGenerator<'a> {
                     }
                     InferType::Concrete(Type::NEVER)
                 } else {
-                    // Constrain the non-Never arms to one common type.
+                    // Constrain the non-Never arms to one common type; the
+                    // arms are peers (RUE-2559, `Constraint::PeerEqual`).
                     let arm_tys: Vec<InferType> =
                         non_never_arms.iter().map(|info| info.ty.clone()).collect();
                     let result_ty = self.join_type(&arm_tys);
                     for arm_info in non_never_arms {
-                        self.add_constraint(Constraint::equal(
+                        self.add_constraint(Constraint::peer(
                             arm_info.ty.clone(),
                             result_ty.clone(),
                             arm_info.span,
@@ -4263,12 +4268,14 @@ impl<'a> ConstraintGenerator<'a> {
     /// `generate_binary_arith` avoids for arithmetic (RUE-270, RUE-2375).
     /// A directional expectation (an annotation, a parameter, a return type)
     /// is not a peer and keeps its ordinary constraint, so a literal at a
-    /// declared `!` is still rejected.
+    /// declared `!` is still rejected. The constraint is a peer one, so an
+    /// array whose element type is `!` does not drag a literal peer element
+    /// to `!` either (RUE-2559).
     fn add_peer_equal(&mut self, operand: InferType, peer: InferType, span: Span) {
         if Self::is_never_concrete(&operand) || Self::is_never_concrete(&peer) {
             return;
         }
-        self.add_constraint(Constraint::equal(operand, peer, span));
+        self.add_constraint(Constraint::peer(operand, peer, span));
     }
 
     /// Check an array-literal element against the element type its
@@ -5967,12 +5974,13 @@ mod tests {
         assert_eq!(cgen.constraints().len(), 1);
         let lhs_ty = cgen.expr_types()[&lhs].clone();
         let rhs_ty = cgen.expr_types()[&rhs].clone();
+        // The operands are peers (RUE-2559).
         match &cgen.constraints()[0] {
-            Constraint::Equal(found, expected, _) => {
+            Constraint::PeerEqual(found, expected, _) => {
                 assert_eq!(found, &rhs_ty);
                 assert_eq!(expected, &lhs_ty);
             }
-            other => panic!("Expected an Equal constraint, got {other:?}"),
+            other => panic!("Expected a PeerEqual constraint, got {other:?}"),
         }
     }
 
@@ -6608,13 +6616,19 @@ mod tests {
         // - 3 for body types matching result type (each arm)
         assert_eq!(cgen.constraints().len(), 6);
 
-        // Verify all constraints are Equal constraints
-        for constraint in cgen.constraints() {
-            match constraint {
-                Constraint::Equal(_, _, _) => {}
-                _ => panic!("Expected Equal constraint in match"),
-            }
-        }
+        // Each pattern is checked against the scrutinee (an equality) and
+        // each body is joined into the result as a peer (RUE-2559).
+        let peers = cgen
+            .constraints()
+            .iter()
+            .filter(|constraint| matches!(constraint, Constraint::PeerEqual(..)))
+            .count();
+        let equals = cgen
+            .constraints()
+            .iter()
+            .filter(|constraint| matches!(constraint, Constraint::Equal(..)))
+            .count();
+        assert_eq!((equals, peers), (3, 3));
     }
 
     // --- Scoped resolution of bare const names in array-length and
