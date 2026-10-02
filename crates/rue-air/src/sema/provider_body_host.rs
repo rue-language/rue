@@ -3238,6 +3238,37 @@ where
         })
     }
 
+    /// The inference signature of a member of an anonymous struct this body
+    /// declares, read from the signatures recorded when the struct was
+    /// minted. Constraint generation runs before ordinary analysis reaches
+    /// the declaration and registers the members, so without this a call's
+    /// result would be an unconstrained variable and a literal combined with
+    /// it would default to `i32` (RUE-2587).
+    fn local_anonymous_method_sig(&self, key: (StructId, Spur)) -> Option<MethodSig> {
+        let sig = self
+            .anon_struct_method_sigs
+            .get(&key.0)?
+            .iter()
+            .find(|sig| sig.name == key.1)?;
+        let owner = Type::new_struct(key.0);
+        let resolve = |ty: &super::AnonMethodType| match ty {
+            super::AnonMethodType::SelfType => Some(provider_infer_type(&self.type_pool, owner)),
+            super::AnonMethodType::Concrete(ty) => Some(provider_infer_type(&self.type_pool, *ty)),
+            super::AnonMethodType::Syntax(_) => None,
+        };
+        Some(MethodSig {
+            struct_type: owner,
+            has_self: sig.has_self,
+            param_types: sig
+                .param_types
+                .iter()
+                .map(resolve)
+                .collect::<Option<Vec<_>>>()?,
+            param_modes: sig.param_modes.clone(),
+            return_type: resolve(&sig.return_type)?,
+        })
+    }
+
     fn durable_type_from_concrete(&self, ty: Type) -> Option<crate::SemanticImportType<K, M>> {
         use crate::SemanticImportType as T;
         Some(match ty.kind() {
@@ -4327,7 +4358,9 @@ where
         })
     }
     fn uncached_method_sig(&self, key: (StructId, Spur)) -> Option<MethodSig> {
-        let info = self.method_info_for_symbol(key.0, key.1)?;
+        let Some(info) = self.method_info_for_symbol(key.0, key.1) else {
+            return self.local_anonymous_method_sig(key);
+        };
         let params = self.state.param_data(info.params);
         Some(MethodSig {
             struct_type: info.struct_type,

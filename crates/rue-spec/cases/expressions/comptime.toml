@@ -2146,6 +2146,138 @@ fn main() -> i32 {
 exit_code = 42
 
 [[case]]
+name = "runtime_body_anon_struct_method_call"
+spec = ["4.14:10"]
+description = "A `let`-bound anonymous struct in a runtime body has callable methods, as one built by a type constructor does"
+source = """
+fn main() -> i32 {
+    let I = struct { x: i64, fn get(self) -> i64 { self.x } };
+    @intCast(I { x: 42 }.get())
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "runtime_body_anon_struct_associated_fn_and_self"
+spec = ["4.14:11", "4.14:13"]
+description = "A runtime body's anonymous struct has associated functions, and `Self` names it in member parameters and results"
+source = """
+fn main() -> i32 {
+    let P = struct {
+        x: i64,
+        fn mk(x: i64) -> Self { Self { x: x } }
+        fn add(self, other: Self) -> Self { Self { x: self.x + other.x } }
+    };
+    let p = P.mk(5000000000).add(P { x: 2 });
+    @intCast(p.x - 5000000000 + 40)
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "runtime_body_anon_struct_method_calls_method"
+spec = ["4.14:10"]
+description = "A method of a runtime body's anonymous struct calls another method through `self`, and its result types the surrounding arithmetic"
+source = """
+fn main() -> i32 {
+    let C = struct {
+        n: i64,
+        fn get(borrow self) -> i64 { self.n }
+        fn twice(borrow self) -> i64 { self.get() + self.get() }
+        fn bump(inout self) { self.n = self.n + 1; }
+    };
+    let mut c = C { n: 19 };
+    c.bump();
+    let t = c.twice();
+    let r = t + 2;
+    @intCast(r)
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "runtime_body_anon_struct_in_a_generic_body"
+spec = ["4.14:8", "4.14:12"]
+description = "An anonymous struct in a generic runtime body is a distinct type per specialization, and its methods read the body's comptime parameters"
+source = """
+fn wrap(comptime T: type, comptime K: i32, v: T) -> T {
+    let W = struct { v: T, fn get(self) -> T { self.v } fn k() -> i32 { K } };
+    let w = W { v: v };
+    w.get()
+}
+fn main() -> i32 {
+    let a = wrap(i64, 1, 5000000000);
+    let b = wrap(i32, 2, 2);
+    @intCast(a - 5000000000 + 40 + @intCast(b))
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "runtime_body_anon_structs_with_same_named_methods_in_blocks_and_loops"
+spec = ["4.14:8", "4.14:15"]
+description = "Anonymous structs in one runtime body, a loop body and a nested block keep their own same-named methods"
+source = """
+fn main() -> i32 {
+    let A = struct { x: i64, fn get(self) -> i64 { self.x } };
+    let B = struct { x: i64, fn get(self) -> i64 { self.x * 2 } };
+    let mut total: i64 = A { x: 1 }.get() + B { x: 4 }.get();
+    let mut i: i64 = 0;
+    while i < 3 {
+        let C = struct { x: i64, fn get(self) -> i64 { self.x + 1 } };
+        total = total + C { x: i }.get();
+        i = i + 1;
+    }
+    {
+        let D = struct { fn get() -> i64 { 27 } };
+        total = total + D.get();
+    }
+    @intCast(total)
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "runtime_body_anon_struct_method_body_is_checked"
+spec = ["4.14:10"]
+description = "A called method of a runtime body's anonymous struct is type-checked"
+source = """
+fn main() -> i32 {
+    let I = struct { x: i64, fn get(self) -> i64 { self.nope } };
+    @intCast(I { x: 42 }.get())
+}
+"""
+compile_fail = true
+error_contains = ["E0401", "unknown field 'nope'"]
+
+[[case]]
+name = "runtime_body_anon_struct_uncalled_method_body_is_checked"
+spec = ["4.14:10"]
+description = "A method of a runtime body's anonymous struct is checked with the body that declares it, even when nothing calls it"
+source = """
+fn main() -> i32 {
+    let I = struct { x: i64, fn get(self, s: [i64; 2]) -> i64 { s[0].nope } };
+    @intCast(I { x: 42 }.x)
+}
+"""
+compile_fail = true
+error_contains = ["E0423", "field access on non-struct type"]
+
+[[case]]
+name = "runtime_body_anon_struct_method_cannot_read_a_runtime_local"
+spec = ["4.14:12"]
+description = "A method of an anonymous struct reads the declaring body's comptime parameters but none of its runtime locals"
+source = """
+fn main() -> i32 {
+    let y: i64 = 5;
+    let I = struct { x: i64, fn get(self) -> i64 { self.x + y } };
+    @intCast(I { x: 37 }.get())
+}
+"""
+compile_fail = true
+error_contains = ["E0201", "undefined variable 'y'", "cannot read a runtime local or parameter"]
+
+[[case]]
 name = "anon_struct_same_signature_different_producer_mismatch"
 spec = ["4.14:15"]
 description = "Two producers with identical fields and method signatures are distinct types; a cross-producer assignment is a type mismatch (ADR-0066)"
