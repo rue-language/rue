@@ -13,7 +13,7 @@ use super::*;
 use crate::sema::NamedConstDependencyTargetEvent;
 use crate::sema::context::DivergenceKind;
 use crate::sema::info::FunctionCallInfo;
-use ahash::AHashMap;
+use ahash::{AHashMap, AHashSet};
 
 /// The result of a `-> type` call whose body reduced at compile time (4.14:28),
 /// or `None` when the reduced value is neither a type nor a module.
@@ -1147,6 +1147,360 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         self.analyze_method_call_impl(air, receiver, method, args, span, ctx)
     }
 
+    /// A block holding nothing but its tail is that tail: `{ a.pmut() }` as
+    /// an `if` arm. A block with statements stays a block.
+    fn peel_tail_only_block(&self, inst: InstRef) -> InstRef {
+        let rir = self.body_rir_ref();
+        let mut current = inst;
+        while let InstData::Block { instructions } = &rir.get(current).data {
+            let mut insts = rir.block_insts(instructions).values();
+            match (insts.next(), insts.next()) {
+                (Some(tail), None) => current = tail,
+                _ => break,
+            }
+        }
+        current
+    }
+
+    /// Whether `inst` is a call of a place-returning (`-> borrow` or
+    /// `-> inout`) accessor, decided without analyzing it.
+    fn is_accessor_call_inst(&self, inst: InstRef, ctx: &AnalysisContext) -> bool {
+        let InstData::MethodCall {
+            receiver, method, ..
+        } = self.body_rir_ref().get(inst).data
+        else {
+            return false;
+        };
+        self.peek_place_type(receiver, ctx)
+            .and_then(|ty| ty.as_struct())
+            .and_then(|struct_id| self.call_facts().call_method_info(struct_id, method))
+            .is_some_and(|info| info.returns_borrow || info.returns_inout)
+    }
+
+    /// Collect the join tree under `inst`: the `if`/`else` and `match`
+    /// instructions whose arms carry the join's value, and the accessor calls
+    /// among those arms (spec 6.6:9a). Any other arm is left out of both.
+    fn collect_join_receiver_tree(
+        &self,
+        inst: InstRef,
+        ctx: &AnalysisContext,
+        joins: &mut AHashSet<InstRef>,
+        leaves: &mut AHashSet<InstRef>,
+    ) {
+        let inst = self.peel_tail_only_block(inst);
+        let arms: Vec<InstRef> = match &self.body_rir_ref().get(inst).data {
+            InstData::Branch {
+                then_block,
+                else_block: Some(else_block),
+                ..
+            } => vec![*then_block, *else_block],
+            InstData::Match { arms, .. } => self
+                .body_rir_ref()
+                .match_arms(arms)
+                .iter()
+                .map(|(_, body)| body)
+                .collect(),
+            _ => {
+                if self.is_accessor_call_inst(inst, ctx) {
+                    leaves.insert(inst);
+                }
+                return;
+            }
+        };
+        joins.insert(inst);
+        for arm in arms {
+            self.collect_join_receiver_tree(arm, ctx, joins, leaves);
+        }
+    }
+
+    /// The names an expression mentions: as a variable (read or assigned),
+    /// or as the callee of a call (`true`).
+    fn mentioned_names(&self, roots: impl IntoIterator<Item = InstRef>) -> Vec<(Spur, bool)> {
+        let rir = self.body_rir_ref();
+        let mut names = Vec::new();
+        let mut pending: Vec<InstRef> = roots.into_iter().collect();
+        while let Some(inst) = pending.pop() {
+            match &rir.get(inst).data {
+                InstData::VarRef { name, .. } | InstData::Assign { name, .. } => {
+                    names.push((*name, false));
+                }
+                InstData::Call { name, .. } => names.push((*name, true)),
+                _ => {}
+            }
+            rir.child_instructions(inst, &mut pending);
+        }
+        names.sort_unstable_by_key(|(name, callee)| (name.into_inner(), *callee));
+        names.dedup();
+        names
+    }
+
+    /// What a name in the arguments resolves to here. A variable names its
+    /// binding. A callee names a callback parameter only while no local of
+    /// that name hides it (ADR-0096); otherwise it names an item, which no
+    /// binding can shadow.
+    fn arg_name_resolution(
+        name: Spur,
+        callee: bool,
+        ctx: &AnalysisContext,
+    ) -> Option<crate::sema::ownership_state::LedgerRoot> {
+        if !callee {
+            return Self::bound_ledger_root(name, ctx);
+        }
+        (!ctx.locals.contains_key(&name) && ctx.param(name).is_some_and(|p| p.ty.is_function()))
+            .then_some(crate::sema::ownership_state::LedgerRoot { name, slot: None })
+    }
+
+    /// Analyze a by-reference method call whose receiver is a join of
+    /// accessor results (spec 6.6:9a, RUE-2374):
+    /// `(if c { a.pmut() } else { a.emut(0) }).set()`.
+    ///
+    /// The join *is* an accessor result (6.6:9), so the call is a use of the
+    /// place that result's loan grants (6.6:10). The call is distributed into
+    /// the join (see [`JoinReceiver`]): each accessor arm makes it on its own
+    /// result, which keeps the evaluation order of a direct call — the arm's
+    /// accessor, then the arguments, then the call. Returns `None` when the
+    /// receiver is not such a join, or the method is not a by-reference
+    /// method of the joined results' type, so ordinary dispatch handles it.
+    fn analyze_join_receiver_method_call(
+        &mut self,
+        air: &mut Air,
+        receiver: InstRef,
+        method: Spur,
+        args_range: &rue_rir::RirCallArgsRange,
+        span: Span,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<Option<AnalysisResult>> {
+        let receiver = self.peel_tail_only_block(receiver);
+        if !matches!(
+            self.body_rir_ref().get(receiver).data,
+            InstData::Branch {
+                else_block: Some(_),
+                ..
+            } | InstData::Match { .. }
+        ) {
+            return Ok(None);
+        }
+        let mut joins = AHashSet::new();
+        let mut leaves = AHashSet::new();
+        self.collect_join_receiver_tree(receiver, ctx, &mut joins, &mut leaves);
+        // Every accessor arm has the join's type, so any one names it.
+        let Some(result_struct) = leaves.iter().find_map(|leaf| {
+            let InstData::MethodCall {
+                receiver, method, ..
+            } = self.body_rir_ref().get(*leaf).data
+            else {
+                return None;
+            };
+            let struct_id = self.peek_place_type(receiver, ctx)?.as_struct()?;
+            let info = self.call_facts().call_method_info(struct_id, method)?;
+            info.return_type.as_struct()
+        }) else {
+            return Ok(None);
+        };
+        let Some(info) = self.call_facts().call_method_info(result_struct, method) else {
+            return Ok(None);
+        };
+        // Calling an accessor on a joined result is a chain of accessors,
+        // which RUE-2530 leaves open; a by-value `self` method reads the
+        // result out rather than using its place.
+        if !info.has_self || info.returns_borrow || info.returns_inout {
+            return Ok(None);
+        }
+        let inout = match info.self_mode {
+            RirParamMode::Inout => true,
+            RirParamMode::Borrow => false,
+            _ => return Ok(None),
+        };
+        let arg_values: Vec<InstRef> = self
+            .body_rir_ref()
+            .call_args(args_range)
+            .iter()
+            .map(|arg| arg.value)
+            .collect();
+        let arg_bindings = self
+            .mentioned_names(arg_values)
+            .into_iter()
+            .map(|(name, callee)| (name, callee, Self::arg_name_resolution(name, callee, ctx)))
+            .collect();
+        let consumer = crate::sema::context::JoinReceiver {
+            joins,
+            leaves,
+            method,
+            args: args_range.clone(),
+            span,
+            inout,
+            root: None,
+            arg_bindings,
+        };
+        let previous = ctx.join_receiver.replace(consumer);
+        let result = self.analyze_inst(air, receiver, ctx);
+        ctx.join_receiver = previous;
+        result.map(Some)
+    }
+
+    /// Analyze one arm of the `if`/`match` instruction `join`. When `join`
+    /// is the receiver of a distributed by-reference call (spec 6.6:9a,
+    /// RUE-2374), an accessor arm makes the call on its result, a nested join
+    /// distributes it further, and any other arm must diverge: its value is
+    /// not a place. Otherwise the arm is analyzed as it stands.
+    pub(in crate::sema) fn analyze_join_arm(
+        &mut self,
+        air: &mut Air,
+        join: InstRef,
+        arm: InstRef,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<AnalysisResult> {
+        let Some(consumer) = ctx
+            .join_receiver
+            .as_ref()
+            .filter(|consumer| consumer.joins.contains(&join))
+        else {
+            return self.analyze_inst(air, arm, ctx);
+        };
+        let inout = consumer.inout;
+        let peeled = self.peel_tail_only_block(arm);
+        if consumer.joins.contains(&peeled) {
+            return self.analyze_inst(air, peeled, ctx);
+        }
+        if consumer.leaves.contains(&peeled) {
+            return self.analyze_join_receiver_arm_call(air, peeled, ctx);
+        }
+        // A block with statements before its tail is analyzed as a value even
+        // when that tail is an accessor result: whether its result outlives
+        // the block's own bindings is not settled here.
+        let tail = self.rir_block_tail_expr(arm);
+        let block_with_statements = tail != arm
+            && (consumer.joins.contains(&self.peel_tail_only_block(tail))
+                || self.is_accessor_call_inst(self.peel_tail_only_block(tail), ctx));
+        let result = self.analyze_inst(air, arm, ctx)?;
+        if result.continues {
+            let arm_span = self.body_rir_ref().get(arm).span;
+            let (label, note) = if block_with_statements {
+                (
+                    "this arm is a block with statements before its accessor result",
+                    "a method call on an `if` or `match` uses an arm's accessor result in \
+                     place only when the arm is the accessor call itself, or a nested \
+                     `if` or `match`; move the statements before the call",
+                )
+            } else {
+                (
+                    "this arm yields a value, not an accessor result",
+                    "an `if` or `match` is a place only when every arm that completes \
+                     yields an accessor result (spec 6.6:9a)",
+                )
+            };
+            return Err(CompileError::new(
+                if inout {
+                    ErrorKind::InoutNonLvalue
+                } else {
+                    ErrorKind::BorrowNonLvalue
+                },
+                arm_span,
+            )
+            .with_label(label, arm_span)
+            .with_note(note));
+        }
+        Ok(result)
+    }
+
+    /// Make a distributed by-reference call on the accessor result `leaf`,
+    /// one arm of the receiver's join (spec 6.6:9a, 6.6:10).
+    fn analyze_join_receiver_arm_call(
+        &mut self,
+        air: &mut Air,
+        leaf: InstRef,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<AnalysisResult> {
+        let consumer = ctx
+            .join_receiver
+            .clone()
+            .expect("a distributed arm call has a join receiver");
+        let leaf_span = self.body_rir_ref().get(leaf).span;
+        let non_place = |label: String, note: &str| {
+            CompileError::new(
+                if consumer.inout {
+                    ErrorKind::InoutNonLvalue
+                } else {
+                    ErrorKind::BorrowNonLvalue
+                },
+                leaf_span,
+            )
+            .with_label(label, leaf_span)
+            .with_note(note.to_string())
+        };
+        // Every arm's result must borrow the same root: the join is an
+        // accessor result of that root (6.6:9).
+        let root = self
+            .place_root_with_accessors(leaf, ctx)
+            .and_then(|name| Self::bound_ledger_root(name, ctx));
+        let Some(root) = root else {
+            return Err(non_place(
+                "this accessor result has no root variable".to_string(),
+                "an `if` or `match` is a place only when every arm's accessor result \
+                 borrows a local or parameter (spec 6.6:9a)",
+            ));
+        };
+        match consumer.root {
+            None => {
+                if let Some(active) = ctx.join_receiver.as_mut() {
+                    active.root = Some((root, leaf_span));
+                }
+            }
+            Some((first, first_span)) if first != root => {
+                let interner = self.body_interner();
+                let first_name = interner.resolve(&first.name).to_string();
+                let name = interner.resolve(&root.name).to_string();
+                return Err(non_place(
+                    format!("this arm's accessor result borrows `{name}`"),
+                    "an `if` or `match` is a place only when every arm's accessor result \
+                     borrows the same root (spec 6.6:9a)",
+                )
+                .with_label(
+                    format!("an earlier arm's accessor result borrows `{first_name}`"),
+                    first_span,
+                ));
+            }
+            Some(_) => {}
+        }
+        // The call's arguments are analyzed in this arm, so they must name
+        // what they name at the join, not a binding the arm introduces.
+        if let Some((name, _, _)) = consumer
+            .arg_bindings
+            .iter()
+            .find(|(name, callee, binding)| {
+                Self::arg_name_resolution(*name, *callee, ctx) != *binding
+            })
+        {
+            let name = self.body_interner().resolve(name).to_string();
+            return Err(non_place(
+                format!("this arm binds `{name}`, which the call's arguments name"),
+                "a method call on an `if` or `match` is made in each arm, so an arm \
+                 may not rebind a name its arguments use; rename the binding (spec 6.6:9a)",
+            ));
+        }
+        // The arguments are analyzed once per arm. Accessor places cached
+        // while analyzing them name this arm's AIR, so the next arm must not
+        // reuse them, and a warning on an argument is reported once.
+        let saved_place_refs = ctx.accessor_place_refs.clone();
+        let warnings_before = ctx.warnings.len();
+        let result = self.analyze_method_call_impl(
+            air,
+            leaf,
+            consumer.method,
+            &consumer.args,
+            consumer.span,
+            ctx,
+        );
+        ctx.accessor_place_refs = saved_place_refs;
+        let added = ctx.warnings.split_off(warnings_before);
+        for warning in added {
+            if !ctx.warnings.contains(&warning) {
+                ctx.warnings.push(warning);
+            }
+        }
+        result
+    }
+
     /// Implementation for MethodCall.
     fn analyze_method_call_impl(
         &mut self,
@@ -1157,6 +1511,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
+        if let Some(result) =
+            self.analyze_join_receiver_method_call(air, receiver, method, args_range, span, ctx)?
+        {
+            return Ok(result);
+        }
         let args = self.body_rir_ref().call_args(args_range).to_vec();
         // An accessor-call receiver chain (`v.get_ref(i).len()`, ADR-0062)
         // roots at the accessor's own receiver root: the chain is a place.

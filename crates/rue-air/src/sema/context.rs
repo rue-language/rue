@@ -25,6 +25,44 @@ use crate::types::{StructId, Type};
 /// unresolved integer-literal join its class carries.
 pub(crate) type FloatLiteralJoins = AHashMap<InstRef, CompileError>;
 
+/// A by-reference (`inout self` or `borrow self`) method call whose receiver
+/// is a join (`if`/`else` or `match`) of accessor results (spec 6.6:9a,
+/// RUE-2374).
+///
+/// A join has no place of its own: each arm yields a different place, and no
+/// address of a place is a value that a join could carry. The call is
+/// therefore distributed into the join: every arm that yields an accessor
+/// result makes the call on that result, so the method mutates (or reads)
+/// whichever place the taken arm yields, and the join's value is the call's
+/// value. An arm that diverges makes no call.
+#[derive(Debug, Clone)]
+pub(crate) struct JoinReceiver {
+    /// The `if`/`match` instructions of the receiver's join tree, nested joins
+    /// included. Only these distribute the call into their arms.
+    pub joins: AHashSet<InstRef>,
+    /// The accessor calls among those arms: each makes the call on its own
+    /// result.
+    pub leaves: AHashSet<InstRef>,
+    /// The method being called.
+    pub method: Spur,
+    /// The method's explicit arguments, analyzed once in each accessor arm,
+    /// so their analysis and AIR are repeated per arm (and multiply when an
+    /// argument holds another such call).
+    pub args: rue_rir::RirCallArgsRange,
+    /// The span of the whole method call.
+    pub span: Span,
+    /// Whether the receiver is `inout self` (else `borrow self`).
+    pub inout: bool,
+    /// The root of the first accessor result analyzed, with the span of its
+    /// arm: every arm's result must share it.
+    pub root: Option<(super::ownership_state::LedgerRoot, Span)>,
+    /// Each name the explicit arguments mention (and whether as a callee),
+    /// with what it resolves to at the join. A `match` arm whose pattern
+    /// bindings change one cannot host the call: the arguments would name the
+    /// arm's binding instead (spec 6.6:9a).
+    pub arg_bindings: Vec<(Spur, bool, Option<super::ownership_state::LedgerRoot>)>,
+}
+
 /// Information about a local variable.
 #[derive(Debug, Clone)]
 pub(crate) struct LocalVar {
@@ -431,6 +469,10 @@ pub(crate) struct AnalysisContext<'a> {
     /// expression. Compound assignment reuses the same yielded place rather
     /// than expanding and loaning the accessor a second time.
     pub accessor_place_refs: AHashMap<InstRef, (crate::inst::AirPlaceRef, Spur, Type, bool, bool)>,
+    /// The by-reference method call whose receiver is a join of accessor
+    /// results currently being distributed into that join's arms (spec 6.6:9a,
+    /// RUE-2374). `None` outside such a receiver.
+    pub join_receiver: Option<JoinReceiver>,
     /// Resolved-type overlays for accessor bodies currently being inlined,
     /// innermost last. `resolved_type_of` consults these before the body's
     /// own `resolved_types`, letting the caller's analysis walk accessor-body
@@ -832,6 +874,7 @@ impl<'a> AnalysisContext<'a> {
             accessor_trailing_yield: self.accessor_trailing_yield,
             accessor_call_insts: self.accessor_call_insts.clone(),
             accessor_place_refs: self.accessor_place_refs.clone(),
+            join_receiver: self.join_receiver.clone(),
             inline_resolved_types: self.inline_resolved_types.clone(),
             place_aliases: self.place_aliases.clone(),
             try_operand: false,
@@ -922,13 +965,29 @@ impl<'a> AnalysisContext<'a> {
         kind: crate::LocalAtomKind,
         anchor: rue_rir::RirStructuralAnchor,
     ) -> u32 {
+        let content_seen = self.local_string_table.contains_key(&content);
         let dense_id = self.add_local_string_content(content.clone());
+        let identity = crate::LocalAtomId {
+            producer: self.canonical_function_identity.clone(),
+            kind,
+            anchor,
+        };
+        // One record per identity: a literal analyzed again — an argument of
+        // a method call made in each arm of a join receiver (RUE-2374) — is
+        // the same atom. An identity names its content, so only content
+        // already in the table can repeat one, and only while such a call is
+        // being analyzed.
+        if content_seen
+            && self.join_receiver.is_some()
+            && self
+                .local_atoms
+                .iter()
+                .any(|record| record.identity == identity)
+        {
+            return dense_id;
+        }
         self.local_atoms.push(crate::LocalAtomRecord {
-            identity: crate::LocalAtomId {
-                producer: self.canonical_function_identity.clone(),
-                kind,
-                anchor,
-            },
+            identity,
             content: content.into(),
             dense_id,
         });
