@@ -1247,37 +1247,15 @@ impl BodyTransactionEvaluator {
                     .iter()
                     .filter_map(|name| name.parse().ok())
                     .collect();
-                let analyzed = {
-                    let _provider_analysis_span = tracing::info_span!(
-                        "semantic_provider_analysis",
-                        phase = "semantic_analysis"
-                    )
-                    .entered();
-                    rue_air::analyze_provider_specialized_body(
-                        &provider,
-                        source,
-                        &bundle,
-                        definition.clone(),
-                        definition.name(),
-                        arguments,
-                        key.configuration.target,
-                        preview,
-                        &well_known_facts,
-                    )
-                };
-                match provider.finish_status() {
-                    Ok(()) => {}
-                    Err(CompilerBodyProviderStatus::Fatal(abort)) => return Err(abort),
-                    Err(CompilerBodyProviderStatus::Incomplete(_)) => {
-                        return Err(QueryAbort::Canceled);
-                    }
-                    Err(CompilerBodyProviderStatus::Ready) => unreachable!(),
-                }
                 // A comptime type constructor owns the anonymous nominals in
                 // its result. Observe that exact semantic projection here so
                 // the body-produced projection remains a thin view of this
-                // transaction instead of recomputing producer facts.
-                let produced_anonymous_nominals = {
+                // transaction instead of recomputing producer facts. It is
+                // observed before the body is analyzed: the analysis resolves
+                // the constructor's own field types (`Opt(ptr const Self)`),
+                // and reducing those reads this projection, which must not
+                // first be computed beneath them (RUE-2590).
+                let produced_projection = {
                     let shell = context.query_registered(
                         &self.declaration_shells,
                         DeclarationShellQueryKey(candidate.clone()),
@@ -1307,40 +1285,68 @@ impl BodyTransactionEvaluator {
                     let Some(exact_type_syntax) = signature.callable_type_syntax.as_ref() else {
                         return Err(QueryAbort::Canceled);
                     };
-                    if let Some(call) = comptime_call_for_anonymous_function(
+                    match comptime_call_for_anonymous_function(
                         &producer,
                         &key.instance,
                         shell,
                         signature,
                         exact_type_syntax,
                     ) {
-                        let projected = context.query_registered(
+                        Some(call) => Some(context.query_registered(
                             &self.semantic_nucleus,
                             crate::semantic_query_nucleus::SemanticNucleusKey::ComptimeCall(call),
-                        )?;
-                        match projected.outcome() {
-                            rue_query::QueryOutcome::Success(
-                                crate::semantic_query_nucleus::SemanticNucleusValue::ComptimeCall(
-                                    projected,
-                                ),
-                            ) => crate::body_query::BodyProducedAnonymousNominals(
-                                projected.anonymous_nominals.clone(),
-                            ),
-                            // The analysis already diagnosed this body, and the
-                            // constructor's projection fails with it (a body
-                            // that cannot reduce over a caller's local,
-                            // RUE-2590); the transaction reports the diagnosis
-                            // rather than escaping as cancellation.
-                            rue_query::QueryOutcome::Success(
-                                crate::semantic_query_nucleus::SemanticNucleusValue::Failure(_),
-                            ) if analyzed.is_err() => {
-                                crate::body_query::BodyProducedAnonymousNominals(Arc::from([]))
-                            }
-                            _ => return Err(QueryAbort::Canceled),
-                        }
-                    } else {
-                        crate::body_query::BodyProducedAnonymousNominals(Arc::from([]))
+                        )?),
+                        None => None,
                     }
+                };
+                let analyzed = {
+                    let _provider_analysis_span = tracing::info_span!(
+                        "semantic_provider_analysis",
+                        phase = "semantic_analysis"
+                    )
+                    .entered();
+                    rue_air::analyze_provider_specialized_body(
+                        &provider,
+                        source,
+                        &bundle,
+                        definition.clone(),
+                        definition.name(),
+                        arguments,
+                        key.configuration.target,
+                        preview,
+                        &well_known_facts,
+                    )
+                };
+                match provider.finish_status() {
+                    Ok(()) => {}
+                    Err(CompilerBodyProviderStatus::Fatal(abort)) => return Err(abort),
+                    Err(CompilerBodyProviderStatus::Incomplete(_)) => {
+                        return Err(QueryAbort::Canceled);
+                    }
+                    Err(CompilerBodyProviderStatus::Ready) => unreachable!(),
+                }
+                let produced_anonymous_nominals = match &produced_projection {
+                    Some(projected) => match projected.outcome() {
+                        rue_query::QueryOutcome::Success(
+                            crate::semantic_query_nucleus::SemanticNucleusValue::ComptimeCall(
+                                projected,
+                            ),
+                        ) => crate::body_query::BodyProducedAnonymousNominals(
+                            projected.anonymous_nominals.clone(),
+                        ),
+                        // The analysis already diagnosed this body, and the
+                        // constructor's projection fails with it (a body
+                        // that cannot reduce over a caller's local,
+                        // RUE-2590); the transaction reports the diagnosis
+                        // rather than escaping as cancellation.
+                        rue_query::QueryOutcome::Success(
+                            crate::semantic_query_nucleus::SemanticNucleusValue::Failure(_),
+                        ) if analyzed.is_err() => {
+                            crate::body_query::BodyProducedAnonymousNominals(Arc::from([]))
+                        }
+                        _ => return Err(QueryAbort::Canceled),
+                    },
+                    None => crate::body_query::BodyProducedAnonymousNominals(Arc::from([])),
                 };
                 match analyzed {
                     Ok(analyzed) => {
