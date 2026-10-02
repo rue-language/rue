@@ -89,10 +89,13 @@ fn main() -> i32 {
 """
 exit_code = 42
 
-# A comptime argument out of its parameter's range is reported once, at the use
-# (RUE-2549). After RUE-2435 the forwarded form used to build `Buf(3000000000)`
-# anyway and add an E0906 "exceeds the maximum supported object size" at the
-# call, and a type-position use anchored at `Buf`'s declaration (1:1).
+# A comptime argument out of its parameter's range, forwarded through a call or
+# written in a type annotation, is reported once (RUE-2549): at the call, or on
+# the enclosing `let` for an annotation. After RUE-2435 the forwarded form used
+# to build `Buf(3000000000)` anyway and add an E0906 "exceeds the maximum
+# supported object size" at the call, and the annotation anchored at `Buf`'s
+# declaration (1:1). A struct-literal head (`Buf(3000000000) { .. }`) still
+# reports twice, once at 1:1; that is RUE-2615.
 [[case]]
 name = "forwarded_out_of_range_comptime_argument_reports_once_at_the_call"
 source = """
