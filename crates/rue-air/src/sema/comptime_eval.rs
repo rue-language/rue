@@ -2552,6 +2552,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         }
                     } else {
                         scope.runtime.insert(name);
+                        if in_comptime {
+                            scope.unevaluated_comptime_locals.insert(name);
+                        }
                     }
                 }
             }
@@ -2673,13 +2676,17 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     }
 
     /// The type of a `comptime` block's `let a: [T; n] = [e0, .., ek]` whose
-    /// length the walk could not resolve, at the length its array literal
-    /// initializer spells. Inference then checks the elements against `T`
-    /// and types the binding's uses at it, as for a length the walk knows
-    /// (4.14:26, 4.14:27). Only the length is assumed: the block's own
-    /// evaluation resolves `n` and reports a negative one (7.1:37) or one
-    /// the literal does not fill (7.1:4), so a program accepted with the
-    /// assumed length binds the array at exactly that length (RUE-2546).
+    /// lengths the walk could not resolve, at the lengths its array literal
+    /// initializer spells. Each named length, at any depth, is bound to the
+    /// element count of the literal at that depth, so inference checks the
+    /// elements against `T` and types the binding's uses at it, as for
+    /// lengths the walk knows (4.14:26, 4.14:27). Only the lengths are
+    /// assumed: the block's own evaluation resolves each name and reports a
+    /// negative one (7.1:33) or one the literal does not fill (7.1:4), so a
+    /// program accepted with the assumed lengths binds the array at exactly
+    /// those lengths (RUE-2546). A literal whose shape does not follow the
+    /// annotation's nesting, or a length naming a type or a runtime binding,
+    /// gives no hint; the evaluation reports it.
     fn comptime_array_annotation_at_literal(
         &mut self,
         annotation: rue_rir::RirTypeSyntaxRef,
@@ -2687,25 +2694,17 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         scope: &WalkScope,
         span: Span,
     ) -> Option<Type> {
-        let InstData::ArrayInit { elements } = &self.body_rir_ref().get(init).data else {
-            return None;
-        };
-        let literal_len = self.body_rir_ref().array_elements(elements).len();
-        let arena = self.body_rir_ref().type_syntax();
-        let Some(rue_rir::RirTypeSyntaxNode::Array { length, .. }) = arena.node(annotation) else {
-            return None;
-        };
-        let Some(rue_rir::RirTypeSyntaxNode::Named(symbol)) = arena.node(*length) else {
-            return None;
-        };
-        let name = *arena.symbol(*symbol)?;
-        if scope.types.contains_key(&name) {
+        let mut assumed = AHashMap::new();
+        self.assume_literal_lengths(annotation, init, scope, &mut assumed)?;
+        if assumed.is_empty() {
             return None;
         }
         let mut values = scope.values.clone();
-        values.insert(name, ConstValue::Integer(literal_len as i128));
+        for (name, length) in &assumed {
+            values.insert(*name, ConstValue::Integer(*length));
+        }
         let shadowing = self.names_in_type_syntax(annotation, |other| {
-            other != name && scope.runtime.contains(&other)
+            !assumed.contains_key(&other) && scope.runtime.contains(&other)
         });
         self.resolve_rir_type_under_runtime_bindings(
             annotation,
@@ -2715,6 +2714,74 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             span,
         )
         .filter(|resolved| !resolved.is_function())
+    }
+
+    /// Walk the array type `syntax` alongside the array literal `literal`,
+    /// recording in `assumed` the element count at each depth whose length
+    /// is a name the walk holds no valid length for. `None` when the
+    /// literal's shape does not follow the annotation's (a non-literal or
+    /// ragged level under a named length), when one name would take two
+    /// lengths, or when a length names a type or a runtime binding.
+    fn assume_literal_lengths(
+        &self,
+        syntax: rue_rir::RirTypeSyntaxRef,
+        literal: InstRef,
+        scope: &WalkScope,
+        assumed: &mut AHashMap<Spur, i128>,
+    ) -> Option<()> {
+        let arena = self.body_rir_ref().type_syntax();
+        let Some(rue_rir::RirTypeSyntaxNode::Array { element, length }) = arena.node(syntax) else {
+            return Some(());
+        };
+        let (element, length) = (*element, *length);
+        let InstData::ArrayInit { elements } = &self.body_rir_ref().get(literal).data else {
+            // Lengths that are all literals need no literal to read them from.
+            return (!self.has_named_array_length(syntax)).then_some(());
+        };
+        let elements = self.body_rir_ref().array_elements(elements).to_vec();
+        if let Some(rue_rir::RirTypeSyntaxNode::Named(symbol)) = arena.node(length) {
+            let name = *arena.symbol(*symbol)?;
+            // A type, or a binding the evaluation holds at run time, is not
+            // a length: the evaluation reports it (RUE-2446).
+            if scope.types.contains_key(&name)
+                || (scope.runtime.contains(&name)
+                    && !scope.unevaluated_comptime_locals.contains(&name))
+            {
+                return None;
+            }
+            let known = scope
+                .values
+                .get(&name)
+                .and_then(ConstValue::as_int_value)
+                .is_some_and(|value| value >= 0);
+            if !known {
+                let count = elements.len() as i128;
+                if *assumed.entry(name).or_insert(count) != count {
+                    return None;
+                }
+            }
+        }
+        // Every element at this depth must follow the element type's own
+        // nesting; an empty literal leaves nothing to read it from.
+        for element_literal in elements {
+            self.assume_literal_lengths(element, element_literal, scope, assumed)?;
+        }
+        Some(())
+    }
+
+    /// Whether an array type in `syntax` has a named length.
+    fn has_named_array_length(&self, syntax: rue_rir::RirTypeSyntaxRef) -> bool {
+        let arena = self.body_rir_ref().type_syntax();
+        let mut pending = vec![syntax];
+        while let Some(reference) = pending.pop() {
+            if let Some(rue_rir::RirTypeSyntaxNode::Array { length, .. }) = arena.node(reference)
+                && let Some(rue_rir::RirTypeSyntaxNode::Named(_)) = arena.node(*length)
+            {
+                return true;
+            }
+            arena.visit_child_references(reference, |child| pending.push(child));
+        }
+        false
     }
 
     /// Whether every name `init` reads is a block local this walk bound with
@@ -2803,6 +2870,10 @@ struct WalkScope {
     /// The declared integer type of each annotated `comptime` block local in
     /// `values`.
     integer_locals: AHashMap<Spur, Type>,
+    /// The `let`s of a `comptime` block in `runtime` only because the walk
+    /// could not evaluate them: compile-time values the block's own
+    /// evaluation binds, unlike the other names in `runtime`.
+    unevaluated_comptime_locals: AHashSet<Spur>,
 }
 
 /// One binding the pre-inference walk saved to restore when its scope ends.
@@ -2812,6 +2883,7 @@ struct WalkFrameEntry {
     was_runtime: bool,
     old_value: Option<ConstValue>,
     old_integer_local: Option<Type>,
+    was_unevaluated_comptime_local: bool,
 }
 
 impl WalkScope {
@@ -2824,6 +2896,7 @@ impl WalkScope {
             was_runtime: self.runtime.remove(&name),
             old_value: self.values.remove(&name),
             old_integer_local: self.integer_locals.remove(&name),
+            was_unevaluated_comptime_local: self.unevaluated_comptime_locals.remove(&name),
         }
     }
 
@@ -2835,6 +2908,11 @@ impl WalkScope {
             restore(&mut self.types, name, entry.old_type);
             restore(&mut self.values, name, entry.old_value);
             restore(&mut self.integer_locals, name, entry.old_integer_local);
+            if entry.was_unevaluated_comptime_local {
+                self.unevaluated_comptime_locals.insert(name);
+            } else {
+                self.unevaluated_comptime_locals.remove(&name);
+            }
             if entry.was_runtime {
                 self.runtime.insert(name);
             } else {
@@ -4217,7 +4295,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeCallProtocol for OrdinaryBodyEngin
 
 impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeStructuredTypes for OrdinaryBodyEngine<'h, H> {
     /// Resolve a type the evaluation spells. A length that is not a
-    /// non-negative integer constant (7.1:37) is the resolver's E0481: no
+    /// non-negative integer constant (7.1:33) is the resolver's E0481: no
     /// later pass checks a type only the evaluation resolves, so leaving it
     /// runtime-dependent let a `comptime` block's `let a: [T; K]` with a
     /// negative or undefined `K` go unchecked (RUE-2546). Any other failure
