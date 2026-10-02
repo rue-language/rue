@@ -2031,7 +2031,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// reduction boundary. Binding paths may differ, but none may reduce a
     /// body until type/value kinds, dependent declared types, and integer
     /// ranges agree with the source declaration.
-    fn validate_comptime_call_substitutions(
+    pub(crate) fn validate_comptime_call_substitutions(
         &mut self,
         function_name: Spur,
         function: &crate::sema::info::FunctionCallInfo,

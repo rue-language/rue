@@ -4849,6 +4849,22 @@ where
                 self.active_constructor_bound_checks.remove(&active);
                 checked?;
             }
+            // The value arguments obey the same contract as at a call
+            // expression: kinds, dependent declared types and integer ranges
+            // agree with the constructor's parameters. The durable reduction
+            // trusts its arguments, so an unchecked `K(300)` at `comptime n:
+            // u8`, or an aggregate of the wrong shape bound through a
+            // deferred signature type (`-> K(a)`, RUE-2550), used to resolve
+            // here and fail only at the specialized signature downstream.
+            let callee_types = type_arguments.iter().copied().collect();
+            let callee_values = value_arguments.iter().cloned().collect();
+            OrdinaryBodyEngine::new(self).validate_comptime_call_substitutions(
+                head.key,
+                &function,
+                &callee_types,
+                &callee_values,
+                span,
+            )?;
         }
         let mut durable_types = Vec::with_capacity(type_arguments.len());
         for &(name, value) in type_arguments {
