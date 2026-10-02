@@ -6749,17 +6749,86 @@ compile_fail = true
 error_contains = ["E1201", "comptime parameter requires a compile-time known value"]
 
 [[case]]
-name = "comptime_value_argument_runtime_parameter_shadowing_type_parameter"
+name = "comptime_type_argument_runtime_parameter_shadowing_type_parameter_in_constructor_rejected"
+spec = ["4.14:5a", "4.14:6"]
+description = "A method parameter `T: i32` shadows its generic struct's type parameter `T` inside a type-constructor argument too, so `Pair(T)` passes a runtime value, not the struct's type, to a `comptime T: type` parameter (RUE-2577)"
+source = """
+fn size(comptime T: type) -> i32 { @size_of(T) }
+fn Pair(comptime T: type) -> type { struct { a: T, b: T } }
+fn Box(comptime T: type) -> type {
+    struct {
+        v: T,
+        fn g(self, T: i32) -> i32 { size(Pair(T)) }
+    }
+}
+fn main() -> i32 { let b = Box(i64) { v: 1 }; b.g(3) }
+"""
+compile_fail = true
+error_contains = ["E1201", "comptime parameter requires a compile-time known value"]
+
+[[case]]
+name = "comptime_type_argument_comptime_value_parameter_shadowing_type_parameter_rejected"
 spec = ["4.14:5a"]
-description = "A method parameter `T: i32` shadowing its struct's type parameter reads as that value at a runtime argument, while a type argument naming the struct's type still works (RUE-2577)"
+description = "A method parameter `comptime T: i32` shadows its generic struct's type parameter `T`, so `id(T, 5)` passes that integer, not the struct's type, to a `comptime T: type` parameter: the argument is no type, rather than a mismatch against the struct's type (RUE-2577)"
 source = """
 fn id(comptime T: type, x: T) -> T { x }
 fn Box(comptime T: type) -> type {
     struct {
         v: T,
-        fn g(self, T: i32) -> i32 { id(i32, T) + T }
+        fn g(self, comptime T: i32) -> i32 { id(T, 5) }
     }
 }
 fn main() -> i32 { let b = Box(i64) { v: 1 }; b.g(21) }
+"""
+compile_fail = true
+expected_error_code = "E1200"
+
+[[case]]
+name = "comptime_value_parameter_shadowing_type_parameter_let_alias"
+spec = ["4.14:5", "5.1:12"]
+description = "`let U = T;` under a method or associated-function parameter `comptime T: i32` that shadows its generic struct's type parameter binds that parameter's value, not the struct's type (RUE-2577)"
+source = """
+fn Box(comptime T: type) -> type {
+    struct {
+        v: T,
+        fn g(self, comptime T: i32) -> i32 { let U = T; U }
+        fn h(comptime T: i32) -> i32 { let U = T; U + 1 }
+    }
+}
+fn main() -> i32 { let b = Box(i64) { v: 1 }; b.g(20) + Box(i64).h(21) }
+"""
+exit_code = 42
+
+[[case]]
+name = "comptime_type_argument_let_alias_shadowing_parameter"
+spec = ["4.14:5a", "5.1:10", "5.1:11"]
+description = "A `let`-bound type alias that shadows a runtime parameter of the same name is the type at a later `comptime T: type` argument, bare, in a `comptime { … }` block, in an array type, and in a type-constructor alias; the parameter is visible again once the alias's block ends (RUE-2577)"
+source = """
+fn size(comptime T: type) -> i32 { @size_of(T) }
+fn id(comptime T: type, x: T) -> T { x }
+fn Pair(comptime T: type) -> type { struct { a: T, b: T } }
+fn g(U: i32) -> i32 { let U = i64; size(U) + size(comptime { U }) + size([U; 2]) }
+fn h(U: i32) -> i32 {
+    let n = { let U = Pair(i8); size(U) };
+    let m = { let U = i16; id(U, 3) };
+    n + @intCast(m) + U
+}
+fn main() -> i32 { g(1) + h(5) }
+"""
+exit_code = 42
+
+[[case]]
+name = "comptime_type_argument_let_alias_shadowing_parameter_shadowing_type_parameter"
+spec = ["4.14:5a", "5.1:10", "5.1:11"]
+description = "In a generic struct's method, `let T = i8;` shadows a parameter `T: i32` that itself shadows the struct's type parameter, so a later `size(T)` measures `i8` (RUE-2577)"
+source = """
+fn size(comptime T: type) -> i32 { @size_of(T) }
+fn Box(comptime T: type) -> type {
+    struct {
+        v: T,
+        fn n(self, T: i32) -> i32 { let k = { let T = i8; size(T) }; k + T }
+    }
+}
+fn main() -> i32 { let b = Box(i64) { v: 1 }; b.n(41) }
 """
 exit_code = 42
