@@ -2251,7 +2251,12 @@ where
                         .symbol_space
                         .try_intern(name.as_ref())
                         .map_err(SemanticImportFailure::Interner)?;
-                    let pointer = type_pool.intern_ptr_const_from_type(element);
+                    // The view's `ptr` field points at `element`; an element
+                    // the pool cannot hold (`[type]`) is an invalid structural
+                    // type, as it is for an array or pointer (RUE-2606).
+                    let pointer = type_pool
+                        .try_intern_ptr_const(element)
+                        .map_err(|_| SemanticImportFailure::InvalidStructuralType)?;
                     let (id, _) = type_pool.register_struct(
                         symbol,
                         StructDef {
@@ -2259,7 +2264,7 @@ where
                             fields: vec![
                                 StructField {
                                     name: "ptr".to_owned(),
-                                    ty: Type::new_ptr_const(pointer),
+                                    ty: pointer,
                                 },
                                 StructField {
                                     name: "len".to_owned(),

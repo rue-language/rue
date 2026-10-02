@@ -1385,7 +1385,11 @@ where
         let symbol = self
             .intern_name(name)
             .map_err(IdentityMintError::Interner)?;
-        let pointer = self.type_pool.intern_ptr_const_from_type(element);
+        // An element the pool cannot hold (`[type]`) mints no view (RUE-2606).
+        let pointer = self
+            .type_pool
+            .try_intern_ptr_const(element)
+            .map_err(|_| IdentityMintError::InvalidStructuralType)?;
         let (id, _) = self.type_pool.register_struct(
             symbol,
             StructDef {
@@ -1393,7 +1397,7 @@ where
                 fields: vec![
                     StructField {
                         name: "ptr".to_owned(),
-                        ty: Type::new_ptr_const(pointer),
+                        ty: pointer,
                     },
                     StructField {
                         name: "len".to_owned(),
