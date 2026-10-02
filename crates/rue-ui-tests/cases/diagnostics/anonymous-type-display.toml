@@ -104,3 +104,21 @@ error_contains = [
     "type `I` does not conform to interface `Getter`",
     "an anonymous type local to a function body cannot be named by a conformance assertion; declare it at module scope as `struct Name is Getter { .. }`",
 ]
+
+[[case]]
+name = "shadowed_let_bound_structs_are_told_apart_by_their_lines"
+description = "A shadowing `let` reuses the name, so two distinct structs that would both read `I` are told apart by where they are declared."
+source = """
+fn main() -> i32 {
+    let I = struct { a: i64 };
+    let i = I { a: 1 };
+    let I = struct { a: i64 };
+    let j: I = i;
+    0
+}
+"""
+compile_fail = true
+error_contains = [
+    "E0206",
+    "type mismatch: expected I (local struct at line 4), found I (local struct at line 2)",
+]
