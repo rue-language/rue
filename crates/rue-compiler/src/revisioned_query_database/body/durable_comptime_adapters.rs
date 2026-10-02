@@ -482,6 +482,30 @@ impl crate::durable_comptime::DurableComptimeHostAuthority for DurableComptimeRo
         &mut self.session
     }
 
+    fn anonymous_binding(&self, key: &crate::AnonymousNominalKey) -> Option<Arc<str>> {
+        self.provider
+            .anonymous_projection(key)
+            .and_then(|nominal| nominal.binding)
+    }
+
+    fn function_returns_type(&self, function: &crate::StableDefinitionKey) -> bool {
+        let Ok(Some(candidate)) =
+            self.provider
+                .candidate(function.module(), function.name(), DefinitionKind::Function)
+        else {
+            return false;
+        };
+        matches!(
+            self.provider.signature(candidate),
+            Ok(
+                crate::semantic_query_nucleus::DeclarationSignatureProjection::Callable {
+                    result: crate::durable_semantics::DurableType::ComptimeType,
+                    ..
+                }
+            )
+        )
+    }
+
     #[cfg(test)]
     fn test_array_length_override(&self) -> Option<i128> {
         TEST_ARRAY_LENGTH_OVERRIDE.with(std::cell::Cell::get)

@@ -168,3 +168,85 @@ error: [E0206]: type mismatch: expected bool, found {integer}
   |     ^^^^^^^^^^^^^^^^
   |
 """
+
+[[case]]
+name = "constructor_cycle_over_a_function_local_names_the_local"
+description = "A constructor application over a function's own `let` type reads by that binding in the E0483 cycle, as `const` and primitive arguments do, not by the producer function (RUE-2612)."
+source = """
+fn Opt(comptime T: type) -> type { enum { Some(T), None } }
+fn L(comptime T: type) -> type { struct { v: T, next: Opt(Self) } }
+fn main() -> i32 { let I = struct { s: i64 }; @size_of(L(I)) }
+"""
+compile_fail = true
+expected_error = """
+error: [E0483]: recursive type 'L(I)' has infinite size (contains itself by value: L(I) -> Opt(L(I)) -> L(I)); break the cycle with a pointer (`ptr const Self` / `ptr mut Self`)
+ --> test.rue:2:34
+  |
+2 | fn L(comptime T: type) -> type { struct { v: T, next: Opt(Self) } }
+  |                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+"""
+
+[[case]]
+name = "constructor_cycle_over_a_function_local_bound_by_let"
+description = "The `let N = L(I)` spelling of the same cycle names the local the same way (RUE-2612)."
+source = """
+fn Opt(comptime T: type) -> type { enum { Some(T), None } }
+fn L(comptime T: type) -> type { struct { v: T, next: Opt(Self) } }
+fn main() -> i32 { let I = struct { s: i64 }; let N = L(I); 0 }
+"""
+compile_fail = true
+expected_error = """
+error: [E0483]: recursive type 'L(I)' has infinite size (contains itself by value: L(I) -> Opt(L(I)) -> L(I)); break the cycle with a pointer (`ptr const Self` / `ptr mut Self`)
+ --> test.rue:2:34
+  |
+2 | fn L(comptime T: type) -> type { struct { v: T, next: Opt(Self) } }
+  |                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+"""
+
+[[case]]
+name = "constructor_mismatch_between_two_function_locals_names_each"
+description = "Two applications of one constructor over different locals of one function read `L(I)` and `L(J)` in an E0206 (RUE-2612)."
+source = """
+fn L(comptime T: type) -> type { struct { v: T } }
+fn main() -> i32 {
+    let I = struct { s: i64 };
+    let J = struct { s: i64 };
+    let a: L(I) = L(I) { v: I { s: 1 } };
+    let b: L(J) = a;
+    0
+}
+"""
+compile_fail = true
+expected_error = """
+error: [E0206]: type mismatch: expected L(J), found L(I)
+ --> test.rue:6:5
+  |
+6 |     let b: L(J) = a;
+  |     ^^^^^^^^^^^^^^^^
+  |
+"""
+
+[[case]]
+name = "constructor_mismatch_between_shadowed_locals_gives_their_lines"
+description = "Two applications of one constructor over a shadowed `let` name are told apart by the line each local is declared on (RUE-2612)."
+source = """
+fn L(comptime T: type) -> type { struct { v: T } }
+fn main() -> i32 {
+    let I = struct { s: i64 };
+    let a = L(I) { v: I { s: 1 } };
+    let I = struct { s: i64 };
+    let b: L(I) = a;
+    0
+}
+"""
+compile_fail = true
+expected_error = """
+error: [E0206]: type mismatch: expected L(I (local struct at line 5)), found L(I (local struct at line 3))
+ --> test.rue:6:5
+  |
+6 |     let b: L(I) = a;
+  |     ^^^^^^^^^^^^^^^^
+  |
+"""

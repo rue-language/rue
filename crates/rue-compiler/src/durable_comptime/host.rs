@@ -55,19 +55,24 @@ impl<'a, A: DurableComptimeHostAuthority + ?Sized> DurableComptimeHost<'a, A> {
     /// A type's diagnostic spelling, naming each anonymous literal this root
     /// has seen bound by `let` by that name (RUE-2589).
     fn display_type(&self, ty: &DurableType) -> String {
-        super::projection::durable_type_diagnostic_name_with_bindings(ty, &|key| {
-            let key = key.with_canonical_producer();
-            self.anonymous_bindings
-                .get(key.as_ref())
-                .cloned()
-                .or_else(|| {
-                    self.services
-                        .durable_session()
-                        .observed_anonymous_nominals()
-                        .find(|nominal| nominal.identity.with_canonical_producer() == key)
-                        .and_then(|nominal| nominal.binding.clone())
-                })
-        })
+        super::projection::durable_type_diagnostic_name_with_bindings(
+            ty,
+            &|key| {
+                let key = key.with_canonical_producer();
+                self.anonymous_bindings
+                    .get(key.as_ref())
+                    .cloned()
+                    .or_else(|| {
+                        self.services
+                            .durable_session()
+                            .observed_anonymous_nominals()
+                            .find(|nominal| nominal.identity.with_canonical_producer() == key)
+                            .and_then(|nominal| nominal.binding.clone())
+                    })
+                    .or_else(|| self.services.anonymous_binding(&key))
+            },
+            &|function| self.services.function_returns_type(function),
+        )
     }
 
     /// Validate a durable structural value against its complete declared
