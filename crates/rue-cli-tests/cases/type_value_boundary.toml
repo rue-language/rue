@@ -92,3 +92,116 @@ fn main() -> i32 {
 }
 """ }]
 stdout = "16\n6\n4\n"
+
+# A type written in a runtime position cannot hold `type` as an array element,
+# a pointer pointee, or a slice element, at any depth: a value of it would
+# carry a type value, and type values cannot exist at run time (4.14:6). Each
+# position reports E1200 naming the child (RUE-2606); `comptime` positions
+# that hold types are unaffected.
+
+[[case]]
+name = "let_annotation_pointer_to_type_is_e1200"
+description = "`let g: ptr const type` reports E1200 at the binding rather than panicking while interning a pointer to `type` (RUE-2606)."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let g: ptr const type = 0;
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E1200", "a pointer pointee cannot be `type`: type values cannot exist at runtime", "main.rue:2:5"]
+compile_stderr_not_contains = ["panicked", "internal compiler error"]
+
+[[case]]
+name = "let_annotation_array_of_type_is_e1200"
+description = "`let g: [type; 2]` reports E1200 rather than a mismatch against `[type; 2]` as if it were a runtime type (RUE-2606)."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let g: [type; 2] = 0;
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E1200", "an array element cannot be `type`: type values cannot exist at runtime", "main.rue:2:5"]
+compile_stderr_not_contains = ["E0206"]
+
+[[case]]
+name = "slice_of_type_in_body_type_syntax_is_e1200"
+description = "`[type]` written in a body (here a `@size_of` argument) reports E1200 rather than panicking while minting the view's pointer field (RUE-2606)."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    @intCast(@size_of([type]))
+}
+""" }]
+compile_fail = true
+error_contains = ["E1200", "a slice element cannot be `type`: type values cannot exist at runtime"]
+compile_stderr_not_contains = ["panicked", "internal compiler error"]
+
+[[case]]
+name = "parameter_pointer_to_type_is_e1200"
+description = "A runtime parameter `ptr mut type` is E1200 at the parameter's type, even with no call, as a `fn` type taking `type` is (RUE-2606)."
+files = [{ path = "main.rue", source = """
+fn f(p: ptr mut type) -> i32 { 0 }
+
+fn main() -> i32 { 0 }
+""" }]
+compile_fail = true
+error_contains = ["E1200", "a pointer pointee cannot be `type`: type values cannot exist at runtime", "main.rue:1:9"]
+
+[[case]]
+name = "called_parameter_slice_of_type_is_e1200"
+description = "A called function with a `borrow p: [type]` parameter reports E1200 at the parameter rather than panicking while importing its signature (RUE-2606)."
+files = [{ path = "main.rue", source = """
+fn g(borrow p: [type]) -> i32 { 0 }
+
+fn main() -> i32 { g(borrow 0) }
+""" }]
+compile_fail = true
+error_contains = ["E1200", "a slice element cannot be `type`: type values cannot exist at runtime", "main.rue:1:16"]
+compile_stderr_not_contains = ["panicked", "internal compiler error", "E0202"]
+
+[[case]]
+name = "struct_field_array_of_type_is_e1200"
+description = "A struct field `[type; 2]` is E1200, as a field `type` is (RUE-2606)."
+files = [{ path = "main.rue", source = """
+struct S { t: [type; 2] }
+
+fn main() -> i32 { 0 }
+""" }]
+compile_fail = true
+error_contains = ["E1200", "an array element cannot be `type`: type values cannot exist at runtime"]
+
+[[case]]
+name = "return_type_holding_type_is_e1200"
+description = "`-> [ptr const type; 2]` is E1200 at the return type naming the innermost child; `-> type` alone is a constructor (RUE-2606)."
+files = [{ path = "main.rue", source = """
+fn f() -> [ptr const type; 2] { f() }
+
+fn main() -> i32 { 0 }
+""" }]
+compile_fail = true
+error_contains = ["E1200", "a pointer pointee cannot be `type`: type values cannot exist at runtime", "main.rue:1:11"]
+
+[[case]]
+name = "comptime_positions_holding_types_still_compile"
+description = "Control for RUE-2606: a `comptime T: type` parameter, a `-> type` constructor whose fields are `T` and `[T; 2]`, a `[T]` parameter over it, and pointers and arrays of a constructed type all still compile and run."
+args = ["main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+fn Pair(comptime T: type) -> type {
+    struct { a: T, b: [T; 2] }
+}
+
+fn first(comptime T: type, borrow xs: [T]) -> T {
+    xs[0]
+}
+
+fn main() -> i32 {
+    let p = Pair(i64) { a: 1, b: [2, 3] };
+    let xs: [i64; 2] = p.b;
+    @dbg(first(i64, borrow xs));
+    @dbg(@size_of(Pair(i32)));
+    @dbg(@size_of([ptr const Pair(u8); 2]));
+    0
+}
+""" }]
+stdout = "2\n12\n16\n"
