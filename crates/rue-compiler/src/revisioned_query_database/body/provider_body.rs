@@ -2252,22 +2252,20 @@ impl rue_air::SemanticTypeSyntaxProvider<ModuleId, ModuleId, StableDefinitionKey
             return Ok(V::Type(ty.clone()));
         }
         if let Some(ty) = self.deferred_value_parameters.get(syntax).cloned() {
-            use crate::durable_semantics::DurableType as T;
-            if crate::durable_comptime::durable_int_width(&ty).is_none()
-                && !matches!(ty, T::Bool | T::Unit)
-            {
-                return Self::provider_failure(format!(
-                    "comptime parameter `{syntax}` has unsupported declared type {}",
-                    durable_type_diagnostic_name(&ty),
-                ));
-            }
+            // Any comptime value parameter defers, an aggregate (an enum,
+            // `@copy` struct or array, 4.14:5) as well as a scalar: the call
+            // site binds the argument value and checks it against the
+            // constructor's parameter (RUE-2550).
+            //
             // The value is unknown here, but its declared type is not: an
             // argument whose type can never fit the constructor's parameter
             // is rejected with the declaration, called or not. Only a value
-            // range check waits for the call.
+            // range check waits for the call. A declared type that is itself
+            // deferred (`comptime a: [i32; N]`) is known only at the call.
             let expected =
                 self.constructor_value_parameter_type(head, parameter_index, type_arguments)?;
             if let Some(expected) = expected
+                && ty != crate::durable_semantics::DurableType::ComptimeType
                 && !deferred_value_type_fits(&ty, &expected)
             {
                 return Self::provider_domain_failure(
