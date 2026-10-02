@@ -2266,6 +2266,107 @@ fn main() -> i32 {
 compile_fail = true
 
 [[case]]
+name = "array_length_in_comptime_block_names_negative_block_local"
+error_contains = ["[E0481]", "array length 'n' is negative (-2)"]
+spec = ["7.1:37", "4.14:26"]
+description = "A `comptime` block's `let` naming a negative value is not an array length, though no pass before the block's evaluation resolves it (RUE-2546)"
+source = """
+fn main() -> i32 {
+    comptime {
+        let n = 0 - 2;
+        let a: [i32; n] = [1, 2];
+        a[1]
+    }
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "array_length_in_comptime_block_names_negative_const"
+error_contains = ["[E0481]", "array length 'K' is negative (-2)"]
+spec = ["7.1:37", "4.14:26"]
+description = "A negative `const` length in a `comptime` block's annotation is rejected there as at run time (RUE-2546)"
+source = """
+const K: i32 = 0 - 2;
+fn main() -> i32 {
+    comptime {
+        let a: [i32; K] = [1, 2];
+        a[1]
+    }
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "array_length_in_comptime_block_names_computed_block_local"
+spec = ["7.1:4", "7.1:37", "4.14:26", "4.14:27"]
+description = "A length naming a block local computed from another binds an array literal of exactly that many elements (RUE-2546)"
+source = """
+fn main() -> i32 {
+    comptime {
+        let k = 2;
+        let n = k + 1;
+        let a: [i32; n] = [10, 12, 20];
+        a[0] + a[1] + a[2]
+    }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "array_length_in_comptime_block_names_computed_block_local_against_wrong_literal"
+error_contains = ["[E0901]", "expected array of 3 elements, found 2 elements"]
+spec = ["7.1:4", "7.1:37", "4.14:26"]
+description = "An array literal that does not fill a length naming a computed block local is E0901, as against a literal length (RUE-2546)"
+source = """
+fn main() -> i32 {
+    comptime {
+        let k = 2;
+        let n = k + 1;
+        let a: [i32; n] = [1, 2];
+        a[1]
+    }
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "array_length_in_comptime_block_names_computed_block_local_element_type"
+error_contains = ["[E0800]", "literal value 300 is out of range for type 'u8'"]
+spec = ["7.1:37", "4.14:26", "4.14:27"]
+description = "The elements of an array literal annotated with a length naming a computed block local are typed at the annotation's element type (RUE-2546)"
+source = """
+fn main() -> i32 {
+    comptime {
+        let k = 1;
+        let n = k + 1;
+        let v = 300;
+        let a: [u8; n] = [1, v];
+        0
+    }
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "array_length_in_comptime_block_names_computed_block_local_element_read"
+error_contains = ["[E0206]", "expected i32, found u8"]
+spec = ["7.1:37", "4.14:26", "4.14:27"]
+description = "An element of an array annotated with a length naming a computed block local has the annotation's element type where it is read (RUE-2546)"
+source = """
+fn main() -> i32 {
+    comptime {
+        let k = 1;
+        let n = k + 1;
+        let a: [u8; n] = [1, 2];
+        let b: i32 = a[1];
+        b
+    }
+}
+"""
+compile_fail = true
+
+[[case]]
 name = "array_length_in_comptime_block_names_unshadowed_const"
 spec = ["7.1:32", "4.14:26"]
 source = """
