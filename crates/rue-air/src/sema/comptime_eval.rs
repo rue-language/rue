@@ -1853,28 +1853,107 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// A float at `f32` or `f64` is keyed by its value at that width, not by
     /// its spelling: `3`, `3.0` and `0.3e1` bind one canonical text, so they
     /// name one specialization and one type-constructor instance (RUE-2403).
-    /// Every other value binds unchanged.
+    /// A float leaf of an aggregate (a struct field, an enum payload, an array
+    /// element, at any depth) is keyed the same way at the leaf's own declared
+    /// type, so `P { x: 0.1 }` and `P { x: 0.100000001 }` with `x: f32` bind
+    /// one value (RUE-2410). Every other value binds unchanged.
     pub(crate) fn canonical_comptime_value_at(
         &self,
         value: ConstValue,
         expected: Type,
     ) -> ConstValue {
-        let ConstValue::Float(symbol) = &value else {
-            return value;
-        };
-        if expected != Type::F32 && expected != Type::F64 {
-            return value;
+        self.canonical_comptime_value_at_depth(value, expected, 0)
+    }
+
+    fn canonical_comptime_value_at_depth(
+        &self,
+        value: ConstValue,
+        expected: Type,
+        depth: usize,
+    ) -> ConstValue {
+        match &value {
+            ConstValue::Float(symbol) => {
+                if expected != Type::F32 && expected != Type::F64 {
+                    return value;
+                }
+                let text = self.body_interner().resolve(&symbol.spur());
+                let Some(canonical) = crate::canonical_float_value_text(text, expected) else {
+                    return value;
+                };
+                if canonical == text {
+                    return value;
+                }
+                ConstValue::Float(rue_rir::SymbolHandle::new(
+                    self.body_interner().get_or_intern(canonical),
+                ))
+            }
+            ConstValue::Aggregate(aggregate) => {
+                // An aggregate's identity is its own type, which validation
+                // checks against `expected`; its leaves are keyed at the
+                // field, payload and element types that type declares. The
+                // value was bounded when it was built; the depth guard only
+                // keeps a malformed value from recursing without end.
+                if depth > crate::MAX_COMPTIME_VALUE_DEPTH {
+                    return value;
+                }
+                let ty = aggregate.ty;
+                let canonical_children = |children: &[ConstValue], types: &[Type]| {
+                    let mut changed = false;
+                    let rebuilt: Vec<ConstValue> = children
+                        .iter()
+                        .zip(types.iter())
+                        .map(|(child, child_type)| {
+                            let canonical = self.canonical_comptime_value_at_depth(
+                                child.clone(),
+                                *child_type,
+                                depth + 1,
+                            );
+                            changed |= canonical != *child;
+                            canonical
+                        })
+                        .collect();
+                    (changed && rebuilt.len() == children.len()).then_some(rebuilt)
+                };
+                let kind = match (&aggregate.kind, ty.kind()) {
+                    (ConstAggregateKind::Struct(values), TypeKind::Struct(id)) => {
+                        let field_types: Vec<Type> = self
+                            .body_type_pool()
+                            .struct_def(id)
+                            .fields
+                            .iter()
+                            .map(|field| field.ty)
+                            .collect();
+                        canonical_children(values, &field_types)
+                            .map(|values| ConstAggregateKind::Struct(values.into()))
+                    }
+                    (ConstAggregateKind::Array(values), TypeKind::Array(id)) => {
+                        let (element, _) = self.body_type_pool().array_def(id);
+                        let element_types = vec![element; values.len()];
+                        canonical_children(values, &element_types)
+                            .map(|values| ConstAggregateKind::Array(values.into()))
+                    }
+                    (ConstAggregateKind::Enum { variant, payload }, TypeKind::Enum(id)) => {
+                        let definition = self.body_type_pool().enum_def(id);
+                        if *variant as usize >= definition.variant_count() {
+                            return value;
+                        }
+                        let payload_types = definition.variant_payload(*variant as usize).to_vec();
+                        canonical_children(payload, &payload_types).map(|payload| {
+                            ConstAggregateKind::Enum {
+                                variant: *variant,
+                                payload: payload.into(),
+                            }
+                        })
+                    }
+                    _ => None,
+                };
+                match kind {
+                    Some(kind) => ConstValue::Aggregate(Arc::new(ConstAggregate { ty, kind })),
+                    None => value,
+                }
+            }
+            _ => value,
         }
-        let text = self.body_interner().resolve(&symbol.spur());
-        let Some(canonical) = crate::canonical_float_value_text(text, expected) else {
-            return value;
-        };
-        if canonical == text {
-            return value;
-        }
-        ConstValue::Float(rue_rir::SymbolHandle::new(
-            self.body_interner().get_or_intern(canonical),
-        ))
     }
 
     /// Rebind every float value argument of a comptime call at its
@@ -1890,7 +1969,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     ) {
         if !callee_values
             .values()
-            .any(|value| matches!(value, ConstValue::Float(_)))
+            .any(|value| matches!(value, ConstValue::Float(_) | ConstValue::Aggregate(_)))
         {
             return;
         }
@@ -1898,7 +1977,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let param_names = param_data.names().to_vec();
         let param_types = param_data.types().to_vec();
         for (index, (name, declared)) in param_names.iter().zip(param_types).enumerate() {
-            if !matches!(callee_values.get(name), Some(ConstValue::Float(_))) {
+            if !matches!(
+                callee_values.get(name),
+                Some(ConstValue::Float(_) | ConstValue::Aggregate(_))
+            ) {
                 continue;
             }
             let Ok(expected) = self.resolve_substituted_param_type(

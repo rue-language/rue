@@ -2436,6 +2436,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 Some(expected),
             ) {
                 call_facts.argument_values.insert(arg.value, value.clone());
+                // Keyed at the parameter type as call analysis keys it, so a
+                // signature constructor (`-> Mk(v)`) names one type for every
+                // spelling of a float value, scalar or nested in an aggregate
+                // (RUE-2403, RUE-2410).
+                let value = self.canonical_comptime_value_at(value, expected);
                 callee_values.insert(param_names[index], value);
             }
         }

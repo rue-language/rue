@@ -827,6 +827,132 @@ fn main() -> i32 {
 compile_fail = true
 error_contains = ["E0206", "expected Mk(0.1), found Mk(0.100000001)"]
 
+# A float nested in an aggregate comptime argument (a struct field, an enum
+# payload, an array element, at any depth) is keyed by its value at the type
+# its slot declares, as a scalar float argument is (4.14:5, RUE-2410).
+
+[[case]]
+name = "equal_float_leaves_in_aggregate_comptime_arguments_select_one_type"
+spec = ["3.12:11", "4.14:5", "4.14:25"]
+description = "Struct fields, a nested struct, array elements, an enum payload and an element typed `T` with `T = f32` that are equal at f32 make one aggregate argument, so each pair of applications is one type (RUE-2410)"
+source = """
+@copy
+struct P { x: f32 }
+@copy
+struct Q { p: P, a: [f32; 2] }
+enum E { A(f32), B }
+fn Mk(comptime q: Q) -> type {
+    struct { y: i32 }
+}
+fn Me(comptime e: E) -> type {
+    struct { y: i32 }
+}
+fn Ka(comptime T: type, comptime a: [T; 1]) -> type {
+    struct { y: i32 }
+}
+const A = Mk(Q { p: P { x: 0.1 }, a: [3, 0.2] });
+const B = Mk(Q { p: P { x: 0.100000001 }, a: [3.0, 0.200000001] });
+const C = Me(E.A(0.1));
+const D = Me(E.A(0.100000001));
+const F = Ka(f32, [0.1]);
+const G = Ka(f32, [0.100000001]);
+
+fn main() -> i32 {
+    let a: A = B { y: 1 };
+    let c: C = D { y: 2 };
+    let f: F = G { y: 3 };
+    @dbg(a.y + c.y + f.y);
+    0
+}
+"""
+expected_stdout = """
+6
+"""
+exit_code = 0
+
+[[case]]
+name = "equal_float_leaves_in_aggregate_comptime_arguments_select_one_specialization"
+spec = ["4.14:5", "4.14:23", "4.14:25"]
+description = "A function's comptime struct argument whose f32 field is `0.1` or `0.100000001` is one argument: the signature constructor `-> Mk(p)` names one type for both, a `const` struct value binds the same, and a scalar `comptime v: f32` does the same (RUE-2410)"
+source = """
+@copy
+struct P { x: f32 }
+fn Mk(comptime p: P) -> type {
+    struct { y: i32 }
+}
+fn make(comptime p: P) -> Mk(p) {
+    Mk(p) { y: 1 }
+}
+fn Ms(comptime v: f32) -> type {
+    struct { y: i32 }
+}
+fn make_s(comptime v: f32) -> Ms(v) {
+    Ms(v) { y: 4 }
+}
+const PA: P = P { x: 0.1 };
+const PB: P = P { x: 0.100000001 };
+const K: f32 = 0.1;
+
+fn main() -> i32 {
+    let a: Mk(PA) = make(P { x: 0.100000001 });
+    let b: Mk(PA) = make(PB);
+    let c: Ms(K) = make_s(0.100000001);
+    @dbg(a.y + b.y + c.y);
+    0
+}
+"""
+expected_stdout = """
+6
+"""
+exit_code = 0
+
+[[case]]
+name = "signed_zero_float_leaves_in_aggregate_comptime_arguments_are_distinct"
+spec = ["4.14:5"]
+description = "`P { x: 0.0 }` and `P { x: -0.0 }` are distinct comptime arguments, so each specialization keeps its own zero and `1.0 / p.x` is `inf` and `-inf` (RUE-2402, RUE-2410)"
+source = """
+@copy
+struct P { x: f32 }
+fn recip(comptime p: P) -> f32 { 1.0 / p.x }
+
+fn main() -> i32 {
+    @dbg(recip(P { x: 0.0 }));
+    @dbg(recip(P { x: -0.0 }));
+    @dbg(recip(P { x: 0.5 }));
+    @dbg(recip(P { x: 0.50 }));
+    0
+}
+"""
+expected_stdout = """
+inf
+-inf
+2.0
+2.0
+"""
+exit_code = 0
+
+[[case]]
+name = "float_leaves_equal_only_at_f32_are_distinct_in_an_f64_field"
+spec = ["4.14:5", "4.14:25"]
+description = "`0.1` and `0.100000001` round to one f32 but two f64 values, so in an `f64` field they are distinct aggregate arguments and `Mk(P { x: 0.1 })` and `Mk(P { x: 0.100000001 })` are distinct types (RUE-2410)"
+source = """
+@copy
+struct P { x: f64 }
+fn Mk(comptime p: P) -> type {
+    struct { y: i32 }
+}
+const A = Mk(P { x: 0.1 });
+const B = Mk(P { x: 0.100000001 });
+
+fn main() -> i32 {
+    let a: A = B { y: 1 };
+    @dbg(a.y);
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0206", "type mismatch: expected Mk(<aggregate>), found Mk(<aggregate>)"]
+
 # =============================================================================
 # Phase 3: Type Parameters (ADR-0025)
 # =============================================================================
