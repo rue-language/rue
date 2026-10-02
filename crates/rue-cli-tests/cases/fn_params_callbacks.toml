@@ -430,3 +430,21 @@ fn main() -> i32 { apply(h.Missing.answer) }
 args = ["main.rue", "-o", "prog"]
 compile_fail = true
 error_contains = ["Missing"]
+
+[[case]]
+name = "fn_type_taking_or_returning_type_rejected_at_parameter"
+description = "A callback is a runtime value (6.1:47), so a `fn` type taking or returning `type` is rejected at the parameter that declares it (4.14:6); the function used to be left without a signature, so each call to it was E0202 \"undefined function\" (RUE-2420)."
+args = ["main.rue", "-o", "prog"]
+files = [
+  { path = "lib.rue", source = """
+pub fn make() -> type { i32 }
+""" },
+  { path = "main.rue", source = """
+const lib = @import("lib.rue");
+fn use_it(g: fn() -> type) -> i32 { 0 }
+fn main() -> i32 { use_it(lib.make) }
+""" },
+]
+compile_fail = true
+error_contains = ["E1200", "a `fn` type cannot take or return `type`: type values cannot exist at runtime", "main.rue:2:14"]
+compile_stderr_not_contains = ["E0202"]
