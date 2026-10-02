@@ -235,6 +235,7 @@ const EXPECTED_REVISIONED_QUERY_TESTS: &[&str] = &[
     "signature_engine_cycles_publish_family_owned_domain_failures",
     "signature_facts_constructor_head_carries_named_typed_parameters",
     "single_worker_toolchain_park_aggregates_the_complete_ready_frontier",
+    "specialized_type_failure_reports_user_errors_as_diagnostics",
     "speculative_frontiers_are_effect_free_and_cannot_publish_host_results",
     "stable_declaration_classification_is_narrow_green_and_multiplicity_sensitive",
     "stable_definition_kinds_have_fixed_syntax_candidate_sets",

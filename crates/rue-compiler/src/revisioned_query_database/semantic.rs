@@ -2203,12 +2203,17 @@ pub(super) fn exact_specialized_callable_types(
 }
 
 /// A failure resolving a specialized callable's parameter or result type at
-/// one call. The call site already checked its comptime arguments, so a
-/// failure here is normally unreachable; one that names a user error (a
-/// constructor argument in a deferred signature type that does not fit, or a
-/// comptime evaluation failure) is still reported as that diagnostic rather
-/// than as an internal error (RUE-2550).
-fn specialized_type_failure(
+/// one call.
+///
+/// This is a safety net. Body analysis resolves the same types at the call
+/// and checks the call's comptime arguments first, so every user error known
+/// to reach here is reported there, at the call. Should the two resolutions
+/// ever disagree, one that names a user error (a constructor argument in a
+/// deferred signature type that does not fit, or a comptime evaluation
+/// failure) is still reported as that diagnostic rather than as an internal
+/// error (RUE-2550). The call ABI query that consumes it is keyed by callable,
+/// not by call, so the diagnostic is reported at the calling body.
+pub(super) fn specialized_type_failure(
     position: &str,
     failure: crate::semantic_query_nucleus::SemanticNucleusFailure,
 ) -> crate::type_queries::TypeQueryFailure {
