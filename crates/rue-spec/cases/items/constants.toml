@@ -1597,3 +1597,107 @@ fn main() -> i32 { 0 }
 """
 compile_fail = true
 error_contains = ["E0207", "expected 1 argument, found 2"]
+
+# =============================================================================
+# A `let` annotation in a constant initializer block (5.1:8, 6.5:2) — RUE-2617
+# =============================================================================
+
+# A block-local `let` in a constant initializer meets its annotation as the
+# same `let` in a function body does: its initializer must be compatible with
+# the annotated type (E0206 on the statement, E0800 on an out-of-range
+# literal), and every use reads the binding at that type.
+
+[[case]]
+name = "const_block_let_integer_literal_at_bool_rejected"
+spec = ["5.1:8", "6.5:2"]
+description = "An integer literal bound by a `let` annotated `bool` in a constant initializer block is E0206 on the statement, as in a function body, rather than a bool local holding 1 (RUE-2617)"
+source = """
+const K: i32 = { let a: bool = 1; a };
+fn main() -> i32 { K }
+"""
+compile_fail = true
+error_contains = ["E0206", "expected bool, found {integer}", "--> test.rue:1:18"]
+
+[[case]]
+name = "const_block_let_bool_local_at_i32_rejected"
+spec = ["5.1:8", "6.5:2"]
+description = "A `bool` local bound by a `let` annotated `i32` is E0206 on that statement, so the arithmetic after it never sees a bool as an integer (RUE-2617)"
+source = """
+const K: i32 = { let a: bool = true; let b: i32 = a; b + 1 };
+fn main() -> i32 { K }
+"""
+compile_fail = true
+error_contains = ["E0206", "expected i32, found bool", "--> test.rue:1:38"]
+
+[[case]]
+name = "const_block_let_literal_out_of_range_rejected"
+spec = ["3.1:17", "5.1:8", "6.5:2"]
+description = "An integer literal out of range for a `let` annotation in a constant initializer block is E0800 on the literal, even when the binding is never read (RUE-2617)"
+source = """
+const K: i32 = { let a: u8 = 300; 7 };
+fn main() -> i32 { K }
+"""
+compile_fail = true
+error_contains = ["E0800", "literal value 300 is out of range for type 'u8'", "--> test.rue:1:30"]
+
+[[case]]
+name = "const_block_let_typed_tail_at_other_type_rejected"
+spec = ["5.1:8", "6.5:5"]
+description = "A block tail reading a `let` annotated `i64` is an i64, so it is E0206 as an i32 constant's value, directly or through an `if` (RUE-2617)"
+source = """
+const A: i32 = { let a: i64 = 5; a };
+const B: i32 = { let a: i64 = 5; if true { a } else { 1 } };
+fn main() -> i32 { A + B }
+"""
+compile_fail = true
+error_contains = ["E0206", "expected i32, found i64", "--> test.rue:1:1"]
+
+[[case]]
+name = "const_block_let_arithmetic_on_a_declared_local_at_other_type_rejected"
+spec = ["5.1:8", "6.5:2"]
+description = "Arithmetic on an i64 local is an i64, so binding it with an `i32` annotation is E0206 on the statement (RUE-2617)"
+source = """
+const K: i32 = { let a: i64 = 5; let b: i32 = a + 1; b };
+fn main() -> i32 { K }
+"""
+compile_fail = true
+error_contains = ["E0206", "expected i32, found i64", "--> test.rue:1:34"]
+
+[[case]]
+name = "const_block_let_in_a_match_arm_rejected"
+spec = ["5.1:8", "6.5:2"]
+description = "A `let` whose initializer does not have its annotated type is E0206 inside a match arm of a constant initializer block as well (RUE-2617)"
+source = """
+const K: i32 = { let x: i32 = 2; match x { 2 => { let a: bool = 5; 1 }, _ => 0 } };
+fn main() -> i32 { K }
+"""
+compile_fail = true
+error_contains = ["E0206", "expected bool, found {integer}", "--> test.rue:1:51"]
+
+[[case]]
+name = "const_block_declared_local_in_a_struct_field_rejected"
+spec = ["5.1:8", "6.5:2"]
+description = "An i64 local in an `i32` struct field is E0206 on the field's value (RUE-2617)"
+source = """
+struct P { x: i32 }
+const K: i32 = { let a: i64 = 5; let p: P = P { x: a }; p.x };
+fn main() -> i32 { K }
+"""
+compile_fail = true
+error_contains = ["E0206", "expected i32, found i64", "--> test.rue:2:52"]
+
+[[case]]
+name = "const_block_annotated_lets_of_the_right_type_accepted"
+spec = ["5.1:8", "6.5:2"]
+description = "Annotated `let` bindings whose initializers have the annotated type keep their values: arithmetic at i64, a negated literal compared with its i8 binding, an integer literal at f64, a shadowing binding and a taken branch over typed locals (RUE-2617)"
+source = """
+const A: i64 = { let x: i64 = 5; x * 1000000000 };
+const B: bool = { let x: i8 = -6; -6 == x };
+const C: f64 = { let a: f64 = 3; a };
+const D: i64 = { let a: i32 = 5; let a: i64 = 6; a };
+const E: i32 = { let x: i64 = 5; let y: i32 = 7; if x == 5 { y } else { 0 } };
+fn main() -> i32 {
+    if A == 5000000000 && B && C == 3.0 && D == 6 && E == 7 { 42 } else { 1 }
+}
+"""
+exit_code = 42
