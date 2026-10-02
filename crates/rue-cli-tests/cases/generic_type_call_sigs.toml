@@ -443,3 +443,19 @@ fn main() -> i32 { let a: u8 = comptime { g(false, Y) }; 0 }
 """ }]
 compile_fail = true
 error_contains = ["E1200", "does not fit in u8"]
+
+[[case]]
+name = "module_constructor_argument_range_names_display_path"
+description = "A range error in `let x: lib.K(300)` names the constructor as written, `lib.K`, not by its internal symbol (RUE-2550)."
+files = [
+    { path = "main.rue", source = """
+const lib = @import("lib.rue");
+fn main() -> i32 { let x: lib.K(300) = 1; x }
+""" },
+    { path = "lib.rue", source = """
+pub fn K(comptime n: u8) -> type { i32 }
+""" },
+]
+compile_fail = true
+error_contains = ["E1200", "for 'lib.K' has value 300 outside the range of u8"]
+compile_stderr_not_contains = ["$K"]
