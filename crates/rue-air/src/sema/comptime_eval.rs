@@ -4382,8 +4382,11 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeStructuredTypes for OrdinaryBodyEn
     /// as the same type in a function body reports it: a length that is not
     /// a non-negative integer constant (7.1:33) is E0481 (RUE-2546), and an
     /// unknown or private name is E0204 or E0706 rather than an annotation
-    /// silently left unchecked (RUE-2445). The engine has already answered
-    /// runtime-dependent for a type naming a runtime binding.
+    /// silently left unchecked (RUE-2445). When the block binds modules, the
+    /// engine has already answered runtime-dependent for a bare name bound to
+    /// a runtime local; a qualified root bound to one (`x.I`) reaches here and
+    /// is E0204. A bare runtime name used as a type is still left unchecked
+    /// (RUE-2599).
     fn begin_comptime_type_syntax(
         &mut self,
         _program: &Self::ProgramKey,
