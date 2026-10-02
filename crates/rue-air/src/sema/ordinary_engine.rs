@@ -645,6 +645,9 @@ impl ResolvedCalleeName {
     }
 }
 
+/// A callee and the substitution one call applies to it, in name order.
+type SignatureBoundsKey = (ParamRange, Vec<(Spur, Type)>, Vec<(Spur, ConstValue)>);
+
 /// Inherent-method receiver for the generic ordinary-body algorithm.
 ///
 /// The engine owns no analyzer representation or alternate semantic algorithm.
@@ -661,6 +664,10 @@ pub(crate) struct OrdinaryBodyEngine<'h, H: OrdinaryBodyAnalysisHost> {
     /// 6.8:11), so one verification per body answers every call relying on
     /// it.
     pub(super) verified_conformances: AHashSet<(Type, StructId)>,
+    /// Calls whose callee signature's applied bounds this body has already
+    /// checked, keyed by the callee and its substitution: re-resolving the
+    /// same signature under the same arguments reaches the same answer.
+    checked_signature_bounds: AHashSet<SignatureBoundsKey>,
     /// The loop-head states settled for the loop nest being analysed, reused
     /// across the enclosing loops' rechecks (RUE-2354).
     pub(super) loop_head_hints: LoopHeadHints,
@@ -740,6 +747,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             storage,
             comptime_reduction_memo: ComptimeCompletedCallMemo::new(),
             verified_conformances: AHashSet::new(),
+            checked_signature_bounds: AHashSet::new(),
             loop_head_hints: LoopHeadHints::default(),
             loop_recheck_depth: 0,
             later_iteration_exit_moves: AHashSet::new(),
@@ -1692,6 +1700,20 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         {
             return Ok(());
         }
+        let mut types = type_subst
+            .iter()
+            .map(|(name, ty)| (*name, *ty))
+            .collect::<Vec<_>>();
+        types.sort_unstable_by_key(|(name, _)| *name);
+        let mut values = value_subst
+            .iter()
+            .map(|(name, value)| (*name, value.clone()))
+            .collect::<Vec<_>>();
+        values.sort_unstable_by_key(|(name, _)| *name);
+        let key = (function.params, types, values);
+        if self.checked_signature_bounds.contains(&key) {
+            return Ok(());
+        }
         let root_file = self
             .storage
             .function_signature_root_file(function)
@@ -1722,6 +1744,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
                     )
                 })?;
         }
+        self.checked_signature_bounds.insert(key);
         Ok(())
     }
 

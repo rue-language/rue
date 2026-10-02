@@ -230,6 +230,14 @@ pub trait DurableNominalSource<K, M> {
         None
     }
 
+    /// The absolute span of a definition's whole declaration, when the caller
+    /// analyzes against a concrete source snapshot. Used to point an
+    /// unsatisfied bound of a type constructor applied in a body at the
+    /// constructor that declares it (spec 6.8:15).
+    fn definition_span(&self, _key: &K) -> Option<Span> {
+        None
+    }
+
     /// The user-facing name of a skolem type (spec 6.8:20) — the bounded
     /// comptime parameter it stands for, such as `T`, or `T.Element` for
     /// one of its associated types — or `None` when `key` names an ordinary
