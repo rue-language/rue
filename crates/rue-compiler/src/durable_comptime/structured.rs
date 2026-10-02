@@ -887,6 +887,7 @@ pub(super) mod structured_type_adapter_tests {
                     is_type_parameter: false,
                 },
             ]),
+            generic_bound_requirements: Arc::from([]),
         }
     }
 

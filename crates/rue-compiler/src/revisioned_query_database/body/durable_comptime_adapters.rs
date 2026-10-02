@@ -960,9 +960,7 @@ impl crate::durable_comptime::DurableComptimeSemanticAuthority
                 matches!(
                     gate.kind,
                     crate::semantic_query_nucleus::DeferredRequirementKind::InterfaceBound { .. }
-                ) && SemanticNucleusTypeProvider::type_contains_unresolved_generic(
-                    &gate.ty,
-                )
+                ) && SemanticNucleusTypeProvider::type_contains_unresolved_generic(&gate.ty)
             })
             .cloned()
             .collect();

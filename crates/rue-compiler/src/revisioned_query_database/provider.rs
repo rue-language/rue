@@ -1729,15 +1729,12 @@ impl rue_air::DurableCallableSource<crate::StableDefinitionKey, ModuleId>
         let candidate = self.candidate(key)?;
         let signature = self.signature_for_candidate(&candidate.declaration)?;
         let type_syntax = signature.callable_type_syntax;
-        let applies_generic_interface_bounds =
-            signature.deferred_requirements.iter().any(|gate| {
-                matches!(
-                    gate.kind,
-                    crate::semantic_query_nucleus::DeferredRequirementKind::InterfaceBound { .. }
-                ) && SemanticNucleusTypeProvider::type_contains_unresolved_generic(
-                    &gate.ty,
-                )
-            });
+        let applies_generic_interface_bounds = signature.deferred_requirements.iter().any(|gate| {
+            matches!(
+                gate.kind,
+                crate::semantic_query_nucleus::DeferredRequirementKind::InterfaceBound { .. }
+            ) && SemanticNucleusTypeProvider::type_contains_unresolved_generic(&gate.ty)
+        });
         let crate::semantic_query_nucleus::DeclarationSignatureProjection::Callable {
             parameters,
             result,

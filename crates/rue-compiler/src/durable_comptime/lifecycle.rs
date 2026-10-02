@@ -514,18 +514,20 @@ impl DurableComptimeSession {
             .iter()
             .map(|(_, ty)| ty.clone())
             .collect::<Vec<_>>();
-        requirements.extend(generic_bound_requirements.iter().map(|gate| {
-            DeferredRequirement {
-                kind: gate.kind.clone(),
-                ty: substitute_durable_generics(&gate.ty, &concrete),
-                source: Arc::new(crate::semantic_query_nucleus::DeferredRequirementSource {
-                    declaration: declaration.clone(),
-                    start,
-                    end,
+        requirements.extend(
+            generic_bound_requirements
+                .iter()
+                .map(|gate| DeferredRequirement {
+                    kind: gate.kind.clone(),
+                    ty: substitute_durable_generics(&gate.ty, &concrete),
+                    source: Arc::new(crate::semantic_query_nucleus::DeferredRequirementSource {
+                        declaration: declaration.clone(),
+                        start,
+                        end,
+                    }),
+                    application: None,
                 }),
-                application: None,
-            }
-        }));
+        );
         requirements
     }
 
