@@ -118,6 +118,9 @@ pub(in crate::revisioned_query_database) fn collect_published_body_references(
     for (_, ty) in body.comptime_param_types.iter() {
         collect_body_type_reference(ty, references);
     }
+    for ty in body.slice_views.iter() {
+        collect_body_type_reference(ty, references);
+    }
 }
 
 pub(crate) fn semantic_candidate_import_occurrences(
