@@ -1240,7 +1240,42 @@ impl<'a> CfgBuilder<'a> {
     }
 
     /// Lower an AIR instruction, returning its result.
+    ///
+    /// A `!`-typed expression never produces a value (spec 3.4:1, 3.4:9), so
+    /// control cannot continue past one. Most `!` forms (`return`, a `-> !`
+    /// call, `@panic`, a breakless `loop`) already end their block, but a `!`
+    /// value can also be *read*: a `!` parameter, a `!` field, an element of
+    /// a `[!; N]` array, or the result of any of them threaded through a
+    /// block. Such a read evaluates (its instructions stay in the block) and
+    /// then ends the block with `Unreachable` here, exactly like a `-> !`
+    /// call (RUE-347). Without this, a consumer of the read — a comparison,
+    /// an array literal, a branch, an arithmetic operator, a return — would
+    /// receive a value with no storage and no runtime representation and fail
+    /// CFG verification or codegen (RUE-2595).
+    ///
+    /// `StorageLive`/`StorageDead` are statements that carry their slot's
+    /// type, not `!` expressions: a `let y = return 7;` opens a `!` slot
+    /// before its initializer runs, and that initializer must still run.
     fn lower_inst(&mut self, air_ref: AirRef) -> ExprResult {
+        let result = self.lower_inst_uncapped(air_ref);
+        let inst = self.air.get(air_ref);
+        if matches!(result.continuation, Continuation::Continues)
+            && inst.ty.is_never()
+            && !matches!(
+                inst.data,
+                AirInstData::StorageLive { .. } | AirInstData::StorageDead { .. }
+            )
+        {
+            self.cfg
+                .set_terminator(self.current_block, Terminator::Unreachable);
+            return Self::diverged();
+        }
+        result
+    }
+
+    /// Lower an AIR instruction without ending the block after a `!` value;
+    /// only [`Self::lower_inst`] calls this.
+    fn lower_inst_uncapped(&mut self, air_ref: AirRef) -> ExprResult {
         // Check cache first
         if let Some(cached) = self.value_cache[air_ref.as_u32() as usize] {
             return ExprResult {
