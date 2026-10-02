@@ -2610,6 +2610,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         scope.modules.bind(binder, None);
                         arm_frame.push(scope.hide(binder));
                         scope.runtime.insert(binder);
+                        if in_comptime {
+                            scope.unevaluated_comptime_locals.insert(binder);
+                        }
                     }
                     self.walk_comptime_type_locals(
                         body,
@@ -2721,7 +2724,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// is a name the walk holds no valid length for. `None` when the
     /// literal's shape does not follow the annotation's (a non-literal or
     /// ragged level under a named length), when one name would take two
-    /// lengths, or when a length names a type or a runtime binding.
+    /// lengths, or when a length names a type or a runtime binding. A
+    /// non-literal element below the top level is skipped.
     fn assume_literal_lengths(
         &self,
         syntax: rue_rir::RirTypeSyntaxRef,
@@ -2761,9 +2765,18 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 }
             }
         }
-        // Every element at this depth must follow the element type's own
-        // nesting; an empty literal leaves nothing to read it from.
+        // Every literal element at this depth must follow the element type's
+        // own nesting; an empty literal leaves nothing to read it from. A
+        // non-literal element gives no lengths, and the evaluation checks its
+        // length against the one its literal siblings fix (E0901); a name no
+        // sibling fixes stays unresolved, so no hint is given.
         for element_literal in elements {
+            if !matches!(
+                self.body_rir_ref().get(element_literal).data,
+                InstData::ArrayInit { .. }
+            ) {
+                continue;
+            }
             self.assume_literal_lengths(element, element_literal, scope, assumed)?;
         }
         Some(())
