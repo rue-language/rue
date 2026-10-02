@@ -832,6 +832,16 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         (0..argument_count)
                             .any(|index| param_data.comptime().get(index).copied().unwrap_or(false))
                     })
+                        // So may a zero-parameter associated `-> type` call
+                        // (RUE-2602).
+                        || self
+                            .associated_type_callee(
+                                &inst_data,
+                                inst_span,
+                                ReceiverFacts::Syntactic(&locals),
+                                |name| locals.lookup(name).is_some(),
+                            )
+                            .is_some()
                 }
                 _ => false,
             };
@@ -1920,6 +1930,23 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                                     resolved_types.contains_key(&inst_ref)
                                         && call_facts.retypes_beyond(staged, inst_ref, &call_args)
                                 });
+                            } else {
+                                let shadowing = lexical_binding_membership_view(&bindings);
+                                if let Some((struct_id, method)) = self.associated_type_callee(
+                                    &inst_data,
+                                    inst_span,
+                                    ReceiverFacts::Resolved(resolved_types),
+                                    |name| shadowing(&name).is_some(),
+                                ) {
+                                    canonical_evaluations = canonical_evaluations.saturating_add(1);
+                                    self.record_associated_module_call_result(
+                                        inst_ref,
+                                        struct_id,
+                                        method,
+                                        inst_span,
+                                        &mut call_facts,
+                                    );
+                                }
                             }
                         }
                         _ => {}
@@ -2058,6 +2085,80 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 self.resolve_callee_name_local(*method, module_file)
             }
             _ => None,
+        }
+    }
+
+    /// The struct and associated function a `Type.f()` or `m.Type.f()` call
+    /// names, when `f` takes no parameters and returns `type`: such a call
+    /// may reduce to a module, as a zero-parameter free `-> type` call may
+    /// (RUE-2602). `shadowed` says whether a binding in scope hides a bare
+    /// type-name receiver, which then makes the call an ordinary method call.
+    /// The receiver resolves as call analysis resolves it, in the current
+    /// file or in the receiver module's file; visibility stays with call
+    /// analysis, which reports it.
+    fn associated_type_callee(
+        &mut self,
+        inst_data: &rue_rir::InstData,
+        span: Span,
+        receiver_facts: ReceiverFacts<'_>,
+        shadowed: impl Fn(Spur) -> bool,
+    ) -> Option<(crate::types::StructId, Spur)> {
+        let rue_rir::InstData::MethodCall {
+            receiver,
+            method,
+            args,
+        } = inst_data
+        else {
+            return None;
+        };
+        if !self.body_rir_ref().call_args(args).is_empty() {
+            return None;
+        }
+        let struct_id = match self.body_rir_ref().get(*receiver).data {
+            rue_rir::InstData::VarRef { name, .. } if !shadowed(name) => {
+                self.struct_in_file(span.file_id, name)?
+            }
+            rue_rir::InstData::FieldGet { base, field } => {
+                let module = self.method_receiver_module(base, span.file_id, receiver_facts)?;
+                let module_file = self.module_def(module).file_id;
+                self.struct_in_file(module_file, field)?
+            }
+            _ => return None,
+        };
+        let info = self.call_facts().call_method_info(struct_id, *method)?;
+        (!info.has_self
+            && info.return_type == Type::COMPTIME_TYPE
+            && self.body_param_data(info.params).names().is_empty())
+        .then_some((struct_id, *method))
+    }
+
+    /// Record the module a zero-parameter associated `-> type` call reduces
+    /// to as the call's result type, as [`Self::record_module_call_result`]
+    /// records a free call's (RUE-2602).
+    fn record_associated_module_call_result(
+        &mut self,
+        call: InstRef,
+        struct_id: crate::types::StructId,
+        method: Spur,
+        call_span: Span,
+        call_facts: &mut GenericCallFacts,
+    ) {
+        let Some(info) = self.call_facts().call_method_info(struct_id, method) else {
+            return;
+        };
+        let Ok(Some(admission)) = self.associated_type_call_admission(struct_id, method, &info)
+        else {
+            return;
+        };
+        if let Ok(Some(ConstValue::Module(module))) = self.reduce_admitted_comptime_call(
+            admission,
+            &AHashMap::new(),
+            &AHashMap::new(),
+            call_span,
+        ) {
+            call_facts
+                .return_types
+                .insert(call, Type::new_module(module));
         }
     }
 
