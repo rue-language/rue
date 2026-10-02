@@ -805,12 +805,17 @@ def decl_spans(t, witnesses=False):
                 e = k + 1
                 break
             k = t.find("\n", k + 1)
-        d, i, b = 0, mm.end(), None
+        # `in_match`: the statement itself holds a `match … with` at depth 0, whose arms
+        # start lines with `|` too (`Float/Lemmas.lean`'s `cmpScaled_at`), so from there on a
+        # line-leading `|` is one of its arms and not an equation of the declaration.
+        d, i, b, in_match = 0, mm.end(), None, False
         while i < e:
             if mask[i]:
                 i += 1
                 continue
             ch = t[i]
+            if d == 0 and re.match(r"match\b", t[i:i + 6]) and not (t[i - 1].isalnum() or t[i - 1] in "_.'"):
+                in_match = True
             if ch in "([{⟨":
                 d += 1
             elif ch in ")]}⟩":
@@ -819,7 +824,7 @@ def decl_spans(t, witnesses=False):
                 b = i
             elif d == 0 and t.startswith(" where", i) and not (t[i + 6:i + 7].isalnum() or t[i + 6:i + 7] == "_"):
                 b = i
-            elif d == 0 and ch == "\n" and re.match(r"\n[ \t]+\|", t[i:i + 40]):
+            elif d == 0 and not in_match and ch == "\n" and re.match(r"\n[ \t]+\|", t[i:i + 40]):
                 b = i
             if b is not None:
                 break
