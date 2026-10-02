@@ -112,9 +112,10 @@ fn statement_recovery_facts(
     facts
 }
 
-/// Whether a statement reads one of `names`, or a poisoned local `rebound`
-/// does not shadow, by the name forms the poison model tracks: a variable
-/// read or assignment, or a call through a local.
+/// Whether a statement reads one of `names`, or a poisoned local not named
+/// in `rebound` (bound after the stop, or poisoned only by recovery), by the
+/// name forms the poison model tracks: a variable read or assignment, or a
+/// call through a local.
 fn statement_reads_names(
     rir: &rue_rir::Rir,
     root: InstRef,
@@ -4633,6 +4634,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     }
 
     /// The error a failed top-level body statement stops the body with.
+    /// `recovery_poisoned_names` are the bindings poisoned so far only
+    /// because inference recovery decided their types.
     ///
     /// Body-wide inference has already typed the statements after it, so
     /// their inference failures are independent of the stop unless they read
@@ -4646,6 +4649,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         &mut self,
         error: CompileError,
         stopped: &[InstRef],
+        recovery_poisoned_names: &AHashSet<Spur>,
         ctx: &AnalysisContext,
     ) -> CompileError {
         let Some((&stopped_statement, later)) = stopped.split_first() else {
@@ -4653,17 +4657,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         };
         if ctx.statement_recovery_depth != 1
             || ctx.inference_statement_errors.is_empty()
-            || matches!(
-                error.kind,
-                ErrorKind::InvalidCompilerInput(_)
-                    | ErrorKind::CompilerResourceLimit(_)
-                    | ErrorKind::CompilerResourceExhaustion(_)
-                    | ErrorKind::OutputPublication(_)
-                    | ErrorKind::UnsatisfiedTrustedToolchainInput(_)
-                    | ErrorKind::CompilerProducerInvariant(_)
-                    | ErrorKind::InternalError(_)
-                    | ErrorKind::InternalCodegenError(_)
-            )
+            || !super::ordinary_engine::is_source_diagnostic(&error)
         {
             return error;
         }
@@ -4673,7 +4667,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 _ => None,
             };
         let mut tainted = AHashSet::new();
-        let mut rebound = AHashSet::new();
+        // A binding poisoned only because inference recovery decided its
+        // type is not a failed binding: the failure that decided it is
+        // reported at its own statement, as `analyze_block` treats it.
+        let mut rebound = recovery_poisoned_names.clone();
         tainted.extend(bound_name(self, stopped_statement));
         let mut trailing = Vec::new();
         for &statement in later {
@@ -4853,7 +4850,12 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     .cloned()
                     .expect("an attributed statement has an inference failure");
                 if !representable {
-                    return Err(self.stop_body_statement(first, &inst_refs[i..], ctx));
+                    return Err(self.stop_body_statement(
+                        first,
+                        &inst_refs[i..],
+                        &recovery_poisoned_names,
+                        ctx,
+                    ));
                 }
                 let recovered_errors = self.body_analysis_recovered_errors_mut();
                 if recovered_errors.len() + failures.len()
@@ -4929,7 +4931,14 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     recovered_errors.push(error);
                     self.recover_statement_placeholder(air, inst_ref, ctx)?
                 }
-                Err(error) => return Err(self.stop_body_statement(error, &inst_refs[i..], ctx)),
+                Err(error) => {
+                    return Err(self.stop_body_statement(
+                        error,
+                        &inst_refs[i..],
+                        &recovery_poisoned_names,
+                        ctx,
+                    ));
+                }
             };
 
             let mut statement_divergence = ctx.divergence_kinds;

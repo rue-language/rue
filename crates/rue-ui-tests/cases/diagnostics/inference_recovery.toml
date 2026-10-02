@@ -193,3 +193,123 @@ error: [E0207]: expected 1 argument, found 2
   |                            ^^^^^^^
   |
 """
+
+[[case]]
+name = "if_initializer_reports_the_branch_mismatch_not_the_annotation"
+description = "Inside one statement the first failure in constraint order is the cause; the let's annotation mismatch it induced is not reported."
+source = """
+fn main() -> i32 {
+    let x: i32 = if true { true } else { 1 };
+    x
+}
+"""
+compile_fail = true
+expected_error = """
+error: [E0206]: type mismatch: expected bool, found {integer}
+ --> test.rue:2:42
+  |
+2 |     let x: i32 = if true { true } else { 1 };
+  |                                          ^
+  |
+"""
+
+[[case]]
+name = "match_initializer_reports_the_arm_mismatch_not_the_annotation"
+description = "The arm mismatch is reported, not the annotation mismatch it caused."
+source = """
+fn main() -> i32 {
+    let n = 3;
+    let x: u8 = match n { 0 => true, _ => 1 };
+    0
+}
+"""
+compile_fail = true
+expected_error = """
+error: [E0206]: type mismatch: expected bool, found {integer}
+ --> test.rue:3:43
+  |
+3 |     let x: u8 = match n { 0 => true, _ => 1 };
+  |                                           ^
+  |
+"""
+
+[[case]]
+name = "block_initializer_reports_the_inner_mismatch_not_the_annotation"
+description = "The inner let's mismatch is reported, not the annotation mismatch of the enclosing let."
+source = """
+fn main() -> i32 {
+    let x: u8 = { let t: bool = 1; t };
+    0
+}
+"""
+compile_fail = true
+expected_error = """
+error: [E0206]: type mismatch: expected bool, found {integer}
+ --> test.rue:2:19
+  |
+2 |     let x: u8 = { let t: bool = 1; t };
+  |                   ^^^^^^^^^^^^^^^^
+  |
+"""
+
+[[case]]
+name = "array_initializer_reports_the_element_not_the_let"
+description = "An array element mismatch points at the element."
+source = """
+fn main() -> i32 {
+    let x: [u8; 2] = [true, 1];
+    0
+}
+"""
+compile_fail = true
+expected_error = """
+error: [E0206]: type mismatch: expected u8, found bool
+ --> test.rue:2:23
+  |
+2 |     let x: [u8; 2] = [true, 1];
+  |                       ^^^^
+  |
+"""
+
+[[case]]
+name = "comparison_initializer_reports_only_the_operand_mismatch"
+description = "A comparison's operand mismatch is reported alone; the bool result's mismatch with the annotation follows from it."
+source = """
+fn main() -> i32 {
+    let x: u8 = (1 == true);
+    0
+}
+"""
+compile_fail = true
+expected_error = """
+error: [E0206]: type mismatch: expected integer type, found bool
+ --> test.rue:2:23
+  |
+2 |     let x: u8 = (1 == true);
+  |                       ^^^^
+  |
+"""
+
+[[case]]
+name = "arity_stop_keeps_a_later_mismatch_over_a_recovery_typed_binding"
+description = "After an arity error stops the body, a later mismatch is still reported when the binding it reads was poisoned only because of that mismatch."
+source = """
+fn f(a: i32) -> i32 { a }
+fn main() -> i32 { let w = 5; let x = f(1, 2); let z: bool = w; 0 }
+"""
+compile_fail = true
+expected_error = """
+error: [E0207]: expected 1 argument, found 2
+ --> test.rue:2:39
+  |
+2 | fn main() -> i32 { let w = 5; let x = f(1, 2); let z: bool = w; 0 }
+  |                                       ^^^^^^^
+  |
+error: [E0206]: type mismatch: expected bool, found {integer}
+ --> test.rue:2:48
+  |
+2 | fn main() -> i32 { let w = 5; let x = f(1, 2); let z: bool = w; 0 }
+  |                                                ^^^^^^^^^^^^^^^^
+  |
+error: aborting due to 2 previous errors
+"""
