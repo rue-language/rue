@@ -629,7 +629,15 @@ impl Unifier {
                     if t.is_error() {
                         return UnifyResult::Ok;
                     }
-                    if !t.is_never() && !self.string_literal_types.contains(t) {
+                    // `!` is not exempt: a string literal is a completing
+                    // value, and only a diverging expression is accepted at
+                    // `!` (3.4:3). Peer sites drop a diverging operand before
+                    // constraining, so `!` reaches here only from a
+                    // declaration — `let s: ! = "x"`, an argument at a `!`
+                    // parameter — which rejects the literal as it does an
+                    // integer one, but as a mismatch: a string literal has
+                    // no value range to check (RUE-2559).
+                    if !self.string_literal_types.contains(t) {
                         return Self::string_literal_mismatch(InferType::Concrete(*t), side);
                     }
                 }
