@@ -1696,7 +1696,11 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             .storage
             .function_signature_root_file(function)
             .unwrap_or(function.file_id);
+        // A type parameter's written "type" is its kind or bound
+        // (`comptime T: Equatable`), not a type to resolve.
+        let type_parameters = self.storage.comptime_type_param_flags(function);
         let syntaxes = (0..function.params.len())
+            .filter(|index| !type_parameters.get(*index).copied().unwrap_or(false))
             .filter_map(|index| self.storage.function_param_type_syntax(function, index))
             .chain(self.storage.function_return_type_syntax(function))
             .collect::<Vec<_>>();
