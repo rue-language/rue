@@ -1784,7 +1784,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// direct module binding — a `let`/`const`-bound `@import` (a local of module
     /// type or a per-file module binding) — and a nested submodule chain
     /// (`std.geo.Sign.Pos`), resolving `std.geo` by looking `geo` up as a module
-    /// binding re-exported from `std`'s file.
+    /// binding re-exported from `std`'s file. An inline `@import("x.rue")` root
+    /// is tried first and resolves exactly as the bound form does (RUE-2416).
     ///
     /// This is a thin consumer of [`decode_module_spine`] and
     /// [`Self::resolve_module_spine`]: the shadowing rule and the per-hop
@@ -1822,8 +1823,12 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         span: Span,
     ) -> CompileResult<Option<crate::types::ModuleId>> {
         let path = self.body_interner().resolve(&spine.path).to_owned();
-        let Ok(module) = self.resolve_canonical_import(&path, spine.root_span) else {
-            return Ok(None);
+        // An unknown specifier falls through: the intrinsic's own analysis
+        // reports it (E0704). Any other failure is not ours to swallow.
+        let module = match self.resolve_canonical_import(&path, spine.root_span) {
+            Ok(module) => module,
+            Err(error) if matches!(error.kind, ErrorKind::UnknownType(_)) => return Ok(None),
+            Err(error) => return Err(error),
         };
         if spine.fields.is_empty() {
             return Ok(Some(module));
