@@ -5191,33 +5191,34 @@ impl<'a> ConstraintGenerator<'a> {
     /// specialization (`T` in `[T; 3]`) that no local shadows. Such a
     /// reference has no inferred type of its own; its value is a type.
     fn names_enclosing_type_parameter(&self, inst: InstRef, ctx: &ConstraintContext) -> bool {
+        self.enclosing_type_parameter(inst, ctx).is_some()
+    }
+
+    /// The enclosing specialization's binding for the type parameter `inst`
+    /// names, when `inst` is a bare reference to one that nothing shadows.
+    ///
+    /// A local, or a parameter that is not itself a `comptime T: type`
+    /// parameter, shadows the enclosing specialization's type parameter:
+    /// `fn g(self, T: i32)` in a generic struct's method reads a value, so
+    /// neither a repeat operand nor a comptime type argument sees the type.
+    fn enclosing_type_parameter(&self, inst: InstRef, ctx: &ConstraintContext) -> Option<Type> {
         let InstData::VarRef { name, .. } = self.rir.get(inst).data else {
-            return false;
+            return None;
         };
-        // A local, or a parameter that is not itself a `comptime T: type`
-        // parameter, shadows the enclosing specialization's type parameter:
-        // `fn g(self, T: i32)` in a generic struct's method reads a value.
         let shadowed_by_param = ctx
             .lookup_param(name)
             .is_some_and(|param| param.ty != InferType::Concrete(Type::COMPTIME_TYPE));
-        !ctx.locals.contains_key(&name)
-            && !shadowed_by_param
-            && self
-                .type_subst
-                .is_some_and(|subst| subst.contains_key(&name))
+        if ctx.locals.contains_key(&name) || shadowed_by_param {
+            return None;
+        }
+        self.type_subst.and_then(|subst| subst.get(&name).copied())
     }
 
     /// Bootstrap only an enclosing type substitution during the speculative
     /// probe. All source names, including primitives, aliases, and nominal
     /// declarations, are resolved by sema's canonical fact collector.
     fn bootstrap_type_argument(&self, arg: InstRef, ctx: &ConstraintContext) -> Option<Type> {
-        let InstData::VarRef { name, .. } = self.rir.get(arg).data else {
-            return None;
-        };
-        if ctx.locals.contains_key(&name) {
-            return None;
-        }
-        self.type_subst.and_then(|subst| subst.get(&name).copied())
+        self.enclosing_type_parameter(arg, ctx)
     }
 
     /// Substitute a generic call's comptime type/value arguments into the
