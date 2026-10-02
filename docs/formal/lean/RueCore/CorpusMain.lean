@@ -11,7 +11,12 @@ profile over the same cases: how many `checkProgram` accepts and rejects, and
 each group's outcomes under `run`, a refusal by its violation. Without `--gen` the output is the seed corpus alone, exactly as Buck's
 `corpus.json` expects it. A generated case the export fuel does not complete is
 an error (exit 1, the cases named on stderr) rather than a silent omission,
-because `Gen.lean` guarantees every one terminates.
+because `Gen.lean` guarantees every one terminates. A seed case it does not
+complete is named on stderr and left out (exit 0, as `Corpus.lean` documents).
+Every run first checks `Corpus.divergent`, programs that never terminate: each
+must come back not completed at the export fuel, or the run fails (exit 1)
+(RUE-2488). The interpreter's native stack grows with the fuel, so this is
+also what shows the export fuel fits the stack Lean runs `main` on.
 
 The profile also names the checker's **incompleteness** (RUE-2491): a case
 `checkProgram` refuses whose `run` nonetheless reaches an `ok` value at the
@@ -102,6 +107,20 @@ def main (args : List String) : IO UInt32 := do
       IO.eprintln msg
       return 2
   | .ok o =>
+      -- RUE-2488: the expected-divergence programs must run out of fuel and be
+      -- reported so, not overflow the stack or complete (`Corpus.divergent`).
+      let finished := RueCore.Corpus.divergent.filter RueCore.Corpus.completed
+      if !finished.isEmpty then
+        IO.eprintln (s!"ruecore-corpus: {finished.length} expected-divergence case(s) completed " ++
+          "at the export fuel, which they never may: " ++ ", ".intercalate (finished.map (·.name)))
+        return 1
+      -- A seed the export fuel does not complete is left out of the document,
+      -- as `Corpus.lean` says; say which, so that a seed going missing (under
+      -- a mutant, say) is reported as not finishing rather than only absent.
+      let unfinishedSeeds := RueCore.Corpus.cases.filter (fun c => !RueCore.Corpus.completed c)
+      if !unfinishedSeeds.isEmpty then
+        IO.eprintln (s!"ruecore-corpus: {unfinishedSeeds.length} seed case(s) did not finish at " ++
+          "the export fuel and are not exported: " ++ ", ".intercalate (unfinishedSeeds.map (·.name)))
       let gen := match o.gen with
         | none => []
         | some n => RueCore.Gen.generate n o.seed
