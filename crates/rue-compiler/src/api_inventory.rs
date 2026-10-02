@@ -1977,7 +1977,7 @@ const REGISTRATION_LEAF_ONE_SHOT_IDENTITIES: [(usize, u64); 45] = [
     (970, 16_733_311_749_340_788_625),
     (2_583, 15_262_418_539_020_264_161),
     (11_629, 16_221_983_252_924_349_648),
-    (140_855, 8_502_880_590_767_923_295),
+    (141_346, 3_601_075_907_122_823_563),
     (3_254, 11_949_940_325_034_004_149),
     (5_552, 14_658_861_127_087_730_967),
     (872, 14_092_162_116_261_787_003),
@@ -4751,7 +4751,7 @@ pub(super) use register_parse_import_parse;"#;
         (
             "revisioned_database::register_semantic_semantic_nucleus".to_owned(),
             "family".to_owned(),
-            21,
+            22,
         ),
         (
             "revisioned_database::semantic".to_owned(),
