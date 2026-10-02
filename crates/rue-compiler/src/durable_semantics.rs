@@ -61,9 +61,15 @@ pub struct DurableAnonymousNominal {
     pub shape: DurableAnonymousNominalShape,
     pub type_captures: Arc<[(Arc<str>, DurableType)]>,
     pub value_captures: Arc<[(Arc<str>, DurableConstValue)]>,
+    /// The `let` name the producer bound the literal to (`let I = struct {
+    /// .. };`), which diagnostics call the nominal by (RUE-2589). It is no
+    /// part of the identity, but it is compared with the fact so a renamed
+    /// binding never leaves a stale name behind a cached equal value.
+    pub binding: Option<Arc<str>>,
 }
 
 impl DurableAnonymousNominal {
+    #[allow(clippy::type_complexity)]
     fn semantic_parts(
         &self,
     ) -> (
@@ -71,13 +77,21 @@ impl DurableAnonymousNominal {
         &DurableAnonymousNominalShape,
         &Arc<[(Arc<str>, DurableType)]>,
         &Arc<[(Arc<str>, DurableConstValue)]>,
+        &Option<Arc<str>>,
     ) {
         (
             &self.identity,
             &self.shape,
             &self.type_captures,
             &self.value_captures,
+            &self.binding,
         )
+    }
+
+    /// This fact with the producer's `let` name for its literal.
+    pub(crate) fn with_binding(mut self, binding: Option<Arc<str>>) -> Self {
+        self.binding = binding;
+        self
     }
 
     pub(crate) fn new(
@@ -100,6 +114,7 @@ impl DurableAnonymousNominal {
             shape,
             type_captures,
             value_captures,
+            binding: None,
         }
     }
 
@@ -111,6 +126,7 @@ impl DurableAnonymousNominal {
             shape,
             type_captures: self.type_captures.clone(),
             value_captures: self.value_captures.clone(),
+            binding: self.binding.clone(),
         }
     }
 
@@ -130,6 +146,7 @@ impl DurableAnonymousNominal {
             self.type_captures.clone(),
             self.value_captures.clone(),
         )
+        .with_binding(self.binding.clone())
     }
 
     pub(crate) fn source_symbol(&self) -> &Arc<str> {
@@ -297,12 +314,17 @@ pub(crate) fn reconcile_anonymous_nominals(
         .ok_or_else(|| left.identity.clone())?;
     let value_captures = reconcile_optional_projection(&left.value_captures, &right.value_captures)
         .ok_or_else(|| left.identity.clone())?;
-    Ok(DurableAnonymousNominal::new(
-        left.identity,
-        shape,
-        type_captures,
-        value_captures,
-    ))
+    // A projection that never saw the producer's literal carries no name.
+    let binding = match (&left.binding, &right.binding) {
+        (Some(left_binding), Some(right_binding)) if left_binding != right_binding => {
+            return Err(left.identity);
+        }
+        (binding, other) => binding.clone().or_else(|| other.clone()),
+    };
+    Ok(
+        DurableAnonymousNominal::new(left.identity, shape, type_captures, value_captures)
+            .with_binding(binding),
+    )
 }
 
 /// Insert one durable anonymous fact without permitting last-writer-wins

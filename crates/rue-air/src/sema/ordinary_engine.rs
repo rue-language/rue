@@ -603,6 +603,18 @@ pub(crate) trait DiagnosticPresentation {
     fn record_body_ctor_type_display(&mut self, ty: Type, display: String);
 
     fn friendly_type_display(&self, ty: Type) -> String;
+
+    /// Whether `ty` is an anonymous nominal local to its producer's body,
+    /// which no module-level item can name (RUE-2589).
+    fn is_body_local_anonymous_type(&self, ty: Type) -> bool;
+
+    /// Record the `let` name the anonymous nominal `identity` is bound to,
+    /// for presentation only (RUE-2589).
+    fn record_anonymous_binding(
+        &mut self,
+        identity: &super::anon_structs::IssuedAnonymousNominalKey,
+        binding: Arc<str>,
+    );
 }
 
 /// The neutral receiver contract consumed by the canonical ordinary-body engine.
@@ -1094,6 +1106,24 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
     }
     pub(crate) fn format_type_name(&self, ty: Type) -> String {
         self.storage.friendly_type_display(ty)
+    }
+
+    /// Whether `ty` is an anonymous struct or enum local to the body that
+    /// produced it, so no module-level item can name it (RUE-2589).
+    pub(crate) fn is_body_local_anonymous_type(&self, ty: Type) -> bool {
+        self.storage.is_body_local_anonymous_type(ty)
+    }
+
+    /// Record the `let` name an anonymous struct or enum literal is bound to
+    /// (`let I = struct { .. };`) before its shape resolves, so diagnostics
+    /// call the nominal by it (RUE-2589). Presentation only.
+    pub(crate) fn record_anonymous_binding(
+        &mut self,
+        identity: &super::anon_structs::IssuedAnonymousNominalKey,
+        binding: Spur,
+    ) {
+        let binding = Arc::from(self.body_interner().resolve(&binding));
+        self.storage.record_anonymous_binding(identity, binding);
     }
 
     /// Render an inference type through the same presentation authority as
@@ -2252,7 +2282,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             .collect::<Vec<_>>()
             .join(" -> ");
         Some(CompileError::without_span(
-            rue_error::ErrorKind::RecursiveTypeInfiniteSize { name, cycle },
+            rue_error::ErrorKind::RecursiveAnonymousTypeInfiniteSize { name, cycle },
         ))
     }
     pub(crate) fn find_or_create_anon_struct(

@@ -438,6 +438,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 anchor,
                 thread_bound,
                 unchecked_transfer_reason,
+                binding,
             } => {
                 if (*thread_bound || unchecked_transfer_reason.is_some())
                     && !self.file_module_is_trusted_standard_library(inst.span.file_id)
@@ -471,6 +472,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     producer: ctx.canonical_producer.clone(),
                     anchor: anchor.clone(),
                 };
+                if let Some(binding) = binding {
+                    self.record_anonymous_binding(&self_identity, *binding);
+                }
                 let self_name = {
                     let engine = ComptimeEngine::new(self);
                     let roots = engine.anon_struct_type_syntax_roots(
@@ -689,6 +693,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 variants,
                 payloads,
                 anchor,
+                binding,
             } => {
                 let variant_syms = self.body_rir_ref().anon_enum_variants(variants).to_vec();
                 let payload_symbols: Vec<Vec<rue_rir::RirTypeSyntaxRef>> = self
@@ -750,15 +755,16 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     variant_payloads.push(tys);
                 }
 
-                let enum_ty = self.find_or_create_anon_enum(
-                    crate::AnonymousNominalKey {
-                        kind: crate::AnonymousNominalKind::Enum,
-                        producer: ctx.canonical_producer.clone(),
-                        anchor: anchor.clone(),
-                    },
-                    &variant_names,
-                    &variant_payloads,
-                )?;
+                let identity = crate::AnonymousNominalKey {
+                    kind: crate::AnonymousNominalKind::Enum,
+                    producer: ctx.canonical_producer.clone(),
+                    anchor: anchor.clone(),
+                };
+                if let Some(binding) = binding {
+                    self.record_anonymous_binding(&identity, *binding);
+                }
+                let enum_ty =
+                    self.find_or_create_anon_enum(identity, &variant_names, &variant_payloads)?;
 
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::TypeConst(enum_ty),

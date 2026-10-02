@@ -2654,6 +2654,7 @@ mod typed_payload_tests {
                 thread_bound: false,
                 unchecked_transfer_reason: None,
                 anchor: RirStructuralAnchor::new(vec![RirStructuralPathSegment::AnonymousType(0),]),
+                binding: None,
             }
         );
         fixed_symbol_case!(
@@ -2672,6 +2673,7 @@ mod typed_payload_tests {
                 variants,
                 payloads: RirAnonEnumPayloadsRange::payload_fallback(),
                 anchor: RirStructuralAnchor::new(vec![RirStructuralPathSegment::AnonymousType(0),]),
+                binding: None,
             }
         );
     }

@@ -101,6 +101,24 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     Some(skolem) => format!(
                         "add `{interface}` to the bound of parameter `{skolem}`: `comptime {skolem}: ... + {interface}`"
                     ),
+                    // A literal local to a body has no name a module-level
+                    // assertion could use, and an anonymous type has no
+                    // header to carry one (RUE-2589).
+                    None if self.is_body_local_anonymous_type(argument) => format!(
+                        "an anonymous type local to a function body cannot be named by a conformance assertion; declare it at module scope as `struct Name is {interface} {{ .. }}`"
+                    ),
+                    None if match argument.kind() {
+                        crate::types::TypeKind::Struct(id) => {
+                            self.body_type_pool().is_anonymous_struct(id)
+                        }
+                        crate::types::TypeKind::Enum(id) => {
+                            self.body_type_pool().is_anonymous_enum(id)
+                        }
+                        _ => false,
+                    } =>
+                    {
+                        format!("add `{ty} is {interface};` to assert the conformance")
+                    }
                     None => format!(
                         "add `{ty} is {interface};` to assert the conformance, or a `struct {ty} is {interface}` header"
                     ),

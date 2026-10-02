@@ -2097,6 +2097,11 @@ impl rue_air::DurableAnonymousSource<crate::StableDefinitionKey, ModuleId>
             .unwrap_or_default()
     }
 
+    fn anonymous_binding(&self, key: &crate::AnonymousNominalKey) -> Option<Arc<str>> {
+        self.anonymous_nominal(key)
+            .and_then(|nominal| nominal.binding.clone())
+    }
+
     fn anonymous_value_captures(
         &self,
         key: &crate::AnonymousNominalKey,
@@ -2336,7 +2341,8 @@ pub(super) fn project_provider_produced_anonymous_nominals(
                     .map(|(name, value)| Ok((name.clone(), map_value(value)?)))
                     .collect::<Result<Vec<_>, _>>()?
                     .into(),
-            ))
+            )
+            .with_binding(value.binding.clone()))
         })
         .collect::<Result<Vec<_>, _>>()?;
     let mut by_identity = BTreeMap::new();

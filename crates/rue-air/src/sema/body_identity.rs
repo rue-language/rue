@@ -407,6 +407,12 @@ pub trait DurableAnonymousSource<K, M> {
         Vec::new()
     }
 
+    /// The `let` name the producer bound an anonymous nominal's literal to
+    /// (`let I = struct { .. };`), if any. Presentation only (RUE-2589).
+    fn anonymous_binding(&self, _key: &AnonymousNominalKey<K, M>) -> Option<Arc<str>> {
+        None
+    }
+
     /// Non-type comptime lexical captures carried by an anonymous producer.
     /// Implementations that only provide shape identity may leave this empty.
     fn anonymous_value_captures(

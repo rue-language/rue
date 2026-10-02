@@ -26,7 +26,7 @@ const MAGIC: &[u8; 4] = b"RIRP";
 // Packed RIR is a private, ephemeral compiler-cache format. The cache header
 // version is checked before decoding, so changing this byte invalidates every
 // prior representation instead of requiring compatibility decoding.
-const VERSION: u8 = 7;
+const VERSION: u8 = 8;
 const HEADER_LEN: usize = 64;
 
 /// The packed-RIR wire encoding of one fallible source intrinsic.
@@ -1965,6 +1965,7 @@ impl<E, C: FnMut() -> Result<(), E>, P: FnMut(RirSpanSlot, Span) -> Result<(u32,
                 thread_bound,
                 unchecked_transfer_reason,
                 anchor,
+                binding,
             } => {
                 self.byte(61)?;
                 self.fields(rir.anon_struct_fields(fields))?;
@@ -1972,11 +1973,13 @@ impl<E, C: FnMut() -> Result<(), E>, P: FnMut(RirSpanSlot, Span) -> Result<(u32,
                 self.boolean(*thread_bound)?;
                 self.optional_symbol(*unchecked_transfer_reason)?;
                 self.anchor(anchor)?;
+                self.optional_symbol(*binding)?;
             }
             InstData::AnonEnumType {
                 variants,
                 payloads,
                 anchor,
+                binding,
             } => {
                 self.byte(62)?;
                 self.enum_payload(
@@ -1984,6 +1987,7 @@ impl<E, C: FnMut() -> Result<(), E>, P: FnMut(RirSpanSlot, Span) -> Result<(u32,
                     rir.anon_enum_payloads(payloads, variants),
                 )?;
                 self.anchor(anchor)?;
+                self.optional_symbol(*binding)?;
             }
         }
         Ok(())
@@ -3530,6 +3534,7 @@ impl<
                 let thread_bound = reader.boolean("anonymous thread-bound marker")?;
                 let unchecked_transfer_reason = self.optional_symbol(reader)?;
                 let anchor = self.anchor(reader)?;
+                let binding = self.optional_symbol(reader)?;
                 self.destination
                     .add_anon_struct_type_with_transfer_metadata(
                         &fields,
@@ -3537,14 +3542,16 @@ impl<
                         thread_bound,
                         unchecked_transfer_reason,
                         anchor,
+                        binding,
                         span,
                     )?
             }
             62 => {
                 let (variants, payloads) = self.enum_payload(reader)?;
                 let anchor = self.anchor(reader)?;
+                let binding = self.optional_symbol(reader)?;
                 self.destination
-                    .add_anon_enum_type(&variants, &payloads, anchor, span)?
+                    .add_anon_enum_type_with_binding(&variants, &payloads, anchor, binding, span)?
             }
             tag => return Err(PackedRirDecodeError::InvalidOpcode(tag).into()),
         };
