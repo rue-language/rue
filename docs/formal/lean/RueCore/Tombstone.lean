@@ -235,6 +235,7 @@ theorem Contents.resolveDyn_ne_uad : ∀ (is : List Int) (πs : List (List Nat))
               · exact Contents.resolveDyn_ne_uad _ _ h
         · cases h
       · cases h; simp
+      · cases h; simp
 
 /-- Navigating a dynamic place from an activation record whose environment names live cells
 never refuses with `useAfterDrop` (helper). -/
