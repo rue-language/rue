@@ -307,6 +307,8 @@ pub(crate) fn decode_module_spine(rir: &Rir, inst_ref: InstRef) -> Option<Module
 pub(crate) struct InlineImportSpine {
     /// The import specifier the root intrinsic names.
     pub(crate) path: Spur,
+    /// The span of the `@import` call, in the importing file.
+    pub(crate) root_span: rue_span::Span,
     /// The field names hanging off the root, in source order.
     pub(crate) fields: Vec<Spur>,
 }
@@ -387,6 +389,7 @@ pub(crate) fn decode_inline_import_spine(
     };
     Some(InlineImportSpine {
         path: content,
+        root_span: spine.root_span,
         fields: spine.fields,
     })
 }
