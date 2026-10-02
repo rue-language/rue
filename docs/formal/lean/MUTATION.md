@@ -975,11 +975,16 @@ need a non-vacuity witness that states `ActivationTyping`/`StoreCC` positively
   the 3 trace-only ones); the 13 refusal shapes RUE-2486 seeded were never
   ones the generator drew, which is why a seed rather than a larger stream
   was the fix.
-* **`operand-swap`'s corpus kill is a crash.** With the operands swapped, a
-  seed's counted loop never exits, and `ruecore-corpus` overflows the native
-  stack at the export fuel instead of reporting the case as not completed.
-  The mutant is killed either way, but the export would crash the same way on
-  any non-terminating seed.
+* **`operand-swap`'s corpus kill was a crash** (fixed by RUE-2488). With the
+  operands swapped, a seed's counted loop never exits, and `ruecore-corpus`
+  overflowed the native stack instead of reporting the case as not completed.
+  The overflow was not in `main`: an unused constant, `Corpus.json`, was
+  evaluated at module initialization, on the process's 8 MB main thread
+  rather than the ~1 GB stack Lean runs `main` on, and `eval` needs about
+  12 to 18 MB at the export fuel. The constant is gone; the export now names
+  the seed on stderr as not finishing and leaves it out, and every run checks
+  that `Corpus.divergent`'s non-terminating programs are reported so. The
+  table above still shows the crash, from the run it records.
 * **The equivalence of the four equivalent mutants is argued, not proved.**
 * **An unproved statement is not a false one.** The spec pass finds the
   statements a mutant can make false *and* whose proofs it breaks, from the
