@@ -1041,7 +1041,6 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         string_literal_types.sort_unstable_by_key(Type::as_u32);
         string_literal_types.dedup();
         unifier.mark_string_literal_vars(&string_literal_vars, &string_literal_types);
-        unifier.set_string_literal_default(string_literal_default);
         let equivalence_queries = std::cell::Cell::new(0usize);
         let errors = unifier.solve_constraints_with_projections(
             &constraints,
@@ -1179,6 +1178,20 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         ))
     }
 
+    /// Name one side of a peer-array mismatch: a string literal no context
+    /// has typed yet is `{string}` (the counterpart of `{integer}`), so an
+    /// annotation that will type it (`Str(2)`) is not misreported as `str`.
+    fn format_peer_type_name(&self, ty: &InferType, string_literals: &[TypeVarId]) -> String {
+        match ty {
+            InferType::Var(var) if string_literals.contains(var) => "{string}".to_string(),
+            InferType::Array { element, length } => crate::types::array_type_name(
+                &self.format_peer_type_name(element, string_literals),
+                *length,
+            ),
+            _ => self.format_infer_type_name(ty),
+        }
+    }
+
     /// The diagnostic for a unification error.
     fn unification_compile_error(
         &self,
@@ -1236,6 +1249,14 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     found: *found,
                 }
             }
+            UnifyResult::PeerArrayMismatch {
+                expected,
+                found,
+                string_literals,
+            } => ErrorKind::TypeMismatch {
+                expected: self.format_peer_type_name(expected, string_literals),
+                found: self.format_peer_type_name(found, string_literals),
+            },
         };
 
         let mut compile_error = CompileError::new(error_kind, err.span);

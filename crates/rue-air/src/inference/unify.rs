@@ -51,6 +51,18 @@ pub enum UnifyResult {
 
     /// Array lengths don't match.
     ArrayLengthMismatch { expected: u64, found: u64 },
+
+    /// Two peer arrays pair a literal element with a `!` element
+    /// (RUE-2559): a type mismatch of the two array types, in the
+    /// constraint's (found, expected) direction. `string_literals` are the
+    /// variables in the two types that stand for string literals no context
+    /// has typed yet; they render as `{string}`, as an untyped integer
+    /// literal renders as `{integer}`.
+    PeerArrayMismatch {
+        expected: InferType,
+        found: InferType,
+        string_literals: Vec<TypeVarId>,
+    },
 }
 
 impl UnifyResult {
@@ -118,7 +130,28 @@ impl UnificationError {
             UnifyResult::ArrayLengthMismatch { expected, found } => {
                 format!("array length mismatch: expected {expected}, found {found}")
             }
+            UnifyResult::PeerArrayMismatch {
+                expected,
+                found,
+                string_literals,
+            } => format!(
+                "type mismatch: expected {}, found {}",
+                render_peer_type(expected, string_literals),
+                render_peer_type(found, string_literals)
+            ),
         }
+    }
+}
+
+/// Render one side of a [`UnifyResult::PeerArrayMismatch`]: an untyped
+/// string literal is `{string}`, everything else as [`InferType`] displays.
+fn render_peer_type(ty: &InferType, string_literals: &[TypeVarId]) -> String {
+    match ty {
+        InferType::Var(v) if string_literals.contains(v) => "{string}".to_string(),
+        InferType::Array { element, length } => {
+            format!("[{}; {length}]", render_peer_type(element, string_literals))
+        }
+        _ => ty.to_string(),
     }
 }
 
@@ -142,10 +175,6 @@ pub struct Unifier {
     string_literal_vars: AHashSet<TypeVarId>,
     /// Concrete string types that may contextualize a literal.
     string_literal_types: AHashSet<Type>,
-    /// The type a string literal has on its own (`str`, 3.7:44), when the
-    /// caller supplied it: how a string literal is named in a mismatch the
-    /// unifier reports for the literal's enclosing array.
-    string_literal_default: Option<Type>,
     /// Joins of an integer-literal class with a float-literal class made by
     /// the constraint being solved, not yet attributed to its span.
     pending_literal_joins: Vec<(TypeVarId, VarSide)>,
@@ -172,7 +201,6 @@ impl Unifier {
             float_literal_vars: AHashSet::new(),
             string_literal_vars: AHashSet::new(),
             string_literal_types: AHashSet::new(),
-            string_literal_default: None,
             pending_literal_joins: Vec::new(),
             literal_joins: Vec::new(),
         }
@@ -189,7 +217,6 @@ impl Unifier {
             float_literal_vars: AHashSet::new(),
             string_literal_vars: AHashSet::new(),
             string_literal_types: AHashSet::new(),
-            string_literal_default: None,
             pending_literal_joins: Vec::new(),
             literal_joins: Vec::new(),
         }
@@ -214,13 +241,6 @@ impl Unifier {
     pub fn mark_string_literal_vars(&mut self, vars: &[TypeVarId], types: &[Type]) {
         self.string_literal_vars.extend(vars.iter().copied());
         self.string_literal_types.extend(types.iter().copied());
-    }
-
-    /// Record the type a string literal has on its own (`str`, 3.7:44), so
-    /// a mismatch naming a string-literal array element names it as that
-    /// type rather than as a type variable.
-    pub fn set_string_literal_default(&mut self, ty: Type) {
-        self.string_literal_default = Some(ty);
     }
 
     /// Unify two types.
@@ -631,12 +651,20 @@ impl Unifier {
                     }
                     // `!` is not exempt: a string literal is a completing
                     // value, and only a diverging expression is accepted at
-                    // `!` (3.4:3). Peer sites drop a diverging operand before
-                    // constraining, so `!` reaches here only from a
-                    // declaration — `let s: ! = "x"`, an argument at a `!`
-                    // parameter — which rejects the literal as it does an
-                    // integer one, but as a mismatch: a string literal has
-                    // no value range to check (RUE-2559).
+                    // `!` (3.4:3). Peer sites drop a concretely diverging
+                    // operand, and if/match joins an arm that does not
+                    // continue, before constraining, so `!` reaches here
+                    // from a declaration — `let s: ! = "x"`, an argument at
+                    // a `!` parameter — which rejects the literal as it does
+                    // an integer one, but as a mismatch: a string literal
+                    // has no value range to check (RUE-2559). It also
+                    // reaches here from an if/match join with a continuing
+                    // `!`-typed place arm (`let v = return 5`, a `!`
+                    // parameter or field): that arm binds the join's result
+                    // to `!`, so `if c { v } else { "x" }` is rejected — as
+                    // the same join already rejects every other concrete
+                    // type (`true`, `1`). Whether such an arm should coerce
+                    // (3.4:4) is open (RUE-2561).
                     if !self.string_literal_types.contains(t) {
                         return Self::string_literal_mismatch(InferType::Concrete(*t), side);
                     }
@@ -843,26 +871,28 @@ impl Unifier {
         let lhs_applied = self.substitution.apply(lhs);
         let rhs_applied = self.substitution.apply(rhs);
         if self.array_pairs_literal_with_never(&lhs_applied, &rhs_applied) {
-            return UnifyResult::TypeMismatch {
-                expected: self.render_peer_for_error(&rhs_applied),
-                found: self.render_peer_for_error(&lhs_applied),
+            let expected = self.render_for_error(&rhs_applied);
+            let found = self.render_for_error(&lhs_applied);
+            let mut string_literals = Vec::new();
+            self.collect_string_literal_vars(&expected, &mut string_literals);
+            self.collect_string_literal_vars(&found, &mut string_literals);
+            return UnifyResult::PeerArrayMismatch {
+                expected,
+                found,
+                string_literals,
             };
         }
         self.unify_with(lhs, rhs, concrete_types_equal)
     }
 
-    /// [`Unifier::render_for_error`], also naming a string-literal element
-    /// by the literal's own type (`str`, 3.7:44) when that type is known.
-    fn render_peer_for_error(&self, ty: &InferType) -> InferType {
+    /// The string-literal variables in `ty`, which a peer mismatch names
+    /// `{string}`: no context has typed the literal yet, and an annotation
+    /// that will (`Str(2)`, `StrBuf`) must not read as `str`.
+    fn collect_string_literal_vars(&self, ty: &InferType, out: &mut Vec<TypeVarId>) {
         match ty {
-            InferType::Var(v) if self.string_literal_vars.contains(v) => self
-                .string_literal_default
-                .map_or_else(|| ty.clone(), InferType::Concrete),
-            InferType::Array { element, length } => InferType::Array {
-                element: Box::new(self.render_peer_for_error(element)),
-                length: *length,
-            },
-            _ => self.render_for_error(ty),
+            InferType::Var(v) if self.string_literal_vars.contains(v) => out.push(*v),
+            InferType::Array { element, .. } => self.collect_string_literal_vars(element, out),
+            _ => {}
         }
     }
 

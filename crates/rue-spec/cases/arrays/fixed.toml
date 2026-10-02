@@ -3340,7 +3340,7 @@ fn main() -> i32 { pick(S { a: [return 0; 1], n: 1 }, true) }
 """
 compile_fail = true
 expected_error_code = "E0206"
-error_contains = "expected [!; 1], found [str; 1]"
+error_contains = "expected [!; 1], found [{string}; 1]"
 
 [[case]]
 name = "diverging_array_continuing_inout_rejected"
