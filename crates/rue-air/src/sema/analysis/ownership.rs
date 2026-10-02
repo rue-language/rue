@@ -2950,16 +2950,37 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let error = CompileError::new(ErrorKind::UndefinedVariable(name_str.to_string()), span);
         // A member of an anonymous struct is its own body: it sees the
         // declaring body's comptime bindings (4.14:12) but none of its
-        // runtime locals or parameters, which is the likeliest reading of a
-        // name it cannot find (RUE-2587).
-        if is_anonymous_member(&ctx.canonical_function_identity) {
+        // runtime locals or parameters, so a name only those bind is named
+        // as such (RUE-2587).
+        if is_anonymous_member(&ctx.canonical_function_identity)
+            && self.artifact_binds_runtime_name(name)
+        {
             return Err(error.with_help(format!(
-                "a method of an anonymous struct cannot read a runtime local or parameter of \
-                 the function that declares the struct; if `{name_str}` is one, pass it to the \
+                "`{name_str}` is a runtime local or parameter of a function enclosing this \
+                 anonymous struct, and a method of the struct cannot read it; pass it to the \
                  method as an argument or store it in a field"
             )));
         }
         Err(error)
+    }
+
+    /// Whether a `let` or a runtime parameter anywhere in the analyzed body's
+    /// source artifact binds `name`. An anonymous member's artifact is the
+    /// top-level function whose body (or a member body within it) declares
+    /// its struct, so a name the member cannot resolve but the artifact binds
+    /// is a runtime binding of an enclosing body.
+    fn artifact_binds_runtime_name(&self, name: Spur) -> bool {
+        let rir = self.body_rir_ref();
+        rir.iter().any(|(_, inst)| match &inst.data {
+            rue_rir::InstData::Alloc {
+                name: Some(bound), ..
+            } => *bound == name,
+            rue_rir::InstData::FnDecl { params, .. } => rir
+                .params(params)
+                .iter()
+                .any(|param| param.name == name && !param.is_comptime),
+            _ => false,
+        })
     }
 
     /// Build E0203 for an immutable by-value parameter with a receiver-aware hint.
