@@ -1253,6 +1253,11 @@ impl<'a> CfgBuilder<'a> {
     /// receive a value with no storage and no runtime representation and fail
     /// CFG verification or codegen (RUE-2595).
     ///
+    /// A join typed `!` whose arms all read `!` already diverges in each arm.
+    /// A join that continues with type `!` would need an arm that produced a
+    /// value typed `!`, which sema rules out since RUE-2559 (a string literal
+    /// is no longer accepted at `!`); this cap relies on that.
+    ///
     /// `StorageLive`/`StorageDead` are statements that carry their slot's
     /// type, not `!` expressions: a `let y = return 7;` opens a `!` slot
     /// before its initializer runs, and that initializer must still run.

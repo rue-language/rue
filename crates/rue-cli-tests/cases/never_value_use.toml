@@ -107,34 +107,6 @@ differential_opt = true
 stdout = ""
 exit_code = 4
 
-[[case]]
-name = "never_param_joined_with_string_compiles"
-description = "An if or match joining a ! parameter arm with a string-literal arm compiles; the program never calls the function."
-files = [{ path = "main.rue", source = """
-fn pick(x: !, c: bool) -> i32 {
-    let s = if c { x } else { "x" };
-    @dbg(s);
-    0
-}
-
-fn choose(x: !, c: i32) -> i32 {
-    let s = match c { 0 => x, _ => "y" };
-    @dbg(s);
-    0
-}
-
-fn main() -> i32 {
-    if false {
-        let _a = pick(@panic("unreached"), true);
-        let _b = choose(@panic("unreached"), 0);
-    }
-    5
-}
-""" }]
-differential_opt = true
-stdout = ""
-exit_code = 5
-
 # ── (b) a `!` value read through a pointer to an uninhabited type ────────────
 
 [[case]]
