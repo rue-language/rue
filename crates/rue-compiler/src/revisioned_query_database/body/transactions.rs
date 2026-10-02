@@ -173,6 +173,13 @@ impl BodyTransactionEvaluator {
     /// Validate one deferred interface requirement through the canonical AIR
     /// checker.  This adapter materializes only the callable's declaration
     /// bundle; it never evaluates or schedules the callable body.
+    ///
+    /// The checker runs in the callable's declaration and anchors an
+    /// unsatisfied bound there. `application` is where the argument was
+    /// applied — a declaration and, when the gate recorded the call, its
+    /// declaration-relative range — and the error is reported there instead,
+    /// with the bound kept as its secondary label.
+    #[allow(clippy::too_many_arguments)]
     pub(in crate::revisioned_query_database) fn check_interface_bound(
         &self,
         context: &rue_query::QueryContext,
@@ -181,6 +188,10 @@ impl BodyTransactionEvaluator {
         parameter_index: usize,
         argument: &crate::durable_semantics::DurableType,
         anonymous_nominals: &[crate::durable_semantics::DurableAnonymousNominal],
+        application: Option<(
+            &crate::declaration_candidate::DeclarationCandidateKey,
+            Option<(u32, u32)>,
+        )>,
     ) -> Result<
         Option<rue_error::ErrorKind>,
         rue_air::SemanticProviderError<
@@ -308,6 +319,23 @@ impl BodyTransactionEvaluator {
                         "interface-bound diagnostic source is unavailable".to_owned(),
                     )));
                 }
+                let error = match application {
+                    Some((declaration, range))
+                        if matches!(
+                            error.kind,
+                            rue_error::ErrorKind::InterfaceBoundNotSatisfied { .. }
+                        ) && !span_modules.is_empty() =>
+                    {
+                        match self.application_span(context, declaration, range)? {
+                            Some(span) => {
+                                span_modules[0] = declaration.module.clone();
+                                error.with_primary_span(span)
+                            }
+                            None => error,
+                        }
+                    }
+                    _ => error,
+                };
                 // These diagnostics retain absolute offsets within each module.
                 // Source-locator equality deliberately ignores text changes, so
                 // observe the complete parse to invalidate offsets after edits.
@@ -324,6 +352,47 @@ impl BodyTransactionEvaluator {
                 ))
             }
         }
+    }
+
+    /// The module-relative span of an interface-bound application: the
+    /// declaration-relative `range` within `declaration`, or the whole
+    /// declaration when no range was recorded.
+    fn application_span(
+        &self,
+        context: &rue_query::QueryContext,
+        declaration: &crate::declaration_candidate::DeclarationCandidateKey,
+        range: Option<(u32, u32)>,
+    ) -> Result<
+        Option<rue_span::Span>,
+        rue_air::SemanticProviderError<
+            QueryAbort,
+            crate::semantic_query_nucleus::SemanticNucleusFailure,
+        >,
+    > {
+        let parsed = context
+            .query_registered(
+                &self.parse_modules,
+                ModuleQueryKey(declaration.module.clone()),
+            )
+            .map_err(rue_air::SemanticProviderError::Abort)?;
+        let rue_query::QueryOutcome::Success(ParseModuleValue {
+            result: Ok(parsed), ..
+        }) = parsed.outcome()
+        else {
+            return Ok(None);
+        };
+        let Some(locator) = parsed.definitions().declaration_locator(declaration) else {
+            return Ok(None);
+        };
+        let span = locator.declaration_span;
+        let Some((start, end)) = range else {
+            return Ok(Some(rue_span::Span::new(span.start, span.end)));
+        };
+        let (Some(start), Some(end)) = (span.start.checked_add(start), span.start.checked_add(end))
+        else {
+            return Ok(None);
+        };
+        Ok((start <= end && end <= span.end).then(|| rue_span::Span::new(start, end)))
     }
 
     pub(in crate::revisioned_query_database) fn evaluate(
