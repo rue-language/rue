@@ -2947,10 +2947,19 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         }
 
         // Not a parameter, local, type, or constant - undefined variable
-        Err(CompileError::new(
-            ErrorKind::UndefinedVariable(name_str.to_string()),
-            span,
-        ))
+        let error = CompileError::new(ErrorKind::UndefinedVariable(name_str.to_string()), span);
+        // A member of an anonymous struct is its own body: it sees the
+        // declaring body's comptime bindings (4.14:12) but none of its
+        // runtime locals or parameters, which is the likeliest reading of a
+        // name it cannot find (RUE-2587).
+        if is_anonymous_member(&ctx.canonical_function_identity) {
+            return Err(error.with_help(format!(
+                "a method of an anonymous struct cannot read a runtime local or parameter of \
+                 the function that declares the struct; if `{name_str}` is one, pass it to the \
+                 method as an argument or store it in a field"
+            )));
+        }
+        Err(error)
     }
 
     /// Build E0203 for an immutable by-value parameter with a receiver-aware hint.
@@ -9192,5 +9201,15 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             return Ok((view, Some(elaborated.storage_live)));
         }
         Err(self.type_mismatch_error(str_ty, operand.ty, span))
+    }
+}
+
+/// Whether `identity` is a member of an anonymous struct, directly or through
+/// a comptime specialization of one.
+fn is_anonymous_member<K, M>(identity: &crate::FunctionInstanceKey<K, M>) -> bool {
+    match identity {
+        crate::FunctionInstanceKey::AnonymousMember { .. } => true,
+        crate::FunctionInstanceKey::Specialization { base, .. } => is_anonymous_member(base),
+        _ => false,
     }
 }
