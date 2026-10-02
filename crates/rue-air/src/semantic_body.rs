@@ -1030,8 +1030,10 @@ pub struct SemanticBody<K, M> {
     /// the callee classifies them as the caller does (RUE-2563); drop
     /// elaboration never reads it.
     pub comptime_param_types: Arc<[(u32, SemanticImportType<K, M>)]>,
-    /// Each slice view the body names by its builtin name, as a
+    /// Each slice view the body's host exported by its builtin name, as a
     /// [`SemanticImportType::Slice`] carrying its element, ordered by name.
+    /// It may include a view named only during analysis, so it can be a
+    /// superset of the views the exported body uses.
     ///
     /// The body's own types name a view only by that name, and code
     /// generation rebuilds the view's generated struct from its element. A
