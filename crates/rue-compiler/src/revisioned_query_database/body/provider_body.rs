@@ -1782,6 +1782,27 @@ impl rue_air::SemanticModulePathProvider<ModuleId, ModuleId, StableDefinitionKey
     type Abort = QueryAbort;
     type Failure = crate::semantic_query_nucleus::SemanticNucleusFailure;
 
+    /// A comptime block's `let`-bound module reaches declaration-level type
+    /// resolution as a module-typed substitution (see
+    /// `ComptimeValue::as_module_root`), so `let v: m.I` and `m.Box(i64)`
+    /// resolve through the local as a function body's do (spec 10.4:1,
+    /// RUE-2445). The site is the declaration being resolved, whose body
+    /// binds the local.
+    fn local_module_root(
+        &mut self,
+        _scope: &ModuleId,
+        name: &str,
+    ) -> Option<rue_air::SemanticResolvedModule<ModuleId, StableDefinitionKey>> {
+        let crate::durable_semantics::DurableType::Module(module) = self.substitutions.get(name)?
+        else {
+            return None;
+        };
+        Some(rue_air::SemanticResolvedModule {
+            module: module.clone(),
+            site: self.dependency_source.clone(),
+        })
+    }
+
     fn root_module_binding(
         &mut self,
         scope: &ModuleId,
@@ -1924,7 +1945,13 @@ impl rue_air::SemanticTypeSyntaxProvider<ModuleId, ModuleId, StableDefinitionKey
         QueryAbort,
         crate::semantic_query_nucleus::SemanticNucleusFailure,
     > {
-        Ok(self.substitutions.get(name).cloned())
+        // A module-typed substitution is a `let`-bound module, which is a
+        // path root and never a type itself.
+        Ok(self
+            .substitutions
+            .get(name)
+            .filter(|ty| !matches!(ty, crate::durable_semantics::DurableType::Module(_)))
+            .cloned())
     }
 
     fn primitive_type(

@@ -1303,6 +1303,13 @@ impl ComptimeValue for EvaluatedSemanticConst {
         matches!(self, Self::Value(_))
     }
 
+    fn as_module_root(&self) -> Option<Self::Type> {
+        match self {
+            Self::Module(module) => Some(DurableComptimeType(DurableType::Module(module.clone()))),
+            Self::Value(_) | Self::TargetEnum(_) => None,
+        }
+    }
+
     fn as_integer_type(&self) -> Option<Self::Type> {
         let Self::Value(value) = self else {
             return None;

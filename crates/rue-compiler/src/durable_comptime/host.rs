@@ -1053,10 +1053,12 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeTypeAlgebra
             _ => false,
         }
     }
-    fn type_is_module(&self, _ty: &Self::Type) -> bool {
-        // Durable modules are values (`EvaluatedSemanticConst::Module`), never
-        // `DurableComptimeType`s, so no type value here is a module (RUE-2426).
-        false
+    fn type_is_module(&self, ty: &Self::Type) -> bool {
+        // Durable modules are values (`EvaluatedSemanticConst::Module`). A
+        // `let`-bound one reaches type resolution as a module-typed
+        // substitution (`ComptimeValue::as_module_root`), which is a path
+        // root and never a type value (RUE-2426, RUE-2445).
+        matches!(ty.as_ref(), DurableType::Module(_))
     }
 
     fn type_is_unsigned(&self, ty: &Self::Type) -> bool {
