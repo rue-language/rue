@@ -1592,6 +1592,19 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             ));
         }
 
+        // A module is not a runtime value, so there is nothing to drop
+        // (10.4:6); `@dbg` and `@to_string` reject it the same way.
+        if arg_type.is_module() {
+            return Err(CompileError::new(
+                ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
+                    name: "drop".to_string(),
+                    expected: "a runtime value".to_string(),
+                    found: self.format_type_name(arg_type),
+                })),
+                self.body_rir_ref().get(args[0].value).span,
+            ));
+        }
+
         // Emit the drop glue at this site. The CFG builder elides the `Drop`
         // for trivially droppable types (so `@drop` of a Copy value or a
         // glue-free linear marker is a pure no-op beyond discharging the
