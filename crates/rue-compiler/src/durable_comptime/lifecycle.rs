@@ -473,13 +473,14 @@ pub(crate) enum DurableComptimePreparedCall {
 impl DurableComptimeSession {
     fn interface_bound_requirements(
         parameters: &[crate::durable_semantics::DurableSemanticParameter],
+        generic_bound_requirements: &[DeferredRequirement],
         type_arguments: &[(Arc<str>, DurableType)],
         callable: &crate::StableDefinitionKey,
         declaration: &crate::declaration_candidate::DeclarationCandidateKey,
         start: u32,
         end: u32,
     ) -> Vec<DeferredRequirement> {
-        parameters
+        let mut requirements = parameters
             .iter()
             .enumerate()
             .filter_map(|(index, parameter)| {
@@ -505,7 +506,27 @@ impl DurableComptimeSession {
                     application: None,
                 })
             })
-            .collect()
+            .collect::<Vec<_>>();
+        // A bound the callee's signature applied to one of its own type
+        // parameters holds of this call's argument for it, and is reported at
+        // this call like the callee's own bounds.
+        let concrete = type_arguments
+            .iter()
+            .map(|(_, ty)| ty.clone())
+            .collect::<Vec<_>>();
+        requirements.extend(generic_bound_requirements.iter().map(|gate| {
+            DeferredRequirement {
+                kind: gate.kind.clone(),
+                ty: substitute_durable_generics(&gate.ty, &concrete),
+                source: Arc::new(crate::semantic_query_nucleus::DeferredRequirementSource {
+                    declaration: declaration.clone(),
+                    start,
+                    end,
+                }),
+                application: None,
+            }
+        }));
+        requirements
     }
 
     pub(crate) fn new(
@@ -773,6 +794,7 @@ impl DurableComptimeSession {
 
         let requirements = Self::interface_bound_requirements(
             &admission.parameters,
+            &admission.generic_bound_requirements,
             &request.type_arguments,
             &request.head_key,
             &admission.candidate,
@@ -1350,6 +1372,7 @@ impl DurableComptimeSession {
         // probes therefore cannot leak effects into the parent scope.
         let requirements = Self::interface_bound_requirements(
             &bound.admission.parameters,
+            &bound.admission.generic_bound_requirements,
             &bound.type_arguments,
             &producer,
             &edge.parent_declaration,
@@ -1976,6 +1999,11 @@ pub(crate) struct DurableComptimeCallableAdmission {
     pub(crate) parameters: Arc<[crate::durable_semantics::DurableSemanticParameter]>,
     pub(crate) result: DurableType,
     pub(crate) shell_parameters: Arc<[crate::declaration_candidate::DeclarationParameterHeader]>,
+    /// The interface bounds the signature applied to its own type parameters
+    /// (`comptime a: W(T, 2)` where `W` takes `comptime T: Equatable`). The
+    /// signature carries them generic; each call instantiates them with its
+    /// type arguments (spec 6.8:15).
+    pub(crate) generic_bound_requirements: Arc<[DeferredRequirement]>,
 }
 
 /// A session-issued call capability.  The capability is deliberately
@@ -2075,6 +2103,7 @@ struct DurableComptimeAdmissionStamp {
     parameters: Arc<[crate::durable_semantics::DurableSemanticParameter]>,
     result: DurableType,
     shell_parameters: Arc<[crate::declaration_candidate::DeclarationParameterHeader]>,
+    generic_bound_requirements: Arc<[DeferredRequirement]>,
 }
 
 impl DurableComptimeAdmissionStamp {
@@ -2086,6 +2115,7 @@ impl DurableComptimeAdmissionStamp {
             parameters: admission.parameters.clone(),
             result: admission.result.clone(),
             shell_parameters: admission.shell_parameters.clone(),
+            generic_bound_requirements: admission.generic_bound_requirements.clone(),
         }
     }
 }
@@ -2490,6 +2520,7 @@ mod effect_lifecycle_tests {
             parameters,
             result: DurableType::GenericParameter(0),
             shell_parameters,
+            generic_bound_requirements: Arc::from([]),
         }
     }
 

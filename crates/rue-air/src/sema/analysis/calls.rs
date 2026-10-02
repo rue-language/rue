@@ -964,6 +964,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 }
             }
 
+            // A bound the callee's signature applied to its own type
+            // parameters holds of this call's type arguments (spec 6.8:15).
+            self.check_signature_bounds_at_call(&fn_info, &type_subst, &value_subst, span)?;
+
             // Type-check the runtime arguments against their (substituted)
             // parameter types. Generic calls bypass the inference-based argument
             // checking when the type parameter isn't resolvable during constraint

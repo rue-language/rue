@@ -2582,6 +2582,12 @@ pub struct DurableFunction<K, M> {
     pub is_public: bool,
     pub is_unchecked: bool,
     pub is_extern: bool,
+    /// Whether resolving the signature applied an interface bound to one of
+    /// the function's own type parameters (`comptime a: W(T, 2)` where `W`
+    /// takes `comptime T: Equatable`). Such a bound is checked at each call,
+    /// with the call's type arguments, by resolving the signature's type
+    /// syntax under them (spec 6.8:15).
+    pub applies_generic_interface_bounds: bool,
 }
 
 /// The durable signature of a method. The `receiver` is a durable type (the
@@ -4089,6 +4095,7 @@ mod tests {
             is_public,
             is_unchecked,
             is_extern: false,
+            applies_generic_interface_bounds: false,
         }
     }
 

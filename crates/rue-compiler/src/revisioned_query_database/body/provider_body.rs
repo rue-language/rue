@@ -1271,7 +1271,7 @@ impl SemanticNucleusTypeProvider<'_> {
         Ok(self.resolved_signature(declaration)?.signature)
     }
 
-    fn resolved_signature(
+    pub(in crate::revisioned_query_database) fn resolved_signature(
         &self,
         declaration: crate::declaration_candidate::DeclarationCandidateKey,
     ) -> Result<

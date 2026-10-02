@@ -1370,6 +1370,33 @@ impl rue_air::DurableBodyLookupSource<crate::StableDefinitionKey, ModuleId>
                         rue_air::DurableComptimeDiagnostic { kind, span, help: None },
                     );
                 }
+                // An interface bound this call's arguments failed (spec
+                // 6.8:15), checked in the bounded constructor's declaration.
+                // The call is where the argument was supplied, so the error
+                // is reported there, as an ordinary call's bound is.
+                Some(crate::semantic_query_nucleus::SemanticNucleusValue::Failure(
+                    crate::semantic_query_nucleus::SemanticNucleusFailure::DiagnosticAtModuleSpans {
+                        error,
+                        ..
+                    },
+                )) if matches!(
+                    error.kind,
+                    rue_error::ErrorKind::InterfaceBoundNotSatisfied { .. }
+                ) =>
+                {
+                    let help = error
+                        .diagnostic()
+                        .helps
+                        .first()
+                        .map(|help| Arc::from(help.0.as_str()));
+                    return rue_air::DurableComptimeCallOutcome::Diagnostic(
+                        rue_air::DurableComptimeDiagnostic {
+                            kind: error.kind,
+                            span: None,
+                            help,
+                        },
+                    );
+                }
                 Some(crate::semantic_query_nucleus::SemanticNucleusValue::Failure(failure))
                     if matches!(failure, crate::semantic_query_nucleus::SemanticNucleusFailure::DiagnosticAtModuleSpans { .. })
                         || semantic_nucleus_failure_is_internal_error(&failure) =>
@@ -1702,6 +1729,15 @@ impl rue_air::DurableCallableSource<crate::StableDefinitionKey, ModuleId>
         let candidate = self.candidate(key)?;
         let signature = self.signature_for_candidate(&candidate.declaration)?;
         let type_syntax = signature.callable_type_syntax;
+        let applies_generic_interface_bounds =
+            signature.deferred_requirements.iter().any(|gate| {
+                matches!(
+                    gate.kind,
+                    crate::semantic_query_nucleus::DeferredRequirementKind::InterfaceBound { .. }
+                ) && SemanticNucleusTypeProvider::type_contains_unresolved_generic(
+                    &gate.ty,
+                )
+            });
         let crate::semantic_query_nucleus::DeclarationSignatureProjection::Callable {
             parameters,
             result,
@@ -1719,6 +1755,7 @@ impl rue_air::DurableCallableSource<crate::StableDefinitionKey, ModuleId>
             is_public: candidate.identity.is_public,
             is_unchecked,
             is_extern,
+            applies_generic_interface_bounds,
         };
         self.durable_payloads
             .borrow_mut()

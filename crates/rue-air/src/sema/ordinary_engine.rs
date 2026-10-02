@@ -249,6 +249,15 @@ pub(crate) trait DeclarationFacts {
         None
     }
 
+    /// Whether the callable's signature applied an interface bound to one of
+    /// its own type parameters (`comptime a: W(T, 2)` where `W` takes
+    /// `comptime T: Equatable`). The resolved signature cannot carry that
+    /// bound, so each call checks it by resolving the signature's type syntax
+    /// under the call's arguments (spec 6.8:15).
+    fn function_signature_applies_generic_bounds(&self, _function: &FunctionCallInfo) -> bool {
+        false
+    }
+
     /// Reduce a comptime call whose body is not owned by this request. `None`
     /// means the callable is request-local and the ordinary evaluator should
     /// read its body; `Some` is the provider's exact reduction result and must
@@ -1663,6 +1672,55 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             span,
         ))
     }
+    /// Check, at one call, the interface bounds the callee's signature
+    /// applied to its own type parameters (spec 6.8:15). The signature was
+    /// resolved with those parameters generic, so `comptime a: W(T, 2)` with
+    /// `W` taking `comptime T: Equatable` holds no checkable bound until a
+    /// call fixes `T`. Resolving each written parameter and result type again
+    /// under the call's arguments applies every constructor in it, which
+    /// checks its bounds at this call as body type syntax does.
+    pub(crate) fn check_signature_bounds_at_call(
+        &mut self,
+        function: &FunctionCallInfo,
+        type_subst: &AHashMap<Spur, Type>,
+        value_subst: &AHashMap<Spur, ConstValue>,
+        span: Span,
+    ) -> CompileResult<()> {
+        if !self
+            .storage
+            .function_signature_applies_generic_bounds(function)
+        {
+            return Ok(());
+        }
+        let root_file = self
+            .storage
+            .function_signature_root_file(function)
+            .unwrap_or(function.file_id);
+        let syntaxes = (0..function.params.len())
+            .filter_map(|index| self.storage.function_param_type_syntax(function, index))
+            .chain(self.storage.function_return_type_syntax(function))
+            .collect::<Vec<_>>();
+        for syntax in syntaxes {
+            self.storage
+                .resolve_structured_type_syntax(StructuredTypeSyntaxRequest {
+                    syntax: &syntax,
+                    root_file,
+                    span,
+                    type_substitutions: Some(type_subst),
+                    value_substitutions: Some(value_subst),
+                    runtime_bindings: None,
+                })
+                .map_err(|failure| {
+                    super::typeck::semantic_type_syntax_compile_error(
+                        self.body_interner(),
+                        failure,
+                        span,
+                    )
+                })?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn resolve_substituted_return_type(
         &mut self,
         function: &FunctionCallInfo,
