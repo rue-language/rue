@@ -674,6 +674,28 @@ impl<'a> AnalysisContext<'a> {
         self.locals.contains_key(&name) || self.param(name).is_some_and(|param| !param.is_comptime)
     }
 
+    /// The comptime type bindings a value read of a name sees: the enclosing
+    /// specialization's type parameters and `let`-bound type aliases, minus
+    /// any name a parameter of this body rebinds. A parameter other than a
+    /// `comptime T: type` parameter shadows the same-named type parameter by
+    /// the precedence `analyze_var_ref` uses (RUE-2574, RUE-2577): `T` in a
+    /// generic struct's method `fn g(self, T: i32)` or `fn g(self, comptime
+    /// T: i32)` is that parameter's value, not the struct's `T`. (A local
+    /// already hides a same-named alias when it binds.)
+    pub(crate) fn value_visible_comptime_type_vars(&self) -> AHashMap<Spur, Type> {
+        let mut vars = self.comptime_type_vars.snapshot();
+        vars.retain(|name, _| !self.param_shadows_comptime_type_var(*name));
+        vars
+    }
+
+    /// Whether a parameter of this body named `name` hides the same-named
+    /// comptime type binding from a value read; see
+    /// [`Self::value_visible_comptime_type_vars`].
+    pub(crate) fn param_shadows_comptime_type_var(&self, name: Spur) -> bool {
+        self.param(name)
+            .is_some_and(|param| !(param.is_comptime && param.ty == Type::COMPTIME_TYPE))
+    }
+
     /// Run one nested analysis with an explicit expected-type context, then
     /// restore the caller's context before returning its result.
     ///
