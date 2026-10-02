@@ -1550,6 +1550,11 @@ impl rue_air::DurableNominalSource<crate::StableDefinitionKey, ModuleId>
             .producer_relative_span(&candidate.declaration, start, end)
     }
 
+    fn definition_span(&self, key: &crate::StableDefinitionKey) -> Option<rue_span::Span> {
+        let candidate = self.candidate(key)?;
+        self.provider.declaration_span(&candidate.declaration)
+    }
+
     fn visible_conformance_assertions(
         &self,
     ) -> Arc<[crate::durable_semantics::DurableConformanceAssertion]> {
@@ -2407,6 +2412,38 @@ impl<'a> CompilerBodyFactProvider<'a> {
             return None;
         };
         Some(locator.clone())
+    }
+
+    /// The absolute span of `candidate`'s whole declaration.
+    pub(super) fn declaration_span(
+        &self,
+        candidate: &crate::declaration_candidate::DeclarationCandidateKey,
+    ) -> Option<rue_span::Span> {
+        let terminal = match self.queries.context.query_registered(
+            &self.queries.parse_modules,
+            ModuleQueryKey(candidate.module.clone()),
+        ) {
+            Ok(terminal) => terminal,
+            Err(abort) => {
+                self.observe_abort(abort);
+                return None;
+            }
+        };
+        let rue_query::QueryOutcome::Success(ParseModuleValue {
+            result: Ok(parsed), ..
+        }) = terminal.outcome()
+        else {
+            return None;
+        };
+        let span = parsed
+            .definitions()
+            .declaration_locator(candidate)?
+            .declaration_span;
+        Some(rue_span::Span::with_file(
+            parsed.file_id(),
+            span.start,
+            span.end,
+        ))
     }
 
     pub(super) fn producer_relative_span(

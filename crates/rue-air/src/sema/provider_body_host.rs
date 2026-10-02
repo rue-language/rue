@@ -4838,6 +4838,12 @@ where
                 else {
                     continue;
                 };
+                if DeclarationFacts::comptime_parameter_bounds(self, &function, index).is_empty() {
+                    continue;
+                }
+                // The application is reported at `span`; the bound it fails
+                // is labeled at the constructor that declares it.
+                let bound_span = self.source.definition_span(&definition).unwrap_or(span);
                 let active = (head.key, index, *argument);
                 if !self.active_constructor_bound_checks.insert(active) {
                     return Err(CompileError::new(
@@ -4850,13 +4856,14 @@ where
                         span,
                     ));
                 }
-                let checked = OrdinaryBodyEngine::new(self).check_interface_bounds(
+                let checked = OrdinaryBodyEngine::new(self).check_interface_bounds_at(
                     &function,
                     index,
                     parameter.name,
                     *argument,
                     span,
                     span,
+                    bound_span,
                 );
                 self.active_constructor_bound_checks.remove(&active);
                 checked?;

@@ -46,6 +46,32 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         argument_span: Span,
         call_span: Span,
     ) -> CompileResult<()> {
+        self.check_interface_bounds_at(
+            function,
+            index,
+            parameter,
+            argument,
+            argument_span,
+            call_span,
+            call_span,
+        )
+    }
+
+    /// [`Self::check_interface_bounds`] with the "required by the bound"
+    /// label at `bound_span` rather than at the call: a type constructor
+    /// applied in type syntax is reported at the application, and its bound
+    /// is labeled at the constructor that declares it.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn check_interface_bounds_at(
+        &mut self,
+        function: &FunctionCallInfo,
+        index: usize,
+        parameter: Spur,
+        argument: Type,
+        argument_span: Span,
+        call_span: Span,
+        bound_span: Span,
+    ) -> CompileResult<()> {
         let bounds = self.comptime_parameter_bounds(function, index);
         if bounds.is_empty() {
             return Ok(());
@@ -85,7 +111,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 )
                 .with_label(
                     format!("required by the bound on parameter `{parameter}`"),
-                    call_span,
+                    bound_span,
                 )
                 .with_help(help));
             };
