@@ -8989,9 +8989,6 @@ where
     )
 }
 
-/// Refuse a `fn` type as a structural child of another type (ADR-0096, spec
-/// 6.1:47): a callback is second-class and is never an element, pointee,
-/// slice element, or type argument.
 /// The diagnostic for a structural child the pool cannot hold. `type` as an
 /// element or pointee would be a type value at run time (4.14:6), reported as
 /// a declaration's parameter, field, payload, or return type reports it.
@@ -9010,6 +9007,9 @@ fn structural_child_error(
     CompileError::new(kind, span)
 }
 
+/// Refuse a `fn` type as a structural child of another type (ADR-0096, spec
+/// 6.1:47): a callback is second-class and is never an element, pointee,
+/// slice element, or type argument.
 fn reject_function_child(ty: Type, position: &str, span: Span) -> CompileResult<()> {
     if ty.is_function() {
         return Err(CompileError::new(
