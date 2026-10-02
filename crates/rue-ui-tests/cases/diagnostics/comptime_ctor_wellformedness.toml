@@ -88,3 +88,40 @@ fn main() -> i32 {
 }
 """
 exit_code = 42
+
+# A comptime argument out of its parameter's range is reported once, at the use
+# (RUE-2549). After RUE-2435 the forwarded form used to build `Buf(3000000000)`
+# anyway and add an E0906 "exceeds the maximum supported object size" at the
+# call, and a type-position use anchored at `Buf`'s declaration (1:1).
+[[case]]
+name = "forwarded_out_of_range_comptime_argument_reports_once_at_the_call"
+source = """
+fn Buf(comptime N: i32) -> type { struct { data: [i32; N] } }
+fn buf(comptime N: i64) -> Buf(N) { Buf(N) { data: [0; N] } }
+fn main() -> i32 { let b = buf(3000000000); 0 }
+"""
+compile_fail = true
+expected_error = """
+error: [E1200]: comptime evaluation failed: compile-time argument 'N' for 'Buf' has value 3000000000 outside the range of i32
+ --> test.rue:3:28
+  |
+3 | fn main() -> i32 { let b = buf(3000000000); 0 }
+  |                            ^^^^^^^^^^^^^^^
+  |
+"""
+
+[[case]]
+name = "out_of_range_constructor_argument_in_type_position_anchors_at_the_use"
+source = """
+fn Buf(comptime N: i32) -> type { struct { data: [i32; N] } }
+fn main() -> i32 { let b: Buf(3000000000) = 0; 0 }
+"""
+compile_fail = true
+expected_error = """
+error: [E1200]: comptime evaluation failed: compile-time argument 'N' for 'Buf' has value 3000000000 outside the range of i32
+ --> test.rue:2:20
+  |
+2 | fn main() -> i32 { let b: Buf(3000000000) = 0; 0 }
+  |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+"""
