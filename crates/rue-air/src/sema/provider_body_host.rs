@@ -3160,8 +3160,9 @@ where
     }
 
     /// The durable form of `ty` when it holds an anonymous nominal this body
-    /// produces: registered, or still being declared because its own
-    /// signature names `Self`. Such a nominal has no durable key in this
+    /// produces: registered (any struct the body declares, not only the one
+    /// naming `Self`), or still being declared because its own signature
+    /// names `Self`. Such a nominal has no durable key in this
     /// body's maps, so its issued identity is reversed to the durable one
     /// through the tokens it was issued from. This lets a still-declared
     /// shell be named by its durable identity wherever a durable type is
@@ -3313,8 +3314,10 @@ where
                     // any other (RUE-2267).
                     T::BuiltinNominal { name, kind }
                 } else {
-                    let (_, definition) = self.nominal_tokens.borrow().get(&ty)?.clone();
-                    T::Nominal(definition)
+                    // A named nominal not yet registered in this body -- a
+                    // method's owner while its result type `Opt(Self)` is
+                    // resolved -- is keyed through the endpoint (RUE-2585).
+                    T::Nominal(self.durable_nominal_key(ty)?)
                 }
             }
             TypeKind::Module(id) => {
