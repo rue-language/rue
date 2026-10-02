@@ -3501,6 +3501,22 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeValueAlgebra for OrdinaryBodyEngin
         count: u64,
         site: &ComptimeDiagnosticSite<Self::ProgramKey>,
     ) -> ComptimeOutcome<ConstValue, Self::Failure> {
+        // Type inference checks a repeat's length against its declared type
+        // only when the count is known before evaluation. A count naming a
+        // `let` of the evaluation itself is known only here, so a declared
+        // length it does not fill is the same E0901 (RUE-2542).
+        if let TypeKind::Array(id) = ty.kind() {
+            let (_, declared) = self.body_type_pool().array_def(id);
+            if declared != count {
+                return ComptimeOutcome::HostFailure(CompileError::new(
+                    ErrorKind::ArrayLengthMismatch {
+                        expected: declared,
+                        found: count,
+                    },
+                    site.span(),
+                ));
+            }
+        }
         let Ok(count) = usize::try_from(count) else {
             return ComptimeOutcome::RuntimeDependent;
         };
