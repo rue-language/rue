@@ -1386,6 +1386,8 @@ where
             .intern_name(name)
             .map_err(IdentityMintError::Interner)?;
         // An element the pool cannot hold (`[type]`) mints no view (RUE-2606).
+        // A backstop: the body host's structural-child check and the
+        // declaration checks report E1200 before any such element gets here.
         let pointer = self
             .type_pool
             .try_intern_ptr_const(element)
