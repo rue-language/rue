@@ -665,7 +665,10 @@ impl crate::durable_comptime::DurableComptimeSemanticAuthority
         type_arguments: &[(Arc<str>, crate::durable_semantics::DurableType)],
         value_arguments: &[(Arc<str>, crate::durable_semantics::DurableConstValue)],
     ) -> Result<
-        crate::durable_semantics::DurableType,
+        (
+            crate::durable_semantics::DurableType,
+            crate::durable_comptime::DurableComptimeEffects,
+        ),
         rue_air::SemanticProviderError<
             QueryAbort,
             crate::semantic_query_nucleus::SemanticNucleusFailure,

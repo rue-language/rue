@@ -3943,6 +3943,7 @@ impl<'p, 'o, 'db>
             Arc<str>,
             ModuleId,
         >,
+        _constructor: &str,
         type_arguments: &[(Arc<str>, crate::DurableType)],
         value_arguments: &[(Arc<str>, crate::DurableConstValue)],
     ) -> rue_air::SemanticProviderResult<

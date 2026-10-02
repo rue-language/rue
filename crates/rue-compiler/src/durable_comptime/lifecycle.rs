@@ -1221,6 +1221,12 @@ impl DurableComptimeSession {
         self.lifecycle.observe_anonymous_nominal(nominal);
     }
 
+    /// Record effects a host service observed outside the evaluator, such as
+    /// resolving a dependent parameter type (RUE-2550), in the current scope.
+    pub(super) fn observe_effects(&mut self, effects: DurableComptimeEffects) {
+        self.lifecycle.observe_effects(effects);
+    }
+
     /// The anonymous nominals this root has observed so far, innermost active
     /// scope first. A declaration-time evaluator meets an anonymous type from a
     /// type constructor only here: `const W = Wrap(u8);` publishes the shape
@@ -1682,6 +1688,11 @@ impl DurableComptimeCallLifecycle {
     pub(crate) fn observe_anonymous_nominal(&mut self, nominal: DurableAnonymousNominal) {
         self.current_effects_mut()
             .observe_anonymous_nominal(nominal);
+    }
+
+    pub(crate) fn observe_effects(&mut self, effects: DurableComptimeEffects) {
+        self.current_effects_mut()
+            .merge_child(effects, &DurableComptimeApplicationPolicy::preserve());
     }
 
     pub(crate) fn observe_deferred_requirement(&mut self, gate: DeferredRequirement) {

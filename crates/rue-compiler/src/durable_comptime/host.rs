@@ -2250,9 +2250,15 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeCallProtocol
         // A parameter whose declared type reads an earlier comptime argument
         // takes its type at this call, from the arguments already bound
         // (RUE-2550).
+        //
+        // The engine asked `comptime_call_parameter_type` for this argument,
+        // with this same binding, immediately before, and that hook recorded
+        // the resolution's effects in the current scope. Binding cannot
+        // record them (it borrows the host immutably), and the identical
+        // effects are already there, so it drops its copy.
         if parameter.deferred_type {
             let candidate = binding.candidate().clone();
-            parameter.ty = self
+            let (ty, _recorded_by_parameter_type) = self
                 .services
                 .resolve_dependent_parameter_type(
                     &candidate,
@@ -2261,6 +2267,7 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeCallProtocol
                     binding.value_arguments(),
                 )
                 .map_err(durable_provider_error)?;
+            parameter.ty = ty;
             parameter.deferred_type = false;
         }
         let Some(header) = binding.shell_parameter(index).cloned() else {
@@ -2326,7 +2333,7 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeCallProtocol
         // (RUE-2550); one that does not resolve leaves the argument untyped
         // and binding reports the failure.
         if parameter.deferred_type {
-            return self
+            let (ty, effects) = self
                 .services
                 .resolve_dependent_parameter_type(
                     binding.candidate(),
@@ -2334,8 +2341,9 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeCallProtocol
                     binding.type_arguments(),
                     binding.value_arguments(),
                 )
-                .ok()
-                .map(DurableComptimeType);
+                .ok()?;
+            self.services.durable_session_mut().observe_effects(effects);
+            return Some(DurableComptimeType(ty));
         }
         let type_arguments = binding
             .type_arguments()
@@ -2677,17 +2685,19 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeStructuredTypes
                 if !parameter.deferred_type {
                     continue;
                 }
-                parameter.ty = match self.services.resolve_dependent_parameter_type(
+                let (ty, effects) = match self.services.resolve_dependent_parameter_type(
                     &admission.candidate,
                     index,
                     request.type_arguments(),
                     request.value_arguments(),
                 ) {
-                    Ok(ty) => ty,
+                    Ok(resolved) => resolved,
                     Err(error) => {
                         return durable_host_error_outcome(durable_provider_error(error));
                     }
                 };
+                self.services.durable_session_mut().observe_effects(effects);
+                parameter.ty = ty;
                 parameter.deferred_type = false;
             }
             admission.parameters = parameters.into();

@@ -495,7 +495,8 @@ impl SemanticNucleusTypeProvider<'_> {
     }
 
     /// The type of a callable's comptime value parameter whose declared type
-    /// reads another comptime parameter (`comptime a: [i32; N]`), at one call.
+    /// reads another comptime parameter (`comptime a: [i32; N]`), at one call,
+    /// with the effects the resolution observed for the caller to publish.
     ///
     /// The signature carries only the deferred `ComptimeType` placeholder for
     /// it (RUE-2435, RUE-2550). The retained syntax is resolved again in the
@@ -511,7 +512,10 @@ impl SemanticNucleusTypeProvider<'_> {
         type_arguments: &[(Arc<str>, crate::durable_semantics::DurableType)],
         value_arguments: &[(Arc<str>, crate::durable_semantics::DurableConstValue)],
     ) -> Result<
-        crate::durable_semantics::DurableType,
+        (
+            crate::durable_semantics::DurableType,
+            crate::durable_comptime::DurableComptimeEffects,
+        ),
         rue_air::SemanticProviderError<
             QueryAbort,
             crate::semantic_query_nucleus::SemanticNucleusFailure,
@@ -535,7 +539,9 @@ impl SemanticNucleusTypeProvider<'_> {
         callee.deferred_value_read = false;
         callee.dependency_source = resolved.definition.clone();
         callee.dependency_kind = rue_air::DeclarationTypeDependencyKind::Signature;
-        rue_air::resolve_structured_semantic_type_syntax(
+        callee.dependencies = BTreeSet::new();
+        callee.deferred_requirements = BTreeSet::new();
+        let ty = rue_air::resolve_structured_semantic_type_syntax(
             &mut callee,
             &declaration.module,
             &syntax.syntax,
@@ -548,7 +554,32 @@ impl SemanticNucleusTypeProvider<'_> {
             ResolveSemanticSignatureError::Failure(failure) => {
                 rue_air::SemanticProviderError::Failure(*failure)
             }
-        })
+        })?;
+        // What the resolution observed belongs to the caller's projection,
+        // which now depends on it: the anonymous nominals the type names, an
+        // interface bound the constructor applied in the type obligates
+        // (`W(T, N)` with `comptime T: Equatable`), and the declarations it
+        // read. A dependency is recorded against the caller, which read it
+        // through this type, rather than against the callee's signature.
+        let mut effects = crate::durable_comptime::DurableComptimeEffects::default();
+        for (identity, nominal) in callee.anonymous_nominals {
+            if !self.anonymous_nominals.contains_key(&identity) {
+                effects.observe_anonymous_nominal(nominal);
+            }
+        }
+        for dependency in callee.dependencies {
+            effects.observe_dependency(
+                crate::semantic_query_nucleus::SemanticDeclarationDependency {
+                    source: self.dependency_source.clone(),
+                    kind: self.dependency_kind,
+                    target: dependency.target,
+                },
+            );
+        }
+        for gate in callee.deferred_requirements {
+            effects.observe_deferred_requirement(gate);
+        }
+        Ok((ty, effects))
     }
 
     fn provider_domain_failure<T>(
@@ -2366,6 +2397,7 @@ impl rue_air::SemanticTypeSyntaxProvider<ModuleId, ModuleId, StableDefinitionKey
             Arc<str>,
             StableDefinitionKey,
         >,
+        _constructor: &str,
         type_arguments: &[(Arc<str>, crate::durable_semantics::DurableType)],
         value_arguments: &[(Arc<str>, crate::durable_semantics::DurableConstValue)],
     ) -> rue_air::SemanticProviderResult<
@@ -2455,12 +2487,17 @@ impl rue_air::SemanticTypeSyntaxProvider<ModuleId, ModuleId, StableDefinitionKey
                 return Self::provider_failure("comptime value argument has no parameter");
             };
             let expected = if parameter.deferred_type {
-                self.dependent_parameter_type(
+                let (expected, effects) = self.dependent_parameter_type(
                     &declaration,
                     index,
                     type_arguments,
                     value_arguments,
-                )?
+                )?;
+                self.merge_comptime_effects(
+                    effects,
+                    &crate::durable_comptime::DurableComptimeApplicationPolicy::preserve(),
+                );
+                expected
             } else {
                 substitute_durable_generics(&parameter.ty, &concrete_type_arguments)
             };

@@ -5204,7 +5204,7 @@ fn revisioned_body_and_program_assembly_have_exact_source_owners() {
             });
     assert_eq!(
         (shared_declarations.len(), shared_fingerprint),
-        (62, 1_801_335_424_334_137_235),
+        (62, 18_068_113_946_279_096_384),
         "database-tree shared body/program API changed"
     );
 }

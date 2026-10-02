@@ -106,9 +106,12 @@ pub(super) trait TypeSyntaxHost {
         module: Option<crate::types::ModuleId>,
         name: Spur,
     ) -> CompileResult<Option<crate::SemanticTypeConstructorHead<Spur, Spur, FileId>>>;
+    /// `constructor` is the call's source spelling (`lib.K`), which a
+    /// diagnostic about the call names.
     fn type_syntax_reduce_constructor(
         &mut self,
         head: &crate::SemanticTypeConstructorHead<Spur, Spur, FileId>,
+        constructor: &str,
         type_arguments: &[(Spur, Type)],
         value_arguments: &[(Spur, ConstValue)],
         span: Span,
@@ -683,6 +686,7 @@ impl<H: TypeSyntaxHost>
     fn reduce_comptime_call(
         &mut self,
         head: &crate::SemanticTypeConstructorHead<Spur, Spur, FileId>,
+        constructor: &str,
         type_arguments: &[(Spur, Type)],
         value_arguments: &[(Spur, ConstValue)],
     ) -> SemaProviderResult<Option<crate::SemanticComptimeCallResult<Type, ConstValue>>> {
@@ -690,6 +694,7 @@ impl<H: TypeSyntaxHost>
             self.host
                 .type_syntax_reduce_constructor(
                     head,
+                    constructor,
                     type_arguments,
                     value_arguments,
                     self.state.span,
