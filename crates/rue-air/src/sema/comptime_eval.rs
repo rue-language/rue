@@ -2475,6 +2475,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         // position check in analyze_alloc rather than masking
                         // its E0214 with an initializer type mismatch.
                         .filter(|resolved| !resolved.is_function());
+                    if annotated.is_none() && in_comptime {
+                        annotated = self
+                            .comptime_array_annotation_at_literal(annotation, init, scope, span);
+                    }
                     if let Some(resolved) = annotated {
                         discovered.local_annotations.insert(inst_ref, resolved);
                     }
@@ -2666,6 +2670,51 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             .try_eval_comptime_local_init(init, &scope.types, &scope.values, &scope.runtime)?
             .as_int_value()?;
         semantics.fits_i128(value).then_some((value, annotated))
+    }
+
+    /// The type of a `comptime` block's `let a: [T; n] = [e0, .., ek]` whose
+    /// length the walk could not resolve, at the length its array literal
+    /// initializer spells. Inference then checks the elements against `T`
+    /// and types the binding's uses at it, as for a length the walk knows
+    /// (4.14:26, 4.14:27). Only the length is assumed: the block's own
+    /// evaluation resolves `n` and reports a negative one (7.1:37) or one
+    /// the literal does not fill (7.1:4), so a program accepted with the
+    /// assumed length binds the array at exactly that length (RUE-2546).
+    fn comptime_array_annotation_at_literal(
+        &mut self,
+        annotation: rue_rir::RirTypeSyntaxRef,
+        init: InstRef,
+        scope: &WalkScope,
+        span: Span,
+    ) -> Option<Type> {
+        let InstData::ArrayInit { elements } = &self.body_rir_ref().get(init).data else {
+            return None;
+        };
+        let literal_len = self.body_rir_ref().array_elements(elements).len();
+        let arena = self.body_rir_ref().type_syntax();
+        let Some(rue_rir::RirTypeSyntaxNode::Array { length, .. }) = arena.node(annotation) else {
+            return None;
+        };
+        let Some(rue_rir::RirTypeSyntaxNode::Named(symbol)) = arena.node(*length) else {
+            return None;
+        };
+        let name = *arena.symbol(*symbol)?;
+        if scope.types.contains_key(&name) {
+            return None;
+        }
+        let mut values = scope.values.clone();
+        values.insert(name, ConstValue::Integer(literal_len as i128));
+        let shadowing = self.names_in_type_syntax(annotation, |other| {
+            other != name && scope.runtime.contains(&other)
+        });
+        self.resolve_rir_type_under_runtime_bindings(
+            annotation,
+            &scope.types,
+            &values,
+            shadowing.as_ref(),
+            span,
+        )
+        .filter(|resolved| !resolved.is_function())
     }
 
     /// Whether every name `init` reads is a block local this walk bound with
