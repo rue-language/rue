@@ -587,6 +587,14 @@ pub struct Case {
     /// Expected program exit code (default 0).
     #[serde(default)]
     pub exit_code: Option<i32>,
+    /// Expect the program to be killed by the trap a live
+    /// `Terminator::Unreachable` lowers to: `SIGTRAP` on AArch64 hosts and
+    /// `SIGILL` on x86-64 hosts (see [`crate::unreachable_trap_signal`]). A
+    /// normal exit or any other signal fails the case. Incompatible with
+    /// `exit_code` and `compile_fail`; `stdout`, `stdout_contains` and
+    /// `runtime_error_contains` still check what the program wrote first.
+    #[serde(default)]
+    pub unreachable_trap: bool,
     /// Expected failure: reference to the Linear issue tracking the bug.
     #[serde(default)]
     pub known_bug: Option<String>,

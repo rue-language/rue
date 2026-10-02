@@ -20,6 +20,65 @@ pub const DEFAULT_TIMEOUT_MS: u64 = 10_000;
 /// This matches the convention used by Rust's test harness and the Rue runtime.
 /// When a Rue program encounters a runtime error, it exits with this code.
 pub const RUNTIME_ERROR_EXIT_CODE: i32 = 101;
+
+/// The signal a produced program dies of when it reaches a live
+/// `Terminator::Unreachable`, for a program of the given architecture.
+///
+/// Codegen lowers that terminator to a trap instruction rather than a runtime
+/// call: `brk #1` on AArch64, which raises `SIGTRAP`, and `ud2` on x86-64,
+/// which raises `SIGILL`. Nothing in the runtime catches either, so the
+/// process is killed by the signal itself. The `unreachable_trap` case field of
+/// both case corpora asserts exactly this death.
+#[cfg(unix)]
+pub fn unreachable_trap_signal(architecture: &str) -> Option<i32> {
+    match architecture {
+        "aarch64" => Some(libc::SIGTRAP),
+        "x86-64" => Some(libc::SIGILL),
+        _ => None,
+    }
+}
+
+/// Check that a produced program was killed by the trap of a live
+/// `Terminator::Unreachable` on this host (see [`unreachable_trap_signal`]).
+///
+/// A normal exit is an assertion failure: the program did something other than
+/// what the case pins. Death by any other signal is a crash and fails fatally,
+/// so an expected-failure marker cannot absorb it. A host whose architecture
+/// Rue does not recognize accepts either trap signal.
+pub fn check_unreachable_trap(
+    status: &std::process::ExitStatus,
+    stderr: &str,
+) -> Result<(), TestFailure> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+
+        let expected: Vec<i32> = match HostPlatform::current()
+            .and_then(|host| unreachable_trap_signal(host.architecture()))
+        {
+            Some(signal) => vec![signal],
+            None => vec![libc::SIGTRAP, libc::SIGILL],
+        };
+        match status.signal() {
+            Some(signal) if expected.contains(&signal) => Ok(()),
+            Some(signal) => Err(TestFailure::fatal(format!(
+                "TEST PROGRAM CRASH: expected the unreachable trap (signal {expected:?}), but the \
+                 process was killed by signal {signal} ({status:?})\n--- program stderr ---\n{stderr}"
+            ))),
+            None => Err(TestFailure::assertion(format!(
+                "expected the unreachable trap (signal {expected:?}), but the program exited \
+                 normally ({status:?})\n--- program stderr ---\n{stderr}"
+            ))),
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        Err(TestFailure::fatal(format!(
+            "`unreachable_trap` needs a Unix host to observe a signal death ({status:?})\n\
+             --- program stderr ---\n{stderr}"
+        )))
+    }
+}
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::io::Write;
@@ -336,6 +395,14 @@ pub struct Case {
     /// Expected exit code for runtime errors (defaults to [`RUNTIME_ERROR_EXIT_CODE`])
     #[serde(default)]
     pub runtime_exit_code: Option<i32>,
+    /// If true, the program compiles and is then killed by the trap a live
+    /// `Terminator::Unreachable` lowers to (see [`unreachable_trap_signal`]):
+    /// `SIGTRAP` on AArch64 hosts, `SIGILL` on x86-64 hosts. A normal exit,
+    /// another signal, or a compile failure fails the case. Excludes
+    /// `exit_code`, `runtime_error` and `runtime_exit_code`; `expected_stdout`
+    /// and `stderr_contains` still check what the program wrote first.
+    #[serde(default)]
+    pub unreachable_trap: bool,
     /// Skip this test
     #[serde(default)]
     pub skip: bool,
@@ -456,6 +523,7 @@ impl Case {
                 || self.expected_stdout.is_some()
                 || self.runtime_error.is_some()
                 || self.runtime_exit_code.is_some()
+                || self.unreachable_trap
                 || self.stdin.is_some()
                 || self.stderr_contains.is_some())
     }
@@ -489,6 +557,7 @@ impl Case {
             || self.expected_stdout.is_some()
             || self.runtime_error.is_some()
             || self.runtime_exit_code.is_some()
+            || self.unreachable_trap
             || self.stdin.is_some()
             || self.stderr_contains.is_some()
             || self.compile_only
@@ -1483,6 +1552,7 @@ pub fn expand_case(case: Case) -> Vec<Case> {
                 compile_fail: case.compile_fail,
                 compile_only: case.compile_only,
                 runtime_exit_code: case.runtime_exit_code,
+                unreachable_trap: case.unreachable_trap,
                 skip: case.skip,
                 expected_warning_count: case.expected_warning_count,
                 no_warnings: case.no_warnings,
@@ -2078,11 +2148,12 @@ impl std::error::Error for CompileOnlyRuntimeAssertionError {}
 pub fn validate_compile_only_runtime_assertions(
     test_file: &TestFile,
 ) -> Vec<CompileOnlyRuntimeAssertionError> {
-    const RUNTIME_FIELDS: [(&str, fn(&Case) -> bool); 6] = [
+    const RUNTIME_FIELDS: [(&str, fn(&Case) -> bool); 7] = [
         ("exit_code", |case| case.exit_code.is_some()),
         ("expected_stdout", |case| case.expected_stdout.is_some()),
         ("runtime_error", |case| case.runtime_error.is_some()),
         ("runtime_exit_code", |case| case.runtime_exit_code.is_some()),
+        ("unreachable_trap", |case| case.unreachable_trap),
         ("stdin", |case| case.stdin.is_some()),
         ("stderr_contains", |case| case.stderr_contains.is_some()),
     ];
@@ -2096,6 +2167,57 @@ pub fn validate_compile_only_runtime_assertions(
                 .filter_map(|(field, present)| present(case).then_some(format!("`{field}`")))
                 .collect::<Vec<_>>();
             (!fields.is_empty()).then_some(CompileOnlyRuntimeAssertionError {
+                test_name: case.name.clone(),
+                section_id: test_file.section.id.clone(),
+                fields: fields.join(", "),
+            })
+        })
+        .collect()
+}
+
+/// An error indicating an `unreachable_trap` case that also declares an
+/// outcome the trap excludes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnreachableTrapConflictError {
+    pub test_name: String,
+    pub section_id: String,
+    pub fields: String,
+}
+
+impl std::fmt::Display for UnreachableTrapConflictError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "test '{}::{}' declares `unreachable_trap` with {} — a program killed by the \
+             unreachable trap neither fails to compile nor exits with a code; remove those fields",
+            self.section_id, self.test_name, self.fields
+        )
+    }
+}
+
+impl std::error::Error for UnreachableTrapConflictError {}
+
+/// Validate that `unreachable_trap` cases declare no other program outcome.
+/// The field order is part of the stable diagnostic.
+pub fn validate_unreachable_trap_conflicts(
+    test_file: &TestFile,
+) -> Vec<UnreachableTrapConflictError> {
+    const CONFLICTING_FIELDS: [(&str, fn(&Case) -> bool); 4] = [
+        ("compile_fail", |case| case.compile_fail),
+        ("exit_code", |case| case.exit_code.is_some()),
+        ("runtime_error", |case| case.runtime_error.is_some()),
+        ("runtime_exit_code", |case| case.runtime_exit_code.is_some()),
+    ];
+    test_file
+        .case
+        .iter()
+        .filter(|case| case.unreachable_trap)
+        .filter_map(|case| {
+            let fields = CONFLICTING_FIELDS
+                .iter()
+                .filter_map(|(field, present)| present(case).then_some(format!("`{field}`")))
+                .collect::<Vec<_>>();
+            (!fields.is_empty()).then_some(UnreachableTrapConflictError {
                 test_name: case.name.clone(),
                 section_id: test_file.section.id.clone(),
                 fields: fields.join(", "),
@@ -2277,6 +2399,7 @@ pub fn load_test_files(cases_dir: &Path) -> Result<Vec<(String, TestFile)>, Stri
     let mut compile_fail_exit_codes: Vec<CompileFailExitCodeError> = Vec::new();
     let mut compile_only_runtime_assertions: Vec<CompileOnlyRuntimeAssertionError> = Vec::new();
     let mut empty_contains_assertions: Vec<EmptyContainsAssertionError> = Vec::new();
+    let mut unreachable_trap_conflicts: Vec<UnreachableTrapConflictError> = Vec::new();
     let mut platform_responsibility: Vec<PlatformResponsibilityError> = Vec::new();
 
     let toml_files = discover_files(cases_dir, "toml").map_err(|error| {
@@ -2326,6 +2449,7 @@ pub fn load_test_files(cases_dir: &Path) -> Result<Vec<(String, TestFile)>, Stri
                 compile_only_runtime_assertions
                     .extend(validate_compile_only_runtime_assertions(&spec));
                 empty_contains_assertions.extend(validate_empty_contains_assertions(&spec));
+                unreachable_trap_conflicts.extend(validate_unreachable_trap_conflicts(&spec));
 
                 // Reject cases whose platform responsibility is ambiguous: an
                 // architecture-specific expectation with no declared target, or
@@ -2462,6 +2586,18 @@ pub fn load_test_files(cases_dir: &Path) -> Result<Vec<(String, TestFile)>, Stri
             "{} `compile_only` case(s) declare produced-program fields:\n  - {}",
             compile_only_runtime_assertions.len(),
             compile_only_runtime_assertions
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("\n  - ")
+        ));
+    }
+
+    if !unreachable_trap_conflicts.is_empty() {
+        return Err(format!(
+            "{} `unreachable_trap` case(s) declare a conflicting outcome:\n  - {}",
+            unreachable_trap_conflicts.len(),
+            unreachable_trap_conflicts
                 .iter()
                 .map(ToString::to_string)
                 .collect::<Vec<_>>()
@@ -3282,16 +3418,22 @@ pub fn run_test_case(case: &Case, rue_binary: &Path) -> TestResult {
     let timeout = Duration::from_millis(case.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS));
     let run_output = run_with_timeout(Command::new(&output_path), timeout, case.stdin.as_deref())?;
 
+    let stderr = String::from_utf8_lossy(&run_output.stderr);
+
+    if case.unreachable_trap {
+        check_unreachable_trap(&run_output.status, &stderr)?;
+        check_program_output(case, &run_output.stdout, &stderr)?;
+        return Ok(());
+    }
+
     if run_output.status.code().is_none() {
         return Err(TestFailure::fatal(format!(
             "TEST PROGRAM CRASH: process killed by signal ({:?})\n--- program stderr ---\n{}",
-            run_output.status,
-            String::from_utf8_lossy(&run_output.stderr)
+            run_output.status, stderr
         )));
     }
 
     let actual_exit_code = run_output.status.code().expect("signal handled above");
-    let stderr = String::from_utf8_lossy(&run_output.stderr);
 
     // Handle runtime error tests
     if let Some(ref expected_error) = case.runtime_error {
@@ -3316,6 +3458,28 @@ pub fn run_test_case(case: &Case, rue_binary: &Path) -> TestResult {
         return Ok(());
     }
 
+    check_program_output(case, &run_output.stdout, &stderr)?;
+
+    // Normal exit code test
+    let expected_exit_code = case.exit_code.ok_or_else(|| {
+        TestFailure::assertion(
+            "Test case should have exit_code when compile_fail is false and runtime_error is not set",
+        )
+    })?;
+
+    if actual_exit_code != expected_exit_code {
+        return Err(TestFailure::assertion(format!(
+            "Exit code mismatch:\n  expected: {}\n  actual: {}\n  source: {}",
+            expected_exit_code, actual_exit_code, case.source
+        )));
+    }
+
+    Ok(())
+}
+
+/// Check the successful-run output assertions, `expected_stdout` and
+/// `stderr_contains`, shared by a normal exit and an `unreachable_trap` death.
+fn check_program_output(case: &Case, stdout: &[u8], stderr: &str) -> TestResult {
     // Check expected stdout output (e.g., from @dbg calls).
     //
     // The compare is byte-exact — matching the CLI runner in rue-cli-tests —
@@ -3326,7 +3490,7 @@ pub fn run_test_case(case: &Case, rue_binary: &Path) -> TestResult {
     // the spec suite while failing the byte-exact CLI runner (RUE-132). Values
     // are shown `{:?}`-quoted so a whitespace-only difference is visible.
     if let Some(ref expected) = case.expected_stdout {
-        let stdout = String::from_utf8_lossy(&run_output.stdout);
+        let stdout = String::from_utf8_lossy(stdout);
         let expected_cmp = strip_block_boundary_newlines(expected);
         let actual_cmp = strip_block_boundary_newlines(&stdout);
         if actual_cmp != expected_cmp {
@@ -3345,20 +3509,6 @@ pub fn run_test_case(case: &Case, rue_binary: &Path) -> TestResult {
                 expected, stderr, case.source
             )));
         }
-    }
-
-    // Normal exit code test
-    let expected_exit_code = case.exit_code.ok_or_else(|| {
-        TestFailure::assertion(
-            "Test case should have exit_code when compile_fail is false and runtime_error is not set",
-        )
-    })?;
-
-    if actual_exit_code != expected_exit_code {
-        return Err(TestFailure::assertion(format!(
-            "Exit code mismatch:\n  expected: {}\n  actual: {}\n  source: {}",
-            expected_exit_code, actual_exit_code, case.source
-        )));
     }
 
     Ok(())
@@ -3764,6 +3914,7 @@ params = [
             expected_cfg: None,
             runtime_error: None,
             runtime_exit_code: None,
+            unreachable_trap: false,
             skip: false,
             warning_contains: None,
             expected_warning_count: None,
@@ -3822,6 +3973,7 @@ params = [
             expected_cfg: None,
             runtime_error: None,
             runtime_exit_code: None,
+            unreachable_trap: false,
             skip: false,
             warning_contains: None,
             expected_warning_count: None,
@@ -3888,6 +4040,7 @@ params = [
             expected_cfg: None,
             runtime_error: None,
             runtime_exit_code: None,
+            unreachable_trap: false,
             skip: false,
             warning_contains: None,
             expected_warning_count: None,
@@ -3946,6 +4099,7 @@ params = [
             expected_cfg: None,
             runtime_error: None,
             runtime_exit_code: None,
+            unreachable_trap: false,
             skip: false,
             warning_contains: None,
             expected_warning_count: None,
@@ -4669,6 +4823,121 @@ chmod +x "$output"
         assert!(error.contains("TEST PROGRAM CRASH"));
     }
 
+    /// A fake compiler whose produced program prints `before` and then runs
+    /// `ending` (a shell command such as `kill -TRAP $$` or `exit 0`).
+    #[cfg(unix)]
+    fn fake_compiler_with_program_ending(ending: &str) -> (tempfile::TempDir, PathBuf) {
+        fake_compiler(&format!(
+            r#"#!/bin/sh
+while [ "$#" -gt 0 ]; do
+    if [ "$1" = "-o" ]; then
+        output="$2"
+        break
+    fi
+    shift
+done
+cat > "$output" <<'EOF'
+#!/bin/sh
+echo before
+{ending}
+EOF
+chmod +x "$output"
+"#
+        ))
+    }
+
+    #[cfg(unix)]
+    fn unreachable_trap_case() -> Case {
+        Case {
+            name: "unreachable_trap".to_string(),
+            source: "fn main() -> i32 { 0 }".to_string(),
+            unreachable_trap: true,
+            expected_stdout: Some("before\n".to_string()),
+            ..Default::default()
+        }
+    }
+
+    /// The host's trap signal, and the other architecture's.
+    #[cfg(unix)]
+    fn host_and_foreign_trap_signals() -> (&'static str, &'static str) {
+        if cfg!(target_arch = "aarch64") {
+            ("TRAP", "ILL")
+        } else {
+            ("ILL", "TRAP")
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unreachable_trap_accepts_the_host_trap_signal_and_checks_output() {
+        let (host, _) = host_and_foreign_trap_signals();
+        let (_directory, binary) = fake_compiler_with_program_ending(&format!("kill -{host} $$"));
+        run_test_case(&unreachable_trap_case(), &binary).expect("host trap signal must pass");
+
+        let mut case = unreachable_trap_case();
+        case.expected_stdout = Some("after\n".to_string());
+        let error = run_test_case(&case, &binary).expect_err("stdout is still checked");
+        assert!(!error.is_fatal());
+        assert!(error.contains("Stdout mismatch"), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unreachable_trap_rejects_a_normal_exit_as_an_assertion() {
+        let (_directory, binary) = fake_compiler_with_program_ending("exit 0");
+        let error =
+            run_test_case(&unreachable_trap_case(), &binary).expect_err("a normal exit must fail");
+        assert!(!error.is_fatal());
+        assert!(error.contains("exited normally"), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unreachable_trap_rejects_any_other_signal_as_a_crash() {
+        let (_, foreign) = host_and_foreign_trap_signals();
+        for signal in [foreign, "ABRT", "SEGV"] {
+            let (_directory, binary) =
+                fake_compiler_with_program_ending(&format!("kill -{signal} $$"));
+            let error = run_test_case(&unreachable_trap_case(), &binary)
+                .expect_err("a signal other than the host's trap must fail");
+            assert!(error.is_fatal(), "{signal}: {error}");
+            assert!(error.contains("TEST PROGRAM CRASH"), "{signal}: {error}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unreachable_trap_signal_matches_each_architectures_trap_instruction() {
+        assert_eq!(unreachable_trap_signal("aarch64"), Some(libc::SIGTRAP));
+        assert_eq!(unreachable_trap_signal("x86-64"), Some(libc::SIGILL));
+        assert_eq!(unreachable_trap_signal("riscv64"), None);
+    }
+
+    #[test]
+    fn unreachable_trap_conflicts_with_every_other_outcome() {
+        let mut case = make_test_case("conflict", None);
+        case.unreachable_trap = true;
+        case.compile_fail = true;
+        case.exit_code = Some(0);
+        case.runtime_error = Some("panic".to_string());
+        case.runtime_exit_code = Some(RUNTIME_ERROR_EXIT_CODE);
+        let errors = validate_unreachable_trap_conflicts(&make_test_file("trap", vec![case]));
+        assert_eq!(errors.len(), 1);
+        assert_eq!(
+            errors[0].fields,
+            "`compile_fail`, `exit_code`, `runtime_error`, `runtime_exit_code`"
+        );
+
+        let mut valid = make_test_case("valid", None);
+        valid.unreachable_trap = true;
+        valid.exit_code = None;
+        valid.expected_stdout = Some("before\n".to_string());
+        valid.stderr_contains = Some("note".to_string());
+        assert!(
+            validate_unreachable_trap_conflicts(&make_test_file("trap", vec![valid])).is_empty()
+        );
+    }
+
     // Tests for run_with_timeout
     #[test]
     fn test_run_with_timeout_completes_normally() {
@@ -4773,6 +5042,7 @@ chmod +x "$output"
             expected_cfg: None,
             runtime_error: None,
             runtime_exit_code: None,
+            unreachable_trap: false,
             skip: false,
             warning_contains: None,
             expected_warning_count: None,
@@ -5109,6 +5379,7 @@ params = [
             "expected_stdout",
             "runtime_error",
             "runtime_exit_code",
+            "unreachable_trap",
             "stdin",
             "stderr_contains",
         ] {
@@ -5120,6 +5391,7 @@ params = [
                 "expected_stdout" => case.expected_stdout = Some("output".to_string()),
                 "runtime_error" => case.runtime_error = Some("panic".to_string()),
                 "runtime_exit_code" => case.runtime_exit_code = Some(RUNTIME_ERROR_EXIT_CODE),
+                "unreachable_trap" => case.unreachable_trap = true,
                 "stdin" => case.stdin = Some("input".to_string()),
                 "stderr_contains" => case.stderr_contains = Some("stderr".to_string()),
                 _ => unreachable!(),
