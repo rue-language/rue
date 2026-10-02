@@ -3229,6 +3229,14 @@ where
         })
     }
 
+    /// Whether this body is a type constructor's: a function whose result
+    /// is `type`, evaluated at compile time for each of its calls.
+    fn body_is_type_constructor(&self) -> bool {
+        DurableCallableSource::function(&self.source, &self.key).is_some_and(|signature| {
+            matches!(signature.result, crate::SemanticImportType::ComptimeType)
+        })
+    }
+
     fn durable_type_from_concrete(&self, ty: Type) -> Option<crate::SemanticImportType<K, M>> {
         use crate::SemanticImportType as T;
         Some(match ty.kind() {
@@ -4811,13 +4819,19 @@ where
         }
         let mut durable_types = Vec::with_capacity(type_arguments.len());
         for &(name, value) in type_arguments {
-            // An argument naming an anonymous nominal this body is still
-            // producing (`Inner(ptr const Self)`) has no durable form in this
-            // body's maps; its identity is recovered from the issued one.
-            let Some(value) = self
-                .durable_type_from_concrete(value)
-                .or_else(|| self.local_durable_type(value))
-            else {
+            // An argument naming an anonymous nominal this body produces
+            // (`Inner(ptr const Self)`, its struct still being declared) has
+            // no durable form in this body's maps, so its identity is
+            // recovered from the issued one. Only a type constructor's body
+            // can lend it: that body's nominals are published by the comptime
+            // evaluation of its call, which the reduction reads. A runtime
+            // body publishes its nominals only when its own analysis
+            // finishes, so a reduction over one would wait on this analysis.
+            let Some(value) = self.durable_type_from_concrete(value).or_else(|| {
+                self.body_is_type_constructor()
+                    .then(|| self.local_durable_type(value))
+                    .flatten()
+            }) else {
                 return Ok(None);
             };
             durable_types.push((Arc::from(self.interner.resolve(&name)), value));
