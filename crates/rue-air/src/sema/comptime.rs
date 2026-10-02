@@ -1531,7 +1531,9 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 let root = path
                     .and_then(|path| arena.words(path))
                     .filter(|words| words.len() > 1)
-                    .and_then(|words| arena.symbol(rue_rir::RirTypeSyntaxSymbol::from_u32(words[0])))
+                    .and_then(|words| {
+                        arena.symbol(rue_rir::RirTypeSyntaxSymbol::from_u32(words[0]))
+                    })
                     .map(|symbol| self.host.name_from_symbol(program, (*symbol).into()));
                 if let Some(root) = root
                     && let Some(Some(module)) = Self::lexical_path_root(&root, env)
