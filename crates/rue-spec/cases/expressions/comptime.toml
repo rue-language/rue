@@ -7565,3 +7565,32 @@ pub fn G(comptime T: type) -> type {
 }
 """ }
 exit_code = 29
+
+[[case]]
+name = "type_constructor_returns_a_structural_type_over_its_own_local"
+spec = ["4.14:22", "4.14:25"]
+description = "A type constructor's own local passed to a constructor returning a structural type (`[T; 3]`) keeps its one identity, as the result, as an unused binding beside another call, and inside another constructor (RUE-2608)"
+source = """
+fn W(comptime T: type) -> type { struct { v: T } }
+fn Arr(comptime T: type) -> type { [T; 3] }
+fn A(comptime T: type) -> type { let L = struct { s: T }; Arr(L) }
+fn B(comptime T: type) -> type { let L = struct { s: T }; let R = Arr(L); W(L) }
+fn C(comptime T: type) -> type { let L = struct { s: T }; W(Arr(L)) }
+fn main() -> i32 {
+    let I = struct { q: i8 };
+    @size_of(A(i16)) + @size_of(B(i16)) + @size_of(C(i16)) + @size_of(C(I))
+}
+"""
+exit_code = 17
+
+[[case]]
+name = "nested_type_constructor_wraps_its_own_local_over_a_local"
+spec = ["4.14:22", "4.14:25"]
+description = "A constructor that wraps its own local reduces when applied to another constructor's local, to a caller's local, and to a builtin type (RUE-2608)"
+source = """
+fn X(comptime T: type) -> type { struct { x: T, y: i8 } }
+fn W(comptime T: type) -> type { let M = struct { m: T, n: i16 }; X(M) }
+fn G(comptime T: type) -> type { let L = struct { s: T }; W(L) }
+fn main() -> i32 { let I = struct { q: i64 }; @size_of(G(i32)) + @size_of(G(I)) + @size_of(W(i8)) }
+"""
+exit_code = 42
