@@ -2954,6 +2954,13 @@ impl<'a> ConstraintGenerator<'a> {
                             // Else diverges - result is then type
                             then_info.ty
                         }
+                        // A completing branch whose value is concretely
+                        // `!` (a read of a `!`-typed binding) coerces to its
+                        // sibling's type (Sub-Never, 3.4:3-4), exactly as a
+                        // diverging branch does, so it does not set the
+                        // join's type (RUE-2610).
+                        (false, false) if Self::is_never_concrete(&then_info.ty) => else_info.ty,
+                        (false, false) if Self::is_never_concrete(&else_info.ty) => then_info.ty,
                         (false, false) => {
                             // Neither diverges - both must have the same type
                             // The arms are peers (RUE-2559): see
@@ -3171,8 +3178,14 @@ impl<'a> ConstraintGenerator<'a> {
 
                 // Handle Never type coercion:
                 // Filter out Never arms and use the remaining non-Never types
-                let non_never_arms: Vec<_> =
-                    arm_types.iter().filter(|info| info.continues).collect();
+                // A completing arm whose value is concretely `!` (a read of
+                // a `!`-typed binding, `F.A(x) => x`) coerces to its peers'
+                // type (Sub-Never, 3.4:3-4) as a diverging arm does, so it
+                // sets no type either (RUE-2610).
+                let non_never_arms: Vec<_> = arm_types
+                    .iter()
+                    .filter(|info| info.continues && !Self::is_never_concrete(&info.ty))
+                    .collect();
                 continues &= arm_types.iter().any(|info| info.continues);
 
                 if non_never_arms.is_empty() {
