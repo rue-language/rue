@@ -104,3 +104,48 @@ fn main() -> i32 { 0 }
 pub enum E { A }
 """ },
 ]
+
+# The same literal in a function body's comptime evaluation: the ordinary
+# body host reaches the module base as a decoded module path, as it reaches a
+# comptime callable's receiver, so a comptime block and a comptime argument
+# reduce it rather than E1200 / E1201.
+
+[[case]]
+name = "qualified_name_body_comptime"
+description = "Body comptime blocks and comptime arguments reduce a qualified literal through a bound, nested or inline-import module."
+files = [
+    { path = "main.rue", source = """
+const lib = @import("lib.rue");
+fn twice(comptime p: lib.S) -> i32 { p.a * 2 }
+fn nested(comptime p: lib.m.S) -> i32 { p.a }
+fn main() -> i32 {
+    let a: lib.S = comptime { lib.S { a: 3 } };
+    let b = comptime { lib.m.S { a: 4 } };
+    let c = comptime { @import("lib.rue").S { a: 5 } };
+    a.a + b.a + c.a + twice(lib.S { a: 10 }) + nested(@import("lib.rue").m.S { a: 0 })
+}
+""" },
+    { path = "lib.rue", source = """
+@copy pub struct S { a: i32 }
+pub const m = @import("m.rue");
+""" },
+    { path = "m.rue", source = """
+@copy pub struct S { a: i32 }
+""" },
+]
+exit_code = 32
+
+[[case]]
+name = "private_qualified_name_body_comptime_rejected"
+description = "A private struct in a body comptime block is the runtime literal's E0706 on the literal, once."
+compile_fail = true
+error_contains = ["E0706", "struct `Priv` is private", "main.rue:2:39"]
+files = [
+    { path = "main.rue", source = """
+const p = @import("sub/p.rue");
+fn main() -> i32 { let c = comptime { p.Priv { a: 1 } }; 0 }
+""" },
+    { path = "sub/p.rue", source = """
+@copy struct Priv { a: i32 }
+""" },
+]
