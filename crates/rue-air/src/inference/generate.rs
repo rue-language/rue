@@ -5241,8 +5241,20 @@ impl<'a> ConstraintGenerator<'a> {
             // substitution attempt would let the use site decide a type sema
             // never agreed to (`h.sq(f32, v) == 6.25` defaulted the literal to
             // `f64` against an `f32` specialization, an AIR verification ICE).
+            //
+            // A bare `-> type` result is the module a fully-comptime call
+            // reduces to once sema's pre-pass found one (`pick(true)` with
+            // `pick(comptime b: bool) -> type { if b { @import(..) } .. }`),
+            // and is left open in a staged pass that has no fact for the call
+            // yet, as the zero-parameter form is (RUE-2602).
             self.module_call_result(call)
-                .or_else(|| self.substituted_generic_return_type(func, &type_subst, &value_subst))
+                .or_else(|| {
+                    self.substituted_generic_return_type(func, &type_subst, &value_subst)
+                        .filter(|ty| {
+                            *ty != InferType::Concrete(Type::COMPTIME_TYPE)
+                                || !self.type_call_fact_pending(call)
+                        })
+                })
                 .or_else(|| {
                     self.generic_call_return_types
                         .and_then(|types| types.get(&call).copied())
@@ -5276,14 +5288,22 @@ impl<'a> ConstraintGenerator<'a> {
         }
         if func.return_type == InferType::Concrete(Type::COMPTIME_TYPE)
             && func.param_types.is_empty()
-            && self.staged_comptime_selectors
-            && self
-                .generic_call_return_types
-                .is_none_or(|types| !types.contains_key(&call))
+            && self.type_call_fact_pending(call)
         {
             return InferType::Var(self.fresh_var());
         }
         func.return_type.clone()
+    }
+
+    /// Whether this is a staged pass that has no pre-pass fact for `call`
+    /// yet. A `-> type` call's result stays open there: the declared `type`
+    /// would otherwise reject a module-reducing call in a value position
+    /// before the pre-pass could reduce it (RUE-2420, RUE-2602).
+    fn type_call_fact_pending(&self, call: InstRef) -> bool {
+        self.staged_comptime_selectors
+            && self
+                .generic_call_return_types
+                .is_none_or(|types| !types.contains_key(&call))
     }
 
     /// Bootstrap only an enclosing type substitution during the speculative
