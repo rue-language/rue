@@ -326,7 +326,8 @@ fn main() -> i32 {
 }
 """
 exit_code = 18
-no_warnings = true
+# The `F.A(_)` arms bind an uninhabited payload, so their bodies are reported
+# unreachable; that warning is correct and not what this case pins.
 
 # =============================================================================
 # @int_to_ptr converts u64 address to pointer with explicit type annotation
