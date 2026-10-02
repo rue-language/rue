@@ -149,3 +149,23 @@ fn main() -> i32 { let c = comptime { p.Priv { a: 1 } }; 0 }
 @copy struct Priv { a: i32 }
 """ },
 ]
+
+[[case]]
+name = "private_module_hop_body_comptime_rejected"
+description = "A private module hop on the literal's module path is the runtime literal's E0706, not a non-evaluable comptime argument."
+compile_fail = true
+error_contains = ["E0706", "const `m` is private", "main.rue:3:22"]
+files = [
+    { path = "main.rue", source = """
+const p = @import("sub/p.rue");
+fn f(comptime q: p.S) -> i32 { q.a }
+fn main() -> i32 { f(p.m.S { a: 1 }) }
+""" },
+    { path = "sub/p.rue", source = """
+const m = @import("../m.rue");
+pub const S = m.S;
+""" },
+    { path = "m.rue", source = """
+@copy pub struct S { a: i32 }
+""" },
+]
