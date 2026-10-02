@@ -531,6 +531,18 @@ compile_fail = true
 error_contains = "out of range for type '!'"
 
 [[case]]
+name = "string_literal_at_a_declared_never_parameter_rejected"
+spec = ["3.4:3", "3.4:4"]
+description = "RUE-2559: a string literal is a completing value, so it is not accepted where a parameter declares `!` — a type mismatch, as the literal has no value range to check"
+source = """
+fn g(x: !) -> i32 { 0 }
+fn main() -> i32 { g("x") }
+"""
+compile_fail = true
+expected_error_code = "E0206"
+error_contains = "expected !, found str"
+
+[[case]]
 name = "wrapping_arithmetic_with_both_operands_diverging_is_never_typed"
 spec = ["3.4:3", "3.4:4", "4.13:98"]
 description = "A wrapping-arithmetic intrinsic whose operands both diverge has type !, in value and statement position"
