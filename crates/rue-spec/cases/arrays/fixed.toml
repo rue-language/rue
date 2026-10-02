@@ -2214,9 +2214,28 @@ fn main() -> i32 {
 exit_code = 42
 
 [[case]]
+name = "repeat_count_in_comptime_block_names_block_local_element_typed_by_use"
+error_contains = ["[E0800]", "literal value 300 is out of range for type 'u8'"]
+spec = ["7.1:37", "4.14:26", "4.14:27"]
+description = "A block-local repeat count leaves the element typed by its uses, as a literal count does, so a literal read as `u8` must fit `u8` (RUE-2542)"
+source = """
+fn main() -> i32 {
+    let x: u8 = comptime {
+        let n = 2;
+        let a = [300; n];
+        let b: u8 = a[0];
+        b + 1
+    };
+    let y: i32 = @intCast(x);
+    y
+}
+"""
+compile_fail = true
+
+[[case]]
 name = "repeat_count_in_comptime_block_names_block_local_against_wrong_annotation"
 error_contains = ["[E0901]", "expected array of 4 elements, found 3 elements"]
-spec = ["7.1:37", "4.14:26"]
+spec = ["7.1:4", "7.1:37", "4.14:26"]
 description = "A block-local repeat count that does not fill the declared array length is E0901, as a literal count is (RUE-2542)"
 source = """
 fn main() -> i32 {
@@ -2232,7 +2251,7 @@ compile_fail = true
 [[case]]
 name = "repeat_count_in_comptime_block_names_block_local_against_later_wrong_annotation"
 error_contains = ["[E0901]", "expected array of 4 elements, found 3 elements"]
-spec = ["7.1:37", "4.14:26"]
+spec = ["7.1:4", "7.1:37", "4.14:26"]
 description = "A block-local repeat count bound unannotated and later read at a different declared length is E0901 (RUE-2542)"
 source = """
 fn main() -> i32 {
