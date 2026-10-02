@@ -245,13 +245,29 @@ impl<'a, A: DurableComptimeHostAuthority + ?Sized> DurableComptimeHost<'a, A> {
         slot: &DurableType,
         site: Option<&DurableComptimeDiagnosticSite>,
     ) -> rue_air::ComptimeHostResult<(), DurableComptimeHostFailure> {
+        Self::admit_value_at(value, slot, site, site)
+    }
+
+    /// [`Self::admit_child_value`] with the two places its rejections are
+    /// reported kept apart: a type mismatch at `mismatch_site` and a literal
+    /// that does not fit the slot at `literal_site`. A structural child
+    /// reports both on itself; a `let` reports a mismatch on the statement
+    /// and a literal on the literal, as the body type checker does.
+    fn admit_value_at(
+        value: &mut EvaluatedSemanticConst,
+        slot: &DurableType,
+        mismatch_site: Option<&DurableComptimeDiagnosticSite>,
+        literal_site: Option<&DurableComptimeDiagnosticSite>,
+    ) -> rue_air::ComptimeHostResult<(), DurableComptimeHostFailure> {
         Self::admit_contextual_integer(value, slot);
-        let reject = |kind: rue_error::ErrorKind| {
+        let reject_at = |site: Option<&DurableComptimeDiagnosticSite>, kind: rue_error::ErrorKind| {
             durable_host_error(match site {
                 Some(site) => DurableComptimeFailure::kind_at_site(site, kind),
                 None => DurableComptimeFailure::failure(SemanticNucleusFailure::Diagnostic(kind)),
             })
         };
+        let reject = |kind| reject_at(mismatch_site, kind);
+        let reject_literal = |kind| reject_at(literal_site, kind);
         // An untyped literal that cannot take the slot's type at all is the
         // found side, as the body path's inference and the scalar
         // `const X: bool = 1;` report it: `S { s: 1 }` at an `S` field is
@@ -300,7 +316,7 @@ impl<'a, A: DurableComptimeHostAuthority + ?Sized> DurableComptimeHost<'a, A> {
                 if durable_int_width(slot).is_some()
                     && !durable_const_fits_type(&typed.value, slot) =>
             {
-                Err(reject(rue_error::ErrorKind::LiteralOutOfRange {
+                Err(reject_literal(rue_error::ErrorKind::LiteralOutOfRange {
                     value: *integer,
                     ty: durable_type_diagnostic_name(slot),
                 }))
@@ -317,7 +333,7 @@ impl<'a, A: DurableComptimeHostAuthority + ?Sized> DurableComptimeHost<'a, A> {
                 };
                 rue_air::finite_float_literal(text, width, false, || text.to_string())
                     .map(|_| ())
-                    .map_err(reject)
+                    .map_err(reject_literal)
             }
             _ => Ok(()),
         }
@@ -1598,6 +1614,43 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeValueAlgebra
     ) -> rue_air::ComptimeHostResult<Self::Value, Self::Failure> {
         let site = self.diagnostic_site(site);
         Self::admit_child_value(&mut value, slot.as_ref(), Some(&site))?;
+        Ok(value)
+    }
+
+    fn admit_comptime_binding(
+        &mut self,
+        mut value: Self::Value,
+        ty: &Self::Type,
+        binding: &rue_air::ComptimeDiagnosticSite<Self::ProgramKey>,
+        initializer: &rue_air::ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> rue_air::ComptimeHostResult<Self::Value, Self::Failure> {
+        let ty = ty.as_ref();
+        // Only a value type is checked, as a structural child is: a generic
+        // parameter, a pointer, a slice or a comptime-only annotation is left
+        // to its own consumer.
+        if !(Self::names_a_value_type(ty) || matches!(ty, DurableType::Array { .. })) {
+            return Ok(value);
+        }
+        let binding = self.diagnostic_site(binding);
+        let initializer = self.diagnostic_site(initializer);
+        Self::admit_value_at(&mut value, ty, Some(&binding), Some(&initializer))?;
+        // The binding has the annotation's type, so every use reads it there
+        // (5.1:8): an untyped integer literal takes the annotated integer
+        // type, and a float literal the annotated float width.
+        if let EvaluatedSemanticConst::Value(typed) = &value
+            && match (&typed.value, typed.ty.as_ref()) {
+                (DurableConstValue::Integer(_), None) => durable_int_width(ty).is_some(),
+                (DurableConstValue::Float(_), Some(DurableType::ComptimeFloat)) => {
+                    matches!(ty, DurableType::F32 | DurableType::F64)
+                }
+                _ => false,
+            }
+        {
+            value = EvaluatedSemanticConst::Value(Arc::new(TypedSemanticConst {
+                value: typed.value.clone(),
+                ty: Some(ty.clone()),
+            }));
+        }
         Ok(value)
     }
 
