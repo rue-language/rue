@@ -667,6 +667,25 @@ pub trait ComptimeValueAlgebra: ComptimeDomain {
     ) -> ComptimeHostResult<Self::Value, Self::Failure> {
         Ok(value)
     }
+    /// Admit a block-local `let`'s reduced initializer into the type its
+    /// annotation names, as the body type checker admits it (5.1:8): `ty`
+    /// is the annotation's type, `binding` the `let` statement and
+    /// `initializer` its initializer. A host reports what the body path
+    /// reports for the same `let`: a value of another type is E0206 on the
+    /// statement and an integer literal out of the annotation's range is
+    /// E0800 on the literal. The host retags the value to the annotation's
+    /// type, so every use of the binding reads it at that type (RUE-2617).
+    /// The default admits it unchanged: the ordinary body host has already
+    /// type-checked the block before it evaluates it.
+    fn admit_comptime_binding(
+        &mut self,
+        value: Self::Value,
+        _ty: &Self::Type,
+        _binding: &ComptimeDiagnosticSite<Self::ProgramKey>,
+        _initializer: &ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> ComptimeHostResult<Self::Value, Self::Failure> {
+        Ok(value)
+    }
     /// Admit a structural literal's shape against its type's declaration
     /// before any child reduces: `shape` is the literal's field names, its
     /// variant and payload count, or its length, `declared` the type its
@@ -4092,23 +4111,6 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         ComptimeOutcome::Known(module.filter(|ty| self.host.type_is_module(ty)))
     }
 
-    /// Evaluate a block-local `let` initializer as trunk evaluates it, and
-    /// find the declared integer type the binding carries (RUE-2353).
-    ///
-    /// The annotation is resolved so an unknown type is the error run time
-    /// reports (E0204), but it does not type the value: without type
-    /// inference, typing untyped values here changes which programs reduce
-    /// and to what (RUE-2360). An integer annotation instead seeds the
-    /// initializer's arithmetic region, so an initializer operation that
-    /// leaves the annotated type is the overflow run time traps on.
-    ///
-    /// Only an annotation that names a primitive integer type directly seeds
-    /// the region; see [`Self::names_primitive_integer`].
-    ///
-    /// The binding carries the annotated type, or for an unannotated `let`
-    /// the type its initializer's region is checked at, when the value is an
-    /// integer that fits it. Otherwise it carries none, and every operation
-    /// that reads it is unchecked, as on trunk.
     /// Whether a `let` annotation names a primitive integer type directly
     /// (`i8` through `u64`, `isize`, `usize`). Only such an annotation
     /// declares a width: run time does not yet apply an annotation spelled as
@@ -4130,6 +4132,25 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             .is_some_and(|ty| ty.integer_semantics().is_some())
     }
 
+    /// Evaluate a block-local `let` initializer, admit its value into the
+    /// annotation's type, and find the declared integer type the binding
+    /// carries (RUE-2353).
+    ///
+    /// An annotation that reduces is the type the initializer is evaluated
+    /// at, and the host admits the value into it as the body type checker
+    /// does (5.1:8, RUE-2617): another type is E0206, an out-of-range
+    /// literal E0800, and the binding is read at the annotated type. An
+    /// integer annotation also seeds the initializer's arithmetic region, so
+    /// an initializer operation that leaves the annotated type is the
+    /// overflow run time traps on.
+    ///
+    /// Only an annotation that names a primitive integer type directly seeds
+    /// the region; see [`Self::names_primitive_integer`].
+    ///
+    /// The binding carries the annotated type, or for an unannotated `let`
+    /// the type its initializer's region is checked at, when the value is an
+    /// integer that fits it. Otherwise it carries none, and every operation
+    /// that reads it is unchecked, as on trunk.
     fn eval_let(
         &mut self,
         init: InstRef,
@@ -4204,10 +4225,20 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                     checked,
                 )
             }
-            Some((_, checked)) => (self.eval_typed(init, literal_type, env), checked),
-            None => (self.eval_typed(init, literal_type, env), None),
+            Some((_, checked)) => (self.eval_typed(init, literal_type.clone(), env), checked),
+            None => (self.eval_typed(init, literal_type.clone(), env), None),
         };
-        let value = outcome_value!(value);
+        let mut value = outcome_value!(value);
+        if let Some(ty) = literal_type.as_ref() {
+            let binding = self.diagnostic_site(span);
+            let initializer = self.diagnostic_site(self.program_rir().get(init).span);
+            value = host_value!(self.host.admit_comptime_binding(
+                value,
+                ty,
+                &binding,
+                &initializer
+            ));
+        }
         let declared = checked.filter(|ty| {
             value.as_integer().is_some_and(|integer| {
                 self.host
