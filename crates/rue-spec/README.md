@@ -49,6 +49,20 @@ compile_fail = true
 error_contains = "type mismatch"
 expected_error_code = "E0206" # Exactly one emitted error must carry this code
 
+# Runtime-error test (exits with the panic code 101)
+[[case]]
+name = "division_by_zero"
+spec = ["8.3:1"]
+source = "fn main() -> i32 { let z = 0; 1 / z }"
+runtime_error = "division by zero"
+
+# Unreachable-trap test (killed by the target's trap signal)
+[[case]]
+name = "uninhabited_read"
+spec = ["9.2:6b"]
+source = "..."
+unreachable_trap = true
+
 # Golden test (exact IR output)
 [[case]]
 name = "simple_add_air"
@@ -91,6 +105,19 @@ diagnostic with that code through `--error-format json`. Unlike
 `error_contains` and `expected_error`, it is not inferred from rendered text.
 The machine-readable error/specification index uses only this typed field when
 linking an error code to the normative rules cited by a case.
+
+`unreachable_trap = true` asserts that the program compiles and is then killed
+by the trap instruction a live `Terminator::Unreachable` lowers to: `brk #1`
+on AArch64, which raises `SIGTRAP`, and `ud2` on x86-64, which raises
+`SIGILL`. The runner accepts only the signal of the host's architecture. A
+normal exit fails the case as an assertion; death by any other signal is a
+crash that a `known_bug` or `preview` marker cannot absorb. The field excludes
+`compile_fail`, `compile_only`, `exit_code`, `runtime_error`, and
+`runtime_exit_code`; `expected_stdout` and `stderr_contains` still check what
+the program wrote before the trap. The CLI corpus accepts the same field with
+the same meaning. The oracle differential reports such cases as ineligible
+(`unreachable trap signal`), because the in-process oracle observes exit
+statuses and typed runtime traps, not native signals.
 
 #### Preview Feature Tests
 
