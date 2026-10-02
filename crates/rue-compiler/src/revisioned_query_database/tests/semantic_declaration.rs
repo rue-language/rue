@@ -2863,6 +2863,7 @@ fn live_root_authority_resolves_keyed_substitutions_and_restores_provider_state(
                     declaration_body_plan_artifacts: &database.declaration_body_plan_artifacts,
                     configuration: &configuration,
                 },
+                own_producer: crate::StableProducerId::Definition(program_key.declaration.clone()),
             };
             authority.session.register_program(&core).unwrap();
             authority.session.register_program(&qualified_core).unwrap();
@@ -3181,6 +3182,7 @@ fn production_root_authority_keyed_admission_preserves_identity_and_dependency()
                     declaration_body_plan_artifacts: &database.declaration_body_plan_artifacts,
                     configuration: &configuration,
                 },
+                own_producer: crate::StableProducerId::Definition(accessing_source.clone()),
             };
             let first = {
                 let services =
@@ -3287,6 +3289,7 @@ fn production_root_authority_keyed_admission_preserves_identity_and_dependency()
                     declaration_body_plan_artifacts: &database.declaration_body_plan_artifacts,
                     configuration: &configuration,
                 },
+                own_producer: crate::StableProducerId::Definition(accessing_source.clone()),
             };
             let result = {
                 let services =

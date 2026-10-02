@@ -272,6 +272,9 @@ pub(in crate::revisioned_query_database) struct DurableComptimeRootAuthority<'db
     pub(in crate::revisioned_query_database) session:
         crate::durable_comptime::DurableComptimeSession,
     pub(in crate::revisioned_query_database) foreign: DurableComptimeForeignQueryAuthority<'db>,
+    /// The producer this evaluation mints its own anonymous nominals under:
+    /// the specialized constructor for a call, the `const` for a declaration.
+    pub(in crate::revisioned_query_database) own_producer: crate::StableProducerId,
 }
 
 impl<'db> DurableComptimeRootAuthority<'db> {
@@ -415,9 +418,59 @@ impl crate::durable_comptime::DurableComptimeForeignCallAuthority
         type_arguments: &[(Arc<str>, crate::durable_semantics::DurableType)],
         value_arguments: &[(Arc<str>, crate::durable_semantics::DurableConstValue)],
     ) -> Result<crate::body_query::ForeignComptimeCallLookup, QueryAbort> {
+        // A call over a nominal this evaluation mints (`let L = struct { ..
+        // }; W(L)` in a constructor's body, RUE-2608) is evaluated here, in
+        // the frame that holds `L`'s facts. Its query reads those facts from
+        // this evaluation's own published result, so probing it would make
+        // this evaluation depend on a query that depends on it: a cycle when
+        // that query is the one that asked for this evaluation, and a back
+        // edge when it already finished.
+        if arguments_reach_producer(&self.own_producer, type_arguments, value_arguments) {
+            return self
+                .foreign
+                .admit_comptime_call(producer, type_arguments, value_arguments);
+        }
         self.foreign
             .probe_comptime_call(producer, type_arguments, value_arguments)
     }
+}
+
+/// Whether the arguments name an anonymous nominal `producer` mints, directly
+/// or through the arguments of the producer of a nominal they name: `L` for
+/// `W(L)`, and also for `W(V(L))` and `W(K(L))` whose `K` drops its argument.
+fn arguments_reach_producer(
+    producer: &crate::StableProducerId,
+    type_arguments: &[(Arc<str>, crate::durable_semantics::DurableType)],
+    value_arguments: &[(Arc<str>, crate::durable_semantics::DurableConstValue)],
+) -> bool {
+    let canonical = |producer: &crate::StableProducerId| match producer {
+        crate::StableProducerId::Function(function) => crate::StableProducerId::Function(
+            rue_air::Node::new(function.with_collapsed_empty_specializations().into_owned()),
+        ),
+        crate::StableProducerId::Definition(_) => producer.clone(),
+    };
+    let producer = canonical(producer);
+    let mut pending = BTreeSet::new();
+    for (_, ty) in type_arguments {
+        collect_anonymous_nominal_type_dependencies(ty, &mut pending);
+    }
+    for (_, value) in value_arguments {
+        collect_anonymous_nominal_value_dependencies(value, &mut pending);
+    }
+    let mut seen = BTreeSet::new();
+    while let Some(identity) = pending.pop_first() {
+        if !seen.insert(identity.clone()) {
+            continue;
+        }
+        let identity = identity.with_canonical_producer();
+        if canonical(&identity.producer) == producer {
+            return true;
+        }
+        if let crate::StableProducerId::Function(function) = &identity.producer {
+            pending.extend(collect_instance_anonymous_nominals(function));
+        }
+    }
+    false
 }
 
 impl crate::durable_comptime::DurableComptimeHostAuthority for DurableComptimeRootAuthority<'_> {
