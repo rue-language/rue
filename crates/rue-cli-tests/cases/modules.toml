@@ -3540,3 +3540,67 @@ fn main() -> i32 {
 ]
 compile_fail = true
 error_contains = ["no member `Color`"]
+
+# ---------------------------------------------------------------------------
+# A module's function read as a value (RUE-2605). It is a member, so the
+# error is E0217 (a callback is second-class, 6.1:51), as for an unqualified
+# function name, not E0707 "no member".
+# ---------------------------------------------------------------------------
+
+[[case]]
+name = "module_function_as_let_value_is_callback_escape"
+description = "`let h = lib.g` is E0217 naming the module's function, not E0707."
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 { let lib = @import("lib.rue"); let h = lib.g; 0 }
+""" },
+    { path = "lib.rue", source = """
+pub fn g() -> i32 { 1 }
+""" },
+]
+compile_fail = true
+error_contains = ["E0217", "the function `g` of module `lib.rue` cannot be used as a value"]
+compile_stderr_not_contains = ["E0707"]
+
+[[case]]
+name = "module_function_through_file_const_as_value_is_callback_escape"
+description = "Through a file-level `const lib = @import(..)`, `[lib.g]` is E0217."
+files = [
+    { path = "main.rue", source = """
+const lib = @import("lib.rue");
+fn main() -> i32 { let a = [lib.g]; 0 }
+""" },
+    { path = "lib.rue", source = """
+pub fn g() -> i32 { 1 }
+""" },
+]
+compile_fail = true
+error_contains = ["E0217", "the function `g` of module `lib.rue`"]
+
+[[case]]
+name = "private_module_function_as_value_is_private"
+description = "A private function of a module in another directory, read as a value, is E0706, as a call is."
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 { let lib = @import("sub/lib.rue"); let h = lib.hid; 0 }
+""" },
+    { path = "sub/lib.rue", source = """
+fn hid() -> i32 { 2 }
+""" },
+]
+compile_fail = true
+error_contains = ["E0706", "function `hid` is private"]
+
+[[case]]
+name = "module_function_passed_to_fn_parameter_control"
+description = "Control: `take(lib.g)` to a `fn() -> i32` parameter still compiles and runs."
+files = [
+    { path = "main.rue", source = """
+fn take(f: fn() -> i32) -> i32 { f() }
+fn main() -> i32 { let lib = @import("lib.rue"); take(lib.g) }
+""" },
+    { path = "lib.rue", source = """
+pub fn g() -> i32 { 7 }
+""" },
+]
+exit_code = 7

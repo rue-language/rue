@@ -1626,6 +1626,32 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             return Ok(AnalysisResult::new(air_ref, ty));
         }
 
+        // A function the module declares is a member, but not a value (6.1:51):
+        // it is called, or passed to a `fn` parameter, and nothing else. Say
+        // so, as for an unqualified function name, rather than that the
+        // member doesn't exist (RUE-2605).
+        if let Some(callee) = self
+            .call_facts()
+            .call_resolve_function_name_local(member_name, module_fact.file)
+            && let Some(fn_info) = self.call_facts().call_function_info(callee)
+            && fn_info.file_id == module_fact.file
+        {
+            self.check_item_visibility(
+                crate::PrivateItemKind::Function,
+                &member_name_str,
+                module_fact.file,
+                fn_info.is_pub,
+                span,
+            )?;
+            let module_name = crate::module_display_name(module_fact.import_path());
+            return Err(CompileError::new(
+                ErrorKind::CallbackEscape {
+                    what: format!("the function `{member_name_str}` of module `{module_name}`"),
+                },
+                span,
+            ));
+        }
+
         // Member not found in the module
         Err(crate::unknown_module_member(
             &crate::module_display_name(module_fact.import_path()),
