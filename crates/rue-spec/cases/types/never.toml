@@ -572,3 +572,51 @@ fn main() -> i32 {
 }
 """
 exit_code = 7
+
+[[case]]
+name = "never_payload_binding_coerces_to_the_sibling_arm_in_either_order"
+spec = ["3.4:3", "3.4:4"]
+description = "RUE-2610: a binding of a `!` payload has type !, which coerces to the other arm's type whichever arm comes first"
+source = """
+enum F { A(!), B(i32) }
+fn first(f: F) -> i32 { match f { F.A(x) => x, F.B(n) => n } }
+fn second(f: F) -> i32 { match f { F.B(n) => n, F.A(x) => x } }
+fn main() -> i32 { first(F.B(3)) + second(F.B(4)) }
+"""
+exit_code = 7
+
+[[case]]
+name = "never_payload_binding_coerces_at_an_annotated_let_and_a_parameter"
+spec = ["3.4:3", "3.4:4"]
+description = "RUE-2610: a `!` payload binding is accepted by a `let` annotated i32 and by an i32 parameter, and the arm joins its sibling at i32"
+source = """
+enum F { A(!), B(i32) }
+fn id(v: i32) -> i32 { v }
+fn by_let(f: F) -> i32 { match f { F.A(x) => { let y: i32 = x; y }, F.B(n) => n } }
+fn by_arg(f: F) -> i32 { match f { F.A(x) => id(x), F.B(n) => n } }
+fn main() -> i32 { by_let(F.B(5)) + by_arg(F.B(6)) }
+"""
+exit_code = 11
+
+[[case]]
+name = "never_payload_beside_another_field_coerces_to_the_sibling_arm"
+spec = ["3.4:3", "3.4:4"]
+description = "RUE-2610: a `!` field of a multi-field payload binds a value of type !, which coerces to the other arm's type"
+source = """
+enum F { A(!, i64), B(i32) }
+fn k(f: F) -> i32 { match f { F.A(x, _) => x, F.B(n) => n } }
+fn main() -> i32 { k(F.B(9)) }
+"""
+exit_code = 9
+
+[[case]]
+name = "never_typed_binding_in_an_if_branch_takes_the_literal_sibling_type"
+spec = ["3.4:3", "3.4:4"]
+description = "RUE-2610: a `!` parameter read in one branch of an `if` coerces to the sibling's type, so a literal sibling is typed by the context rather than checked against !"
+source = """
+enum F { A(!), B(bool) }
+fn pick(x: !, c: bool) -> u8 { if c { x } else { 200 } }
+fn k(f: F) -> u8 { match f { F.A(x) => pick(x, true), F.B(b) => if b { 20 } else { 200 } } }
+fn main() -> i32 { let v: i32 = @intCast(k(F.B(false))); v - 190 }
+"""
+exit_code = 10
