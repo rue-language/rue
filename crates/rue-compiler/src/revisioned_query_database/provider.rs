@@ -1412,7 +1412,37 @@ impl rue_air::DurableBodyLookupSource<crate::StableDefinitionKey, ModuleId>
                 Some(_) => {}
             }
         }
-        if !projection.anonymous_nominals.is_empty() {
+        // The projection also carries the nominals the call's own arguments
+        // name (`W(Box(i32), 2)` transports `Box(i32)`), which their own
+        // producers already published. Only a nominal the reduction itself
+        // minted needs this producer's body facts; reading them for a
+        // constructor that mints none, such as `[i32; N]`, would analyze its
+        // type-valued body as executable code.
+        let mut argument_nominals = BTreeSet::new();
+        for (_, ty) in type_arguments {
+            collect_anonymous_nominal_type_dependencies(ty, &mut argument_nominals);
+        }
+        for (_, value) in value_arguments {
+            collect_anonymous_nominal_value_dependencies(value, &mut argument_nominals);
+        }
+        loop {
+            let before = argument_nominals.len();
+            for nominal in projection.anonymous_nominals.iter() {
+                if argument_nominals.contains(&nominal.identity) {
+                    let mut dependencies = BTreeSet::new();
+                    collect_durable_anonymous_nominal_dependencies(nominal, &mut dependencies);
+                    argument_nominals.extend(dependencies);
+                }
+            }
+            if argument_nominals.len() == before {
+                break;
+            }
+        }
+        if projection
+            .anonymous_nominals
+            .iter()
+            .any(|nominal| !argument_nominals.contains(&nominal.identity))
+        {
             let producer = match crate::durable_comptime::canonical_specialized_function_instance(
                 definition,
                 type_arguments,

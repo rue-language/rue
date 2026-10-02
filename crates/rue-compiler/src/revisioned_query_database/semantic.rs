@@ -691,6 +691,51 @@ pub(super) fn query_anonymous_nominal(
         }))
 }
 
+/// `anonymous_nominals` extended with the facts of every anonymous nominal
+/// `ty` names that it lacks, transitively. A deferred requirement is checked
+/// with its producer's nominals, but its subject can be an argument the
+/// producer never minted: a body's `W(BI, 2)` gates `BI`, a `const`-bound
+/// anonymous struct, against `W`. A nominal whose facts are unavailable is
+/// left out, and the check reports it as before.
+pub(super) fn with_type_anonymous_nominals(
+    context: &rue_query::QueryContext,
+    semantic_nucleus: &SemanticNucleusFamily,
+    body_produced_anonymous: &QueryFamily<
+        crate::body_query::BodyQueryKey,
+        crate::body_query::ProducedAnonymous,
+    >,
+    ty: &crate::durable_semantics::DurableType,
+    configuration: &crate::semantic_query_nucleus::SemanticQueryConfiguration,
+    anonymous_nominals: Arc<[crate::durable_semantics::DurableAnonymousNominal]>,
+) -> Result<Arc<[crate::durable_semantics::DurableAnonymousNominal]>, QueryAbort> {
+    let mut known = anonymous_nominals
+        .iter()
+        .map(|nominal| nominal.identity.clone())
+        .collect::<BTreeSet<_>>();
+    let mut pending = BTreeSet::new();
+    collect_anonymous_nominal_type_dependencies(ty, &mut pending);
+    let mut added = Vec::new();
+    while let Some(identity) = pending.pop_first() {
+        if !known.insert(identity.clone()) {
+            continue;
+        }
+        if let Ok(nominal) = query_anonymous_nominal(
+            context,
+            semantic_nucleus,
+            body_produced_anonymous,
+            &identity,
+            configuration,
+        )? {
+            collect_durable_anonymous_nominal_dependencies(&nominal, &mut pending);
+            added.push(nominal);
+        }
+    }
+    if added.is_empty() {
+        return Ok(anonymous_nominals);
+    }
+    Ok(anonymous_nominals.iter().cloned().chain(added).collect())
+}
+
 pub(super) fn type_shape_from_terminal(
     terminal: &rue_query::QueryTerminal<crate::type_queries::TypeShapeValue>,
 ) -> Result<&crate::type_queries::TypeShape, crate::type_queries::TypeQueryFailure> {
