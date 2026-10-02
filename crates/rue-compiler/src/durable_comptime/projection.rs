@@ -159,7 +159,7 @@ fn durable_parameter_mode(
 }
 
 fn durable_type_diagnostic_name_kernel(ty: &DurableType) -> String {
-    durable_type_diagnostic_name_with_bindings(ty, &|_| None)
+    durable_type_diagnostic_name_with_bindings(ty, &|_| None, &|_| false)
 }
 
 /// [`durable_type_diagnostic_name`] with the `let` names producers bound
@@ -169,6 +169,7 @@ fn durable_type_diagnostic_name_kernel(ty: &DurableType) -> String {
 pub(crate) fn durable_type_diagnostic_name_with_bindings(
     ty: &DurableType,
     binding: &dyn Fn(&crate::AnonymousNominalKey) -> Option<Arc<str>>,
+    constructor: &dyn Fn(&crate::StableDefinitionKey) -> bool,
 ) -> String {
     use crate::durable_semantics::DurableType as T;
 
@@ -205,7 +206,13 @@ pub(crate) fn durable_type_diagnostic_name_with_bindings(
                             .types
                             .iter()
                             .map(crate::semantic_identity::semantic_type_from_instance)
-                            .map(|ty| durable_type_diagnostic_name_with_bindings(&ty, binding))
+                            .map(|ty| {
+                                durable_type_diagnostic_name_with_bindings(
+                                    &ty,
+                                    binding,
+                                    constructor,
+                                )
+                            })
                             .collect::<Vec<_>>()
                     })
                     .unwrap_or_default();
@@ -222,6 +229,7 @@ pub(crate) fn durable_type_diagnostic_name_with_bindings(
                                         value.as_ref(),
                                     ),
                                     binding,
+                                    constructor,
                                 )
                             }
                             crate::CanonicalArgumentValue::Function(_) => "function".to_owned(),
@@ -238,44 +246,52 @@ pub(crate) fn durable_type_diagnostic_name_with_bindings(
                 } else {
                     format!("{name}({})", arguments.join(", "))
                 };
-                // Declaration-time evaluation reaches a function's body only
-                // through a comptime call, so a bound literal here is a
-                // constructor's local: qualified by the application, so two
-                // constructors' `I`s never read alike.
+                // A type constructor's local, or one of a specialized function,
+                // is qualified by the application so two constructors' `I`s
+                // never read alike; a plain function's local reads by its
+                // name, as the body's own diagnostics call it.
                 match binding(key) {
-                    Some(binding) => format!("{producer}.{binding}"),
+                    Some(binding)
+                        if applied.is_some_and(|applied| {
+                            !applied.types.is_empty() || !applied.values.is_empty()
+                        }) || crate::semantic_identity::function_base_definition(function)
+                            .is_some_and(constructor) =>
+                    {
+                        format!("{producer}.{binding}")
+                    }
+                    Some(binding) => binding.to_string(),
                     None => producer,
                 }
             }
         },
         T::Array { element, len } => rue_air::array_type_name(
-            &durable_type_diagnostic_name_with_bindings(element, binding),
+            &durable_type_diagnostic_name_with_bindings(element, binding, constructor),
             *len,
         ),
         // A view's name is an identity spelling (RUE-2571); present the view
         // from its element.
         T::Slice { element, .. } => rue_air::slice_struct_name(
-            &durable_type_diagnostic_name_with_bindings(element, binding),
+            &durable_type_diagnostic_name_with_bindings(element, binding, constructor),
         ),
         T::PtrConst(pointee) => {
             format!(
                 "ptr const {}",
-                durable_type_diagnostic_name_with_bindings(pointee, binding)
+                durable_type_diagnostic_name_with_bindings(pointee, binding, constructor)
             )
         }
         T::PtrMut(pointee) => format!(
             "ptr mut {}",
-            durable_type_diagnostic_name_with_bindings(pointee, binding)
+            durable_type_diagnostic_name_with_bindings(pointee, binding, constructor)
         ),
         T::Function { params, result } => rue_air::function_type_name(
             params.iter().map(|(mode, ty)| {
                 (
                     *mode,
-                    durable_type_diagnostic_name_with_bindings(ty, binding),
+                    durable_type_diagnostic_name_with_bindings(ty, binding, constructor),
                 )
             }),
             (**result != T::Unit)
-                .then(|| durable_type_diagnostic_name_with_bindings(result, binding)),
+                .then(|| durable_type_diagnostic_name_with_bindings(result, binding, constructor)),
         ),
         T::Module(module) => module.to_string(),
         T::GenericParameter(index) => format!("T{index}"),

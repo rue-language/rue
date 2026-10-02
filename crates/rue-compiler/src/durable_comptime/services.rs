@@ -392,6 +392,19 @@ pub(crate) trait DurableComptimeHostAuthority:
     fn durable_session(&self) -> &DurableComptimeSession;
     fn durable_session_mut(&mut self) -> &mut DurableComptimeSession;
 
+    /// The `let` name a producer bound an anonymous literal to when that
+    /// literal was minted outside this root, such as a type a function body
+    /// passes to a type constructor (RUE-2589). Presentation only.
+    fn anonymous_binding(&self, _key: &crate::AnonymousNominalKey) -> Option<Arc<str>> {
+        None
+    }
+
+    /// Whether the function declared as `function` returns `type`, which
+    /// makes its unbound literal the type it builds. Presentation only.
+    fn function_returns_type(&self, _function: &crate::StableDefinitionKey) -> bool {
+        false
+    }
+
     /// Test-only injection point for exercising the named array-length
     /// conversion boundary with a value the source language cannot spell.
     /// Production authorities leave this disabled.
@@ -703,6 +716,14 @@ impl<A: DurableComptimeHostAuthority + ?Sized> DurableComptimeServices<'_, A> {
 
     pub(super) fn durable_session_mut(&mut self) -> &mut DurableComptimeSession {
         self.authority.durable_session_mut()
+    }
+
+    pub(super) fn function_returns_type(&self, function: &crate::StableDefinitionKey) -> bool {
+        self.authority.function_returns_type(function)
+    }
+
+    pub(super) fn anonymous_binding(&self, key: &crate::AnonymousNominalKey) -> Option<Arc<str>> {
+        self.authority.anonymous_binding(key)
     }
 
     pub(super) fn test_array_length_override(&self) -> Option<i128> {
