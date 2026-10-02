@@ -725,9 +725,25 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // binding site (the `let`'s Alloc); the generator brings each alias
         // into scope when its statement is reached and unwinds it with the
         // enclosing block (RUE-530).
+        //
+        // The aliases are evaluated as value reads, so a parameter that
+        // shadows a type parameter of the enclosing specialization hides it
+        // here as in the comptime facts below (RUE-2577): `let U = T;` under
+        // `fn g(self, comptime T: i32)` binds that parameter's value, or
+        // nothing when the specialization gives it none.
+        let value_visible = value_visible_type_subst(params, type_subst, value_subst);
+        let precompute_type_subst = value_visible
+            .as_ref()
+            .map(|(subst, _)| subst)
+            .or(type_subst);
         let runtime_params: Vec<Spur> = params
             .iter()
             .filter_map(|(name, _, _, is_comptime)| (!is_comptime).then_some(*name))
+            .chain(
+                value_visible
+                    .iter()
+                    .flat_map(|(_, unknown)| unknown.iter().copied()),
+            )
             .collect();
         let precompute_attribution_enabled = tracing::enabled!(
             target: "rue::timing",
@@ -749,7 +765,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             } else {
                 let (precomputed_locals, precompute_work) = self.precompute_comptime_type_locals(
                     body,
-                    type_subst,
+                    precompute_type_subst,
                     value_subst,
                     &runtime_params,
                     precompute_attribution_enabled,
@@ -1239,42 +1255,19 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         u64,
         u64,
     )> {
-        // A parameter other than a `comptime T: type` parameter shadows the
-        // enclosing specialization's same-named type parameter (RUE-2574,
-        // RUE-2577), as `AnalysisContext::value_visible_comptime_type_vars`
-        // does for analysis: `T` in a generic struct's method
-        // `fn g(self, comptime T: i32)` is that parameter's value, which the
-        // specialization supplies or which is otherwise unknown here.
-        let shadows_type_param = |name: &Spur, ty: &Type, is_comptime: bool| {
-            !(is_comptime && *ty == Type::COMPTIME_TYPE)
-                && type_subst.is_some_and(|subst| subst.contains_key(name))
-        };
-        let value_visible_type_subst = type_subst
-            .filter(|_| {
-                params
-                    .iter()
-                    .any(|(name, ty, _, is_comptime)| shadows_type_param(name, ty, *is_comptime))
-            })
-            .map(|subst| {
-                let mut subst = subst.clone();
-                for (name, ty, _, is_comptime) in params {
-                    if shadows_type_param(name, ty, *is_comptime) {
-                        subst.remove(name);
-                    }
-                }
-                subst
-            });
-        let type_subst = value_visible_type_subst.as_ref().or(type_subst);
+        let value_visible = value_visible_type_subst(params, type_subst, value_subst);
+        let type_subst = value_visible
+            .as_ref()
+            .map(|(subst, _)| subst)
+            .or(type_subst);
         let mut runtime_bindings = inherited_scope;
         let mut scope_nodes = 0_u64;
         if runtime_bindings.is_none() {
             for (name, ty, mode, is_comptime) in params {
-                // A shadowing comptime value parameter the specialization
-                // gives no value reads as unknown, never as the type.
                 let unknown_shadowing_value = *is_comptime
-                    && value_visible_type_subst.is_some()
-                    && shadows_type_param(name, ty, true)
-                    && !value_subst.is_some_and(|values| values.contains_key(name));
+                    && value_visible
+                        .as_ref()
+                        .is_some_and(|(_, unknown)| unknown.contains(name));
                 if !*is_comptime || unknown_shadowing_value {
                     scope_nodes = scope_nodes.saturating_add(1);
                     runtime_bindings = self.push_frontier_scope(
@@ -2325,4 +2318,39 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             )
         })
     }
+}
+
+/// The enclosing specialization's type substitution as a value read in this
+/// body sees it, or `None` when no parameter rebinds one of its names.
+///
+/// A parameter other than a `comptime T: type` parameter shadows the
+/// same-named type parameter (RUE-2574, RUE-2577), as
+/// `AnalysisContext::value_visible_comptime_type_vars` does for analysis: `T`
+/// in a generic struct's method `fn g(self, comptime T: i32)` is that
+/// parameter's value, which the specialization supplies or which is otherwise
+/// unknown here. The second component names the shadowing comptime value
+/// parameters the specialization gives no value; they read as unknown, never
+/// as the type.
+fn value_visible_type_subst(
+    params: &[(Spur, Type, RirParamMode, bool)],
+    type_subst: Option<&AHashMap<Spur, Type>>,
+    value_subst: Option<&AHashMap<Spur, ConstValue>>,
+) -> Option<(AHashMap<Spur, Type>, Vec<Spur>)> {
+    let type_subst = type_subst?;
+    let mut shadowing = params
+        .iter()
+        .filter(|(name, ty, _, is_comptime)| {
+            !(*is_comptime && *ty == Type::COMPTIME_TYPE) && type_subst.contains_key(name)
+        })
+        .peekable();
+    shadowing.peek()?;
+    let mut subst = type_subst.clone();
+    let mut unknown = Vec::new();
+    for (name, _, _, is_comptime) in shadowing {
+        subst.remove(name);
+        if *is_comptime && !value_subst.is_some_and(|values| values.contains_key(name)) {
+            unknown.push(*name);
+        }
+    }
+    Some((subst, unknown))
 }
