@@ -2812,6 +2812,11 @@ impl DurableComptimeForeignQueryAuthority<'_> {
         type_arguments: &[(Arc<str>, crate::durable_semantics::DurableType)],
         value_arguments: &[(Arc<str>, crate::durable_semantics::DurableConstValue)],
     ) -> Result<crate::body_query::ForeignComptimeCallLookup, QueryAbort> {
+        use crate::body_query::{
+            ComptimeProgramProjectionFailure as ProjectionFailure,
+            ForeignComptimeCallLookup as Lookup,
+        };
+        use DeclarationBodyPlanArtifactsValue as Artifacts;
         let Some(declaration) = declaration_candidate_for_stable_key(producer) else {
             return Ok(Self::invalid_producer(producer));
         };
@@ -2826,30 +2831,17 @@ impl DurableComptimeForeignQueryAuthority<'_> {
             self.declaration_body_plan_artifacts,
             DeclarationBodyPlanQueryKey(foreign_plan.candidate.clone()),
         )?;
-        let artifacts =
-            match artifacts.outcome() {
-                rue_query::QueryOutcome::Success(DeclarationBodyPlanArtifactsValue::Available(
-                    artifacts,
-                )) => artifacts,
-                rue_query::QueryOutcome::Success(DeclarationBodyPlanArtifactsValue::Failure(
-                    failure,
-                )) => {
-                    return Ok(
-                        crate::body_query::ForeignComptimeCallLookup::AdmissionFailure(
-                            crate::body_query::ComptimeProgramProjectionFailure::Artifact(
-                                failure.clone(),
-                            ),
-                        ),
-                    );
-                }
-                rue_query::QueryOutcome::Failure(failure) => {
-                    return Ok(crate::body_query::ForeignComptimeCallLookup::AdmissionFailure(
-                crate::body_query::ComptimeProgramProjectionFailure::ArtifactQueryFailure(
-                    failure.clone(),
-                ),
-            ));
-                }
-            };
+        let artifacts = match artifacts.outcome() {
+            rue_query::QueryOutcome::Success(Artifacts::Available(artifacts)) => artifacts,
+            rue_query::QueryOutcome::Success(Artifacts::Failure(failure)) => {
+                let failure = ProjectionFailure::Artifact(failure.clone());
+                return Ok(Lookup::AdmissionFailure(failure));
+            }
+            rue_query::QueryOutcome::Failure(failure) => {
+                let failure = ProjectionFailure::ArtifactQueryFailure(failure.clone());
+                return Ok(Lookup::AdmissionFailure(failure));
+            }
+        };
         let seed = crate::body_query::ForeignComptimeCallSeed {
             type_arguments: type_arguments.to_vec().into(),
             value_arguments: value_arguments.to_vec().into(),
@@ -2860,13 +2852,11 @@ impl DurableComptimeForeignQueryAuthority<'_> {
             seed,
             || self.context.check_canceled(),
         ) {
-            Ok(program) => Ok(crate::body_query::ForeignComptimeCallLookup::Admitted(
-                program,
-            )),
-            Err(crate::body_query::ComptimeProgramProjectionFailure::Materialization(
+            Ok(program) => Ok(Lookup::Admitted(program)),
+            Err(ProjectionFailure::Materialization(
                 crate::canonical_lower::BodyPlanMaterializationFailure::Query(abort),
             )) => Err(abort),
-            Err(error) => Ok(crate::body_query::ForeignComptimeCallLookup::AdmissionFailure(error)),
+            Err(error) => Ok(Lookup::AdmissionFailure(error)),
         }
     }
 }
