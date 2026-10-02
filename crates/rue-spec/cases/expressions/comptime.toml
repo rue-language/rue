@@ -7188,3 +7188,49 @@ fn main() -> i32 {
 """
 compile_fail = true
 error_contains = ["E0800", "u8"]
+
+[[case]]
+name = "generic_call_result_comptime_selector_overflow_in_value_specialized_body"
+spec = ["4.14:4", "4.14:5", "4.14:17"]
+description = "A comptime-known selector over a comptime generic call's `u8` result evaluates at `u8` in a value-specialized body: `cid(u8, 255) + 1 == 256` is rejected as in `main`, not selected at `i32` (RUE-2436)"
+source = """
+fn cid(comptime T: type, comptime x: T) -> T { x }
+fn g(comptime n: i32) -> i32 { if cid(u8, 255) + 1 == 256 { 1 } else { n } }
+
+fn main() -> i32 { g(2) }
+"""
+compile_fail = true
+error_contains = ["256", "u8"]
+
+[[case]]
+name = "generic_call_result_comptime_block_selector_overflow_in_value_specialized_body"
+spec = ["4.14:4", "4.14:5", "4.14:17"]
+description = "`comptime { cid(u8, 255) + 1 }` in a value-specialized body's selector overflows at `u8` (E1200), as in `main`, rather than evaluating to 256 at `i32` (RUE-2436)"
+source = """
+fn cid(comptime T: type, comptime x: T) -> T { x }
+fn g(comptime n: i32) -> i32 { if comptime { cid(u8, 255) + 1 } == 0 { 1 } else { n } }
+
+fn main() -> i32 { g(2) }
+"""
+compile_fail = true
+error_contains = ["E1200", "u8"]
+
+[[case]]
+name = "generic_call_result_binding_read_in_selected_arm"
+spec = ["3.1:14", "4.14:5", "4.14:17"]
+description = "A `let` bound to a generic `-> T` call's result before a comptime selector keeps the result's type inside the selected arm, where a peer literal compared with it is an `i64` (RUE-2436)"
+source = """
+fn id(comptime T: type, x: T) -> T { x }
+fn g(comptime n: i32) -> i32 {
+    let a = id(i64, 3000000000);
+    if n == 7 {
+        if a == 3000000000 { 5 } else { 6 }
+    } else {
+        let q: i32 = true;
+        0
+    }
+}
+
+fn main() -> i32 { g(7) }
+"""
+exit_code = 5
