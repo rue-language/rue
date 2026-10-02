@@ -94,8 +94,10 @@ bound does not complete is **not exported**: `outOfFuel` is the interpreter
 admitting it stopped early, not a claim about the program, and there is no
 honest `expected` to compare an implementation against. `fuel_mono`
 (`Soundness.lean`) is why one bound is enough to speak for every larger one.
-The seed corpus completes far inside the bound; a generated program that did
-not would simply be absent from the output.
+The seed corpus completes far inside the bound, and `Gen.lean` guarantees every
+generated program terminates, so `lake exe ruecore-corpus` treats a seed or a
+generated case the bound does not complete as an error (exit 1, naming it)
+rather than leaving it silently absent (RUE-2488).
 
 The output is deterministic: cases are listed in a fixed order and nothing
 depends on the environment.
@@ -139,7 +141,11 @@ cell per turn costs time quadratic in the bound (the store grows by a cell a
 turn, and each turn walks it): about 6 s at 10,000, and over half an hour per
 run at 100,000, which is what a mutant with a diverging seed hit (RUE-2465's
 `operand-swap`). By `fuel_mono` a case that completes here has the same
-outcome at every larger bound, so lowering it changed no exported case. -/
+outcome at every larger bound, so lowering it changed no exported case. The
+`ruecore-explain` renderings also read this bound (`Explain/Text.lean`,
+`Explain/Html.lean`), and `fuel_mono` covers only their result, not their
+step lists; RUE-2488's review checked all 199 HTML and text renderings
+byte-identical at 100,000 and 10,000. -/
 def exportFuel : Nat := 10000
 
 /-- The model every exported case is evaluated at: `Float.exactOps`
@@ -1309,10 +1315,11 @@ def jsonOf (cs : List Case) : String :=
 /-! ## Expected divergence (RUE-2488)
 
 Programs that never terminate, kept beside the corpus rather than in it: the
-export fuel cannot complete them, so `jsonOf` would leave them out anyway.
+export fuel cannot complete them, and a seed it does not complete fails the
+export.
 `lake exe ruecore-corpus` runs each at the export fuel on every invocation and
 fails unless it is reported as not completed, so the path a diverging case
-takes — fuel exhausted at full nesting depth, then left out — is exercised on
+takes — fuel exhausted at full nesting depth, then reported — is exercised on
 every run, not only when a mutant happens to reach it. The two shapes are the
 two ways the calculus diverges: a loop whose body always completes, and a
 call that never returns, here with the recursive call as an operand's
