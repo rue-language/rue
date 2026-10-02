@@ -816,8 +816,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     )
                     .and_then(|key| self.function_info(key))
                     .is_some_and(|function| {
+                        // A zero-parameter `-> type` call may reduce to a
+                        // module, which inference types as that module only
+                        // from the pre-pass's reduction (RUE-2420).
                         if !function.is_generic {
-                            return false;
+                            return function.returns_type && argument_count == 0;
                         }
                         // Every comptime argument is a fact site, type
                         // arguments included: inference substitutes the
@@ -1075,6 +1078,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         ConstValue::Bool(_) => Type::BOOL,
                         ConstValue::Type(t) => *t,
                         ConstValue::Function(_) => Type::COMPTIME_TYPE,
+                        // Never a comptime argument (RUE-2420); typed as the
+                        // module it names should one ever be substituted.
+                        ConstValue::Module(module) => Type::new_module(*module),
                         // String values carry their content, while the declared
                         // nominal type is recovered from the same canonical
                         // `str` identity used for literal inference. Do not
@@ -2211,6 +2217,31 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         }
     }
 
+    /// Record the module a fully-comptime `-> type` call reduces to as the
+    /// call's result type (`fn m() -> type { @import("x.rue") }`). The
+    /// declared `type` result would otherwise type the call as a type value,
+    /// so a module used as a value would be reported as one instead of as the
+    /// `<module>` 10.4:6 names (RUE-2420). A call reducing to a type, or not
+    /// reducing, records nothing: inference keeps its declared result and
+    /// call analysis reports the failure.
+    fn record_module_call_result(
+        &mut self,
+        call: InstRef,
+        function_key: Spur,
+        callee_types: &AHashMap<Spur, Type>,
+        callee_values: &AHashMap<Spur, ConstValue>,
+        call_span: Span,
+        call_facts: &mut GenericCallFacts,
+    ) {
+        if let Ok(Some(ConstValue::Module(module))) =
+            self.reduce_type_ctor_body(function_key, callee_types, callee_values, call_span)
+        {
+            call_facts
+                .return_types
+                .insert(call, Type::new_module(module));
+        }
+    }
+
     fn collect_generic_argument_facts(
         &mut self,
         call: InstRef,
@@ -2227,6 +2258,17 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             return 0;
         };
         if !function.is_generic {
+            if function.returns_type && call_args.is_empty() {
+                self.record_module_call_result(
+                    call,
+                    function_key,
+                    &AHashMap::new(),
+                    &AHashMap::new(),
+                    call_span,
+                    call_facts,
+                );
+                return 1;
+            }
             return 0;
         }
         let param_data = self.body_param_data(function.params);
@@ -2334,6 +2376,16 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     call_facts.param_types.insert(arg.value, param_type);
                 }
             }
+        }
+        if function.returns_type && all_comptime_known {
+            self.record_module_call_result(
+                call,
+                function_key,
+                &callee_types,
+                &callee_values,
+                call_span,
+                call_facts,
+            );
         }
         if function.return_type.is_comptime_type()
             && all_comptime_known

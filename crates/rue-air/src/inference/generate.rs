@@ -2396,7 +2396,7 @@ impl<'a> ConstraintGenerator<'a> {
                                 arg_info.span,
                             ));
                         }
-                        func.return_type.clone()
+                        self.type_call_result(inst_ref, &func)
                     }
                 } else {
                     // Unknown function - still process arguments for constraint generation
@@ -3962,7 +3962,7 @@ impl<'a> ConstraintGenerator<'a> {
                                         }
                                     }
                                 }
-                                func.return_type.clone()
+                                self.type_call_result(inst_ref, &func)
                             }
                         } else {
                             // Unknown member - sema reports UndefinedFunction
@@ -5241,7 +5241,8 @@ impl<'a> ConstraintGenerator<'a> {
             // substitution attempt would let the use site decide a type sema
             // never agreed to (`h.sq(f32, v) == 6.25` defaulted the literal to
             // `f64` against an `f32` specialization, an AIR verification ICE).
-            self.substituted_generic_return_type(func, &type_subst, &value_subst)
+            self.module_call_result(call)
+                .or_else(|| self.substituted_generic_return_type(func, &type_subst, &value_subst))
                 .or_else(|| {
                     self.generic_call_return_types
                         .and_then(|types| types.get(&call).copied())
@@ -5251,6 +5252,38 @@ impl<'a> ConstraintGenerator<'a> {
         } else {
             func.return_type.clone()
         }
+    }
+
+    /// The module a fully-comptime `-> type` call reduces to, which sema's
+    /// pre-pass records among the call return types (RUE-2420): such a call
+    /// is a module expression, typed as `@import` is, not a type value.
+    fn module_call_result(&self, call: InstRef) -> Option<InferType> {
+        self.generic_call_return_types
+            .and_then(|types| types.get(&call).copied())
+            .filter(Type::is_module)
+            .map(InferType::Concrete)
+    }
+
+    /// The result type of a non-generic call: its declared result, except
+    /// that a zero-parameter `-> type` call is the module it reduces to when
+    /// sema's pre-pass found one (RUE-2420). A staged pass that has no fact for
+    /// the call yet leaves its result open, as a generic call's unknown result
+    /// is: the declared `type` would otherwise reject a module-reducing call
+    /// in a value position before the pre-pass could reduce it.
+    fn type_call_result(&mut self, call: InstRef, func: &FunctionSig) -> InferType {
+        if let Some(module) = self.module_call_result(call) {
+            return module;
+        }
+        if func.return_type == InferType::Concrete(Type::COMPTIME_TYPE)
+            && func.param_types.is_empty()
+            && self.staged_comptime_selectors
+            && self
+                .generic_call_return_types
+                .is_none_or(|types| !types.contains_key(&call))
+        {
+            return InferType::Var(self.fresh_var());
+        }
+        func.return_type.clone()
     }
 
     /// Bootstrap only an enclosing type substitution during the speculative
