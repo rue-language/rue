@@ -3,7 +3,9 @@
 //! This category connects the inference engine to the canonical semantic
 //! analysis and records resolved expression types.
 
-use super::super::ordinary_engine::{OrdinaryBodyAnalysisHost, OrdinaryBodyEngine};
+use super::super::ordinary_engine::{
+    OrdinaryBodyAnalysisHost, OrdinaryBodyEngine, is_source_diagnostic,
+};
 use super::*;
 use crate::inference::{FrontierParamOverlay, LazyInferenceFacts, ParamVarInfo};
 use crate::inference::{TypeVarId, UnificationError};
@@ -587,8 +589,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // frontier; see `collect_staged_facts`.
         // A probe that recovered from inference failures stages over the
         // types that recovery poisoned. Staging is not recovery-aware, so when
-        // it fails the body reports the probe's first inference failure, as it
-        // would had the probe stopped there.
+        // it fails with a source diagnostic the body reports the probe's first
+        // inference failure, as it would had the probe stopped there. A
+        // resource, input or internal failure keeps its own authority.
         let first_probe_error = probe_errors.map(|failures| failures.first);
         let staged = match self.stage_comptime_selections(
             infer_ctx,
@@ -628,11 +631,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         };
         let (selections, call_facts) = match (staged, first_probe_error) {
             (Ok(staged), _) => staged,
-            (Err(_), Some(probe_error)) => {
+            (Err(error), Some(probe_error)) if is_source_diagnostic(&error) => {
                 self.check_canceled()?;
                 return Err(probe_error);
             }
-            (Err(error), None) => return Err(error),
+            (Err(error), _) => return Err(error),
         };
         let StagedWalkWork {
             fact_nodes,
@@ -1481,9 +1484,17 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     }
 
     /// Attribute each inference failure to the body block's top-level
-    /// statement whose span contains it, in source order per statement.
-    /// `None` when some failure is not statement-recoverable or lies outside
-    /// every statement (a callee's declaration, the body's own result).
+    /// statement whose span contains it, keeping each statement's first
+    /// failure in the unifier's constraint order. `None` when some failure is
+    /// not statement-recoverable or lies outside every statement (a callee's
+    /// declaration, the body's own result).
+    ///
+    /// Inside one statement the unifier cannot tell an independent failure
+    /// from one its first failure caused: an initializer's inner mismatch
+    /// precedes the `let`'s own annotation constraint in constraint order,
+    /// yet the `let` spans more source and starts earlier. Reporting only the
+    /// first failure in constraint order names the cause, exactly as a body
+    /// that stops at its first failure does.
     fn attribute_inference_errors(
         &self,
         body: InstRef,
@@ -1509,13 +1520,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     && statement.start <= span.start
                     && span.end <= statement.end
             })?;
-            let listed = attributed.entry(*statement).or_insert_with(Vec::new);
-            if !listed.contains(&error) {
-                listed.push(error);
-            }
-        }
-        for listed in attributed.values_mut() {
-            listed.sort_by_key(|error| error.span().map(|span| span.start));
+            attributed.entry(*statement).or_insert_with(|| vec![error]);
         }
         Some(attributed)
     }

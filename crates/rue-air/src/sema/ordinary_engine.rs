@@ -53,6 +53,24 @@ use rue_target::Target;
 /// from cancellation and never permits publication.
 pub(crate) const BODY_ANALYSIS_DIAGNOSTIC_BUDGET: usize = 100;
 
+/// Whether an error is a diagnostic about the source, as opposed to a
+/// cancellation (reported as an internal error), resource, input,
+/// publication or internal failure, which keeps its authority as a body's
+/// first error.
+pub(crate) fn is_source_diagnostic(error: &CompileError) -> bool {
+    !matches!(
+        error.kind,
+        ErrorKind::InvalidCompilerInput(_)
+            | ErrorKind::CompilerResourceLimit(_)
+            | ErrorKind::CompilerResourceExhaustion(_)
+            | ErrorKind::OutputPublication(_)
+            | ErrorKind::UnsatisfiedTrustedToolchainInput(_)
+            | ErrorKind::CompilerProducerInvariant(_)
+            | ErrorKind::InternalError(_)
+            | ErrorKind::InternalCodegenError(_)
+    )
+}
+
 pub(crate) fn reject_runtime_type_value(
     ty: Type,
     is_comptime: bool,
