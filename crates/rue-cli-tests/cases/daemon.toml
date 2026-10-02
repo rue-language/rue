@@ -278,3 +278,27 @@ fn main() -> i32 {
   { args = ["main.rue", "-o", "direct"], exit_code = 0, stdout_contains = ["Compiled main.rue -> direct"], run_output = "direct", run_output_exit_code = 42 },
   { args = ["daemon", "stop"], exit_code = 0, stdout_contains = ["stopped service pid"] },
 ] }
+
+[[case]]
+name = "service_rebuild_after_editing_a_constructor_that_wraps_its_own_local"
+description = "Editing a type constructor that wraps its own local in another constructor, and then applying it to a caller's local, rebuilds through the service to the program a direct build of the edited text gives (RUE-2608)."
+files = [{ path = "main.rue", source = """
+fn W(comptime T: type) -> type { struct { v: T } }
+fn G(comptime T: type) -> type { let L = struct { s: T }; W(L) }
+fn main() -> i32 { let X = G(i64); @size_of(X) }
+""" }]
+daemon = { steps = [
+  { args = ["--daemon=required", "main.rue", "-o", "app"], exit_code = 0, stdout_contains = ["Compiled main.rue -> app"], run_output = "app", run_output_exit_code = 8 },
+  { args = ["--daemon=required", "main.rue", "-o", "app2"], exit_code = 0, stdout_contains = ["Compiled main.rue -> app2"], run_output = "app2", run_output_exit_code = 16, writes = [{ path = "main.rue", source = """
+fn W(comptime T: type) -> type { struct { v: T } }
+fn G(comptime T: type) -> type { let L = struct { s: T, t: T }; W(L) }
+fn main() -> i32 { let X = G(i64); @size_of(X) }
+""" }] },
+  { args = ["--daemon=required", "main.rue", "-o", "app3"], exit_code = 0, stdout_contains = ["Compiled main.rue -> app3"], run_output = "app3", run_output_exit_code = 6, writes = [{ path = "main.rue", source = """
+fn W(comptime T: type) -> type { struct { v: T } }
+fn G(comptime T: type) -> type { let L = struct { s: T, t: T }; W(L) }
+fn main() -> i32 { let I = struct { q: i8, r: i8, z: i8 }; let X = G(I); @size_of(X) }
+""" }] },
+  { args = ["main.rue", "-o", "direct"], exit_code = 0, stdout_contains = ["Compiled main.rue -> direct"], run_output = "direct", run_output_exit_code = 6 },
+  { args = ["daemon", "stop"], exit_code = 0, stdout_contains = ["stopped service pid"] },
+] }
