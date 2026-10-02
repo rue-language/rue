@@ -131,12 +131,13 @@ $runtime
                                     let facts = match crate::revisioned_query_database::semantic::type_facts_from_terminal(&terminal) {
                                         Ok(facts) => facts,
                                         Err(failure) => {
-                                            let detail = match failure {
+                                            let failure = match failure {
                                                 crate::type_queries::TypeQueryFailure::Unavailable(detail)
-                                                | crate::type_queries::TypeQueryFailure::Invalid(detail) => detail.clone(),
+                                                | crate::type_queries::TypeQueryFailure::Invalid(detail) => Failure::Resolution(detail.clone()),
+                                                crate::type_queries::TypeQueryFailure::Diagnostic(kind) => Failure::Diagnostic(kind.clone()),
                                             };
                                             return Ok(QueryOutput::success(Value::Failure(
-                                                Failure::Resolution(detail),
+                                                failure,
                                             ))
                                             .with_terminal_kind(QueryTerminalKind::Failure));
                                         }
@@ -1414,10 +1415,9 @@ $runtime
                                                 .iter()
                                                 .map(|(_, ty)| ty.clone())
                                                 .collect::<Vec<_>>();
-                                            let value_parameter_types =
+                                            let mut value_parameter_types =
                                                 crate::durable_comptime::comptime_value_parameter_types(
                                                     callable_parameters,
-                                                    &call.value_arguments,
                                                     &concrete_type_arguments,
                                                 );
                                             let expected_type = substitute_durable_generics(
@@ -1537,6 +1537,20 @@ $runtime
                                                 deferred_requirements: BTreeSet::new(),
                                                 ownership_properties: BTreeMap::new(),
                                             };
+                                            match resolve_deferred_value_parameter_types(
+                                                &mut provider,
+                                                &call.declaration.declaration.module,
+                                                signature.callable_type_syntax.as_ref(),
+                                                callable_parameters,
+                                                &mut value_parameter_types,
+                                            ) {
+                                                Ok(()) => {}
+                                                Err(ResolveSemanticSignatureError::Abort(abort)) => return Err(abort),
+                                                Err(ResolveSemanticSignatureError::Failure(failure)) => {
+                                                    return Ok(QueryOutput::success(Value::Failure(*failure))
+                                                        .with_terminal_kind(QueryTerminalKind::Failure));
+                                                }
+                                            }
                                             // The root producer is also a
                                             // constructor-call boundary. Its
                                             // concrete type arguments must be

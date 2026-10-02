@@ -73,6 +73,11 @@ pub(crate) struct TypeFacts {
 pub(crate) enum TypeQueryFailure {
     Unavailable(Arc<str>),
     Invalid(Arc<str>),
+    /// A user error found while resolving a specialized callable's types at
+    /// one call, such as a constructor argument in a deferred signature type
+    /// that does not fit its parameter (RUE-2550). It is reported as the
+    /// diagnostic it is, never as an internal error.
+    Diagnostic(rue_error::ErrorKind),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -403,6 +408,7 @@ impl RetainedCharge for TypeQueryFailure {
     fn retained_charge(&self) -> u64 {
         match self {
             Self::Unavailable(detail) | Self::Invalid(detail) => detail.retained_charge(),
+            Self::Diagnostic(kind) => kind.retained_charge(),
         }
     }
 }
