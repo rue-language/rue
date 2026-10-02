@@ -2491,7 +2491,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // A name that is no runtime binding (a constant, a module) owns no
         // storage an accessor could loan.
         if ctx.ownership.byref_arg_root != Some(name)
-            && (ctx.locals.contains_key(&name) || ctx.has_param(name))
+            && (ctx.locals.contains_key(&name)
+                || (ctx.has_param(name) && !ctx.body_type_alias_binds(name)))
         {
             self.reject_accessor_shared_loan_conflict(name, "by a shared read", span, ctx)?;
             let key = Self::ledger_root(name, span, ctx)?;
@@ -2501,7 +2502,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // rebinds the name to a new local, and that local wins for all later
         // reads (spec 5.1:10, RUE-278). A same-named local can only exist by
         // shadowing, so its presence means "resolve as local" (handled below).
-        if !ctx.locals.contains_key(&name) {
+        // A `let`-bound type alias shadows the parameter the same way and
+        // resolves as a comptime type variable below (RUE-2577).
+        if !ctx.locals.contains_key(&name) && !ctx.body_type_alias_binds(name) {
             if let Some(param_info) = ctx.param(name) {
                 let ty = param_info.ty;
                 let name_str = self.body_interner().resolve(&name);

@@ -680,17 +680,35 @@ impl<'a> AnalysisContext<'a> {
     /// module-level `const` (spec 5.1:10). A `comptime` parameter is no
     /// runtime binding; its value or type comes from the specialization.
     pub(crate) fn is_runtime_binding(&self, name: Spur) -> bool {
-        self.locals.contains_key(&name) || self.param(name).is_some_and(|param| !param.is_comptime)
+        self.locals.contains_key(&name)
+            || (self.param(name).is_some_and(|param| !param.is_comptime)
+                && !self.body_type_alias_binds(name))
+    }
+
+    /// Whether `name`'s live comptime type binding is a `let`-bound alias of
+    /// this body (`let U = i64;`) rather than the enclosing specialization's
+    /// type parameter. The body binds after its parameters, so such an alias
+    /// shadows a same-named parameter for a value read, as a runtime `let`
+    /// does (spec 5.1:10, RUE-2577). A binding the body made is recorded in
+    /// a live scope frame; the specialization's bindings never are.
+    pub(crate) fn body_type_alias_binds(&self, name: Spur) -> bool {
+        self.comptime_type_vars.contains_key(&name)
+            && self
+                .comptime_type_scope_stack
+                .iter()
+                .any(|frame| frame.iter().any(|(symbol, _)| *symbol == name))
     }
 
     /// The comptime type bindings a value read of a name sees: the enclosing
     /// specialization's type parameters and `let`-bound type aliases, minus
-    /// any name a parameter of this body rebinds. A parameter other than a
-    /// `comptime T: type` parameter shadows the same-named type parameter by
-    /// the precedence `analyze_var_ref` uses (RUE-2574, RUE-2577): `T` in a
-    /// generic struct's method `fn g(self, T: i32)` or `fn g(self, comptime
-    /// T: i32)` is that parameter's value, not the struct's `T`. (A local
-    /// already hides a same-named alias when it binds.)
+    /// any type parameter a parameter of this body rebinds. A parameter
+    /// other than a `comptime T: type` parameter shadows the same-named type
+    /// parameter by the precedence `analyze_var_ref` uses (RUE-2574,
+    /// RUE-2577): `T` in a generic struct's method `fn g(self, T: i32)` or
+    /// `fn g(self, comptime T: i32)` is that parameter's value, not the
+    /// struct's `T`. A `let` in the body binds after the parameters and so
+    /// shadows them in turn: `fn g(U: i32) { let U = i64; … }` reads the
+    /// alias. (A local already hides a same-named alias when it binds.)
     pub(crate) fn value_visible_comptime_type_vars(&self) -> AHashMap<Spur, Type> {
         let mut vars = self.comptime_type_vars.snapshot();
         vars.retain(|name, _| !self.param_shadows_comptime_type_var(*name));
@@ -699,10 +717,13 @@ impl<'a> AnalysisContext<'a> {
 
     /// Whether a parameter of this body named `name` hides the same-named
     /// comptime type binding from a value read; see
-    /// [`Self::value_visible_comptime_type_vars`].
+    /// [`Self::value_visible_comptime_type_vars`]. Only the enclosing
+    /// specialization's own binding is hidden; a body alias
+    /// ([`Self::body_type_alias_binds`]) binds after the parameters and wins.
     pub(crate) fn param_shadows_comptime_type_var(&self, name: Spur) -> bool {
         self.param(name)
             .is_some_and(|param| !(param.is_comptime && param.ty == Type::COMPTIME_TYPE))
+            && !self.body_type_alias_binds(name)
     }
 
     /// Run one nested analysis with an explicit expected-type context, then
