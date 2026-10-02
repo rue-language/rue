@@ -3315,7 +3315,28 @@ fn run_daemon_steps(
             )));
         }
         for write in &step.writes {
-            std::fs::write(dir.join(&write.path), &write.source).map_err(|error| {
+            // A rewrite stays inside the case directory, like `files`.
+            let relative = Path::new(&write.path);
+            if relative.is_absolute()
+                || relative
+                    .components()
+                    .any(|component| matches!(component, std::path::Component::ParentDir))
+            {
+                return Err(TestFailure::assertion(format!(
+                    "daemon step {index} writes `{}`, which is not a path inside the case directory",
+                    write.path
+                )));
+            }
+            let path = dir.join(relative);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).map_err(|error| {
+                    TestFailure::fatal(format!(
+                        "daemon step {index} could not create the directory for `{}`: {error}",
+                        write.path
+                    ))
+                })?;
+            }
+            std::fs::write(&path, &write.source).map_err(|error| {
                 TestFailure::fatal(format!(
                     "daemon step {index} could not write `{}`: {error}",
                     write.path
