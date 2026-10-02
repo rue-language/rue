@@ -927,9 +927,15 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             ctx.divergence_kinds = DivergenceKinds::NONE;
             ctx.pop_scope();
 
-            // Check that the then branch has unit type (or Never/Error)
+            // Check that the then branch has unit type (or Never/Error). A
+            // continuing branch whose value has type `!` coerces to `()`
+            // (3.4:4), as it does at an `if`/`else` join (RUE-2610).
             let then_type = then_result.ty;
-            if then_type != Type::UNIT && then_result.continues && !then_type.is_error() {
+            if then_type != Type::UNIT
+                && then_result.continues
+                && !then_type.is_error()
+                && !then_type.is_never()
+            {
                 return Err(CompileError::new(
                     ErrorKind::TypeMismatch {
                         expected: "()".to_string(),

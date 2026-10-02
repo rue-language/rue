@@ -635,3 +635,17 @@ fn f(c: bool) -> i32 {
 fn main() -> i32 { f(false) }
 """
 exit_code = 5
+
+[[case]]
+name = "never_typed_binding_as_the_then_branch_of_an_if_without_else"
+spec = ["3.4:4", "4.6:5"]
+description = "RUE-2610: the then branch of an `if` without `else` must have type `()` (4.6:5); a `!` parameter read there coerces to `()` as at an `if`/`else` join"
+source = """
+fn f(x: !, c: bool) -> i32 { if c { x } 4 }
+fn main() -> i32 {
+    let c = false;
+    if c { let _ = f(@panic("never"), true); }
+    6
+}
+"""
+exit_code = 6
