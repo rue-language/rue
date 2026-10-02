@@ -981,10 +981,14 @@ need a non-vacuity witness that states `ActivationTyping`/`StoreCC` positively
   The overflow was not in `main`: an unused constant, `Corpus.json`, was
   evaluated at module initialization, on the process's 8 MB main thread
   rather than the ~1 GB stack Lean runs `main` on, and `eval` needs about
-  12 to 18 MB at the export fuel. The constant is gone; the export now names
-  the seed on stderr as not finishing and leaves it out, and every run checks
-  that `Corpus.divergent`'s non-terminating programs are reported so. The
-  table above still shows the crash, from the run it records.
+  12 to 18 MB at the export fuel, then 100,000. The constant is gone; the
+  export now names the seed on stderr as not finishing and leaves it out, and
+  every run checks that `Corpus.divergent`'s non-terminating programs are
+  reported so. The seed's loop allocates a cell a turn, so not finishing cost
+  time quadratic in the fuel, over half an hour; the export fuel is now
+  10,000 (`Corpus.exportFuel`: no case needs more than a few dozen), and the
+  mutant's corpus run reports the seed in seconds. The table above still
+  shows the crash, from the run it records.
 * **The equivalence of the four equivalent mutants is argued, not proved.**
 * **An unproved statement is not a false one.** The spec pass finds the
   statements a mutant can make false *and* whose proofs it breaks, from the

@@ -406,7 +406,7 @@ When it reaches zero the interpreter stops with `.outOfFuel`. That is not a
 state of §6's machine and not a claim about the program; it is the
 interpreter reporting that *it* gave up. Unspent fuel costs nothing, so a
 bound far larger than any program needs is free (`Examples.lean` runs its
-demos at `demoFuel`, 400; the corpus exporter uses 100,000).
+demos at `demoFuel`, 400; the corpus exporter uses 10,000).
 
 The theorems then say: *for every* fuel bound, a well-typed program's result
 is a well-typed value, an unwinding return, a defined panic, or `outOfFuel`,
