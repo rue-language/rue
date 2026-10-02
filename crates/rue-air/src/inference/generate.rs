@@ -2396,7 +2396,11 @@ impl<'a> ConstraintGenerator<'a> {
                                 arg_info.span,
                             ));
                         }
-                        self.type_call_result(inst_ref, &func)
+                        self.type_call_result(
+                            inst_ref,
+                            &func.return_type,
+                            func.param_types.is_empty(),
+                        )
                     }
                 } else {
                     // Unknown function - still process arguments for constraint generation
@@ -3770,7 +3774,8 @@ impl<'a> ConstraintGenerator<'a> {
                         || self.enum_type_for(&name, span.file_id).is_some())
                 {
                     return {
-                        let ty = self.generate_type_qualified_call(name, *method, args, span, ctx);
+                        let ty = self
+                            .generate_type_qualified_call(inst_ref, name, *method, args, span, ctx);
                         self.record_type(inst_ref, ty.clone());
                         ExprInfo::with_continues(
                             ty.clone(),
@@ -3798,8 +3803,9 @@ impl<'a> ConstraintGenerator<'a> {
                     && let Some(member_ty) = self
                         .struct_type_for_module(module_ref, &type_name, ctx)
                         .or_else(|| self.enum_type_for_module(module_ref, &type_name, ctx))
-                    && let Some(result) =
-                        self.generate_call_on_reduced_type(member_ty, *method, args, span, ctx)
+                    && let Some(result) = self.generate_call_on_reduced_type(
+                        inst_ref, member_ty, *method, args, span, ctx,
+                    )
                 {
                     self.record_type(inst_ref, result.clone());
                     return ExprInfo::with_continues(
@@ -3962,7 +3968,11 @@ impl<'a> ConstraintGenerator<'a> {
                                         }
                                     }
                                 }
-                                self.type_call_result(inst_ref, &func)
+                                self.type_call_result(
+                                    inst_ref,
+                                    &func.return_type,
+                                    func.param_types.is_empty(),
+                                )
                             }
                         } else {
                             // Unknown member - sema reports UndefinedFunction
@@ -4012,8 +4022,9 @@ impl<'a> ConstraintGenerator<'a> {
                             .inline_ctor_head_types
                             .and_then(|heads| heads.get(receiver).copied())
                             .or(module_member_ty)
-                            && let Some(result) = self
-                                .generate_call_on_reduced_type(reduced, *method, args, span, ctx)
+                            && let Some(result) = self.generate_call_on_reduced_type(
+                                inst_ref, reduced, *method, args, span, ctx,
+                            )
                         {
                             result
                         } else {
@@ -4131,8 +4142,9 @@ impl<'a> ConstraintGenerator<'a> {
                         if let Some(reduced) = self
                             .inline_ctor_head_types
                             .and_then(|heads| heads.get(receiver).copied())
-                            && let Some(result) = self
-                                .generate_call_on_reduced_type(reduced, *method, args, span, ctx)
+                            && let Some(result) = self.generate_call_on_reduced_type(
+                                inst_ref, reduced, *method, args, span, ctx,
+                            )
                         {
                             result
                         } else {
@@ -4524,6 +4536,7 @@ impl<'a> ConstraintGenerator<'a> {
     /// instead of letting it default to `i32`.
     fn generate_type_qualified_call(
         &mut self,
+        call: InstRef,
         type_name: Spur,
         function: Spur,
         args: &rue_rir::RirCallArgsRange,
@@ -4535,7 +4548,7 @@ impl<'a> ConstraintGenerator<'a> {
         // below.
         if let Some(enum_ty) = self.enum_type_for(&type_name, span.file_id)
             && let Some(result) =
-                self.generate_call_on_reduced_type(enum_ty, function, args, span, ctx)
+                self.generate_call_on_reduced_type(call, enum_ty, function, args, span, ctx)
         {
             return result;
         }
@@ -4550,7 +4563,7 @@ impl<'a> ConstraintGenerator<'a> {
             && struct_ty.as_struct().is_some()
         {
             if let Some(result) =
-                self.generate_call_on_reduced_type(struct_ty, function, args, span, ctx)
+                self.generate_call_on_reduced_type(call, struct_ty, function, args, span, ctx)
             {
                 return result;
             }
@@ -4605,6 +4618,7 @@ impl<'a> ConstraintGenerator<'a> {
     /// generic owner would otherwise apply.
     fn generate_call_on_reduced_type(
         &mut self,
+        call: InstRef,
         ty: Type,
         function: Spur,
         args: &rue_rir::RirCallArgsRange,
@@ -4658,6 +4672,11 @@ impl<'a> ConstraintGenerator<'a> {
                     arg_info.span,
                 ));
             }
+        }
+        // A zero-parameter associated `-> type` function is typed as the
+        // module it reduces to, as the free form is (RUE-2602).
+        if !method_sig.has_self && method_sig.param_types.is_empty() {
+            return Some(self.type_call_result(call, &method_sig.return_type, true));
         }
         Some(method_sig.return_type.clone())
     }
@@ -5276,23 +5295,28 @@ impl<'a> ConstraintGenerator<'a> {
             .map(InferType::Concrete)
     }
 
-    /// The result type of a non-generic call: its declared result, except
-    /// that a zero-parameter `-> type` call is the module it reduces to when
-    /// sema's pre-pass found one (RUE-2420). A staged pass that has no fact for
-    /// the call yet leaves its result open, as a generic call's unknown result
-    /// is: the declared `type` would otherwise reject a module-reducing call
-    /// in a value position before the pre-pass could reduce it.
-    fn type_call_result(&mut self, call: InstRef, func: &FunctionSig) -> InferType {
+    /// The result type of a non-generic call declared to return
+    /// `return_type`: its declared result, except that a zero-parameter
+    /// (`nullary`) `-> type` call — a free function's or an associated
+    /// function's — is the module it reduces to when sema's pre-pass found one
+    /// (RUE-2420, RUE-2602). A staged pass that has no fact for the call yet
+    /// leaves its result open, as a generic call's unknown result is.
+    fn type_call_result(
+        &mut self,
+        call: InstRef,
+        return_type: &InferType,
+        nullary: bool,
+    ) -> InferType {
         if let Some(module) = self.module_call_result(call) {
             return module;
         }
-        if func.return_type == InferType::Concrete(Type::COMPTIME_TYPE)
-            && func.param_types.is_empty()
+        if *return_type == InferType::Concrete(Type::COMPTIME_TYPE)
+            && nullary
             && self.type_call_fact_pending(call)
         {
             return InferType::Var(self.fresh_var());
         }
-        func.return_type.clone()
+        return_type.clone()
     }
 
     /// Whether this is a staged pass that has no pre-pass fact for `call`
