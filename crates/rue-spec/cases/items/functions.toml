@@ -1167,7 +1167,7 @@ exit_code = 0
 
 [[case]]
 name = "inout_of_shadowing_local_inside_borrow_call_is_not_the_root"
-spec = ["6.1:36"]
+spec = ["6.1:30"]
 description = "A nested `inout` of a local that shadows the `borrow`-loaned argument is no exclusive access of the loaned root (RUE-2377)"
 source = """
 struct R { id: i32 }

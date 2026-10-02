@@ -2677,6 +2677,9 @@ fn main() -> i32 {
 expected_stdout = "5\n1\n"
 exit_code = 0
 
+# This guard also errors on base, at the shadow rather than the outer accessor; its
+# twin `shadowing_local_accessor_inside_borrow_argument_is_not_the_root` is what
+# pins that the shadow itself is accepted.
 [[case]]
 name = "loaned_root_accessor_after_dropped_shadow_inside_borrow_argument"
 spec = ["6.1:36", "6.6:10"]
