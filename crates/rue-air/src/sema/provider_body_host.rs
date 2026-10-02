@@ -4755,10 +4755,18 @@ where
                 result,
             })
             .map_err(|failure| {
-                CompileError::new(
-                    rue_error::ErrorKind::UnknownType(format!("function type: {failure:?}")),
-                    span,
-                )
+                // A `fn` type can neither take nor return a type value, which
+                // cannot exist at run time (4.14:6); a parameter of such a
+                // type says the same (RUE-2420, RUE-2600).
+                let kind = match failure {
+                    crate::TypeValidationError::ComptimeStructuralChild => {
+                        rue_error::ErrorKind::ComptimeEvaluationFailed {
+                            reason: "a `fn` type cannot take or return `type`: type values cannot exist at runtime".to_owned(),
+                        }
+                    }
+                    failure => rue_error::ErrorKind::UnknownType(format!("function type: {failure:?}")),
+                };
+                CompileError::new(kind, span)
             })
     }
 

@@ -448,3 +448,36 @@ fn main() -> i32 { use_it(lib.make) }
 compile_fail = true
 error_contains = ["E1200", "a `fn` type cannot take or return `type`: type values cannot exist at runtime", "main.rue:2:14"]
 compile_stderr_not_contains = ["E0202"]
+
+[[case]]
+name = "fn_type_returning_type_rejected_in_let_annotation"
+description = "A `let` annotated `fn() -> type` is E1200 with the parameter's wording, not E0204 naming an internal pool failure (RUE-2600)."
+args = ["main.rue", "-o", "prog"]
+files = [
+  { path = "main.rue", source = """
+fn mk() -> type { i32 }
+fn main() -> i32 {
+    let g: fn() -> type = mk;
+    0
+}
+""" },
+]
+compile_fail = true
+error_contains = ["E1200", "a `fn` type cannot take or return `type`: type values cannot exist at runtime"]
+compile_stderr_not_contains = ["E0204", "ComptimeStructuralChild"]
+
+[[case]]
+name = "fn_type_taking_type_rejected_in_let_annotation"
+description = "A `let` annotated `fn(type) -> i32` is E1200 too (RUE-2600)."
+args = ["main.rue", "-o", "prog"]
+files = [
+  { path = "main.rue", source = """
+fn main() -> i32 {
+    let g: fn(type) -> i32 = 0;
+    0
+}
+""" },
+]
+compile_fail = true
+error_contains = ["E1200", "a `fn` type cannot take or return `type`"]
+compile_stderr_not_contains = ["ComptimeStructuralChild"]
