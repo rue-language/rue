@@ -880,6 +880,9 @@ $runtime
                                                 &$artifacts_for_semantic_nucleus,
                                             configuration: &query.configuration,
                                         },
+                                        own_producer: crate::StableProducerId::Definition(
+                                            const_identity.key.clone(),
+                                        ),
                                     };
                                     let mut frame = authority
                                         .session
@@ -1792,6 +1795,7 @@ $runtime
                                                             &$artifacts_for_semantic_nucleus,
                                                         configuration: &call.declaration.configuration,
                                                     },
+                                                    own_producer: producer.clone(),
                                                 };
                                         authority
                                             .session

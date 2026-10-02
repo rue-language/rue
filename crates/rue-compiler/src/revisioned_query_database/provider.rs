@@ -2792,6 +2792,85 @@ pub(super) fn foreign_comptime_miss_or_not_ready<T>(
     }
 }
 
+impl DurableComptimeForeignQueryAuthority<'_> {
+    fn invalid_producer(
+        producer: &crate::StableDefinitionKey,
+    ) -> crate::body_query::ForeignComptimeCallLookup {
+        crate::body_query::ForeignComptimeCallLookup::AdmissionFailure(
+            crate::body_query::ComptimeProgramProjectionFailure::InvalidProducer(producer.clone()),
+        )
+    }
+
+    /// Admit the callee's owned body frame for this call without consulting
+    /// its comptime query: the cold-miss half of
+    /// [`DurableComptimeForeignCallAuthority::probe_comptime_call`], and the
+    /// whole of it for a call whose query would depend on the evaluation
+    /// asking (RUE-2608).
+    pub(super) fn admit_comptime_call(
+        &self,
+        producer: &crate::StableDefinitionKey,
+        type_arguments: &[(Arc<str>, crate::durable_semantics::DurableType)],
+        value_arguments: &[(Arc<str>, crate::durable_semantics::DurableConstValue)],
+    ) -> Result<crate::body_query::ForeignComptimeCallLookup, QueryAbort> {
+        let Some(declaration) = declaration_candidate_for_stable_key(producer) else {
+            return Ok(Self::invalid_producer(producer));
+        };
+        let foreign_plan = crate::body_query::DurableComptimeProgramPlan {
+            key: crate::body_query::DurableComptimeProgramKey {
+                declaration: producer.clone(),
+                configuration: self.configuration.clone(),
+            },
+            candidate: declaration,
+        };
+        let artifacts = self.context.query_registered(
+            self.declaration_body_plan_artifacts,
+            DeclarationBodyPlanQueryKey(foreign_plan.candidate.clone()),
+        )?;
+        let artifacts =
+            match artifacts.outcome() {
+                rue_query::QueryOutcome::Success(DeclarationBodyPlanArtifactsValue::Available(
+                    artifacts,
+                )) => artifacts,
+                rue_query::QueryOutcome::Success(DeclarationBodyPlanArtifactsValue::Failure(
+                    failure,
+                )) => {
+                    return Ok(
+                        crate::body_query::ForeignComptimeCallLookup::AdmissionFailure(
+                            crate::body_query::ComptimeProgramProjectionFailure::Artifact(
+                                failure.clone(),
+                            ),
+                        ),
+                    );
+                }
+                rue_query::QueryOutcome::Failure(failure) => {
+                    return Ok(crate::body_query::ForeignComptimeCallLookup::AdmissionFailure(
+                crate::body_query::ComptimeProgramProjectionFailure::ArtifactQueryFailure(
+                    failure.clone(),
+                ),
+            ));
+                }
+            };
+        let seed = crate::body_query::ForeignComptimeCallSeed {
+            type_arguments: type_arguments.to_vec().into(),
+            value_arguments: value_arguments.to_vec().into(),
+        };
+        match crate::body_query::OwnedForeignComptimeProgram::from_body_plan(
+            foreign_plan,
+            artifacts,
+            seed,
+            || self.context.check_canceled(),
+        ) {
+            Ok(program) => Ok(crate::body_query::ForeignComptimeCallLookup::Admitted(
+                program,
+            )),
+            Err(crate::body_query::ComptimeProgramProjectionFailure::Materialization(
+                crate::canonical_lower::BodyPlanMaterializationFailure::Query(abort),
+            )) => Err(abort),
+            Err(error) => Ok(crate::body_query::ForeignComptimeCallLookup::AdmissionFailure(error)),
+        }
+    }
+}
+
 #[allow(dead_code)] // activated by the canonical durable AIR host
 impl crate::durable_comptime::DurableComptimeForeignCallAuthority
     for DurableComptimeForeignQueryAuthority<'_>
@@ -2803,13 +2882,7 @@ impl crate::durable_comptime::DurableComptimeForeignCallAuthority
         value_arguments: &[(Arc<str>, crate::durable_semantics::DurableConstValue)],
     ) -> Result<crate::body_query::ForeignComptimeCallLookup, QueryAbort> {
         let Some(declaration) = declaration_candidate_for_stable_key(producer) else {
-            return Ok(
-                crate::body_query::ForeignComptimeCallLookup::AdmissionFailure(
-                    crate::body_query::ComptimeProgramProjectionFailure::InvalidProducer(
-                        producer.clone(),
-                    ),
-                ),
-            );
+            return Ok(Self::invalid_producer(producer));
         };
         let key = crate::semantic_query_nucleus::ComptimeCallQueryKey {
             declaration: crate::semantic_query_nucleus::DeclarationSemanticQueryKey {
@@ -2819,13 +2892,6 @@ impl crate::durable_comptime::DurableComptimeForeignCallAuthority
             type_arguments: type_arguments.to_vec().into(),
             value_arguments: value_arguments.to_vec().into(),
             lent_anonymous_nominals: Arc::from([]),
-        };
-        let foreign_plan = crate::body_query::DurableComptimeProgramPlan {
-            key: crate::body_query::DurableComptimeProgramKey {
-                declaration: producer.clone(),
-                configuration: self.configuration.clone(),
-            },
-            candidate: declaration,
         };
         match self.context.join_registered_noncomputing(
             self.semantic_nucleus,
@@ -2851,57 +2917,7 @@ impl crate::durable_comptime::DurableComptimeForeignCallAuthority
             },
             probe @ (rue_query::ReadyQueryProbe::NotReady | rue_query::ReadyQueryProbe::Miss) => {
                 foreign_comptime_miss_or_not_ready(probe, || {
-                    let artifacts = self.context.query_registered(
-                        self.declaration_body_plan_artifacts,
-                        DeclarationBodyPlanQueryKey(foreign_plan.candidate.clone()),
-                    )?;
-                    let artifacts = match artifacts.outcome() {
-                        rue_query::QueryOutcome::Success(
-                            DeclarationBodyPlanArtifactsValue::Available(artifacts),
-                        ) => artifacts,
-                        rue_query::QueryOutcome::Success(
-                            DeclarationBodyPlanArtifactsValue::Failure(failure),
-                        ) => {
-                            return Ok(
-                                crate::body_query::ForeignComptimeCallLookup::AdmissionFailure(
-                                    crate::body_query::ComptimeProgramProjectionFailure::Artifact(
-                                        failure.clone(),
-                                    ),
-                                ),
-                            );
-                        }
-                        rue_query::QueryOutcome::Failure(failure) => {
-                            return Ok(crate::body_query::ForeignComptimeCallLookup::AdmissionFailure(
-                            crate::body_query::ComptimeProgramProjectionFailure::ArtifactQueryFailure(
-                                failure.clone(),
-                            ),
-                        ));
-                        }
-                    };
-                    let seed = crate::body_query::ForeignComptimeCallSeed {
-                        type_arguments: type_arguments.to_vec().into(),
-                        value_arguments: value_arguments.to_vec().into(),
-                    };
-                    match crate::body_query::OwnedForeignComptimeProgram::from_body_plan(
-                        foreign_plan,
-                        artifacts,
-                        seed,
-                        || self.context.check_canceled(),
-                    ) {
-                        Ok(program) => Ok(crate::body_query::ForeignComptimeCallLookup::Admitted(
-                            program,
-                        )),
-                        Err(
-                            crate::body_query::ComptimeProgramProjectionFailure::Materialization(
-                                crate::canonical_lower::BodyPlanMaterializationFailure::Query(
-                                    abort,
-                                ),
-                            ),
-                        ) => Err(abort),
-                        Err(error) => Ok(
-                            crate::body_query::ForeignComptimeCallLookup::AdmissionFailure(error),
-                        ),
-                    }
+                    self.admit_comptime_call(producer, type_arguments, value_arguments)
                 })
             }
         }
