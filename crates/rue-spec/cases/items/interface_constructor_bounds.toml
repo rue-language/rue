@@ -362,3 +362,61 @@ fn main() -> i32 {
 }
 """
 exit_code = 22
+
+[[case]]
+name = "applied_bound_accepts_a_conforming_generic_struct_instance"
+spec = ["6.8:15", "6.8:24"]
+preview = "interfaces"
+preview_should_pass = true
+description = "A conforming `Box(i32)`, named by a `const` or spelled inline, passes `W`'s bound in an applied `W(T, 2)` and a dependent `W(T, N)` parameter type at a body call (RUE-2596)"
+source = """
+interface Equatable { fn equals(borrow self, borrow other: Self) -> bool; }
+fn W(comptime T: Equatable, comptime N: i32) -> type { [i32; N] }
+fn Box(comptime T: type) -> type { struct { v: T, fn equals(borrow self, borrow other: Self) -> bool { true } } }
+const BI = Box(i32);
+BI is Equatable;
+fn f(comptime T: type, a: W(T, 2)) -> i32 { a[1] }
+fn g(comptime T: type, comptime N: i32, a: W(T, N)) -> i32 { a[0] }
+fn main() -> i32 {
+    let x: W(BI, 2) = [1, 2];
+    x[0] + f(BI, [3, 4]) + f(Box(i32), [5, 6]) + g(BI, 2, [7, 8])
+}
+"""
+exit_code = 18
+
+[[case]]
+name = "applied_bound_accepts_a_conforming_const_anonymous_struct"
+spec = ["6.8:15", "6.8:24"]
+preview = "interfaces"
+preview_should_pass = true
+description = "A conforming `const`-bound anonymous struct passes `W`'s bound in an applied `W(T, 2)` and a dependent `W(T, N)` parameter type at a body call (RUE-2596)"
+source = """
+interface Equatable { fn equals(borrow self, borrow other: Self) -> bool; }
+fn W(comptime T: Equatable, comptime N: i32) -> type { [i32; N] }
+const AI = struct { v: i32, fn equals(borrow self, borrow other: Self) -> bool { true } };
+AI is Equatable;
+fn f(comptime T: type, a: W(T, 2)) -> i32 { a[1] }
+fn g(comptime T: type, comptime N: i32, a: W(T, N)) -> i32 { a[0] }
+fn main() -> i32 {
+    let x: W(AI, 2) = [1, 2];
+    x[0] + f(AI, [3, 4]) + g(AI, 2, [5, 6])
+}
+"""
+exit_code = 10
+
+[[case]]
+name = "applied_bound_rejects_a_non_conforming_generic_struct_instance"
+spec = ["6.8:15", "6.8:24"]
+preview = "interfaces"
+preview_should_pass = true
+description = "A `Box(i32)` with no conformance assertion fails `W`'s bound at the body call `f(BI, [1, 2])` (RUE-2596)"
+source = """
+interface Equatable { fn equals(borrow self, borrow other: Self) -> bool; }
+fn W(comptime T: Equatable, comptime N: i32) -> type { [i32; N] }
+fn Box(comptime T: type) -> type { struct { v: T } }
+const BI = Box(i32);
+fn f(comptime T: type, a: W(T, 2)) -> i32 { a[1] }
+fn main() -> i32 { f(BI, [1, 2]) }
+"""
+compile_fail = true
+error_contains = ["E0305", "Box(i32)", "Equatable"]
