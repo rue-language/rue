@@ -142,6 +142,10 @@ pub struct Unifier {
     string_literal_vars: AHashSet<TypeVarId>,
     /// Concrete string types that may contextualize a literal.
     string_literal_types: AHashSet<Type>,
+    /// The type a string literal has on its own (`str`, 3.7:44), when the
+    /// caller supplied it: how a string literal is named in a mismatch the
+    /// unifier reports for the literal's enclosing array.
+    string_literal_default: Option<Type>,
     /// Joins of an integer-literal class with a float-literal class made by
     /// the constraint being solved, not yet attributed to its span.
     pending_literal_joins: Vec<(TypeVarId, VarSide)>,
@@ -168,6 +172,7 @@ impl Unifier {
             float_literal_vars: AHashSet::new(),
             string_literal_vars: AHashSet::new(),
             string_literal_types: AHashSet::new(),
+            string_literal_default: None,
             pending_literal_joins: Vec::new(),
             literal_joins: Vec::new(),
         }
@@ -184,6 +189,7 @@ impl Unifier {
             float_literal_vars: AHashSet::new(),
             string_literal_vars: AHashSet::new(),
             string_literal_types: AHashSet::new(),
+            string_literal_default: None,
             pending_literal_joins: Vec::new(),
             literal_joins: Vec::new(),
         }
@@ -208,6 +214,13 @@ impl Unifier {
     pub fn mark_string_literal_vars(&mut self, vars: &[TypeVarId], types: &[Type]) {
         self.string_literal_vars.extend(vars.iter().copied());
         self.string_literal_types.extend(types.iter().copied());
+    }
+
+    /// Record the type a string literal has on its own (`str`, 3.7:44), so
+    /// a mismatch naming a string-literal array element names it as that
+    /// type rather than as a type variable.
+    pub fn set_string_literal_default(&mut self, ty: Type) {
+        self.string_literal_default = Some(ty);
     }
 
     /// Unify two types.
@@ -802,16 +815,17 @@ impl Unifier {
 
     /// Unify two peer types (see [`Constraint::PeerEqual`]).
     ///
-    /// `bind` lets an integer literal take `!`, so that a literal where a
-    /// parameter or annotation declares `!` is range-checked there (E0800,
-    /// RUE-2375). A peer is not such a declaration: the never coercion
-    /// (3.4:3) re-types a diverging *expression*, and a peer whose type
-    /// merely contains `!` as an array element is a completing value that no
-    /// rule accepts at another array type (7.1:2a). So when the two sides
-    /// are arrays whose elements pair an integer literal with `!`, at any
-    /// nesting depth, the join is a mismatch of the two array types, in the
-    /// constraint's (found, expected) direction (RUE-2559). A top-level `!`
-    /// never reaches here: the peer sites drop it before constraining.
+    /// `bind` lets an integer or string literal take `!`, so that an
+    /// integer literal where a parameter or annotation declares `!` is
+    /// range-checked there (E0800, RUE-2375). A peer is not such a
+    /// declaration: the never coercion (3.4:3) re-types a diverging
+    /// *expression*, and a peer whose type merely contains `!` as an array
+    /// element is a completing value that no rule accepts at another array
+    /// type (7.1:2a). So when the two sides are arrays whose elements pair an
+    /// integer or string literal with `!`, at any nesting depth, the join is
+    /// a mismatch of the two array types, in the constraint's (found,
+    /// expected) direction (RUE-2559). A top-level `!` never reaches here:
+    /// the peer sites drop it before constraining.
     fn unify_peer(
         &mut self,
         lhs: &InferType,
@@ -820,19 +834,34 @@ impl Unifier {
     ) -> UnifyResult {
         let lhs_applied = self.substitution.apply(lhs);
         let rhs_applied = self.substitution.apply(rhs);
-        if self.array_pairs_int_literal_with_never(&lhs_applied, &rhs_applied) {
+        if self.array_pairs_literal_with_never(&lhs_applied, &rhs_applied) {
             return UnifyResult::TypeMismatch {
-                expected: self.render_for_error(&rhs_applied),
-                found: self.render_for_error(&lhs_applied),
+                expected: self.render_peer_for_error(&rhs_applied),
+                found: self.render_peer_for_error(&lhs_applied),
             };
         }
         self.unify_with(lhs, rhs, concrete_types_equal)
     }
 
+    /// [`Unifier::render_for_error`], also naming a string-literal element
+    /// by the literal's own type (`str`, 3.7:44) when that type is known.
+    fn render_peer_for_error(&self, ty: &InferType) -> InferType {
+        match ty {
+            InferType::Var(v) if self.string_literal_vars.contains(v) => self
+                .string_literal_default
+                .map_or_else(|| ty.clone(), InferType::Concrete),
+            InferType::Array { element, length } => InferType::Array {
+                element: Box::new(self.render_peer_for_error(element)),
+                length: *length,
+            },
+            _ => self.render_for_error(ty),
+        }
+    }
+
     /// Whether `lhs` and `rhs` are arrays of one length whose elements, at
-    /// some depth, pair an integer literal with `!`. Both are already
+    /// some depth, pair an integer or string literal with `!`. Both are already
     /// resolved through the substitution.
-    fn array_pairs_int_literal_with_never(&self, lhs: &InferType, rhs: &InferType) -> bool {
+    fn array_pairs_literal_with_never(&self, lhs: &InferType, rhs: &InferType) -> bool {
         let (
             InferType::Array {
                 element: lhs_element,
@@ -850,14 +879,16 @@ impl Unifier {
             return false;
         }
         let is_never = |ty: &InferType| matches!(ty, InferType::Concrete(t) if t.is_never());
-        let is_int_literal = |ty: &InferType| match ty {
+        let is_literal = |ty: &InferType| match ty {
             InferType::IntLiteral => true,
-            InferType::Var(var) => self.int_literal_vars.contains(var),
+            InferType::Var(var) => {
+                self.int_literal_vars.contains(var) || self.string_literal_vars.contains(var)
+            }
             InferType::Concrete(_) | InferType::Array { .. } => false,
         };
-        (is_never(lhs_element) && is_int_literal(rhs_element))
-            || (is_int_literal(lhs_element) && is_never(rhs_element))
-            || self.array_pairs_int_literal_with_never(lhs_element, rhs_element)
+        (is_never(lhs_element) && is_literal(rhs_element))
+            || (is_literal(lhs_element) && is_never(rhs_element))
+            || self.array_pairs_literal_with_never(lhs_element, rhs_element)
     }
 
     fn register_string_context_types(

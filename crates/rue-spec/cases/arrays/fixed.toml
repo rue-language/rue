@@ -3327,6 +3327,22 @@ compile_fail = true
 error_contains = "found [!; 2]"
 
 [[case]]
+name = "diverging_array_continuing_string_literal_peer_rejected"
+spec = ["3.4:3", "7.1:2", "7.1:2a"]
+description = "RUE-2559: a continuing `[!; 1]` if arm does not type a string-literal peer's element at `!`; the join is a mismatch of the two array types"
+source = """
+struct S { a: [!; 1], n: i32 }
+fn pick(s: S, c: bool) -> i32 {
+    let _x = if c { s.a } else { ["x"] };
+    s.n
+}
+fn main() -> i32 { pick(S { a: [return 0; 1], n: 1 }, true) }
+"""
+compile_fail = true
+expected_error_code = "E0206"
+error_contains = "expected [!; 1], found [str; 1]"
+
+[[case]]
 name = "diverging_array_continuing_inout_rejected"
 spec = ["3.4:3", "7.1:2"]
 description = "A `[!; 0]` place is not accepted at an `inout [i32; 0]` parameter"

@@ -1041,6 +1041,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         string_literal_types.sort_unstable_by_key(Type::as_u32);
         string_literal_types.dedup();
         unifier.mark_string_literal_vars(&string_literal_vars, &string_literal_types);
+        unifier.set_string_literal_default(string_literal_default);
         let equivalence_queries = std::cell::Cell::new(0usize);
         let errors = unifier.solve_constraints_with_projections(
             &constraints,
