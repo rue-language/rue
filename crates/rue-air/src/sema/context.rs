@@ -12,7 +12,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use lasso::Spur;
-use rue_error::CompileWarning;
+use rue_error::{CompileError, CompileWarning};
 use rue_rir::{InstRef, RirParamMode, SymbolHandle};
 use rue_span::{FileId, Span};
 
@@ -20,6 +20,10 @@ use super::ownership_state::OwnershipState;
 use crate::inst::{AirPlaceBase, AirProjection};
 use crate::scope::ScopedContext;
 use crate::types::{StructId, Type};
+
+/// Float literals keyed by RIR instruction, each with the diagnostic for the
+/// unresolved integer-literal join its class carries.
+pub(crate) type FloatLiteralJoins = AHashMap<InstRef, CompileError>;
 
 /// Information about a local variable.
 #[derive(Debug, Clone)]
@@ -304,6 +308,11 @@ pub(crate) struct AnalysisContext<'a> {
     /// as `resolved_types`. Semantic consumers use these facts rather than
     /// rediscovering divergence from a construct's surface result type.
     pub resolved_continues: &'a AHashMap<InstRef, bool>,
+    /// The float literals whose class inference joined with an integer
+    /// literal and no float context resolved, each with the diagnostic for
+    /// that join. Materializing such a literal reports the join rather than
+    /// the defaulted type it cannot take (RUE-2573).
+    pub float_literal_joins: &'a FloatLiteralJoins,
     /// Canonical compile-time selector facts produced by the bounded inference
     /// probe. Semantic control-flow analysis consumes these facts directly so
     /// branch and match selection has one evaluator-owned decision path.
@@ -751,6 +760,7 @@ impl<'a> AnalysisContext<'a> {
             checked_const_index_scope_state: self.checked_const_index_scope_state.clone(),
             resolved_types: self.resolved_types,
             resolved_continues: self.resolved_continues,
+            float_literal_joins: self.float_literal_joins,
             comptime_selections: self.comptime_selections,
             divergence_kinds: self.divergence_kinds,
             ownership: self.ownership.fork_for_recheck(),
@@ -802,6 +812,12 @@ impl<'a> AnalysisContext<'a> {
     /// Return whether inference found a normal outgoing path for an
     /// instruction. Missing entries occur only for instructions analyzed from
     /// an inline overlay; their semantic result remains the fallback.
+    /// The join diagnostic for a float literal, if its class is an
+    /// unresolved integer/float literal join.
+    pub(crate) fn float_literal_join(&self, inst_ref: InstRef) -> Option<&CompileError> {
+        self.float_literal_joins.get(&inst_ref)
+    }
+
     pub fn resolved_continues_of(&self, inst_ref: InstRef) -> Option<bool> {
         self.resolved_continues.get(&inst_ref).copied()
     }

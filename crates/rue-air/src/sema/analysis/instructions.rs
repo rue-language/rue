@@ -372,6 +372,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                             },
                             ty,
                             inst.span,
+                            ctx.float_literal_join(inst_ref),
                         )?;
                         let air_ref = air.add_inst(AirInst {
                             data,

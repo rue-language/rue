@@ -5,7 +5,7 @@
 //! - [`UnificationError`] - Error with span for reporting
 //! - [`Unifier`] - The unification engine
 
-use ahash::AHashSet;
+use ahash::{AHashMap, AHashSet};
 use lasso::Spur;
 
 use super::constraint::{Constraint, Substitution};
@@ -480,48 +480,39 @@ impl Unifier {
     }
 
     /// The joins of an integer literal with a float literal that no float
-    /// context resolved.
+    /// context resolved, keyed by the representative of the joined class;
+    /// the first join of a class is the one kept.
     ///
     /// An integer literal takes a float type only from a contextual `f32` or
     /// `f64` expectation (3.12:11); joined with a float literal and left
-    /// unresolved, the class would default to `i32` and the float literal
-    /// could not take it. Each such join is reported at the constraint that
-    /// made it, in that constraint's direction: "expected integer type, found
+    /// unresolved, the class defaults to `i32` and the float literal cannot
+    /// take it. The join is the error, named at the constraint that made it
+    /// and in that constraint's direction: "expected integer type, found
     /// comptime_float" when the integer literal set the expectation,
     /// "expected comptime_float, found {integer}" when the float literal did.
     ///
-    /// The judgment needs every constraint of the body, so it belongs to the
-    /// final inference pass alone: a staged pass that sees part of a body (or
-    /// a branch comptime selection later drops) can leave a class unresolved
-    /// that the full body resolves.
-    ///
-    /// `exempt` holds the types of bindings whose annotation semantic
-    /// analysis diagnoses instead: a join in their class is a consequence of
-    /// that missing annotation, not an error of its own.
-    pub(crate) fn unresolved_literal_joins(&self, exempt: &[InferType]) -> Vec<UnificationError> {
-        let exempt: Vec<InferType> = exempt
-            .iter()
-            .map(|ty| self.substitution.apply(ty))
-            .collect();
-        self.literal_joins
-            .iter()
-            .filter(|(rep, _, _)| {
-                let resolved = self.substitution.apply(&InferType::Var(*rep));
-                !matches!(
-                    resolved,
-                    InferType::Concrete(ty) if ty.is_float() || ty.is_error() || ty.is_never()
-                ) && !exempt.contains(&resolved)
-            })
-            .map(|(_, int_side, span)| {
-                UnificationError::new(
-                    Self::int_literal_mismatch(
-                        InferType::Concrete(Type::COMPTIME_FLOAT),
-                        *int_side,
-                    ),
-                    *span,
-                )
-            })
-            .collect()
+    /// Inference does not report it itself. Whether the join is legal
+    /// depends on a context that may be broken (an unknown callee, a wrong
+    /// arity, an unknown field), whose own diagnostic semantic analysis
+    /// owns; so the join is handed to the float literal's materialization,
+    /// which semantic analysis reaches only past those errors. Call this
+    /// before literal defaulting, which resolves every class.
+    pub(crate) fn unresolved_literal_joins(&self) -> AHashMap<TypeVarId, UnificationError> {
+        let mut joins = AHashMap::new();
+        for (rep, int_side, span) in &self.literal_joins {
+            if let InferType::Var(class) = self.substitution.apply(&InferType::Var(*rep)) {
+                joins.entry(class).or_insert_with(|| {
+                    UnificationError::new(
+                        Self::int_literal_mismatch(
+                            InferType::Concrete(Type::COMPTIME_FLOAT),
+                            *int_side,
+                        ),
+                        *span,
+                    )
+                });
+            }
+        }
+        joins
     }
 
     /// Bind a type variable to a type.
@@ -1826,9 +1817,9 @@ mod tests {
     }
 
     /// An integer-literal class joined with a float-literal class is judged
-    /// after solving: left unresolved it is reported at the joining
-    /// constraint, in its direction; resolved by a float context it is
-    /// accepted (RUE-2573).
+    /// after solving: left unresolved it is named at the joining constraint,
+    /// in its direction, for the float literal of that class; resolved by a
+    /// float context it is accepted (RUE-2573).
     #[test]
     fn unresolved_integer_float_literal_join_is_reported_in_constraint_direction() {
         let int = TypeVarId::new(0);
@@ -1843,30 +1834,26 @@ mod tests {
                 Span::new(3, 4),
             )]);
             assert!(errors.is_empty());
-            // A binding whose annotation semantic analysis diagnoses exempts
-            // its class.
-            assert!(
-                unifier
-                    .unresolved_literal_joins(&[InferType::Var(found)])
-                    .is_empty()
-            );
-            unifier.unresolved_literal_joins(&[])
+            let joins = unifier.unresolved_literal_joins();
+            assert_eq!(joins.len(), 1);
+            let InferType::Var(class) = unifier.substitution.apply(&InferType::Var(float)) else {
+                panic!("the joined class is unresolved");
+            };
+            joins[&class].clone()
         };
 
         let float_found = join(float, int);
-        assert_eq!(float_found.len(), 1);
-        assert_eq!(float_found[0].span, Span::new(3, 4));
+        assert_eq!(float_found.span, Span::new(3, 4));
         assert_eq!(
-            float_found[0].kind,
+            float_found.kind,
             UnifyResult::IntLiteralNonInteger {
                 found: InferType::Concrete(Type::COMPTIME_FLOAT),
             }
         );
 
         let int_found = join(int, float);
-        assert_eq!(int_found.len(), 1);
         assert_eq!(
-            int_found[0].kind,
+            int_found.kind,
             UnifyResult::TypeMismatch {
                 expected: InferType::Concrete(Type::COMPTIME_FLOAT),
                 found: InferType::IntLiteral,
@@ -1890,7 +1877,7 @@ mod tests {
             ),
         ]);
         assert!(errors.is_empty());
-        assert!(unifier.unresolved_literal_joins(&[]).is_empty());
+        assert!(unifier.unresolved_literal_joins().is_empty());
         assert_eq!(unifier.resolve(&InferType::Var(float)), Some(Type::F64));
     }
 

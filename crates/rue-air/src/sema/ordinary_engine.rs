@@ -3214,8 +3214,13 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         // for all expressions BEFORE emitting AIR.
         let expression_setup_ns =
             u64::try_from(expression_setup_started.elapsed().as_nanos()).unwrap_or(u64::MAX);
-        let (resolved_types, resolved_continues, comptime_selections, inference_breakdown) = self
-            .run_type_inference(
+        let (
+            resolved_types,
+            resolved_continues,
+            comptime_selections,
+            inference_breakdown,
+            float_literal_joins,
+        ) = self.run_type_inference(
             infer_ctx,
             return_type,
             params,
@@ -3266,6 +3271,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             checked_const_index_scope_state: super::context::CheckedConstIndexScopeState::new(),
             resolved_types: &resolved_types,
             resolved_continues: &resolved_continues,
+            float_literal_joins: &float_literal_joins,
             comptime_selections: &comptime_selections,
             divergence_kinds: DivergenceKinds::NONE,
             ownership: super::ownership_state::OwnershipState::default(),

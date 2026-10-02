@@ -424,11 +424,6 @@ pub struct ConstraintGenerator<'a> {
     /// Variables rooted at a `comptime_float` literal. They accept only f32/f64
     /// context and default to f64 after whole-body unification.
     float_literal_vars: Vec<TypeVarId>,
-    /// The types of bindings whose annotation is left to semantic analysis
-    /// (the binding takes its initializer's type here). Semantic analysis
-    /// owns that diagnostic and poisons the binding, so a literal join the
-    /// missing annotation would have resolved is not judged on its own.
-    deferred_annotation_types: Vec<InferType>,
     /// Type variables allocated for string literals. Unlike integer literals,
     /// these default to the canonical core `str` type. Context may still bind
     /// a literal to the trusted standard-library `StrBuf` language item.
@@ -732,7 +727,6 @@ impl<'a> ConstraintGenerator<'a> {
             lazy: None,
             int_literal_vars: Vec::new(),
             float_literal_vars: Vec::new(),
-            deferred_annotation_types: Vec::new(),
             string_literal_vars: Vec::new(),
             array_literal_expectation: None,
             string_literal_default,
@@ -799,7 +793,6 @@ impl<'a> ConstraintGenerator<'a> {
             lazy: Some(lazy),
             int_literal_vars: Vec::new(),
             float_literal_vars: Vec::new(),
-            deferred_annotation_types: Vec::new(),
             string_literal_vars: Vec::new(),
             array_literal_expectation: None,
             string_literal_default,
@@ -1594,12 +1587,6 @@ impl<'a> ConstraintGenerator<'a> {
         &self.expr_types
     }
 
-    /// The types of bindings whose annotation semantic analysis resolves and
-    /// diagnoses instead of this generator.
-    pub fn deferred_annotation_types(&self) -> &[InferType] {
-        &self.deferred_annotation_types
-    }
-
     /// Consume the constraint generator and return its generated constraints,
     /// literal variables, expression types, fixed-string identities, and
     /// allocated variable count.
@@ -2039,7 +2026,6 @@ impl<'a> ConstraintGenerator<'a> {
                         // Leave unresolved or position-invalid annotations
                         // to semantic analysis for the authoritative diagnostic.
                         // It also checks the materialized initializer's type.
-                        self.deferred_annotation_types.push(init_info.ty.clone());
                         init_info.ty
                     }
                 } else if self

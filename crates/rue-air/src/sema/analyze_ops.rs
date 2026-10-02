@@ -236,11 +236,19 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
     /// Materialize a floating-point constant as the AIR `Const` payload for
     /// `ty`, with the spelling read by the parser its source calls for.
+    ///
+    /// `literal_join` is the diagnostic inference recorded when the
+    /// constant's class joined an integer literal that no float context
+    /// resolved (RUE-2573). The class then defaulted to an integer type, and
+    /// the join, named at the constraint that made it, is the error. It is
+    /// reported here, where semantic analysis reaches the literal, so a
+    /// broken context that would have resolved the join reports first.
     pub(crate) fn materialize_float_const(
         &self,
         source: FloatConstSource<'_>,
         ty: Type,
         span: rue_span::Span,
+        literal_join: Option<&CompileError>,
     ) -> CompileResult<AirInstData> {
         // `comptime_float` has no runtime width to round to; its uses are
         // resolved before lowering, so the placeholder payload is zero.
@@ -248,6 +256,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             return Ok(AirInstData::Const(0));
         }
         if !ty.is_float() {
+            if let Some(join) = literal_join {
+                return Err(join.clone());
+            }
             return Err(CompileError::new(
                 ErrorKind::TypeMismatch {
                     expected: "f32 or f64".to_owned(),
@@ -317,6 +328,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     },
                     ty,
                     inst.span,
+                    ctx.float_literal_join(inst_ref),
                 )?;
                 let air_ref = air.add_inst(AirInst {
                     data,
@@ -458,6 +470,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         },
                         ty,
                         inst.span,
+                        None,
                     )?;
                     let air_ref = air.add_inst(AirInst {
                         data,
