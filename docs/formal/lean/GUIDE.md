@@ -208,7 +208,8 @@ only for the reader's benefit. What it buys is section 4's last theorem,
 destructor run twice, and no identity appears twice among the
 `drop`/`dropTemp` free events.
 
-A `Refusal` is a refusal: `useAfterMove` (reading a `⊘` cell),
+A `Refusal` is a refusal: `useAfterMove` (reading a `⊘` cell, or reaching a
+`⊘` node with a constant or a dynamic step left to take),
 `useAfterDrop` (touching a `†` cell), `linearLeak` (a scope exit or an activation record
 unwind reaching a live linear value), `linearOverwrite` (`3.8:77`),
 `linearDiscard` (`3.8:64`), `ownedUnderCopy` (an owned value put under a

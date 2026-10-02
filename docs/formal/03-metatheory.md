@@ -313,7 +313,11 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
   dynamic index reads the same way: the premise is at the array `p` the first
   dynamic step indexes, so every element under it and every place below one is
   moved-out-free, and each dynamic step either traps on its bound or lands on an
-  element the invariant covers (`RueCore.Contents.resolveDyn_ok`). It is `p`,
+  element the invariant covers (`RueCore.Contents.resolveDyn_ok`). Off the
+  checked domain, a dynamic step that meets a `⊘` is refused `useAfterMove`,
+  the tag a constant step into one gets (`RueCore.Contents.getAt`), so such a
+  run is what this statement rules out and not a `typeConfusion`
+  (`RueCore.Examples.dynWriteAfterFieldMove`, RUE-2492). It is `p`,
   not the root: `a[0][i].x1` after a move of `a[1]` reads a whole `a[0]`, and
   the compiler accepts it too (`RueCore.Examples.dynReadAfterSiblingMove`).
   A declared-linear destructure reads the same way, one place up: the rule's
