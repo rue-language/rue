@@ -3604,3 +3604,38 @@ pub fn g() -> i32 { 7 }
 """ },
 ]
 exit_code = 7
+
+[[case]]
+name = "nested_module_function_as_value_is_callback_escape"
+description = "`lib.sub.g` read as a value, through a `pub const sub = @import(..)` facade, is E0217."
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 { let lib = @import("lib.rue"); let h = lib.sub.g; 0 }
+""" },
+    { path = "lib.rue", source = """
+pub const sub = @import("sub.rue");
+""" },
+    { path = "sub.rue", source = """
+pub fn g() -> i32 { 1 }
+""" },
+]
+compile_fail = true
+error_contains = ["E0217", "the function `g` of module `sub.rue`"]
+
+[[case]]
+name = "imported_files_function_as_value_stays_unknown_member"
+description = "A function declared in a file `lib` imports is not `lib`'s member (4.13:90): `lib.g` as a value stays E0707."
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 { let lib = @import("lib.rue"); let h = lib.g; 0 }
+""" },
+    { path = "lib.rue", source = """
+const other = @import("other.rue");
+pub fn real() -> i32 { other.g() }
+""" },
+    { path = "other.rue", source = """
+pub fn g() -> i32 { 1 }
+""" },
+]
+compile_fail = true
+error_contains = ["E0707", "module `lib.rue` has no member `g`"]
