@@ -2653,6 +2653,55 @@ expected_stdout = "5\n6\n"
 exit_code = 0
 
 [[case]]
+name = "shadowing_local_accessor_inside_borrow_argument_is_not_the_root"
+spec = ["6.1:36", "6.6:10"]
+description = "An exclusive accessor on a local that shadows a `borrow`-loaned argument inside the argument list uses a different binding, not the loaned root (RUE-2377)."
+source = """
+struct P {
+    c: i64,
+}
+struct Acc {
+    p: P,
+
+    fn pmut(inout self) -> inout P { yield self.p; }
+}
+fn gp(borrow x: Acc, y: i64) -> i64 { x.p.c + y }
+fn main() -> i32 {
+    let mut a = Acc { p: P { c: 1 } };
+    let r = gp(borrow a, { let mut a = Acc { p: P { c: 1 } }; a.pmut().c = 4; a.pmut().c });
+    @dbg(r);
+    @dbg(a.p.c);
+    0
+}
+"""
+expected_stdout = "5\n1\n"
+exit_code = 0
+
+[[case]]
+name = "loaned_root_accessor_after_dropped_shadow_inside_borrow_argument"
+spec = ["6.1:36", "6.6:10"]
+description = "Once a shadowing local's block ends, the name is the loaned root again: an exclusive accessor on it inside the `borrow` argument list conflicts with the loan (E0259, RUE-2377)."
+source = """
+struct P {
+    c: i64,
+}
+struct Acc {
+    p: P,
+
+    fn pmut(inout self) -> inout P { yield self.p; }
+}
+fn gp(borrow x: Acc, y: i64) -> i64 { x.p.c + y }
+fn main() -> i32 {
+    let mut a = Acc { p: P { c: 1 } };
+    let r = gp(borrow a, { { let mut a = Acc { p: P { c: 1 } }; a.pmut().c = 4; } a.pmut().c });
+    @dbg(r);
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0259", "as an accessor receiver"]
+
+[[case]]
 name = "accessor_read_before_inout_call_is_legal"
 spec = ["6.6:8", "6.6:10"]
 description = "The accessor loan ends with its full expression: reading the result in a prior statement, then calling with `inout`, is legal (RUE-1593)."
