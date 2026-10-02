@@ -124,8 +124,8 @@ struct StagedFacts {
     call_facts: GenericCallFacts,
     frontier: VecDeque<ComptimeInferenceFrontier>,
     work: StagedWalkWork,
-    /// The walk stopped at a selector whose staged types predate a typed
-    /// call's facts; see `collect_staged_facts`.
+    /// The walk stopped at a selector that failed to evaluate at staged
+    /// types predating a typed call's facts; see `collect_staged_facts`.
     deferred: bool,
 }
 
@@ -448,19 +448,12 @@ impl GenericCallFacts {
         self.return_types.len() + self.param_types.len()
     }
 
-    /// Whether this set retypes `call`'s result or a runtime argument where
-    /// `staged` did not.
-    fn retypes_beyond(
-        &self,
-        staged: &Self,
-        call: InstRef,
-        call_args: &[rue_rir::RirCallArg],
-    ) -> bool {
-        (self.return_types.contains_key(&call) && !staged.return_types.contains_key(&call))
-            || call_args.iter().any(|arg| {
-                self.param_types.contains_key(&arg.value)
-                    && !staged.param_types.contains_key(&arg.value)
-            })
+    /// Whether this set retypes `call`'s result or one of its arguments.
+    fn retypes_call(&self, call: InstRef, call_args: &[rue_rir::RirCallArg]) -> bool {
+        self.return_types.contains_key(&call)
+            || call_args
+                .iter()
+                .any(|arg| self.param_types.contains_key(&arg.value))
     }
 
     /// Merge `other`, reporting whether it added a typing fact this set
@@ -1373,12 +1366,16 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// staged pass's types, so in a value-specialized body
     /// `if id(i64, x) == 3000000000` reported the literal out of range for
     /// `i32` (E0800) where the final pass, which has the facts, types it `i64`
-    /// (RUE-2436). When the walk reaches a selector after a typed call whose
-    /// result or argument types the pass lacked, it stops; the call facts of
-    /// the typed code are collected, the pass runs again with them, replacing
-    /// `staged_types`, and the walk restarts. A body without such a call pays
-    /// nothing. Each restart adds a typing fact, so the loop is bounded; were
-    /// one to add none, the walk runs once more without stopping.
+    /// (RUE-2436). When a selector fails to evaluate after a typed call whose
+    /// result or argument types its facts change, the walk stops instead of
+    /// reporting; the call facts of the typed code are collected, the pass
+    /// runs again with them, replacing `staged_types`, and the walk restarts.
+    /// A selector that evaluates is kept as it is: retyping the code before it
+    /// can only change whether a literal in it is in range, never its value,
+    /// so a body whose selectors all evaluate pays nothing. The loop is
+    /// bounded because each rerun adds a typing fact, and when a restart adds
+    /// none, `defer_stale_selectors` is cleared and the final walk reports
+    /// the failure as a selector always did.
     ///
     /// `call_facts` holds the facts the staged pass was generated with and
     /// gains those of each refresh; the returned breakdown is the refresh
@@ -1410,7 +1407,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 frontier_scope.cloned().flatten(),
                 &precompute_snapshot.comptime_local_bindings,
                 FactWalk::Select,
-                defer_stale_selectors.then_some(&*call_facts),
+                defer_stale_selectors,
             )?;
             work.accrue(std::mem::take(&mut facts.work));
             if !facts.deferred {
@@ -1426,7 +1423,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 frontier_scope.cloned().flatten(),
                 &precompute_snapshot.comptime_local_bindings,
                 FactWalk::CallsOnly,
-                None,
+                false,
             )?;
             work.accrue(typed.work);
             if !call_facts.absorb(typed.call_facts) {
@@ -1465,7 +1462,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         inherited_scope: FrontierScope,
         comptime_local_bindings: &AHashMap<InstRef, Type>,
         walk: FactWalk,
-        staged_call_facts: Option<&GenericCallFacts>,
+        defer_stale_selectors: bool,
     ) -> CompileResult<StagedFacts> {
         let value_visible = value_visible_type_subst(params, type_subst, value_subst);
         let type_subst = value_visible
@@ -1536,8 +1533,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let mut fact_nodes = 0_u64;
         let mut canonical_evaluations = 0_u64;
         let mut scope_materializations = 0_u64;
-        // A typed call whose result or argument types `staged_call_facts`
-        // lacked makes every later selector's staged types suspect.
+        // Once a typed call has facts that retype it, a later selector's
+        // staged types may predate them: a selector that fails to evaluate
+        // then defers rather than reporting.
         let mut stale = false;
         let mut deferred = false;
         while let Some(task) = tasks.pop() {
@@ -1549,14 +1547,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     condition,
                     bindings,
                 } => {
-                    if can_select && stale {
-                        deferred = true;
-                        break;
-                    }
                     if can_select {
                         canonical_evaluations = canonical_evaluations.saturating_add(1);
                         scope_materializations = scope_materializations.saturating_add(1);
-                        if let Some(taken) = self
+                        let selection = match self
                             .select_comptime_branch_with_resolved_types_and_membership(
                                 condition,
                                 resolved_types,
@@ -1565,8 +1559,14 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                                 lexical_binding_membership_view(&bindings),
                                 lexical_binding_capture_view(&bindings),
                                 lexical_module_membership_view(&bindings),
-                            )?
-                        {
+                            ) {
+                            Err(_) if stale => {
+                                deferred = true;
+                                break;
+                            }
+                            selection => selection?,
+                        };
+                        if let Some(taken) = selection {
                             selections
                                 .insert(inst_ref, crate::sema::ComptimeSelection::Branch { taken });
                         }
@@ -1675,14 +1675,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     arms,
                     bindings,
                 } => {
-                    if can_select && stale {
-                        deferred = true;
-                        break;
-                    }
                     if can_select {
                         canonical_evaluations = canonical_evaluations.saturating_add(1);
                         scope_materializations = scope_materializations.saturating_add(1);
-                        if let Some(selected_arm) = self
+                        let selection = match self
                             .select_comptime_match_with_resolved_types_and_membership(
                                 scrutinee,
                                 &arms,
@@ -1692,7 +1688,14 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                                 lexical_binding_membership_view(&bindings),
                                 lexical_binding_capture_view(&bindings),
                                 lexical_module_membership_view(&bindings),
-                            )?
+                            ) {
+                            Err(_) if stale => {
+                                deferred = true;
+                                break;
+                            }
+                            selection => selection?,
+                        };
+                        if let Some(selected_arm) = selection
                             && crate::sema::comptime::prunable_match_body(
                                 self.body_rir_ref(),
                                 &arms,
@@ -1790,10 +1793,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                                         &mut call_facts,
                                     ),
                                 );
-                                stale |= staged_call_facts.is_some_and(|staged| {
-                                    resolved_types.contains_key(&inst_ref)
-                                        && call_facts.retypes_beyond(staged, inst_ref, &call_args)
-                                });
+                                stale |= defer_stale_selectors
+                                    && resolved_types.contains_key(&inst_ref)
+                                    && call_facts.retypes_call(inst_ref, &call_args);
                             }
                         }
                         _ => {}
