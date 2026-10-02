@@ -606,3 +606,96 @@ fn main() -> i32 {
 """
 compile_fail = true
 error_contains = ["E0201", "x"]
+
+# A constructor applied to `Self` sees the struct still being produced: by
+# value it is held to 3.0:5, behind a pointer or unused it is not (RUE-2588).
+[[case]]
+name = "constructed_struct_holding_a_constructor_of_a_pointer_to_itself"
+spec = ["3.0:5", "6.4:18"]
+source = """
+fn Inner(comptime T: type) -> type { struct { x: T } }
+fn PtrIn(comptime T: type) -> type { struct { v: T, w: Inner(ptr const Self) } }
+fn main() -> i32 {
+    let T = PtrIn(i64);
+    @intCast(@size_of(T) + 26)
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "constructed_list_holding_an_option_of_a_pointer_to_itself"
+spec = ["3.0:5", "6.4:18"]
+source = """
+fn Opt(comptime T: type) -> type { enum { Some(T), None } }
+fn List(comptime T: type) -> type { struct { v: T, next: Opt(ptr const Self) } }
+fn main() -> i32 {
+    let L = List(i64);
+    @intCast(@size_of(L) - @size_of(Opt(i64)) + 34)
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "body_local_struct_in_a_constructor_holding_an_option_of_a_pointer_to_itself"
+spec = ["3.0:5", "6.4:18"]
+source = """
+fn Opt(comptime T: type) -> type { enum { Some(T), None } }
+fn G(comptime T: type) -> type {
+    let L = struct { v: T, next: Opt(ptr const Self) };
+    L
+}
+fn main() -> i32 {
+    let X = G(i64);
+    @intCast(@size_of(X) - @size_of(Opt(i64)) + 34)
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "constructed_struct_passing_itself_to_a_phantom_constructor"
+spec = ["3.0:5", "6.4:18"]
+description = "A constructor whose result does not use its argument may be applied to `Self` by value"
+source = """
+fn Ph(comptime T: type) -> type { struct { x: i32 } }
+fn P(comptime T: type) -> type { struct { v: T, p: Ph(Self) } }
+fn G(comptime T: type) -> type {
+    let L = struct { v: T, p: Ph(Self) };
+    L
+}
+fn main() -> i32 {
+    let A = P(i32);
+    let a = A { v: 1, p: Ph(A) { x: 20 } };
+    let B = G(i32);
+    let b = B { v: 1, p: Ph(B) { x: 20 } };
+    a.v + a.p.x + b.v + b.p.x
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "constructed_struct_selecting_itself_through_a_comptime_bool"
+spec = ["3.0:5", "6.4:18"]
+source = """
+fn Pick(comptime b: bool, comptime T: type) -> type { if b { T } else { i32 } }
+fn F(comptime b: bool) -> type { struct { v: i64, w: Pick(b, Self) } }
+fn main() -> i32 {
+    let T = F(false);
+    let t = T { v: 2, w: 40 };
+    t.w + @intCast(t.v)
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "constructed_struct_selected_into_itself_is_infinite"
+spec = ["3.0:5"]
+source = """
+fn Pick(comptime b: bool, comptime T: type) -> type { if b { T } else { i32 } }
+fn F(comptime b: bool) -> type { struct { v: i64, w: Pick(b, Self) } }
+fn main() -> i32 {
+    let T = F(true);
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0483", "F(true) -> F(true)"]
