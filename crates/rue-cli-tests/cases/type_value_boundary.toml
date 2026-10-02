@@ -205,3 +205,146 @@ fn main() -> i32 {
 }
 """ }]
 stdout = "2\n12\n16\n"
+
+[[case]]
+name = "called_comptime_slice_of_type_parameter_is_e1200"
+description = "A called function with a `comptime p: [type]` parameter reports E1200 at the parameter rather than panicking while importing its signature: `[type]` is no type in any position (RUE-2606)."
+files = [{ path = "main.rue", source = """
+fn f(comptime p: [type]) -> i32 { 0 }
+
+fn main() -> i32 { f(0) }
+""" }]
+compile_fail = true
+error_contains = ["E1200", "a slice element cannot be `type`: type values cannot exist at runtime", "main.rue:1:18"]
+compile_stderr_not_contains = ["panicked", "internal compiler error", "E0202"]
+
+[[case]]
+name = "called_comptime_slice_of_type_after_value_parameter_is_e1200"
+description = "The same with a value `comptime` parameter before it (RUE-2606)."
+files = [{ path = "main.rue", source = """
+fn g(comptime n: i32, comptime p: [type]) -> i32 { n }
+
+fn main() -> i32 { g(1, 0) }
+""" }]
+compile_fail = true
+error_contains = ["E1200", "a slice element cannot be `type`: type values cannot exist at runtime", "main.rue:1:35"]
+compile_stderr_not_contains = ["panicked", "internal compiler error", "E0202"]
+
+[[case]]
+name = "borrow_call_of_comptime_slice_of_type_parameter_is_e1200"
+description = "The same reached by a `borrow` argument (RUE-2606)."
+files = [{ path = "main.rue", source = """
+fn f(comptime p: [type]) -> i32 { 0 }
+
+fn main() -> i32 {
+    let x = 0;
+    f(borrow x)
+}
+""" }]
+compile_fail = true
+error_contains = ["E1200", "a slice element cannot be `type`: type values cannot exist at runtime", "main.rue:1:18"]
+compile_stderr_not_contains = ["panicked", "internal compiler error", "E0202"]
+
+[[case]]
+name = "called_parameter_of_constructor_over_slice_of_type_is_e1200"
+description = "`borrow b: Box([type])` is E1200 at the declaration rather than panicking when the call mints the slice view (RUE-2606)."
+files = [{ path = "main.rue", source = """
+fn Box(comptime T: type) -> type {
+    struct { v: i32 }
+}
+
+fn f(borrow b: Box([type])) -> i32 { 0 }
+
+fn main() -> i32 { f(borrow 0) }
+""" }]
+compile_fail = true
+error_contains = ["E1200", "a slice element cannot be `type`: type values cannot exist at runtime"]
+compile_stderr_not_contains = ["panicked", "internal compiler error", "E0202"]
+
+[[case]]
+name = "called_method_parameter_of_constructor_over_slice_of_type_is_e1200"
+description = "The method form of the `Box([type])` parameter (RUE-2606)."
+files = [{ path = "main.rue", source = """
+fn Box(comptime T: type) -> type {
+    struct { v: i32 }
+}
+
+struct S {
+    x: i32,
+    fn m(self, borrow b: Box([type])) -> i32 { 0 }
+}
+
+fn main() -> i32 {
+    let s = S { x: 1 };
+    s.m(borrow 0)
+}
+""" }]
+compile_fail = true
+error_contains = ["E1200", "a slice element cannot be `type`: type values cannot exist at runtime"]
+compile_stderr_not_contains = ["panicked", "internal compiler error", "E0202"]
+
+[[case]]
+name = "used_return_of_constructor_over_slice_of_type_is_e1200"
+description = "`-> Box([type])` is E1200 at the declaration rather than panicking at a use (RUE-2606)."
+files = [{ path = "main.rue", source = """
+fn Box(comptime T: type) -> type {
+    struct { v: i32 }
+}
+
+fn f() -> Box([type]) { f() }
+
+fn main() -> i32 {
+    let x = f();
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E1200", "a slice element cannot be `type`: type values cannot exist at runtime"]
+compile_stderr_not_contains = ["panicked", "internal compiler error", "E0202"]
+
+[[case]]
+name = "used_enum_payload_of_constructor_over_slice_of_type_is_e1200"
+description = "An enum payload `Box([type])` is E1200 at the declaration rather than panicking at a use (RUE-2606)."
+files = [{ path = "main.rue", source = """
+fn Box(comptime T: type) -> type {
+    struct { v: i32 }
+}
+
+enum E { A(Box([type])), B }
+
+fn main() -> i32 {
+    let e = E.B;
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E1200", "a slice element cannot be `type`: type values cannot exist at runtime"]
+compile_stderr_not_contains = ["panicked", "internal compiler error", "E0202"]
+
+[[case]]
+name = "constructor_argument_pointer_to_type_is_e1200_at_the_declaration"
+description = "`b: Box(ptr const type)` is E1200 at the declaration, even with no call, rather than E0202 and E1400 at a call (RUE-2606)."
+files = [{ path = "main.rue", source = """
+fn Box(comptime T: type) -> type {
+    struct { v: i32 }
+}
+
+fn f(b: Box(ptr const type)) -> i32 { 0 }
+
+fn main() -> i32 { 0 }
+""" }]
+compile_fail = true
+error_contains = ["E1200", "a pointer pointee cannot be `type`: type values cannot exist at runtime"]
+compile_stderr_not_contains = ["panicked", "internal compiler error", "E0202"]
+
+[[case]]
+name = "fn_type_parameter_names_the_innermost_child"
+description = "A callback type `fn(ptr const type) -> i32` names the pointer pointee, as the same type in a `let` does; the `fn` wording is kept for `type` directly a parameter or result (RUE-2606)."
+files = [{ path = "main.rue", source = """
+fn f(cb: fn(ptr const type) -> i32) -> i32 { 0 }
+
+fn main() -> i32 { 0 }
+""" }]
+compile_fail = true
+error_contains = ["E1200", "a pointer pointee cannot be `type`: type values cannot exist at runtime", "main.rue:1:10"]
+compile_stderr_not_contains = ["panicked", "internal compiler error", "E0202"]
