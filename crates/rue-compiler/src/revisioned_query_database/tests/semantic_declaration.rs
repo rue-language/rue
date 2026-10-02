@@ -1,6 +1,45 @@
 use super::*;
 
 #[test]
+fn specialized_type_failure_reports_user_errors_as_diagnostics() {
+    use crate::semantic_query_nucleus::{SemanticNucleusFailure as F, SignatureTypeAnchor};
+    use crate::type_queries::TypeQueryFailure;
+
+    let mismatch = rue_error::ErrorKind::TypeMismatch {
+        expected: "[i32; 3]".to_owned(),
+        found: "[i32; 2]".to_owned(),
+    };
+    assert_eq!(
+        specialized_type_failure("result", F::Diagnostic(mismatch.clone())),
+        TypeQueryFailure::Diagnostic(mismatch.clone()),
+    );
+    assert_eq!(
+        specialized_type_failure(
+            "parameter",
+            F::DiagnosticAtSignatureType {
+                kind: mismatch.clone(),
+                anchor: SignatureTypeAnchor::Result,
+            },
+        ),
+        TypeQueryFailure::Diagnostic(mismatch),
+    );
+    assert_eq!(
+        specialized_type_failure(
+            "result",
+            F::Resolution(Arc::from("value 300 is outside the range of type u8")),
+        ),
+        TypeQueryFailure::Diagnostic(rue_error::ErrorKind::ComptimeEvaluationFailed {
+            reason: "value 300 is outside the range of type u8".to_owned(),
+        }),
+    );
+    assert!(matches!(
+        specialized_type_failure("result", F::Shell(Arc::from("missing"))),
+        TypeQueryFailure::Invalid(detail)
+            if detail.starts_with("specialized callable result type failed to resolve")
+    ));
+}
+
+#[test]
 fn foreign_signature_agreement_uses_resolved_identity_mode_and_comptime_not_names() {
     use crate::durable_semantics::{
         DurableParameterMode as Mode, DurableSemanticParameter as Parameter, DurableType as Type,

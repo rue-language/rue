@@ -1811,6 +1811,9 @@ fn build_cfg(
                 let detail = match failure {
                     crate::type_queries::TypeQueryFailure::Unavailable(detail)
                     | crate::type_queries::TypeQueryFailure::Invalid(detail) => detail,
+                    // A safety net (see `specialized_type_failure`): the
+                    // callable key carries no call site, so the user error
+                    // is reported at the calling body.
                     crate::type_queries::TypeQueryFailure::Diagnostic(kind) => {
                         return Ok(CfgValue::Failure {
                             errors: crate::CompileError::new(kind.clone(), materialized.body_span)
