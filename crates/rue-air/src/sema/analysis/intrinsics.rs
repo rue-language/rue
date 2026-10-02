@@ -1592,9 +1592,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             ));
         }
 
-        // A module is not a runtime value, so there is nothing to drop
-        // (10.4:6); `@dbg` and `@to_string` reject it the same way.
-        if arg_type.is_module() {
+        // A module (10.4:6) or a `type` value (4.14:6) is not a runtime value,
+        // so there is nothing to drop; `@dbg` and `@to_string` reject them the
+        // same way.
+        if arg_type.is_module() || arg_type.is_comptime_type() {
             return Err(CompileError::new(
                 ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
                     name: "drop".to_string(),
