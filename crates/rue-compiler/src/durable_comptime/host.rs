@@ -327,6 +327,9 @@ impl<'a, A: DurableComptimeHostAuthority + ?Sized> DurableComptimeHost<'a, A> {
         if *canonical == **text {
             return;
         }
+        // The child keeps its own type tag (a `comptime_float` stays one):
+        // only its key text changes, and every read of the field is typed at
+        // the slot, so the tag never meets a use at another width.
         *value = EvaluatedSemanticConst::Value(Arc::new(TypedSemanticConst {
             value: DurableConstValue::Float(Arc::from(canonical)),
             ty: typed.ty.clone(),
