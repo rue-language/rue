@@ -466,6 +466,19 @@ pub trait ComptimeTypeAlgebra: ComptimeDomain {
     ) -> ComptimeHostResult<Option<Self::Type>, Self::Failure> {
         self.resolve_named_type_value(program, name, span)
     }
+    /// Resolve the nominal struct a module-qualified literal names
+    /// (`lib.S { .. }`) from its reduced module base. `Ok(None)` is a base
+    /// that is not a module value, which is every base in a domain without
+    /// module values; an unknown or private member is the host's diagnostic,
+    /// as in a body (RUE-2440).
+    fn resolve_comptime_module_struct_type(
+        &mut self,
+        _module: Self::Value,
+        _name: Self::Name,
+        _site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> ComptimeHostResult<Option<Self::Type>, Self::Failure> {
+        Ok(None)
+    }
     /// Resolve an array literal's type from reduced child values. Contextual
     /// hosts may retain their resolved expression type; durable hosts use the
     /// typed value projection and never decode RIR here.
@@ -5504,14 +5517,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 type_name,
                 ..
             } => {
-                let ctor_head = *ctor_head;
-                // A module-qualified name (`lib.S { .. }`) has no comptime
-                // struct resolution here. A module-qualified constructor head
-                // (`lib.Wrap(u8) { .. }`) carries its module in the head call,
-                // which reduces below like an unqualified head (RUE-2434).
-                if module.is_some() && ctor_head.is_none() {
-                    return ComptimeOutcome::RuntimeDependent;
-                }
+                let (ctor_head, module) = (*ctor_head, *module);
                 let site = self.diagnostic_site(span);
                 let field_inits: Vec<_> = self
                     .program_rir()
@@ -5524,12 +5530,23 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 // An inline type-constructor head, `Wrap(u8) { ... }`, names
                 // the struct by its reduction rather than by `type_name`,
                 // which is only the constructor's name (spec 4.14:23).
+                // A module-qualified constructor head (`lib.Wrap(u8) { .. }`)
+                // carries its module in the head call (RUE-2434). A qualified
+                // name (`lib.S { .. }`) reduces its module base first, and the
+                // host resolves the member as a body's literal does (RUE-2440).
                 let ty = if let Some(head) = ctor_head {
                     let head = outcome_value!(self.eval(head, env));
                     let Some(ty) = head.as_type() else {
                         return ComptimeOutcome::RuntimeDependent;
                     };
                     Some(ty)
+                } else if let Some(module) = module {
+                    let module = outcome_value!(self.eval(module, env));
+                    let type_name = self.name_from_rir((*type_name).into());
+                    host_value!(
+                        self.host
+                            .resolve_comptime_module_struct_type(module, type_name, &site)
+                    )
                 } else {
                     let type_name = self.name_from_rir((*type_name).into());
                     host_value!(self.host.resolve_comptime_struct_type(
