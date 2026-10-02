@@ -290,10 +290,47 @@ impl<'a, A: DurableComptimeHostAuthority + ?Sized> DurableComptimeHost<'a, A> {
                 };
                 rue_air::finite_float_literal(text, width, false, || text.to_string())
                     .map(|_| ())
-                    .map_err(reject)
+                    .map_err(reject)?;
+                Self::canonicalize_float_child(value, slot);
+                Ok(())
+            }
+            (DurableConstValue::Float(_), _, DurableType::F32 | DurableType::F64) => {
+                Self::canonicalize_float_child(value, slot);
+                Ok(())
             }
             _ => Ok(()),
         }
+    }
+
+    /// Key a float child by its value at its slot's width, not its spelling,
+    /// as a scalar float comptime argument is keyed at its parameter type
+    /// (RUE-2403): `P { x: 0.1 }` and `P { x: 0.100000001 }` with `x: f32`
+    /// build one value, so they name one specialization and one
+    /// type-constructor instance (RUE-2410). The slot rounds the value
+    /// anyway, so the canonical text reads back to the same bits at every
+    /// use. A text that is not a float value is left for its consumer.
+    fn canonicalize_float_child(value: &mut EvaluatedSemanticConst, slot: &DurableType) {
+        let EvaluatedSemanticConst::Value(typed) = value else {
+            return;
+        };
+        let DurableConstValue::Float(text) = &typed.value else {
+            return;
+        };
+        let width = match slot {
+            DurableType::F32 => rue_air::Type::F32,
+            DurableType::F64 => rue_air::Type::F64,
+            _ => return,
+        };
+        let Some(canonical) = rue_air::canonical_float_value_text(text, width) else {
+            return;
+        };
+        if *canonical == **text {
+            return;
+        }
+        *value = EvaluatedSemanticConst::Value(Arc::new(TypedSemanticConst {
+            value: DurableConstValue::Float(Arc::from(canonical)),
+            ty: typed.ty.clone(),
+        }));
     }
 
     /// Whether `ty` is a concrete value type a literal can be checked
