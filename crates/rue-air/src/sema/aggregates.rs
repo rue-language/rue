@@ -1189,27 +1189,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     span,
                 ));
             };
-            let module_file = self.aggregate_facts().aggregate_module(module_id).file;
-            let member = {
-                let facts = self.aggregate_facts();
-                select_module_type_member(facts, module_file, type_name)
-            };
-            let nominal = member
-                .as_struct()
-                .ok_or_compile_error(ErrorKind::UnknownType(type_name_str.to_string()), span)?;
-            // Visibility is E0706 (RUE-525), uniform with enum members and
-            // associated-function calls through a module — and with every
-            // other position that can name this struct (RUE-1973).
-            let def = self.body_type_pool().struct_def(nominal.id);
-            self.check_module_qualified_visibility(
-                nominal.alias,
-                module_file,
-                (def.file_id, def.is_pub),
-                crate::PrivateItemKind::Struct,
-                &type_name_str,
-                span,
-            )?;
-            nominal.id
+            self.resolve_module_qualified_struct_literal(module_id, type_name, span)?
         } else {
             let head = {
                 let facts = self.aggregate_facts();
@@ -1433,6 +1413,44 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// Apply module-qualified visibility (E0706) to a nominal reached through
     /// `m.Name`, whichever of the two ways it was named.
     ///
+    /// Resolve the struct a module-qualified literal names (`lib.S { .. }`,
+    /// `lib.m.S { .. }`, `@import("x.rue").S { .. }`) once its module base
+    /// has resolved to `module_id`.
+    ///
+    /// The body's literal analysis and body comptime evaluation (RUE-2440)
+    /// both resolve the name here, so a literal reduced at comptime selects
+    /// the same nominal type and reports the same unknown-type (E0204) and
+    /// privacy (E0706) diagnostics as the runtime literal.
+    pub(crate) fn resolve_module_qualified_struct_literal(
+        &self,
+        module_id: crate::types::ModuleId,
+        type_name: Spur,
+        span: Span,
+    ) -> CompileResult<crate::types::StructId> {
+        let type_name_str = self.body_interner().resolve(&type_name).to_owned();
+        let module_file = self.aggregate_facts().aggregate_module(module_id).file;
+        let member = {
+            let facts = self.aggregate_facts();
+            select_module_type_member(facts, module_file, type_name)
+        };
+        let nominal = member
+            .as_struct()
+            .ok_or_compile_error(ErrorKind::UnknownType(type_name_str.clone()), span)?;
+        // Visibility is E0706 (RUE-525), uniform with enum members and
+        // associated-function calls through a module — and with every
+        // other position that can name this struct (RUE-1973).
+        let def = self.body_type_pool().struct_def(nominal.id);
+        self.check_module_qualified_visibility(
+            nominal.alias,
+            module_file,
+            (def.file_id, def.is_pub),
+            crate::PrivateItemKind::Struct,
+            &type_name_str,
+            span,
+        )?;
+        Ok(nominal.id)
+    }
+
     /// A declaration is governed by its own `pub` and defining file. A `const`
     /// type alias is governed by the binding instead: `m.Alias` names the
     /// binding, not the declaration behind it, so the binding's `pub` and the

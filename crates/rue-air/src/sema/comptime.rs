@@ -467,13 +467,28 @@ pub trait ComptimeTypeAlgebra: ComptimeDomain {
         self.resolve_named_type_value(program, name, span)
     }
     /// Resolve the nominal struct a module-qualified literal names
-    /// (`lib.S { .. }`) from its reduced module base. `Ok(None)` is a base
-    /// that is not a module value, which is every base in a domain without
-    /// module values; an unknown or private member is the host's diagnostic,
-    /// as in a body (RUE-2440).
+    /// (`lib.S { .. }`) from its evaluated module base, for a host that
+    /// evaluates module receivers ([`ComptimeMethodReceiverPolicy`]).
+    /// `Ok(None)` is a base that is not a module value; an unknown or private
+    /// member is the host's diagnostic, as in a body (RUE-2440).
     fn resolve_comptime_module_struct_type(
         &mut self,
         _module: Self::Value,
+        _name: Self::Name,
+        _site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> ComptimeHostResult<Option<Self::Type>, Self::Failure> {
+        Ok(None)
+    }
+    /// Resolve the nominal struct a module-qualified literal names from its
+    /// decoded module path, for a host that reaches module receivers
+    /// syntactically. `root_module` is as for
+    /// [`ComptimeTypeAlgebra::resolve_comptime_type_path`]; `Ok(None)` is a
+    /// path that does not name a module (RUE-2440).
+    fn resolve_comptime_module_path_struct_type(
+        &mut self,
+        _file: Self::File,
+        _root_module: Option<&Self::Type>,
+        _segments: &[Self::Name],
         _name: Self::Name,
         _site: &ComptimeDiagnosticSite<Self::ProgramKey>,
     ) -> ComptimeHostResult<Option<Self::Type>, Self::Failure> {
@@ -5541,12 +5556,31 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                     };
                     Some(ty)
                 } else if let Some(module) = module {
-                    let module = outcome_value!(self.eval(module, env));
+                    // The module base is reached as a method call's receiver
+                    // is: evaluated to a module value by a durable host, or
+                    // decoded as a module path by the ordinary body host.
                     let type_name = self.name_from_rir((*type_name).into());
-                    host_value!(
-                        self.host
-                            .resolve_comptime_module_struct_type(module, type_name, &site)
-                    )
+                    match self.host.comptime_method_receiver_policy() {
+                        ComptimeMethodReceiverPolicy::EvaluateReceiver => {
+                            let module = outcome_value!(self.eval(module, env));
+                            host_value!(
+                                self.host
+                                    .resolve_comptime_module_struct_type(module, type_name, &site)
+                            )
+                        }
+                        ComptimeMethodReceiverPolicy::SyntacticModulePath => {
+                            let Some(path) = self.decode_module_path(module, env) else {
+                                return ComptimeOutcome::RuntimeDependent;
+                            };
+                            host_value!(self.host.resolve_comptime_module_path_struct_type(
+                                path.file,
+                                path.root_module.as_ref(),
+                                &path.segments,
+                                type_name,
+                                &site,
+                            ))
+                        }
+                    }
                 } else {
                     let type_name = self.name_from_rir((*type_name).into());
                     host_value!(self.host.resolve_comptime_struct_type(
