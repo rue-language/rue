@@ -866,6 +866,16 @@ pub(crate) struct ComptimeCallQueryKey {
     pub(crate) declaration: DeclarationSemanticQueryKey,
     pub(crate) type_arguments: Arc<[(Arc<str>, DurableType)]>,
     pub(crate) value_arguments: Arc<[(Arc<str>, DurableConstValue)]>,
+    /// The facts of anonymous nominals a runtime body produces and passes to
+    /// this call while its own analysis is still running (`let I = struct {
+    /// .. }; W(I)`, RUE-2590). Such a body publishes its nominals only when
+    /// its transaction finishes, so the call cannot read them from their
+    /// producer without waiting on the body that is asking. The caller lends
+    /// them instead; they are a pure function of the argument identities
+    /// within one revision, so a call keyed with them reduces exactly as the
+    /// same call keyed without them would once the body has finished. Empty
+    /// for every other call.
+    pub(crate) lent_anonymous_nominals: Arc<[DurableAnonymousNominal]>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -985,11 +995,18 @@ impl SemanticNucleusKey {
                 key.gate
             ),
             Self::ConstResolution(key) => format!("const:{}", key.stable_identity()),
-            Self::ComptimeCall(key) => format!(
+            Self::ComptimeCall(key) if key.lent_anonymous_nominals.is_empty() => format!(
                 "comptime:{}:{:?}:{:?}",
                 key.declaration.stable_identity(),
                 key.type_arguments,
                 key.value_arguments
+            ),
+            Self::ComptimeCall(key) => format!(
+                "comptime:{}:{:?}:{:?}:lent:{:?}",
+                key.declaration.stable_identity(),
+                key.type_arguments,
+                key.value_arguments,
+                key.lent_anonymous_nominals
             ),
             Self::AnonymousNominal(key) => format!(
                 "anonymous:{}:{:?}",

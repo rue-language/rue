@@ -1480,7 +1480,33 @@ $runtime
                                                 );
                                             }
                                             let mut anonymous_nominals = BTreeMap::new();
+                                            // A runtime caller lends the facts of
+                                            // the nominals it is still producing;
+                                            // asking their producer would wait on
+                                            // the caller's own analysis (RUE-2590).
+                                            for lent in call.lent_anonymous_nominals.iter() {
+                                                if let Err(identity) =
+                                                    crate::durable_semantics::merge_anonymous_nominal(
+                                                        &mut anonymous_nominals,
+                                                        lent,
+                                                    )
+                                                {
+                                                    return Ok(QueryOutput::success(
+                                                        Value::Failure(Failure::Resolution(
+                                                            Arc::from(format!(
+                                                                "conflicting durable anonymous facts for {identity:?}"
+                                                            )),
+                                                        )),
+                                                    )
+                                                    .with_terminal_kind(QueryTerminalKind::Failure));
+                                                }
+                                            }
                                             for identity in anonymous_dependencies {
+                                                if anonymous_nominals.contains_key(
+                                                    identity.with_canonical_producer().as_ref(),
+                                                ) {
+                                                    continue;
+                                                }
                                                 let Some(dependency) = anonymous_nominal_query_key(
                                                     &identity,
                                                     &call.declaration.configuration,

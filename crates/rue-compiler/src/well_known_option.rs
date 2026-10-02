@@ -96,6 +96,7 @@ pub(crate) fn exact_option_query(
         },
         type_arguments: Arc::from([(Arc::<str>::from("T"), payload.clone())]),
         value_arguments: Arc::from([]),
+        lent_anonymous_nominals: Arc::from([]),
     };
     (payload, call)
 }

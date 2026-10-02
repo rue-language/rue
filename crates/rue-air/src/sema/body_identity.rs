@@ -1170,6 +1170,22 @@ where
         self.try_intern_name(name)
     }
 
+    /// Resolve `key` to `ty`, an anonymous nominal the body declares itself,
+    /// whenever a durable fact names it: the fields of a type a constructor
+    /// built over the body's own `let I = struct { .. }` (RUE-2590). Only the
+    /// forward lookup is recorded. The type stays the body's own, so nothing
+    /// that asks whether a type came from a durable fact is told it did.
+    pub(in crate::sema) fn alias_local_anonymous(
+        &mut self,
+        key: &AnonymousNominalKey<K, M>,
+        ty: Type,
+    ) where
+        M: Clone,
+    {
+        let key = key.with_canonical_producer().into_owned();
+        self.anon_nominals.entry(key).or_insert(ty);
+    }
+
     fn record_struct_identity(&mut self, key: K, id: StructId) {
         if let Some(previous) = self.struct_ids.insert(key.clone(), id) {
             assert!(

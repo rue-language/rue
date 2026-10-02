@@ -170,6 +170,7 @@ impl DurableComptimeCallContext {
             },
             type_arguments: admitted.seed.type_arguments.clone(),
             value_arguments: admitted.seed.value_arguments.clone(),
+            lent_anonymous_nominals: Arc::from([]),
         };
         Ok(Self {
             query,
@@ -234,6 +235,7 @@ impl DurableComptimeCallContext {
                 },
                 type_arguments: Arc::from([]),
                 value_arguments: Arc::from([]),
+                lent_anonymous_nominals: Arc::from([]),
             },
             parent_producer,
             parent_declaration,
@@ -562,6 +564,7 @@ impl DurableComptimeSession {
             },
             type_arguments: type_arguments.to_vec().into(),
             value_arguments: value_arguments.to_vec().into(),
+            lent_anonymous_nominals: Arc::from([]),
         };
         let first = self.lifecycle.active.iter().position(|key| {
             self.lifecycle

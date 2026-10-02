@@ -142,6 +142,7 @@ pub(in crate::revisioned_query_database) fn comptime_call_for_anonymous_function
         declaration: producer.clone(),
         type_arguments: types.into(),
         value_arguments: values.into(),
+        lent_anonymous_nominals: Arc::from([]),
     })
 }
 
