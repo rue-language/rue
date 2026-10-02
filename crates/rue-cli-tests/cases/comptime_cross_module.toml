@@ -802,6 +802,89 @@ compile_fail = true
 error_contains = ["E0706", "function `hidden` is private"]
 
 [[case]]
+name = "associated_type_call_type_result_in_comptime_block"
+description = "An associated `-> type` call reduces only to a module (RUE-2602): one whose body is a type stays not compile-time known in a `comptime` block, the E1200 it was before associated calls reduced, not the spanless E1400 an earlier RUE-2602 revision reported for a producer body no query could analyze."
+args = ["main.rue", "-o", "prog"]
+files = [
+  { path = "main.rue", source = """
+struct S { fn md() -> type { i32 } }
+fn main() -> i32 {
+    let a: i32 = comptime { let m = S.md(); 3 };
+    a
+}
+""" },
+]
+compile_fail = true
+error_contains = ["E1200", "expression contains values that cannot be known at compile time"]
+compile_stderr_not_contains = ["E1400", "provider-native analyzer"]
+
+[[case]]
+name = "associated_type_call_struct_result_in_comptime_block"
+description = "An associated `-> type` call whose body mints an anonymous struct stays not compile-time known in a `comptime` block, as before associated calls reduced; the reduction never names the member callable as the struct's producer (RUE-2602)."
+args = ["main.rue", "-o", "prog"]
+files = [
+  { path = "main.rue", source = """
+struct T { fn md() -> type { struct { x: i32 } } }
+fn main() -> i32 {
+    let a: i32 = comptime { T.md(); 3 };
+    a
+}
+""" },
+]
+compile_fail = true
+error_contains = ["E1200", "expression contains values that cannot be known at compile time"]
+compile_stderr_not_contains = ["E1400", "provider-native analyzer"]
+
+[[case]]
+name = "module_returning_associated_type_call_type_parameter_receiver"
+description = "A `comptime X: type` parameter heads an associated module-returning call through the type each specialization binds: `f(R)` reaches R's module and `f(S)` S's, whether the call is bound by a `let` or heads the member call (RUE-2602)."
+args = ["main.rue", "-o", "prog"]
+files = [
+  { path = "one.rue", source = """
+pub fn g() -> i32 { 1 }
+""" },
+  { path = "two.rue", source = """
+pub fn g() -> i32 { 2 }
+""" },
+  { path = "main.rue", source = """
+struct S { fn md() -> type { @import("one.rue") } }
+struct R { fn md() -> type { @import("two.rue") } }
+fn f(comptime X: type) -> i32 {
+    let m = X.md();
+    m.g() + X.md().g()
+}
+fn main() -> i32 { f(R) * 10 + f(S) }
+""" },
+]
+exit_code = 42
+
+[[case]]
+name = "module_returning_associated_type_call_shadowed_receiver"
+description = "A parameter or local named `S` shadows the file's `struct S` as the receiver of an associated module-returning call, so `S.md()` reaches the module of the type the binding names, and the global `S` only where no binding hides it (RUE-2602)."
+args = ["main.rue", "-o", "prog"]
+files = [
+  { path = "one.rue", source = """
+pub fn g() -> i32 { 1 }
+""" },
+  { path = "two.rue", source = """
+pub fn g() -> i32 { 2 }
+""" },
+  { path = "main.rue", source = """
+struct S { fn md() -> type { @import("one.rue") } }
+struct R { fn md() -> type { @import("two.rue") } }
+fn k(comptime S: type) -> i32 { S.md().g() }
+fn main() -> i32 {
+    let a = k(R);
+    let b = S.md().g();
+    let S = R;
+    let c = S.md().g();
+    a * 10 + b * 5 + c
+}
+""" },
+]
+exit_code = 27
+
+[[case]]
 name = "zero_param_associated_type_call_no_runtime_param_help"
 description = "A zero-parameter associated function returning `type` whose body does not reduce is rejected at the call without the runtime-parameter help, which would point at a condition the call already meets (RUE-2417 review; re-pinned when RUE-2420 made the module-returning form reduce)."
 args = ["main.rue", "-o", "prog"]
