@@ -1,6 +1,6 @@
 macro_rules! register_body_body_produced_anonymous {
     ($runtime:ident, $semantic_nucleus_for_produced_anonymous_evaluator:ident, $shells_for_produced_anonymous:ident, $transactions_for_produced_anonymous:ident) => {{
-$runtime
+        $runtime
             .family_with_equality_and_evaluator(
                 "compiler.body-produced-anonymous",
                 BODY_QUERY_MEMO_RETENTION,
