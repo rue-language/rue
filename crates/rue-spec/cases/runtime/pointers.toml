@@ -555,3 +555,66 @@ fn main() -> i32 {
 """
 compile_fail = true
 error_contains = "checked"
+
+# =============================================================================
+# @ptr_read at an uninhabited pointee (RUE-2556)
+# =============================================================================
+#
+# A `ptr mut !` read types as `!` (9.2:6d), and no value of `!` exists to read
+# (3.4:9), so the read ends in `Terminator::Unreachable`. Codegen lowers that
+# to a trap instruction: `brk #1` (SIGTRAP) on AArch64 and `ud2` (SIGILL) on
+# x86-64. `unreachable_trap` pins that death; the program's output before the
+# read shows it ran up to it. The specification does not yet state the dynamic
+# semantics of a read at an uninhabited pointee.
+
+[[case]]
+name = "ptr_read_never_pointee_tail_traps"
+description = "A `ptr mut !` read as the tail of main's checked block is the program's last act: it prints, then dies by its target's trap signal. A null address is enough, since a zero-sized read loads nothing."
+spec = ["9.2:6b", "9.2:6d"]
+source = """
+fn main() -> i32 {
+    @dbg(1);
+    checked {
+        let p: ptr mut ! = @int_to_ptr(0);
+        @ptr_read(p)
+    }
+}
+"""
+expected_stdout = "1\n"
+unreachable_trap = true
+
+[[case]]
+name = "ptr_read_never_pointee_statement_traps"
+description = "A `ptr mut !` read as an expression statement diverges, so the code after it is unreachable and never runs: the program dies by its target's trap signal instead of exiting 0."
+spec = ["9.2:6b", "9.2:6d"]
+source = """
+fn main() -> i32 {
+    let mut x: i32 = 7;
+    checked {
+        let p: ptr mut ! = @int_to_ptr(@ptr_to_int(@raw_mut(x)));
+        @ptr_read(p);
+    };
+    0
+}
+"""
+unreachable_trap = true
+
+[[case]]
+name = "ptr_read_never_pointee_in_diverging_function_traps"
+description = "A function returning `!` whose body is a `ptr mut !` read traps when the call is reached, at -O1 as at -O0."
+spec = ["9.2:6b", "9.2:6d", "3.4:8"]
+source = """
+fn absurd(p: ptr mut !) -> ! {
+    checked { @ptr_read(p) }
+}
+
+fn main() -> i32 {
+    let mut x: i32 = 7;
+    @dbg(x);
+    let p: ptr mut ! = checked { @int_to_ptr(@ptr_to_int(@raw_mut(x))) };
+    if x == 7 { absurd(p) } else { 0 }
+}
+"""
+opt_level = 1
+expected_stdout = "7\n"
+unreachable_trap = true

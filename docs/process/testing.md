@@ -127,5 +127,9 @@ policy.
   ABI, multi-file, platform, and runtime-I/O bugs.
 - `known_bug = "RUE-NN"` and `known_bug_on = [...]` are executable xfail
   markers. When fixing a bug, find its cases and remove markers that now pass.
+- A program killed by a signal is a crash in both the spec and CLI runners,
+  except that `unreachable_trap = true` pins the one signal death Rue emits on
+  purpose: the trap a live `Terminator::Unreachable` lowers to (`SIGTRAP` on
+  AArch64, `SIGILL` on x86-64). See `crates/rue-spec/README.md`.
 - Specification tests cite paragraph IDs with `spec = ["X.Y:Z"]`. Update the
   specification and traceability whenever language semantics change.
