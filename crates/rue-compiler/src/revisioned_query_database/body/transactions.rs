@@ -1318,17 +1318,26 @@ impl BodyTransactionEvaluator {
                             &self.semantic_nucleus,
                             crate::semantic_query_nucleus::SemanticNucleusKey::ComptimeCall(call),
                         )?;
-                        let rue_query::QueryOutcome::Success(
-                            crate::semantic_query_nucleus::SemanticNucleusValue::ComptimeCall(
-                                projected,
+                        match projected.outcome() {
+                            rue_query::QueryOutcome::Success(
+                                crate::semantic_query_nucleus::SemanticNucleusValue::ComptimeCall(
+                                    projected,
+                                ),
+                            ) => crate::body_query::BodyProducedAnonymousNominals(
+                                projected.anonymous_nominals.clone(),
                             ),
-                        ) = projected.outcome()
-                        else {
-                            return Err(QueryAbort::Canceled);
-                        };
-                        crate::body_query::BodyProducedAnonymousNominals(
-                            projected.anonymous_nominals.clone(),
-                        )
+                            // The analysis already diagnosed this body, and the
+                            // constructor's projection fails with it (a body
+                            // that cannot reduce over a caller's local,
+                            // RUE-2590); the transaction reports the diagnosis
+                            // rather than escaping as cancellation.
+                            rue_query::QueryOutcome::Success(
+                                crate::semantic_query_nucleus::SemanticNucleusValue::Failure(_),
+                            ) if analyzed.is_err() => {
+                                crate::body_query::BodyProducedAnonymousNominals(Arc::from([]))
+                            }
+                            _ => return Err(QueryAbort::Canceled),
+                        }
                     } else {
                         crate::body_query::BodyProducedAnonymousNominals(Arc::from([]))
                     }

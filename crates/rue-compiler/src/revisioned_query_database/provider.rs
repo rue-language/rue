@@ -361,8 +361,11 @@ impl CanonicalAnonymousNominalRegistry {
     ) {
         for nominal in nominals {
             self.extend([nominal]);
-            self.complete
-                .insert(nominal.identity.with_canonical_producer().into_owned());
+            // An identity the merge just poisoned holds no facts to read.
+            let identity = nominal.identity.with_canonical_producer().into_owned();
+            if self.by_identity.contains_key(&identity) {
+                self.complete.insert(identity);
+            }
         }
     }
 

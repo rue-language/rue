@@ -1507,6 +1507,68 @@ $runtime
                                                 ) {
                                                     continue;
                                                 }
+                                                // A nominal a body with no declaration
+                                                // of its own produced (`let K = struct
+                                                // { .. }` in an anonymous struct's
+                                                // method, RUE-2590) is published by
+                                                // that body's transaction.
+                                                if let crate::StableProducerId::Function(function) =
+                                                    &identity.producer
+                                                    && function_definition_key(function).is_none()
+                                                {
+                                                    let produced = context.query_registered(
+                                                        &$produced_anonymous_for_semantic_nucleus,
+                                                        crate::body_query::BodyQueryKey::new(
+                                                            (**function).clone(),
+                                                            call.declaration.configuration.clone(),
+                                                        ),
+                                                    )?;
+                                                    let rue_query::QueryOutcome::Success(produced) =
+                                                        produced.outcome()
+                                                    else {
+                                                        unreachable!(
+                                                            "BodyProducedAnonymous publishes typed values"
+                                                        )
+                                                    };
+                                                    let fact = match produced {
+                                                        crate::body_query::ProducedAnonymous::Produced(
+                                                            produced,
+                                                        ) => produced
+                                                            .0
+                                                            .iter()
+                                                            .find(|nominal| {
+                                                                nominal.identity.with_canonical_producer()
+                                                                    == identity.with_canonical_producer()
+                                                            })
+                                                            .cloned()
+                                                            .ok_or_else(|| {
+                                                                Failure::Resolution(Arc::from(
+                                                                    "anonymous nominal producer did not publish the requested identity",
+                                                                ))
+                                                            }),
+                                                        crate::body_query::ProducedAnonymous::ProducerFailed(
+                                                            failure,
+                                                        ) => Err((**failure).clone()),
+                                                    };
+                                                    let merged = fact.and_then(|fact| {
+                                                        crate::durable_semantics::merge_anonymous_nominal(
+                                                            &mut anonymous_nominals,
+                                                            &fact,
+                                                        )
+                                                        .map_err(|identity| {
+                                                            Failure::Resolution(Arc::from(format!(
+                                                                "conflicting durable anonymous facts for {identity:?}"
+                                                            )))
+                                                        })
+                                                    });
+                                                    if let Err(failure) = merged {
+                                                        return Ok(QueryOutput::success(
+                                                            Value::Failure(failure),
+                                                        )
+                                                        .with_terminal_kind(QueryTerminalKind::Failure));
+                                                    }
+                                                    continue;
+                                                }
                                                 let Some(dependency) = anonymous_nominal_query_key(
                                                     &identity,
                                                     &call.declaration.configuration,
