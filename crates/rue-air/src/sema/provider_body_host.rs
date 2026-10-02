@@ -1271,6 +1271,10 @@ struct ProviderBodyHost<'a, P, S, K, M> {
     durable_comptime_type_flags: RefCell<AHashMap<ParamRange, Vec<bool>>>,
     durable_callable_type_syntax: RefCell<AHashMap<ParamRange, ProviderCallableTypeSyntax>>,
     durable_signature_files: RefCell<AHashMap<ParamRange, FileId>>,
+    /// Callables whose signature applied an interface bound to one of their
+    /// own type parameters; each call re-resolves their type syntax under its
+    /// type arguments so the bound is checked there (spec 6.8:15).
+    durable_generic_bound_signatures: RefCell<AHashSet<ParamRange>>,
     named_method_infos: RefCell<AHashMap<(StructId, Spur), MethodCallInfo>>,
     const_infos: RefCell<AHashMap<(FileId, Spur), ConstInfo>>,
     /// The conformance assertions visible from this body per subject type
@@ -1476,6 +1480,7 @@ where
             durable_comptime_type_flags: RefCell::new(AHashMap::new()),
             durable_callable_type_syntax: RefCell::new(AHashMap::new()),
             durable_signature_files: RefCell::new(AHashMap::new()),
+            durable_generic_bound_signatures: RefCell::new(AHashSet::new()),
             named_method_infos: RefCell::new(AHashMap::new()),
             const_infos: RefCell::new(AHashMap::new()),
             conformance_assertions: RefCell::new(AHashMap::new()),
@@ -1711,7 +1716,12 @@ where
                 .iter()
                 .any(|parameter| requires_deferred_syntax(&parameter.ty))
                 || requires_deferred_syntax(&function.result);
-            if has_deferred_type {
+            if function.applies_generic_interface_bounds {
+                self.durable_generic_bound_signatures
+                    .borrow_mut()
+                    .insert(info.params);
+            }
+            if has_deferred_type || function.applies_generic_interface_bounds {
                 if let Some(syntax) = exact_type_syntax
                     .and_then(|syntax| self.remap_callable_type_syntax(syntax))
                     .or_else(|| self.build_durable_callable_type_syntax(function))
@@ -5675,6 +5685,12 @@ where
             arena: self.rir.rir().type_syntax().clone(),
             root: *return_type,
         })
+    }
+
+    fn function_signature_applies_generic_bounds(&self, function: &FunctionCallInfo) -> bool {
+        self.durable_generic_bound_signatures
+            .borrow()
+            .contains(&function.params)
     }
 
     fn function_signature_root_file(&self, function: &FunctionCallInfo) -> Option<FileId> {

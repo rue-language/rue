@@ -937,6 +937,7 @@ pub(super) mod structured_type_adapter_tests {
             parameters,
             result: DurableType::ComptimeType,
             shell_parameters,
+            generic_bound_requirements: Arc::from([]),
         }
     }
 
@@ -2750,6 +2751,7 @@ pub(super) mod structured_type_adapter_tests {
                         parameters,
                         result: DurableType::ComptimeType,
                         shell_parameters,
+                        generic_bound_requirements: Arc::from([]),
                     })
                 }
                 CallFinishMode::Failure => Err(rue_air::SemanticProviderError::Failure(

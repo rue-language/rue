@@ -254,6 +254,7 @@ impl rue_air::DurableCallableSource<StableDefinitionKey, ModuleId> for DurableDe
             is_public: decl.is_public,
             is_unchecked: *is_unchecked,
             is_extern: false,
+            applies_generic_interface_bounds: false,
         })
     }
 

@@ -952,12 +952,25 @@ impl crate::durable_comptime::DurableComptimeSemanticAuthority
             dependency: _,
             alias_dependency: _,
         } = start;
-        let signature = self.provider.signature(candidate.clone())?;
+        let resolved = self.provider.resolved_signature(candidate.clone())?;
+        let generic_bound_requirements = resolved
+            .deferred_requirements
+            .iter()
+            .filter(|gate| {
+                matches!(
+                    gate.kind,
+                    crate::semantic_query_nucleus::DeferredRequirementKind::InterfaceBound { .. }
+                ) && SemanticNucleusTypeProvider::type_contains_unresolved_generic(
+                    &gate.ty,
+                )
+            })
+            .cloned()
+            .collect();
         let crate::semantic_query_nucleus::DeclarationSignatureProjection::Callable {
             parameters,
             result,
             ..
-        } = signature
+        } = resolved.signature
         else {
             return Err(rue_air::SemanticProviderError::Failure(
                 Failure::Resolution(Arc::from(format!("`{name}` is not callable"))),
@@ -1030,6 +1043,7 @@ impl crate::durable_comptime::DurableComptimeSemanticAuthority
             parameters,
             result,
             shell_parameters: shell.parameters.clone(),
+            generic_bound_requirements,
         })
     }
 

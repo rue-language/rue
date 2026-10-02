@@ -672,6 +672,7 @@ impl ProviderFixture {
                 is_public: true,
                 is_unchecked: false,
                 is_extern: false,
+                applies_generic_interface_bounds: false,
             },
         );
         key

@@ -156,17 +156,90 @@ $runtime
                                 crate::semantic_query_nucleus::DeferredRequirementKind::InterfaceBound {
                                     callable,
                                     parameter_index,
-                                } => $body_transaction_evaluator_for_semantic_nucleus
-                                    .get()
-                                    .ok_or(QueryAbort::ForeignRuntime)?
-                                    .check_interface_bound(
-                                        context,
-                                        configuration.clone(),
-                                        callable,
-                                        *parameter_index as usize,
-                                        &query.gate.ty,
-                                        anonymous_nominals.as_ref(),
-                                    ),
+                                } => {
+                                    let checked = $body_transaction_evaluator_for_semantic_nucleus
+                                        .get()
+                                        .ok_or(QueryAbort::ForeignRuntime)?
+                                        .check_interface_bound(
+                                            context,
+                                            configuration.clone(),
+                                            callable,
+                                            *parameter_index as usize,
+                                            &query.gate.ty,
+                                            anonymous_nominals.as_ref(),
+                                        );
+                                    // The checker runs in the constructor's
+                                    // declaration, so it anchors the error
+                                    // there. It is reported where the
+                                    // argument was applied instead: at the
+                                    // call the gate recorded (a call in a
+                                    // `const` initializer or a body), or,
+                                    // for an application in a signature that
+                                    // recorded no call, at the declaration
+                                    // whose signature applies it. The bound
+                                    // stays as the secondary label.
+                                    let source = &query.gate.source;
+                                    let (anchor, start, end) = match &query.producer {
+                                        _ if source.start < source.end => {
+                                            (&source.declaration, source.start, source.end)
+                                        }
+                                        Producer::Declaration(producer) => (&producer.declaration, 0, 0),
+                                        Producer::Module(_) => (&source.declaration, 0, 0),
+                                    };
+                                    match checked {
+                                        Err(rue_air::SemanticProviderError::Failure(
+                                            Failure::DiagnosticAtModuleSpans { error, span_modules },
+                                        )) if matches!(
+                                            error.kind,
+                                            rue_error::ErrorKind::InterfaceBoundNotSatisfied { .. }
+                                        ) && (start < end || anchor != &source.declaration)
+                                            && !span_modules.is_empty() =>
+                                        {
+                                            let parsed = context.query_registered(
+                                                &$parse_for_semantic_nucleus,
+                                                ModuleQueryKey(anchor.module.clone()),
+                                            )?;
+                                            let application = match parsed.outcome() {
+                                                rue_query::QueryOutcome::Success(ParseModuleValue {
+                                                    result: Ok(parsed),
+                                                    ..
+                                                }) => parsed
+                                                    .definitions()
+                                                    .declaration_locator(anchor)
+                                                    .map(|locator| locator.declaration_span)
+                                                    .and_then(|declaration| {
+                                                        if start == end {
+                                                            return Some(rue_span::Span::new(
+                                                                declaration.start,
+                                                                declaration.end,
+                                                            ));
+                                                        }
+                                                        let start = declaration.start.checked_add(start)?;
+                                                        let end = declaration.start.checked_add(end)?;
+                                                        (end <= declaration.end)
+                                                            .then(|| rue_span::Span::new(start, end))
+                                                    }),
+                                                _ => None,
+                                            };
+                                            match application {
+                                                Some(span) => {
+                                                    let mut modules = span_modules.to_vec();
+                                                    modules[0] = anchor.module.clone();
+                                                    Err(rue_air::SemanticProviderError::Failure(
+                                                        Failure::DiagnosticAtModuleSpans {
+                                                            error: error.with_primary_span(span),
+                                                            span_modules: modules.into(),
+                                                        },
+                                                    ))
+                                                }
+                                                None => Err(rue_air::SemanticProviderError::Failure(
+                                                    Failure::DiagnosticAtModuleSpans { error, span_modules },
+                                                )),
+                                            }
+                                        }
+                                        checked => checked,
+                                    }
+                                }
                             };
                             let value = match result {
                                 Ok(Some(kind)) => Value::Failure(Failure::DeferredRequirement {
@@ -1590,6 +1663,27 @@ $runtime
                                                         },
                                                     );
                                                 }
+                                            }
+                                            // A bound the signature applied to
+                                            // one of its own type parameters
+                                            // (`comptime a: W(T, 2)` with
+                                            // `comptime T: Equatable` on `W`)
+                                            // was carried forward generic;
+                                            // this call fixes `T`, so the
+                                            // requirement holds of its
+                                            // argument here (spec 6.8:15).
+                                            for gate in signature.deferred_requirements.iter() {
+                                                if !matches!(gate.kind, crate::semantic_query_nucleus::DeferredRequirementKind::InterfaceBound { .. })
+                                                    || !SemanticNucleusTypeProvider::type_contains_unresolved_generic(&gate.ty)
+                                                {
+                                                    continue;
+                                                }
+                                                let mut gate = gate.clone();
+                                                gate.ty = substitute_durable_generics(
+                                                    &gate.ty,
+                                                    &concrete_type_arguments,
+                                                );
+                                                provider.deferred_requirements.insert(gate);
                                             }
                                             let session = crate::durable_comptime::DurableComptimeSession::new(
                                                 producer_key.clone(),
