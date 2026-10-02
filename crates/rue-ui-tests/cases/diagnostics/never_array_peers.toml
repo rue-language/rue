@@ -1,0 +1,124 @@
+[section]
+id = "diagnostics.never_array_peers"
+name = "Arrays of ! joined with literal peers"
+description = """
+A completing value whose type is `[!; N]` (read through a pointer, returned by
+a function, held in a field) is not accepted at another array type (7.1:2a),
+and no peer of it is a declaration of `!`. Joining it with an integer-literal
+array — as `if` or `match` arms, comparison operands, or array-literal
+elements — is a type mismatch of the two array types, reported at the later
+peer in the usual expected/found direction, not a literal typed at `!` and
+range-checked there (E0800, RUE-2559). A literal where an annotation or
+parameter declares `!` is still range-checked: that is a declaration, not a
+peer.
+"""
+
+[[case]]
+name = "if_join_with_a_never_array_read"
+description = "The literal arm is checked against the array of `!` the first arm read."
+source = """
+fn main() -> i32 {
+    let p: ptr mut [!; 2] = checked { @int_to_ptr(64) };
+    let c = true;
+    let _a = if c { checked { @ptr_read(p) } } else { [1, 2] };
+    0
+}
+"""
+compile_fail = true
+expected_error_code = "E0206"
+expected_error = """
+error: [E0206]: type mismatch: expected [!; 2], found [{integer}; 2]
+ --> test.rue:4:55
+  |
+4 |     let _a = if c { checked { @ptr_read(p) } } else { [1, 2] };
+  |                                                       ^^^^^^
+  |
+"""
+
+[[case]]
+name = "match_join_with_a_never_array_return"
+description = "A function declared to return `[!; 2]` is the found side after a literal arm."
+source = """
+fn stuck() -> [!; 2] { @panic("unreachable") }
+fn main() -> i32 {
+    let c = true;
+    let _a = match c { true => [1, 2], false => stuck() };
+    0
+}
+"""
+compile_fail = true
+expected_error_code = "E0206"
+expected_error = """
+error: [E0206]: type mismatch: expected [{integer}; 2], found [!; 2]
+ --> test.rue:4:49
+  |
+4 |     let _a = match c { true => [1, 2], false => stuck() };
+  |                                                 ^^^^^^^
+  |
+"""
+
+[[case]]
+name = "comparison_with_a_never_array_field"
+description = "The left operand sets the expectation; the field of type `[!; 2]` is found wanting."
+source = """
+struct Holder { v: [!; 2] }
+fn main() -> i32 {
+    let p: ptr mut Holder = checked { @int_to_ptr(64) };
+    let h = checked { @ptr_read(p) };
+    let _b = [1, 2] == h.v;
+    0
+}
+"""
+compile_fail = true
+expected_error_code = "E0206"
+expected_error = """
+error: [E0206]: type mismatch: expected [{integer}; 2], found [!; 2]
+ --> test.rue:5:24
+  |
+5 |     let _b = [1, 2] == h.v;
+  |                        ^^^
+  |
+"""
+
+[[case]]
+name = "array_literal_element_after_a_never_array"
+description = "The first element supplies the element type and the literal element is checked against it."
+source = """
+fn main() -> i32 {
+    let p: ptr mut [!; 2] = checked { @int_to_ptr(64) };
+    let _a = [checked { @ptr_read(p) }, [1, 2]];
+    0
+}
+"""
+compile_fail = true
+expected_error_code = "E0206"
+expected_error = """
+error: [E0206]: type mismatch: expected [!; 2], found [{integer}; 2]
+ --> test.rue:3:41
+  |
+3 |     let _a = [checked { @ptr_read(p) }, [1, 2]];
+  |                                         ^^^^^^
+  |
+"""
+
+[[case]]
+name = "nested_never_element_in_an_if_join"
+description = "The `!` may sit at any depth of the array; the whole array types are named."
+source = """
+fn main() -> i32 {
+    let p: ptr mut [[!; 2]; 1] = checked { @int_to_ptr(64) };
+    let c = true;
+    let _a = if c { [[1, 2]] } else { checked { @ptr_read(p) } };
+    0
+}
+"""
+compile_fail = true
+expected_error_code = "E0206"
+expected_error = """
+error: [E0206]: type mismatch: expected [[{integer}; 2]; 1], found [[!; 2]; 1]
+ --> test.rue:4:39
+  |
+4 |     let _a = if c { [[1, 2]] } else { checked { @ptr_read(p) } };
+  |                                       ^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+"""
