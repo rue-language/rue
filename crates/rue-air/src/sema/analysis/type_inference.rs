@@ -7,7 +7,7 @@ use super::super::ordinary_engine::{OrdinaryBodyAnalysisHost, OrdinaryBodyEngine
 use super::*;
 use crate::inference::{FrontierParamOverlay, LazyInferenceFacts, ParamVarInfo};
 use crate::inference::{TypeVarId, UnificationError};
-use crate::sema::context::FloatLiteralJoins;
+use crate::sema::context::{FloatLiteralJoins, InferenceStatementErrors};
 use crate::sema::{decode_inline_import_spine, decode_module_spine};
 use ahash::{AHashMap, AHashSet};
 use lasso::Key;
@@ -499,8 +499,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// This avoids rebuilding these maps for each function, reducing O(n²) to O(n).
     ///
     /// Returns maps from RIR instruction refs to their resolved concrete types
-    /// and normal-continuation facts, and the float literals whose class an
-    /// unresolved integer literal joined.
+    /// and normal-continuation facts, the float literals whose class an
+    /// unresolved integer literal joined, and, under statement recovery, the
+    /// inference failures attributed to the body's top-level statements.
     pub(crate) fn run_type_inference(
         &mut self,
         infer_ctx: &InferenceContext,
@@ -515,6 +516,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         AHashMap<InstRef, crate::sema::ComptimeSelection>,
         InferenceBreakdown,
         FloatLiteralJoins,
+        InferenceStatementErrors,
     )> {
         // Most bodies have no selector or computed comptime argument that can
         // benefit from a canonical pre-pass.  Keep those bodies on the normal
@@ -540,23 +542,39 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 None,
                 None,
             )?;
-            return Ok((result.0, result.1, AHashMap::new(), result.2, result.4));
+            return Ok((
+                result.0,
+                result.1,
+                AHashMap::new(),
+                result.2,
+                result.4,
+                result
+                    .5
+                    .map(|failures| failures.statements)
+                    .unwrap_or_default(),
+            ));
         }
-        let (mut probe_types, _probe_continues, probe_breakdown, precompute_snapshot, _) = self
-            .run_type_inference_pass(
-                infer_ctx,
-                return_type,
-                params,
-                body,
-                type_subst,
-                value_subst,
-                None,
-                None,
-                true,
-                false,
-                None,
-                None,
-            )?;
+        let (
+            mut probe_types,
+            _probe_continues,
+            probe_breakdown,
+            precompute_snapshot,
+            _,
+            probe_errors,
+        ) = self.run_type_inference_pass(
+            infer_ctx,
+            return_type,
+            params,
+            body,
+            type_subst,
+            value_subst,
+            None,
+            None,
+            true,
+            false,
+            None,
+            None,
+        )?;
         // The facts `probe_types` was generated with.
         let mut probe_facts = GenericCallFacts::default();
         let mut staged_breakdown = probe_breakdown;
@@ -567,7 +585,12 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // types and, should a frontier then fail while some walk had seen
         // stale types, stages again refreshing every walk that queues a
         // frontier; see `collect_staged_facts`.
-        let (selections, call_facts) = match self.stage_comptime_selections(
+        // A probe that recovered from inference failures stages over the
+        // types that recovery poisoned. Staging is not recovery-aware, so when
+        // it fails the body reports the probe's first inference failure, as it
+        // would had the probe stopped there.
+        let first_probe_error = probe_errors.map(|failures| failures.first);
+        let staged = match self.stage_comptime_selections(
             infer_ctx,
             return_type,
             params,
@@ -582,7 +605,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             &mut staged_breakdown,
             &mut work,
         ) {
-            Ok(staged) => staged,
+            Ok(staged) => Ok(staged),
             Err(_) if stale_seen => {
                 self.check_canceled()?;
                 self.stage_comptime_selections(
@@ -599,9 +622,17 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     &mut stale_seen,
                     &mut staged_breakdown,
                     &mut work,
-                )?
+                )
             }
-            Err(error) => return Err(error),
+            Err(error) => Err(error),
+        };
+        let (selections, call_facts) = match (staged, first_probe_error) {
+            (Ok(staged), _) => staged,
+            (Err(_), Some(probe_error)) => {
+                self.check_canceled()?;
+                return Err(probe_error);
+            }
+            (Err(error), None) => return Err(error),
         };
         let StagedWalkWork {
             fact_nodes,
@@ -641,7 +672,17 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         breakdown.staged_binding_trie_lookups = breakdown
             .staged_binding_trie_lookups
             .saturating_add(scope_materializations.saturating_mul(33));
-        Ok((result.0, result.1, selections, breakdown, result.4))
+        Ok((
+            result.0,
+            result.1,
+            selections,
+            breakdown,
+            result.4,
+            result
+                .5
+                .map(|failures| failures.statements)
+                .unwrap_or_default(),
+        ))
     }
 
     /// Stage one value-specialized or fact-bearing body: collect the root's
@@ -893,6 +934,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         InferenceBreakdown,
         PrecomputeSnapshot,
         FloatLiteralJoins,
+        Option<RecoveredInferenceFailures>,
     )> {
         let precompute_started = Instant::now();
         // Pre-resolve `let`-bound comptime type aliases (`let P = F();` where
@@ -1186,10 +1228,6 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
         // Phase 2: Solve constraints via unification
         let unification_resolution_started = Instant::now();
-        // Pre-size the substitution for better performance on large functions
-        let mut unifier = Unifier::with_capacity(type_var_count);
-        unifier.mark_int_literal_vars(&int_literal_vars);
-        unifier.mark_float_literal_vars(&float_literal_vars);
         // Literal contextualization is nominal. Admit only compiler-owned
         // identities: core `str`, the trusted std StrBuf language item when
         // imported, and synthetic fixed strings.
@@ -1223,54 +1261,107 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         string_literal_types.extend(fixed_string_types);
         string_literal_types.sort_unstable_by_key(Type::as_u32);
         string_literal_types.dedup();
-        unifier.mark_string_literal_vars(&string_literal_vars, &string_literal_types);
         let equivalence_queries = std::cell::Cell::new(0usize);
-        let errors = unifier.solve_constraints_with_projections(
-            &constraints,
-            &|left, right| {
-                if left == right {
-                    return true;
-                }
-                equivalence_queries.set(equivalence_queries.get() + 1);
-                self.types_equivalent(left, right)
-            },
-            &|base, field| {
-                let InferType::Concrete(base) = base else {
-                    return None;
-                };
-                let struct_id = base.as_struct()?;
-                let field_name = self.body_interner().resolve(&field);
-                let field_ty = self
-                    .body_type_pool()
-                    .struct_def(struct_id)
-                    .find_field(field_name)
-                    .map(|(_, field)| field.ty)?;
-                Some(self.type_to_infer_type(field_ty))
-            },
-            &|base| match base {
-                InferType::Array { element, .. } => Some((**element).clone()),
-                InferType::Concrete(ty) => self
-                    .body_type_pool()
-                    .index_element_type(*ty)
-                    .map(|ty| self.type_to_infer_type(ty)),
-                _ => None,
-            },
-            &|ty| {
-                let InferType::Concrete(ty) = ty else {
-                    return false;
-                };
-                self.is_strbuf(*ty) || self.is_str_like(*ty)
-            },
-        );
+        let solve = |recover_failures: bool| {
+            // Pre-size the substitution for better performance on large
+            // functions.
+            let mut unifier = Unifier::with_capacity(type_var_count);
+            if !recover_failures {
+                unifier = unifier.without_failure_recovery();
+            }
+            unifier.mark_int_literal_vars(&int_literal_vars);
+            unifier.mark_float_literal_vars(&float_literal_vars);
+            unifier.mark_string_literal_vars(&string_literal_vars, &string_literal_types);
+            let errors = unifier.solve_constraints_with_projections(
+                &constraints,
+                &|left, right| {
+                    if left == right {
+                        return true;
+                    }
+                    equivalence_queries.set(equivalence_queries.get() + 1);
+                    self.types_equivalent(left, right)
+                },
+                &|base, field| {
+                    let InferType::Concrete(base) = base else {
+                        return None;
+                    };
+                    let struct_id = base.as_struct()?;
+                    let field_name = self.body_interner().resolve(&field);
+                    let field_ty = self
+                        .body_type_pool()
+                        .struct_def(struct_id)
+                        .find_field(field_name)
+                        .map(|(_, field)| field.ty)?;
+                    Some(self.type_to_infer_type(field_ty))
+                },
+                &|base| match base {
+                    InferType::Array { element, .. } => Some((**element).clone()),
+                    InferType::Concrete(ty) => self
+                        .body_type_pool()
+                        .index_element_type(*ty)
+                        .map(|ty| self.type_to_infer_type(ty)),
+                    _ => None,
+                },
+                &|ty| {
+                    let InferType::Concrete(ty) = ty else {
+                        return false;
+                    };
+                    self.is_strbuf(*ty) || self.is_str_like(*ty)
+                },
+            );
+            (unifier, errors)
+        };
+        let (mut unifier, errors) = solve(true);
+
+        // Outside statement recovery a body stops at its first unification
+        // failure. Under recovery, failures that each fall inside one of the
+        // body block's top-level statements are attributed to those
+        // statements: the unifier has already bound the variables of every
+        // failed constraint to `Type::ERROR`, and semantic analysis reports
+        // each failed statement in its place, poisoning its binding. A
+        // failure recovery cannot attribute (outside the body's statements,
+        // or of a kind statement recovery keeps fatal) still stops the body.
+        // Frontier passes type selected sub-bodies and stay strict.
+        //
+        // The recovering unifier decides some types only through that
+        // `Type::ERROR` binding: a literal whose class a failed constraint
+        // joined, or a later constraint the binding silenced. A solve without
+        // recovery leaves those variables unbound and reports the silenced
+        // constraints; every top-level statement whose types differ between
+        // the two solves, or which holds a silenced constraint, is poisoned
+        // without a diagnostic of its own, so no semantic consumer reads a
+        // type recovery invented.
+        let mut pending_recovery = None;
+        if let Some(err) = errors.first() {
+            let first = self.unification_compile_error(err, string_literal_default);
+            if !self.body_analysis_error_recovery() || frontier_mode {
+                self.body_analysis_work_mut()
+                    .semantic_type_equivalence_queries += equivalence_queries.get();
+                return Err(first);
+            }
+            let compile_errors = errors
+                .iter()
+                .map(|err| self.unification_compile_error(err, string_literal_default))
+                .collect();
+            let Some(failures) = self.attribute_inference_errors(body, compile_errors) else {
+                self.body_analysis_work_mut()
+                    .semantic_type_equivalence_queries += equivalence_queries.get();
+                return Err(first);
+            };
+            let (mut unrecovered, unrecovered_errors) = solve(false);
+            let failed_spans = errors.iter().map(|err| err.span).collect::<AHashSet<_>>();
+            let silenced_spans = unrecovered_errors
+                .iter()
+                .map(|err| err.span)
+                .filter(|span| !failed_spans.contains(span))
+                .collect::<Vec<_>>();
+            unrecovered.default_int_literal_vars(&int_literal_vars);
+            unrecovered.default_unconstrained_vars(&float_literal_vars, Type::F64);
+            unrecovered.default_unconstrained_vars(&string_literal_vars, string_literal_default);
+            pending_recovery = Some((first, failures, unrecovered, silenced_spans));
+        }
         self.body_analysis_work_mut()
             .semantic_type_equivalence_queries += equivalence_queries.get();
-
-        // Convert unification errors to compile errors
-        // For now, we collect the first error. In the future, we could
-        // report multiple errors for better diagnostics.
-        if let Some(err) = errors.first() {
-            return Err(self.unification_compile_error(err, string_literal_default));
-        }
 
         // An integer literal joined with a float literal that no float
         // context resolved is named at the join, but only when semantic
@@ -1304,6 +1395,33 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         unifier.default_int_literal_vars(&int_literal_vars);
         unifier.default_unconstrained_vars(&float_literal_vars, Type::F64);
         unifier.default_unconstrained_vars(&string_literal_vars, string_literal_default);
+
+        let recovered_failures = match pending_recovery {
+            None => None,
+            Some((first, failures, unrecovered, silenced_spans)) => {
+                let decided_by_recovery = expr_types
+                    .iter()
+                    .filter(|(inst_ref, infer_ty)| {
+                        **inst_ref != body
+                            && unifier.resolve_infer_type(infer_ty)
+                                != unrecovered.resolve_infer_type(infer_ty)
+                    })
+                    .map(|(inst_ref, _)| *inst_ref)
+                    .collect::<AHashSet<_>>();
+                let Some(poisoned) = self.poison_recovered_statements(
+                    body,
+                    &failures,
+                    &decided_by_recovery,
+                    &silenced_spans,
+                ) else {
+                    return Err(first);
+                };
+                Some(RecoveredInferenceFailures {
+                    first,
+                    statements: InferenceStatementErrors { failures, poisoned },
+                })
+            }
+        };
 
         // Pre-collect all array types from resolved InferTypes before converting them.
         // This ensures all array types are created before the conversion loop, which
@@ -1358,7 +1476,101 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 local_repeat_counts,
             },
             float_literal_joins,
+            recovered_failures,
         ))
+    }
+
+    /// Attribute each inference failure to the body block's top-level
+    /// statement whose span contains it, in source order per statement.
+    /// `None` when some failure is not statement-recoverable or lies outside
+    /// every statement (a callee's declaration, the body's own result).
+    fn attribute_inference_errors(
+        &self,
+        body: InstRef,
+        errors: Vec<CompileError>,
+    ) -> Option<AHashMap<InstRef, Vec<CompileError>>> {
+        let rue_rir::InstData::Block { instructions } = &self.body_rir_ref().get(body).data else {
+            return None;
+        };
+        let statements = self
+            .body_rir_ref()
+            .block_insts(instructions)
+            .values()
+            .map(|statement| (statement, self.body_rir_ref().get(statement).span))
+            .collect::<Vec<_>>();
+        let mut attributed = AHashMap::<InstRef, Vec<CompileError>>::new();
+        for error in errors {
+            if !self.body_analysis_error_is_recoverable(&error) {
+                return None;
+            }
+            let span = error.span()?;
+            let (statement, _) = statements.iter().find(|(_, statement)| {
+                statement.file_id == span.file_id
+                    && statement.start <= span.start
+                    && span.end <= statement.end
+            })?;
+            let listed = attributed.entry(*statement).or_insert_with(Vec::new);
+            if !listed.contains(&error) {
+                listed.push(error);
+            }
+        }
+        for listed in attributed.values_mut() {
+            listed.sort_by_key(|error| error.span().map(|span| span.start));
+        }
+        Some(attributed)
+    }
+
+    /// The body block's top-level statements, other than those with an
+    /// attributed failure, that hold an instruction whose type recovery
+    /// decided or a constraint recovery silenced. `None` when one of those
+    /// lies outside every statement.
+    fn poison_recovered_statements(
+        &self,
+        body: InstRef,
+        failures: &AHashMap<InstRef, Vec<CompileError>>,
+        decided_by_recovery: &AHashSet<InstRef>,
+        silenced_spans: &[Span],
+    ) -> Option<AHashSet<InstRef>> {
+        let rue_rir::InstData::Block { instructions } = &self.body_rir_ref().get(body).data else {
+            return None;
+        };
+        let statements = self
+            .body_rir_ref()
+            .block_insts(instructions)
+            .values()
+            .collect::<Vec<_>>();
+        let mut poisoned = AHashSet::new();
+        let mut covered = AHashSet::new();
+        for &statement in &statements {
+            let span = self.body_rir_ref().get(statement).span;
+            let mut pending = vec![statement];
+            let mut decided = false;
+            while let Some(instruction) = pending.pop() {
+                if !covered.insert(instruction) {
+                    continue;
+                }
+                decided |= decided_by_recovery.contains(&instruction);
+                self.body_rir_ref()
+                    .child_instructions(instruction, &mut pending);
+            }
+            let silenced = silenced_spans.iter().any(|silenced| {
+                silenced.file_id == span.file_id
+                    && span.start <= silenced.start
+                    && silenced.end <= span.end
+            });
+            if (decided || silenced) && !failures.contains_key(&statement) {
+                poisoned.insert(statement);
+            }
+        }
+        let all_silenced_covered = silenced_spans.iter().all(|silenced| {
+            statements.iter().any(|&statement| {
+                let span = self.body_rir_ref().get(statement).span;
+                silenced.file_id == span.file_id
+                    && span.start <= silenced.start
+                    && silenced.end <= span.end
+            })
+        });
+        (all_silenced_covered && decided_by_recovery.is_subset(&covered)).then_some(poisoned)
     }
 
     /// Name one side of a peer-array mismatch: a string literal no context
@@ -1545,7 +1757,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 defer_stale_selectors = false;
                 continue;
             }
-            let (types, _, breakdown, _, _) = self.run_type_inference_pass(
+            let (types, _, breakdown, _, _, _) = self.run_type_inference_pass(
                 infer_ctx,
                 return_type,
                 params,
@@ -2928,4 +3140,12 @@ fn value_visible_type_subst(
         }
     }
     Some((subst, unknown))
+}
+
+/// Inference failures a pass recovered from under statement recovery: the
+/// failure the pass would have stopped at, and every failure attributed to
+/// the body's top-level statements.
+pub(crate) struct RecoveredInferenceFailures {
+    first: CompileError,
+    statements: InferenceStatementErrors,
 }

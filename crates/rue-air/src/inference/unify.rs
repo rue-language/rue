@@ -184,6 +184,11 @@ pub struct Unifier {
     /// `f32`/`f64` (3.12:11), so the join is judged once solving is done;
     /// see [`Unifier::unresolved_literal_joins`].
     literal_joins: Vec<(TypeVarId, VarSide, Span)>,
+    /// Whether a failed constraint binds its unbound variables to
+    /// `Type::ERROR` so later constraints over them are not reported. A
+    /// unifier without that recovery leaves them unbound; comparing its
+    /// solution with the recovering one shows which types recovery decided.
+    recover_failures: bool,
 }
 
 impl Default for Unifier {
@@ -203,6 +208,7 @@ impl Unifier {
             string_literal_types: AHashSet::new(),
             pending_literal_joins: Vec::new(),
             literal_joins: Vec::new(),
+            recover_failures: true,
         }
     }
 
@@ -219,7 +225,15 @@ impl Unifier {
             string_literal_types: AHashSet::new(),
             pending_literal_joins: Vec::new(),
             literal_joins: Vec::new(),
+            recover_failures: true,
         }
+    }
+
+    /// Leave the variables of a failed constraint unbound instead of binding
+    /// them to `Type::ERROR`.
+    pub(crate) fn without_failure_recovery(mut self) -> Self {
+        self.recover_failures = false;
+        self
     }
 
     /// Register the type variables that stand for integer literals.
@@ -1175,6 +1189,9 @@ impl Unifier {
     /// This allows type checking to continue after an error, catching more
     /// errors in a single pass.
     fn recover_from_error(&mut self, lhs: &InferType, rhs: &InferType) {
+        if !self.recover_failures {
+            return;
+        }
         // Apply substitution first to find any unbound variables
         let lhs_applied = self.substitution.apply(lhs);
         let rhs_applied = self.substitution.apply(rhs);

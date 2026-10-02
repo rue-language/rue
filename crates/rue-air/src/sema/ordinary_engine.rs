@@ -3398,6 +3398,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             comptime_selections,
             inference_breakdown,
             float_literal_joins,
+            inference_statement_errors,
         ) = self.run_type_inference(
             infer_ctx,
             return_type,
@@ -3450,6 +3451,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             resolved_types: &resolved_types,
             resolved_continues: &resolved_continues,
             float_literal_joins: &float_literal_joins,
+            inference_statement_errors: &inference_statement_errors,
             comptime_selections: &comptime_selections,
             divergence_kinds: DivergenceKinds::NONE,
             ownership: super::ownership_state::OwnershipState::default(),
@@ -3517,6 +3519,18 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         }
         let body_result = self.analyze_inst(&mut air, body, &mut ctx)?;
         ctx.expected_type = None;
+        // Every recovered inference failure belongs to a top-level statement
+        // that statement recovery reported or poisoned, so the recovery
+        // ledger is never empty here. Keep the body rejected regardless.
+        if self.body_analysis_recovered_errors_mut().is_empty()
+            && let Some(error) = inference_statement_errors
+                .failures
+                .values()
+                .flatten()
+                .min_by_key(|error| error.span().map(|span| span.start))
+        {
+            return Err(error.clone());
+        }
 
         // Linear parameters: the callee owns its pass-by-value parameters and
         // drops them at exit unless moved out (RUE-61), so a by-value
