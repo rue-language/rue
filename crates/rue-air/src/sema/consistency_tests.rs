@@ -1556,7 +1556,11 @@ mod tests {
         );
         assert!(!adapter.contains("return Some("));
 
-        let bootstrap = source_item(GENERATE_SOURCE, "fn bootstrap_type_argument(");
+        // The probe's bootstrap is the one enclosing-type-parameter rule a
+        // repeat operand also uses, so both honor the same shadowing.
+        let bootstrap_owner = source_item(GENERATE_SOURCE, "fn bootstrap_type_argument(");
+        assert!(bootstrap_owner.contains("self.enclosing_type_parameter("));
+        let bootstrap = source_item(GENERATE_SOURCE, "fn enclosing_type_parameter(");
         assert_eq!(bootstrap.matches("self.type_subst").count(), 1);
         assert!(!GENERATE_SOURCE.contains("fn extract_type_argument("));
         assert!(!bootstrap.contains("unqualified_nominal_type"));
