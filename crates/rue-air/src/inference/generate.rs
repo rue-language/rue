@@ -1930,6 +1930,17 @@ impl<'a> ConstraintGenerator<'a> {
                     } else {
                         param.ty.clone()
                     }
+                } else if self
+                    .type_subst
+                    .is_some_and(|subst| subst.get(name).is_some_and(|ty| !ty.is_module()))
+                {
+                    // A type parameter of the enclosing specialization (`T`
+                    // in a generic struct's method) is a type value, exactly
+                    // as a `comptime T: type` parameter of the body itself
+                    // is, so `comptime { T }` and `let U = T;` see a type
+                    // (RUE-2577). A local or a runtime parameter of the same
+                    // name was resolved above and shadows it.
+                    InferType::Concrete(Type::COMPTIME_TYPE)
                 } else if let Some(binding_ty) = self.module_binding_type((span.file_id, *name)) {
                     // Module binding declared in this file (`const m =
                     // @import(...)`): per-file scoped and distinct from the
@@ -3566,11 +3577,8 @@ impl<'a> ConstraintGenerator<'a> {
                     // `[[i32; 2]; 3]` and a method's `comptime T: type`
                     // argument see a type. Sema reduces it to a type
                     // constant or rejects it. A specialization's type
-                    // parameter (`[T; 3]`) is a type value too, though its
-                    // reference infers no type of its own.
-                    _ if value_info.ty == InferType::Concrete(Type::COMPTIME_TYPE)
-                        || self.names_enclosing_type_parameter(*value, ctx) =>
-                    {
+                    // parameter (`[T; 3]`) is a type value too.
+                    _ if value_info.ty == InferType::Concrete(Type::COMPTIME_TYPE) => {
                         InferType::Concrete(Type::COMPTIME_TYPE)
                     }
                     Some(length) => InferType::Array {
@@ -5187,22 +5195,16 @@ impl<'a> ConstraintGenerator<'a> {
         }
     }
 
-    /// Whether `inst` is a reference to a type parameter of the enclosing
-    /// specialization (`T` in `[T; 3]`) that no local shadows. Such a
-    /// reference has no inferred type of its own; its value is a type.
-    fn names_enclosing_type_parameter(&self, inst: InstRef, ctx: &ConstraintContext) -> bool {
-        self.enclosing_type_parameter(inst, ctx).is_some()
-    }
-
-    /// The enclosing specialization's binding for the type parameter `inst`
-    /// names, when `inst` is a bare reference to one that nothing shadows.
+    /// Bootstrap only an enclosing type substitution during the speculative
+    /// probe. All source names, including primitives, aliases, and nominal
+    /// declarations, are resolved by sema's canonical fact collector.
     ///
     /// A local, or a parameter that is not itself a `comptime T: type`
-    /// parameter, shadows the enclosing specialization's type parameter:
-    /// `fn g(self, T: i32)` in a generic struct's method reads a value, so
-    /// neither a repeat operand nor a comptime type argument sees the type.
-    fn enclosing_type_parameter(&self, inst: InstRef, ctx: &ConstraintContext) -> Option<Type> {
-        let InstData::VarRef { name, .. } = self.rir.get(inst).data else {
+    /// parameter, shadows the enclosing specialization's type parameter, by
+    /// the precedence `VarRef` generation uses: `T` in a generic struct's
+    /// method `fn g(self, T: i32)` is the `i32` value, not a type argument.
+    fn bootstrap_type_argument(&self, arg: InstRef, ctx: &ConstraintContext) -> Option<Type> {
+        let InstData::VarRef { name, .. } = self.rir.get(arg).data else {
             return None;
         };
         let shadowed_by_param = ctx
@@ -5212,13 +5214,6 @@ impl<'a> ConstraintGenerator<'a> {
             return None;
         }
         self.type_subst.and_then(|subst| subst.get(&name).copied())
-    }
-
-    /// Bootstrap only an enclosing type substitution during the speculative
-    /// probe. All source names, including primitives, aliases, and nominal
-    /// declarations, are resolved by sema's canonical fact collector.
-    fn bootstrap_type_argument(&self, arg: InstRef, ctx: &ConstraintContext) -> Option<Type> {
-        self.enclosing_type_parameter(arg, ctx)
     }
 
     /// Substitute a generic call's comptime type/value arguments into the
