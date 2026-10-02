@@ -3458,19 +3458,22 @@ pub(in crate::revisioned_query_database) fn resolve_parsed_semantic_signature(
                     if parameter.is_comptime {
                         fn_type_position(&ty, "a `comptime` parameter")?;
                     }
-                    // A callback is a runtime value (6.1:47), so its `fn` type
-                    // can neither take nor return a type value, which cannot
-                    // exist at run time (4.14:6). No function could be passed
-                    // for it either: one returning `type` is a `-> type`
-                    // constructor (6.1:50). Reported at the parameter rather
-                    // than leaving the function without a signature, which
-                    // made every call to it an undefined function (RUE-2420).
-                    if fn_type_mentions_type_value(&ty) {
+                    // A runtime parameter's type can hold no type value, which
+                    // cannot exist at run time (4.14:6): not as an array
+                    // element, pointee, or slice element (RUE-2606), and not
+                    // as a callback's parameter or result, since a callback is
+                    // a runtime value (6.1:47) and a function returning `type`
+                    // is a `-> type` constructor (6.1:50). Reported at the
+                    // parameter rather than leaving the function without a
+                    // signature, which made every call to it an undefined
+                    // function (RUE-2420). A `comptime` parameter is not asked:
+                    // its value never exists at run time.
+                    if !parameter.is_comptime
+                        && let Some(kind) = crate::durable_semantics::durable_type_value_child(&ty)
+                    {
                         return Err(ResolveSemanticSignatureError::failure(
                             crate::semantic_query_nucleus::SemanticNucleusFailure::DiagnosticAtSignatureType {
-                                kind: rue_error::ErrorKind::ComptimeEvaluationFailed {
-                                    reason: "a `fn` type cannot take or return `type`: type values cannot exist at runtime".to_owned(),
-                                },
+                                kind,
                                 anchor: crate::semantic_query_nucleus::SignatureTypeAnchor::Parameter(
                                     ordinal as u32,
                                 ),
@@ -3523,6 +3526,17 @@ pub(in crate::revisioned_query_database) fn resolve_parsed_semantic_signature(
             }
             if contains_slice(&result) {
                 return Err(diagnostic(rue_error::ErrorKind::SliceReturnNotAllowed));
+            }
+            // `-> type` is a constructor (6.1:50); `-> [type; 2]` or
+            // `-> ptr const type` would return a type value at run time
+            // (4.14:6, RUE-2606).
+            if let Some(kind) = crate::durable_semantics::durable_type_value_child(&result) {
+                return Err(ResolveSemanticSignatureError::failure(
+                    crate::semantic_query_nucleus::SemanticNucleusFailure::DiagnosticAtSignatureType {
+                        kind,
+                        anchor: crate::semantic_query_nucleus::SignatureTypeAnchor::Result,
+                    },
+                ));
             }
             reject_interface_type(provider, &result, |kind, help| {
                 ResolveSemanticSignatureError::failure(
@@ -3749,6 +3763,9 @@ pub(in crate::revisioned_query_database) fn resolve_parsed_semantic_signature(
             }
             for (_, ty) in &fields {
                 fn_type_position(ty, "a struct field")?;
+                if let Some(kind) = crate::durable_semantics::durable_type_value_child(ty) {
+                    return Err(diagnostic(kind));
+                }
             }
             if fields
                 .iter()
@@ -4007,6 +4024,19 @@ pub(in crate::revisioned_query_database) fn resolve_parsed_semantic_signature(
             }
             for ty in variants.iter().flat_map(|(_, payload)| payload.iter()) {
                 fn_type_position(ty, "an enum payload")?;
+                if let Some(kind) = crate::durable_semantics::durable_type_value_child(ty) {
+                    return Err(diagnostic(kind));
+                }
+            }
+            // A payload is a runtime value as a field is (4.14:6).
+            if variants
+                .iter()
+                .flat_map(|(_, payload)| payload.iter())
+                .any(|ty| *ty == crate::durable_semantics::DurableType::ComptimeType)
+            {
+                return Err(diagnostic(rue_error::ErrorKind::ComptimeEvaluationFailed {
+                    reason: "type values cannot exist at runtime".to_owned(),
+                }));
             }
             Ok(Output::Enum {
                 variants: variants.into(),
@@ -4193,19 +4223,6 @@ impl BodyInputResolver {
         }
         self.resolve_selected_artifact(context, key, definition, candidate)
     }
-}
-
-/// Whether `ty` is a `fn` type with `type` as a parameter or result type, at
-/// any depth of nested `fn` parameter types (RUE-2420).
-fn fn_type_mentions_type_value(ty: &crate::durable_semantics::DurableType) -> bool {
-    let crate::durable_semantics::DurableType::Function { params, result } = ty else {
-        return false;
-    };
-    let is_type_value = |ty: &crate::durable_semantics::DurableType| {
-        *ty == crate::durable_semantics::DurableType::ComptimeType
-            || fn_type_mentions_type_value(ty)
-    };
-    is_type_value(result) || params.iter().any(|(_, param)| is_type_value(param))
 }
 
 /// Refuse a `fn` type as a structural child of another type (ADR-0096, spec

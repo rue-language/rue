@@ -29,6 +29,35 @@ pub(crate) fn durable_type_contains_slice(ty: &DurableType) -> bool {
     }
 }
 
+/// The E1200 for a type written in a runtime position (a parameter, return
+/// type, field, or payload) that holds `type` inside it: as an array element,
+/// a pointer pointee, a slice element, or a `fn` type's parameter or result,
+/// at any depth. A value of such a type would carry a type value, and type
+/// values cannot exist at run time (4.14:6). A bare `type` is not asked here:
+/// each position owns that rule (a `-> type` constructor is legal).
+pub(crate) fn durable_type_value_child(ty: &DurableType) -> Option<rue_error::ErrorKind> {
+    use rue_air::declaration_validation::{fn_type_value, type_value_child};
+    let (child, position) = match ty {
+        DurableType::Array { element, .. } => (element, "an array element"),
+        DurableType::PtrConst(pointee) | DurableType::PtrMut(pointee) => {
+            (pointee, "a pointer pointee")
+        }
+        DurableType::Slice { element, .. } => (element, "a slice element"),
+        DurableType::Function { params, result } => {
+            let mentions = |ty: &DurableType| {
+                *ty == DurableType::ComptimeType || durable_type_value_child(ty).is_some()
+            };
+            return (mentions(result) || params.iter().any(|(_, param)| mentions(param)))
+                .then(fn_type_value);
+        }
+        _ => return None,
+    };
+    if **child == DurableType::ComptimeType {
+        return Some(type_value_child(position));
+    }
+    durable_type_value_child(child)
+}
+
 /// The durable specialization of rue-air's canonical constant algebra.
 pub type DurableConstValue = SemanticImportConstValue<StableDefinitionKey, ModuleId>;
 
