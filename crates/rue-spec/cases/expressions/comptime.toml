@@ -6592,9 +6592,9 @@ fn main() -> i32 {
 exit_code = 4
 
 [[case]]
-name = "value_param_ctor_slice_parameter_from_slice_rejected"
+name = "value_param_ctor_slice_parameter_from_slice"
 spec = ["4.14:5", "7.2:10"]
-description = "A parameter whose slice type `Wrap([i64], N)` exists only at the call is rejected there, when the caller forwards its own slice; it is never passed in the wrong shape (RUE-2435)"
+description = "A `borrow` parameter whose type `Wrap([i64], N)` is a slice only at the call receives the caller's forwarded view: `s[0]` is 10 (RUE-2435, RUE-2555)"
 source = """
 fn Wrap(comptime T: type, comptime N: i32) -> type { T }
 fn g(comptime N: i32, borrow s: Wrap([i64], N)) -> i64 { s[0] }
@@ -6605,13 +6605,12 @@ fn main() -> i32 {
     @intCast(h(borrow a))
 }
 """
-compile_fail = true
-error_contains = ["E1200", "parameter 's' of 'g' has the slice type [i64] only at this call"]
+exit_code = 10
 
 [[case]]
-name = "value_param_ctor_slice_parameter_len_rejected"
+name = "value_param_ctor_slice_parameter_len"
 spec = ["4.14:5", "7.2:10"]
-description = "A forwarded slice whose `len()` the callee reads through a `Wrap([i64], N)` parameter is rejected at the call (RUE-2435)"
+description = "A forwarded slice whose `len()` the callee reads through a `Wrap([i64], N)` parameter is the caller's length, 3 (RUE-2435, RUE-2555)"
 source = """
 fn Wrap(comptime T: type, comptime N: i32) -> type { T }
 fn g(comptime N: i32, borrow s: Wrap([i64], N)) -> i64 { @intCast(s.len()) }
@@ -6624,13 +6623,13 @@ fn main() -> i32 {
     0
 }
 """
-compile_fail = true
-error_contains = ["E1200", "parameter 's' of 'g' has the slice type [i64] only at this call"]
+exit_code = 0
+expected_stdout = "3\n"
 
 [[case]]
-name = "value_param_ctor_slice_parameter_from_array_rejected"
-spec = ["4.14:5", "7.2:10"]
-description = "An array passed `borrow` to a parameter whose slice type `Wrap([i64], N)` exists only at the call is rejected there (RUE-2435)"
+name = "value_param_ctor_slice_parameter_from_array"
+spec = ["4.14:5", "7.2:10", "7.2:12"]
+description = "An array passed `borrow` to a parameter whose type `Wrap([i64], N)` is a slice only at the call coerces to a view of it: `s[0]` is 10 (RUE-2435, RUE-2555)"
 source = """
 fn Wrap(comptime T: type, comptime N: i32) -> type { T }
 fn g(comptime N: i32, borrow s: Wrap([i64], N)) -> i64 { s[0] }
@@ -6640,8 +6639,7 @@ fn main() -> i32 {
     @intCast(g(5, borrow a))
 }
 """
-compile_fail = true
-error_contains = ["E1200", "parameter 's' of 'g' has the slice type [i64] only at this call"]
+exit_code = 10
 
 [[case]]
 name = "value_param_ctor_unmarked_slice_parameter_rejected"
