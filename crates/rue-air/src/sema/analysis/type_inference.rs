@@ -6,8 +6,10 @@
 use super::super::ordinary_engine::{OrdinaryBodyAnalysisHost, OrdinaryBodyEngine};
 use super::*;
 use crate::inference::{FrontierParamOverlay, LazyInferenceFacts, ParamVarInfo};
+use crate::inference::{TypeVarId, UnificationError};
+use crate::sema::context::FloatLiteralJoins;
 use crate::sema::{decode_inline_import_spine, decode_module_spine};
-use ahash::AHashMap;
+use ahash::{AHashMap, AHashSet};
 use lasso::Key;
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -412,7 +414,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// This avoids rebuilding these maps for each function, reducing O(n²) to O(n).
     ///
     /// Returns maps from RIR instruction refs to their resolved concrete types
-    /// and normal-continuation facts.
+    /// and normal-continuation facts, and the float literals whose class an
+    /// unresolved integer literal joined.
     pub(crate) fn run_type_inference(
         &mut self,
         infer_ctx: &InferenceContext,
@@ -426,6 +429,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         AHashMap<InstRef, bool>,
         AHashMap<InstRef, crate::sema::ComptimeSelection>,
         InferenceBreakdown,
+        FloatLiteralJoins,
     )> {
         // Most bodies have no selector or computed comptime argument that can
         // benefit from a canonical pre-pass.  Keep those bodies on the normal
@@ -451,9 +455,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 None,
                 None,
             )?;
-            return Ok((result.0, result.1, AHashMap::new(), result.2));
+            return Ok((result.0, result.1, AHashMap::new(), result.2, result.4));
         }
-        let (probe_types, _probe_continues, probe_breakdown, precompute_snapshot) = self
+        let (probe_types, _probe_continues, probe_breakdown, precompute_snapshot, _) = self
             .run_type_inference_pass(
                 infer_ctx,
                 return_type,
@@ -592,7 +596,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         breakdown.staged_binding_trie_lookups = breakdown
             .staged_binding_trie_lookups
             .saturating_add(scope_materializations.saturating_mul(33));
-        Ok((result.0, result.1, selections, breakdown))
+        Ok((result.0, result.1, selections, breakdown, result.4))
     }
 
     fn has_comptime_fact_sites(&mut self, body: InstRef) -> CompileResult<(bool, u64)> {
@@ -708,6 +712,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         AHashMap<InstRef, bool>,
         InferenceBreakdown,
         PrecomputeSnapshot,
+        FloatLiteralJoins,
     )> {
         let precompute_started = Instant::now();
         // Pre-resolve `let`-bound comptime type aliases (`let P = F();` where
@@ -798,7 +803,6 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             expr_continues,
             type_var_count,
             fixed_string_types,
-            deferred_annotation_types,
         ) = {
             let facts = self.inference_facts(infer_ctx);
 
@@ -946,7 +950,6 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 ));
             }
 
-            let deferred_annotation_types = cgen.deferred_annotation_types().to_vec();
             // Consume the constraint generator to release borrows
             let (
                 constraints,
@@ -969,7 +972,6 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 expr_continues,
                 type_var_count,
                 fixed_string_types,
-                deferred_annotation_types,
             )
         };
         let constraint_generation_ns = elapsed_ns(constraint_generation_started);
@@ -1015,7 +1017,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         string_literal_types.dedup();
         unifier.mark_string_literal_vars(&string_literal_vars, &string_literal_types);
         let equivalence_queries = std::cell::Cell::new(0usize);
-        let mut errors = unifier.solve_constraints_with_projections(
+        let errors = unifier.solve_constraints_with_projections(
             &constraints,
             &|left, right| {
                 if left == right {
@@ -1054,80 +1056,40 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         );
         self.body_analysis_work_mut()
             .semantic_type_equivalence_queries += equivalence_queries.get();
-        // An integer literal joined with a float literal is judged once the
-        // whole body has been solved, and only by the final pass: a staged
-        // pass may lack the float context that resolves the join.
-        if errors.is_empty() && !staged {
-            errors = unifier.unresolved_literal_joins(&deferred_annotation_types);
-        }
 
         // Convert unification errors to compile errors
         // For now, we collect the first error. In the future, we could
         // report multiple errors for better diagnostics.
         if let Some(err) = errors.first() {
-            // Map each UnifyResult variant to the appropriate ErrorKind
-            let error_kind = match &err.kind {
-                UnifyResult::Ok => unreachable!("UnificationError should never contain Ok"),
-                UnifyResult::TypeMismatch { expected, found } => ErrorKind::TypeMismatch {
-                    expected: self.format_infer_type_name(expected),
-                    found: self.format_infer_type_name(found),
-                },
-                UnifyResult::IntLiteralNonInteger { found } => ErrorKind::TypeMismatch {
-                    expected: "integer type".to_string(),
-                    found: self.format_infer_type_name(found),
-                },
-                UnifyResult::StringLiteralNonString { found } => ErrorKind::TypeMismatch {
-                    expected: "string type".to_string(),
-                    found: self.format_infer_type_name(found),
-                },
-                // The literal's own type is `str` unless a string-buffer
-                // context gives it another (3.7:44), and the const path names
-                // a mismatched string-literal initializer the same way. An
-                // integer literal that set the expectation (the first arm of
-                // `if c { 5 } else { "x" }`) reads as it does against any
-                // other type: "expected integer type".
-                UnifyResult::StringLiteralMismatch { expected } => ErrorKind::TypeMismatch {
-                    expected: if expected.is_int_literal() {
-                        "integer type".to_string()
-                    } else {
-                        self.format_infer_type_name(expected)
-                    },
-                    found: self.format_type_name(string_literal_default),
-                },
-                UnifyResult::OccursCheck { var, ty } => ErrorKind::TypeMismatch {
-                    expected: "non-recursive type".to_string(),
-                    found: format!(
-                        "{var} = {} (infinite type)",
-                        self.format_infer_type_name(ty)
-                    ),
-                },
-                UnifyResult::NotSigned { ty } => {
-                    ErrorKind::CannotNegate(self.format_type_name(*ty))
-                }
-                UnifyResult::NotInteger { ty } => ErrorKind::TypeMismatch {
-                    expected: "integer type".to_string(),
-                    found: self.format_infer_type_name(ty),
-                },
-                UnifyResult::NotUnsigned { ty } => ErrorKind::TypeMismatch {
-                    expected: "unsigned integer type".to_string(),
-                    found: self.format_infer_type_name(ty),
-                },
-                UnifyResult::ArrayLengthMismatch { expected, found } => {
-                    ErrorKind::ArrayLengthMismatch {
-                        expected: *expected,
-                        found: *found,
-                    }
-                }
-            };
+            return Err(self.unification_compile_error(err, string_literal_default));
+        }
 
-            let mut compile_error = CompileError::new(error_kind, err.span);
-
-            // Add note for unsigned negation errors
-            if matches!(err.kind, UnifyResult::NotSigned { .. }) {
-                compile_error = compile_error.with_note("unsigned values cannot be negated");
+        // An integer literal joined with a float literal that no float
+        // context resolved is named at the join, but only when semantic
+        // analysis reaches a float literal of that class (see
+        // `Unifier::unresolved_literal_joins`). Recorded before defaulting
+        // resolves the class.
+        let literal_joins = unifier.unresolved_literal_joins();
+        let mut float_literal_joins = FloatLiteralJoins::new();
+        if !literal_joins.is_empty() {
+            let float_literal_vars: AHashSet<TypeVarId> =
+                float_literal_vars.iter().copied().collect();
+            for (inst_ref, infer_ty) in &expr_types {
+                let InferType::Var(var) = infer_ty else {
+                    continue;
+                };
+                if !float_literal_vars.contains(var) {
+                    continue;
+                }
+                if let InferType::Var(class) = unifier.substitution.apply(infer_ty)
+                    && let Some(join) = literal_joins.get(&class)
+                {
+                    float_literal_joins.insert(
+                        *inst_ref,
+                        self.unification_compile_error(join, string_literal_default),
+                    );
+                }
             }
-
-            return Err(compile_error);
         }
 
         // Default any unconstrained integer literals to i32
@@ -1186,7 +1148,77 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 local_annotations,
                 inline_ctor_head_types,
             },
+            float_literal_joins,
         ))
+    }
+
+    /// The diagnostic for a unification error.
+    fn unification_compile_error(
+        &self,
+        err: &UnificationError,
+        string_literal_default: Type,
+    ) -> CompileError {
+        // Map each UnifyResult variant to the appropriate ErrorKind
+        let error_kind = match &err.kind {
+            UnifyResult::Ok => unreachable!("UnificationError should never contain Ok"),
+            UnifyResult::TypeMismatch { expected, found } => ErrorKind::TypeMismatch {
+                expected: self.format_infer_type_name(expected),
+                found: self.format_infer_type_name(found),
+            },
+            UnifyResult::IntLiteralNonInteger { found } => ErrorKind::TypeMismatch {
+                expected: "integer type".to_string(),
+                found: self.format_infer_type_name(found),
+            },
+            UnifyResult::StringLiteralNonString { found } => ErrorKind::TypeMismatch {
+                expected: "string type".to_string(),
+                found: self.format_infer_type_name(found),
+            },
+            // The literal's own type is `str` unless a string-buffer
+            // context gives it another (3.7:44), and the const path names
+            // a mismatched string-literal initializer the same way. An
+            // integer literal that set the expectation (the first arm of
+            // `if c { 5 } else { "x" }`) reads as it does against any
+            // other type: "expected integer type".
+            UnifyResult::StringLiteralMismatch { expected } => ErrorKind::TypeMismatch {
+                expected: if expected.is_int_literal() {
+                    "integer type".to_string()
+                } else {
+                    self.format_infer_type_name(expected)
+                },
+                found: self.format_type_name(string_literal_default),
+            },
+            UnifyResult::OccursCheck { var, ty } => ErrorKind::TypeMismatch {
+                expected: "non-recursive type".to_string(),
+                found: format!(
+                    "{var} = {} (infinite type)",
+                    self.format_infer_type_name(ty)
+                ),
+            },
+            UnifyResult::NotSigned { ty } => ErrorKind::CannotNegate(self.format_type_name(*ty)),
+            UnifyResult::NotInteger { ty } => ErrorKind::TypeMismatch {
+                expected: "integer type".to_string(),
+                found: self.format_infer_type_name(ty),
+            },
+            UnifyResult::NotUnsigned { ty } => ErrorKind::TypeMismatch {
+                expected: "unsigned integer type".to_string(),
+                found: self.format_infer_type_name(ty),
+            },
+            UnifyResult::ArrayLengthMismatch { expected, found } => {
+                ErrorKind::ArrayLengthMismatch {
+                    expected: *expected,
+                    found: *found,
+                }
+            }
+        };
+
+        let mut compile_error = CompileError::new(error_kind, err.span);
+
+        // Add note for unsigned negation errors
+        if matches!(err.kind, UnifyResult::NotSigned { .. }) {
+            compile_error = compile_error.with_note("unsigned values cannot be negated");
+        }
+
+        compile_error
     }
 
     fn collect_comptime_facts(

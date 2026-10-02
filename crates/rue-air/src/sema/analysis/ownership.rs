@@ -2315,6 +2315,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     },
                     ty,
                     span,
+                    None,
                 )?;
                 (data, ty)
             }
