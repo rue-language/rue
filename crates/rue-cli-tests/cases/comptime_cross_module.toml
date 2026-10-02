@@ -675,6 +675,133 @@ compile_fail = true
 error_contains = ["E0206", "expected i32, found <module>", "main.rue:3:22"]
 
 [[case]]
+name = "module_returning_type_call_comptime_argument_as_runtime_argument"
+description = "A `-> type` call that reduces to a module through a comptime argument, directly or through a wrapper forwarding it, is the E0206 naming `<module>` at a runtime `i32` parameter, as `h(@import(..))` is, not a `type` mismatch (10.4:6, RUE-2602)."
+args = ["main.rue", "-o", "prog"]
+files = [
+  { path = "lib.rue", source = """
+pub fn g() -> i32 { 1 }
+""" },
+  { path = "other.rue", source = """
+pub fn g() -> i32 { 2 }
+""" },
+  { path = "main.rue", source = """
+fn pick(comptime first: bool) -> type { if first { @import("lib.rue") } else { @import("other.rue") } }
+fn h(x: i32) -> i32 { x }
+fn main() -> i32 { h(pick(true)) }
+""" },
+]
+compile_fail = true
+error_contains = ["E0206", "expected i32, found <module>", "main.rue:3:22"]
+
+[[case]]
+name = "module_returning_type_call_wrapper_as_runtime_argument"
+description = "A wrapper `W(comptime b: bool) -> type { pick(b) }` reduces to the module `pick` selects, so `h(W(false))` reports `<module>` at the runtime parameter, as the direct call does (10.4:6, RUE-2602)."
+args = ["main.rue", "-o", "prog"]
+files = [
+  { path = "lib.rue", source = """
+pub fn g() -> i32 { 1 }
+""" },
+  { path = "other.rue", source = """
+pub fn g() -> i32 { 2 }
+""" },
+  { path = "main.rue", source = """
+fn pick(comptime first: bool) -> type { if first { @import("lib.rue") } else { @import("other.rue") } }
+fn W(comptime first: bool) -> type { pick(first) }
+fn h(x: i32) -> i32 { x }
+fn main() -> i32 { h(W(false)) }
+""" },
+]
+compile_fail = true
+error_contains = ["E0206", "expected i32, found <module>", "main.rue:4:22"]
+
+[[case]]
+name = "module_returning_associated_type_call_binds_and_heads_paths"
+description = "A zero-parameter associated `-> type` function whose body is an `@import` reduces to that module as the free form does: the call heads a member call, a `let` binds it, a module-qualified `lib.T.md()` resolves its import from its own file, and a discarded call is a module expression statement (10.4:7, 10.4:15, RUE-2602)."
+args = ["main.rue", "-o", "prog"]
+files = [
+  { path = "lib.rue", source = """
+pub fn g() -> i32 { 1 }
+""" },
+  { path = "dir/lib.rue", source = """
+pub struct T { fn md() -> type { @import("inner.rue") } }
+""" },
+  { path = "dir/inner.rue", source = """
+pub fn v() -> i32 { 8 }
+""" },
+  { path = "main.rue", source = """
+const dir = @import("dir/lib.rue");
+struct S { fn md() -> type { @import("lib.rue") } }
+fn main() -> i32 {
+    S.md();
+    let m = S.md();
+    let n = dir.T.md();
+    S.md().g() + m.g() * 2 + dir.T.md().v() + n.v() * 3
+}
+""" },
+]
+exit_code = 35
+
+[[case]]
+name = "module_returning_associated_type_call_as_runtime_value"
+description = "A module an associated `-> type` call reduces to is no runtime value: `let x: i32 = S.md()` is the E0206 naming `<module>` that `let x: i32 = @import(..)` is (10.4:6, RUE-2602)."
+args = ["main.rue", "-o", "prog"]
+files = [
+  { path = "lib.rue", source = """
+pub fn g() -> i32 { 1 }
+""" },
+  { path = "main.rue", source = """
+struct S { fn md() -> type { @import("lib.rue") } }
+fn main() -> i32 {
+    let x: i32 = S.md();
+    x
+}
+""" },
+]
+compile_fail = true
+error_contains = ["E0206", "expected i32, found <module>"]
+
+[[case]]
+name = "module_returning_associated_type_call_comptime_let"
+description = "A `let` inside a `comptime` block binds the module an associated `-> type` call reduces to and calls through it, as it does for the free form (RUE-2602)."
+args = ["main.rue", "-o", "prog"]
+files = [
+  { path = "lib.rue", source = """
+pub fn add(comptime x: i32) -> i32 { x + 1 }
+""" },
+  { path = "main.rue", source = """
+struct S { fn md() -> type { @import("lib.rue") } }
+fn main() -> i32 {
+    let a: i32 = comptime { let m = S.md(); m.add(41) };
+    a
+}
+""" },
+]
+exit_code = 42
+
+[[case]]
+name = "module_returning_associated_type_call_privacy"
+description = "A module an associated `-> type` call reduces to keeps the privacy a direct import has: a private member of a module in another directory is E0706 through it, as through `@import` (10.3:7, RUE-2602)."
+args = ["main.rue", "-o", "prog"]
+files = [
+  { path = "dir/lib.rue", source = """
+pub struct P { fn md() -> type { @import("inner.rue") } }
+""" },
+  { path = "dir/inner.rue", source = """
+fn hidden() -> i32 { 3 }
+""" },
+  { path = "main.rue", source = """
+const dir = @import("dir/lib.rue");
+fn main() -> i32 {
+    let m = dir.P.md();
+    m.hidden()
+}
+""" },
+]
+compile_fail = true
+error_contains = ["E0706", "function `hidden` is private"]
+
+[[case]]
 name = "zero_param_associated_type_call_no_runtime_param_help"
 description = "A zero-parameter associated function returning `type` whose body does not reduce is rejected at the call without the runtime-parameter help, which would point at a condition the call already meets (RUE-2417 review; re-pinned when RUE-2420 made the module-returning form reduce)."
 args = ["main.rue", "-o", "prog"]
