@@ -383,6 +383,41 @@ class GateTests(unittest.TestCase):
             errors, ["03-metatheory.md:3: cites `core:5.1:7`, which is not a paragraph `calculus.md` declares"]
         )
 
+    def corpus(self, *cases: str) -> None:
+        body = "".join(
+            f'  {{ name := "c{i}",\n    description := {desc},\n    rules := [{rules}],\n    x := 1 }},\n'
+            for i, (desc, rules) in enumerate(cases)
+        )
+        self.write("Corpus.lean", "/-! (`xref: examples`) -/\ndef cases := [\n" + body + "]\n")
+
+    def test_corpus_rules_and_descriptions_with_declared_ids_pass(self) -> None:
+        # `3.8:5a` keeps its suffix; a version `1.5`, a ratio `2:1` and a section `3.8` are not ids.
+        self.corpus(('"3.8:50 forbids it, at 2:1 odds, since v1.5, see 3.8."', '"(Use-Copy) §5.1", "3.8:5a"'))
+        _, _, errors = self.collect()
+        self.assertEqual(errors, [])
+
+    def test_corpus_rules_entry_citing_an_undeclared_paragraph_is_an_error(self) -> None:
+        self.corpus(('"fine"', '"3.8:5", "3.8:999"'))
+        _, _, errors = self.collect()
+        self.assertEqual(
+            errors,
+            ["RueCore/Corpus.lean:5: `rules` cites `3.8:999`, which is not a paragraph `docs/spec/src` declares"],
+        )
+
+    def test_corpus_description_citing_an_undeclared_paragraph_is_an_error(self) -> None:
+        self.corpus(('"3.8:5 allows it but 3.8:6 forbids it"', '"3.8:5"'))
+        _, _, errors = self.collect()
+        self.assertEqual(
+            errors,
+            ["RueCore/Corpus.lean:4: `description` cites `3.8:6`, which is not a paragraph `docs/spec/src` declares"],
+        )
+
+    def test_corpus_letter_suffix_is_its_own_id(self) -> None:
+        self.corpus(('"fine"', '"3.8:50a"'))
+        _, _, errors = self.collect()
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("cites `3.8:50a`", errors[0])
+
     def test_lean_string_literal_citation_must_resolve(self) -> None:
         # Not only doc-comments: a string the explainer prints cites too.
         self.write(

@@ -21,6 +21,9 @@ The index cannot rot silently because the gate fails when:
 * a doc-comment cites a rule label the calculus does not define;
 * a doc-comment cites a prose-specification paragraph ``docs/spec/src``'s own
   ``{{ rule(id=…) }}`` shortcode does not declare;
+* a corpus case's ``rules`` entry or ``description`` string
+  (``RueCore/Corpus.lean``) cites a spec paragraph ``docs/spec/src`` does not
+  declare;
 * any text beside the calculus (every text file under ``docs/formal`` outside
   ``.lake``: SPINE, GLOSSARY, the metatheory, the guides, ``explain/*.txt``,
   and the Lean sources in full, strings and ``--`` comments included) cites a
@@ -1187,6 +1190,45 @@ def check_syntax_forms(calculus: Calculus, modules: List[Module]) -> List[str]:
     return errors
 
 
+CORPUS_FILE = Path("RueCore") / "Corpus.lean"
+CORPUS_STRING = re.compile(r'"((?:[^"\\]|\\.)*)"')
+CORPUS_RULES_FIELD = re.compile(r"^\s*rules\s*:=\s*\[(?P<body>.*)\]\s*,?\s*$")
+CORPUS_DESCRIPTION_FIELD = re.compile(r'^\s*description\s*:=\s*(?P<body>".*")\s*,?\s*$')
+
+
+def check_corpus_citations(lean_dir: Path, spec_paragraph_ids: set) -> List[str]:
+    """Spec paragraphs a corpus case cites in its ``rules`` and ``description`` strings.
+
+    The doc-comment check never sees these: a case's ``rules := [...]`` entries
+    and its ``description`` are Lean string literals. Each ``N.M:K`` in them
+    (the same ``PARAGRAPH_CITATION`` shape, letter suffix kept) must be a
+    paragraph ``docs/spec/src`` declares. A ``core:`` id is the calculus's and
+    is checked elsewhere; a ratio or a version is not the id shape.
+    """
+    path = lean_dir / CORPUS_FILE
+    if not path.is_file():
+        return []
+    errors: List[str] = []
+    for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        rules = CORPUS_RULES_FIELD.match(line)
+        description = CORPUS_DESCRIPTION_FIELD.match(line)
+        if rules:
+            field, strings = "rules", CORPUS_STRING.findall(rules.group("body"))
+        elif description:
+            field, strings = "description", CORPUS_STRING.findall(description.group("body"))
+        else:
+            continue
+        for text in strings:
+            for match in PARAGRAPH_CITATION.finditer(text):
+                ref = f"{match.group(1)}:{match.group(2)}"
+                if ref not in spec_paragraph_ids:
+                    errors.append(
+                        f"{CORPUS_FILE.as_posix()}:{number}: `{field}` cites `{ref}`, which is not a "
+                        f"paragraph `docs/spec/src` declares"
+                    )
+    return errors
+
+
 def collect(
     lean_dir: Path, calculus_path: Path, spec_dir: Path = DEFAULT_SPEC_DIR
 ) -> Tuple[List[Module], Calculus, List[str]]:
@@ -1233,6 +1275,7 @@ def collect(
                 )
         modules.append(module)
     errors.extend(check_syntax_forms(calculus, modules))
+    errors.extend(check_corpus_citations(lean_dir, spec_paragraph_ids))
     errors.extend(calculus_citations_in_files(calculus_path.parent, calculus_path, lean_dir, calculus_ids))
     return modules, calculus, errors
 
