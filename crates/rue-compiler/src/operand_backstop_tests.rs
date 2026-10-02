@@ -185,14 +185,33 @@ const BOX_MISMATCH: &str = "type mismatch: expected Box(i32), found Box(i64)";
 
 // --- The switch itself -----------------------------------------------------
 
-/// The switch reaches inference. Both inference and the backstop hold the
-/// right operand to the left's type (`expected Box(i32), found Box(i64)`,
-/// RUE-2582), but they report at different places: inference at the whole
-/// comparison, the backstop at the right operand. Were the switch inert,
-/// every rejection below could be inference's and prove nothing about the
-/// backstop.
+/// The switch reaches inference. With the head's fact, inference types
+/// `.v` as `i64` and the literal compared with it takes that type; with the
+/// fact withheld, the literal falls back to `i32` and is out of range. Were
+/// the switch inert, every rejection below could be inference's and prove
+/// nothing about the backstop. Inference and the backstop otherwise agree on
+/// a comparison mismatch, in orientation (`expected Box(i32), found
+/// Box(i64)`, RUE-2582) and place (the right operand, RUE-2583).
 #[test]
 fn withholding_the_fact_hands_the_comparison_to_the_backstop() {
+    let typed_by_the_head = r#"
+const lib = @import("lib.rue");
+fn main() -> i32 {
+    if (@import("lib.rue").Box(i64) { v: 7 }.v == 3000000000) { 1 } else { 0 }
+}
+"#;
+    frontend(typed_by_the_head, false).expect("the head's fact types the literal as i64");
+    let withheld = frontend(typed_by_the_head, true)
+        .expect_err("without the fact the literal defaults to i32");
+    let withheld = withheld.first().expect("one diagnostic");
+    let rendered = format!("[{}] {}", withheld.kind.code(), withheld.kind);
+    assert!(
+        rendered.starts_with("[E0800] ")
+            && rendered.contains("3000000000")
+            && rendered.contains("'i32'"),
+        "the literal falls back to i32: {rendered}"
+    );
+
     let main = r#"
 const lib = @import("lib.rue");
 fn main() -> i32 {
@@ -200,29 +219,23 @@ fn main() -> i32 {
     if (q == @import("lib.rue").Box(i64) { v: 7 }) { 1 } else { 0 }
 }
 "#;
-    let comparison_start = main.find("q ==").expect("comparison") as u32;
     let right_operand_start = main.find("@import(\"lib.rue\").Box(i64)").expect("operand") as u32;
-    let inferred = frontend(main, false).expect_err("inference rejects the mismatch");
-    let inferred = inferred.first().expect("one diagnostic");
-    assert_eq!(inferred.kind.code().to_string(), "E0206");
-    assert!(
-        inferred.kind.to_string().contains(BOX_MISMATCH),
-        "inference's orientation: {}",
-        inferred.kind
-    );
-    assert_eq!(
-        inferred.span().map(|span| span.start),
-        Some(comparison_start),
-        "inference reports at the whole comparison"
-    );
+    for (withheld, reporter) in [(false, "inference"), (true, "the backstop")] {
+        let errors = frontend(main, withheld).expect_err("the mismatch is rejected");
+        let error = errors.first().expect("one diagnostic");
+        assert_eq!(error.kind.code().to_string(), "E0206");
+        assert!(
+            error.kind.to_string().contains(BOX_MISMATCH),
+            "{reporter}'s orientation: {}",
+            error.kind
+        );
+        assert_eq!(
+            error.span().map(|span| span.start),
+            Some(right_operand_start),
+            "{reporter} reports at the right operand"
+        );
+    }
     assert_backstop_rejects("struct equality", main, "E0206", BOX_MISMATCH);
-    let withheld = frontend(main, true).expect_err("the backstop rejects the mismatch");
-    let withheld = withheld.first().expect("one diagnostic");
-    assert_eq!(
-        withheld.span().map(|span| span.start),
-        Some(right_operand_start),
-        "the backstop reports at the right operand"
-    );
 }
 
 // --- Slots: require_slot_type ----------------------------------------------
