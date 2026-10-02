@@ -1496,6 +1496,60 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 }
             }
         }
+        // A path rooted at a `let`-bound module, of this block or of the
+        // enclosing body, walks from that module: its root reaches the
+        // resolver as a module-typed substitution, as the body's own
+        // annotations see it (RUE-2426, RUE-2445). The root is classified by
+        // the one lexical rule module-path decoding uses. A bare name bound
+        // to a runtime binding the maps do not carry is runtime-dependent,
+        // as the staged walk above treats it, so the resolver's failure
+        // below is a genuine one.
+        if !env.local_modules.is_empty() || env.local_module_membership.is_some() {
+            let mut pending = vec![syntax];
+            while let Some(reference) = pending.pop() {
+                let arena = self.host.program_rir(program).type_syntax();
+                let path = match arena.node(reference) {
+                    Some(rue_rir::RirTypeSyntaxNode::Qualified { path })
+                    | Some(rue_rir::RirTypeSyntaxNode::TypeCall { path, .. }) => Some(*path),
+                    Some(rue_rir::RirTypeSyntaxNode::Named(symbol)) => {
+                        if let Some(symbol) = arena.symbol(*symbol) {
+                            let name = self.host.name_from_symbol(program, (*symbol).into());
+                            if !types.contains_key(&name)
+                                && !values.contains_key(&name)
+                                && !env.locals.contains_key(&name)
+                                && !env.local_modules.contains_key(&name)
+                                && (env.is_runtime_local_name(&name)
+                                    || env.runtime_binding_names.contains(&name))
+                            {
+                                return ComptimeOutcome::RuntimeDependent;
+                            }
+                        }
+                        None
+                    }
+                    _ => None,
+                };
+                let root = path
+                    .and_then(|path| arena.words(path))
+                    .filter(|words| words.len() > 1)
+                    .and_then(|words| arena.symbol(rue_rir::RirTypeSyntaxSymbol::from_u32(words[0])))
+                    .map(|symbol| self.host.name_from_symbol(program, (*symbol).into()));
+                if let Some(root) = root
+                    && let Some(Some(module)) = Self::lexical_path_root(&root, env)
+                    && self.host.type_is_module(&module)
+                {
+                    types.to_mut().insert(root.clone(), module);
+                    values.to_mut().remove(&root);
+                }
+                if !self
+                    .host
+                    .program_rir(program)
+                    .type_syntax()
+                    .visit_child_references(reference, |child| pending.push(child))
+                {
+                    return ComptimeOutcome::RuntimeDependent;
+                }
+            }
+        }
         match self.host.begin_comptime_type_syntax(
             program,
             syntax,
@@ -2832,39 +2886,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             return self.decode_inline_import_module_path(inst_ref, env);
         };
         let root = self.name_from_rir(spine.root.into());
-        // The nearest lexical binding of the root, in the order name lookup
-        // consults them: a value local or runtime name shadows the file's
-        // bindings, and a type-valued binding does too unless it is a module.
-        // A runtime local may itself be a module, which body analysis and
-        // staged inference report through `local_module_membership`.
-        let local_module = |root: &H::Name| {
-            env.local_module_membership
-                .as_ref()
-                .and_then(|membership| membership(root))
-        };
-        let lexical = if let Some(module) = env.local_modules.get(&root) {
-            Some(Some(module.clone()))
-        } else if env.locals.contains_key(&root) {
-            Some(None)
-        } else if let Some(binding) = env
-            .local_binding_membership
-            .as_ref()
-            .and_then(|membership| membership(&root))
-        {
-            Some(match binding {
-                ComptimeLocalBinding::Type(ty) => Some(ty),
-                ComptimeLocalBinding::Runtime => local_module(&root),
-            })
-        } else if env.is_runtime_local_name(&root) || env.runtime_binding_names.contains(&root) {
-            Some(local_module(&root))
-        } else if let Some(ty) = env.type_subst.get(&root) {
-            Some(Some(ty.clone()))
-        } else if env.value_subst.contains_key(&root) {
-            Some(None)
-        } else {
-            None
-        };
-        let root_module = match lexical {
+        let root_module = match Self::lexical_path_root(&root, env) {
             Some(Some(ty)) if self.host.type_is_module(&ty) => Some(ty),
             Some(_) => return None,
             None => None,
@@ -2883,6 +2905,47 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             root_module,
             segments,
         })
+    }
+
+    /// The nearest lexical binding of a module path's root, in the order name
+    /// lookup consults them: `Some(Some(ty))` is a type-valued or module
+    /// binding, `Some(None)` a value or runtime binding that is not a module,
+    /// and `None` no lexical binding (the file's bindings answer). A value
+    /// local or runtime name shadows the file's bindings, and a type-valued
+    /// binding does too unless it is a module. A runtime local may itself be
+    /// a module, which body analysis and staged inference report through
+    /// `local_module_membership`.
+    fn lexical_path_root(
+        root: &H::Name,
+        env: &ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
+    ) -> Option<Option<H::Type>> {
+        let local_module = |root: &H::Name| {
+            env.local_module_membership
+                .as_ref()
+                .and_then(|membership| membership(root))
+        };
+        if let Some(module) = env.local_modules.get(root) {
+            Some(Some(module.clone()))
+        } else if env.locals.contains_key(root) {
+            Some(None)
+        } else if let Some(binding) = env
+            .local_binding_membership
+            .as_ref()
+            .and_then(|membership| membership(root))
+        {
+            Some(match binding {
+                ComptimeLocalBinding::Type(ty) => Some(ty),
+                ComptimeLocalBinding::Runtime => local_module(root),
+            })
+        } else if env.is_runtime_local_name(root) || env.runtime_binding_names.contains(root) {
+            Some(local_module(root))
+        } else if let Some(ty) = env.type_subst.get(root) {
+            Some(Some(ty.clone()))
+        } else if env.value_subst.contains_key(root) {
+            Some(None)
+        } else {
+            None
+        }
     }
 
     /// Decode a module path rooted at an inline `@import("path")`
