@@ -7191,7 +7191,7 @@ error_contains = ["E0800", "u8"]
 
 [[case]]
 name = "generic_call_result_comptime_selector_overflow_in_value_specialized_body"
-spec = ["4.14:4", "4.14:5", "4.14:17"]
+spec = ["3.1:17", "4.14:5", "4.14:17"]
 description = "A comptime-known selector over a comptime generic call's `u8` result evaluates at `u8` in a value-specialized body: `cid(u8, 255) + 1 == 256` is rejected as in `main`, not selected at `i32` (RUE-2436)"
 source = """
 fn cid(comptime T: type, comptime x: T) -> T { x }
