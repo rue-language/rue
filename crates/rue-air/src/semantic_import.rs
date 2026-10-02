@@ -601,6 +601,8 @@ fn local_const_value_fits_type(
             .is_some_and(|kind| matches!(kind, crate::types::TextViewKind::Str)),
         ConstValue::Float(_) => expected.is_float() || expected == Type::COMPTIME_FLOAT,
         ConstValue::Aggregate(value) => value.ty == expected,
+        // A module is not a value of any type (10.4:6, RUE-2420).
+        ConstValue::Module(_) => false,
     }
 }
 
@@ -2626,6 +2628,8 @@ where
                 SemanticImportConstValue::Function(key.clone())
             }
             ConstValue::Unit => SemanticImportConstValue::Unit,
+            // A module is never an exported constant value (10.4:6, RUE-2420).
+            ConstValue::Module(_) => return Err(SemanticImportFailure::ForeignLocalValue),
             ConstValue::String(content) => {
                 SemanticImportConstValue::String(Arc::from(self.interner.resolve(&content.spur())))
             }

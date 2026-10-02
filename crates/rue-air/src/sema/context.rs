@@ -1032,6 +1032,12 @@ pub enum ConstValue {
     Aggregate(Arc<ConstAggregate>),
     /// Unit value - the value of `()`.
     Unit,
+    /// The module a module-returning `-> type` call reduces to
+    /// (`fn m() -> type { @import("x.rue") }`, RUE-2420). A module is not a
+    /// value (10.4:6) and not a type, so this is never a comptime argument,
+    /// an element, an operand or a type: only a `let` binding or a module path
+    /// head consumes it, as they consume an `@import`.
+    Module(crate::types::ModuleId),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -1182,6 +1188,7 @@ impl ConstValue {
             ConstValue::Float(_) => Type::COMPTIME_FLOAT,
             ConstValue::Aggregate(aggregate) => aggregate.ty,
             ConstValue::Unit => Type::UNIT,
+            ConstValue::Module(module) => Type::new_module(*module),
         }
     }
 }

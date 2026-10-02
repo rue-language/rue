@@ -494,6 +494,10 @@ impl AirValidationContext<'_> {
                     return Err("function constant has the wrong type".into());
                 }
             }
+            // A module is not a value (10.4:6, RUE-2420): no constant holds one.
+            crate::sema::ConstValue::Module(_) => {
+                return Err("a module is not a constant value".into());
+            }
             crate::sema::ConstValue::String(symbol) => {
                 self.validate_symbol(symbol.spur())?;
                 if let Some(ty) = expected {
@@ -1077,8 +1081,10 @@ enum ConstValueTag {
 }
 
 impl ConstValueTag {
-    fn of(value: &crate::sema::ConstValue) -> Self {
-        match value {
+    /// The tag of an encodable value; a module has none, since it is never
+    /// a constant value argument (10.4:6, RUE-2420).
+    fn of(value: &crate::sema::ConstValue) -> Option<Self> {
+        Some(match value {
             crate::sema::ConstValue::Integer(_) => Self::Integer,
             crate::sema::ConstValue::Bool(_) => Self::Bool,
             crate::sema::ConstValue::Unit => Self::Unit,
@@ -1087,7 +1093,8 @@ impl ConstValueTag {
             crate::sema::ConstValue::String(_) => Self::String,
             crate::sema::ConstValue::Float(_) => Self::Float,
             crate::sema::ConstValue::Aggregate(_) => Self::Aggregate,
-        }
+            crate::sema::ConstValue::Module(_) => return None,
+        })
     }
 
     const fn word(self) -> u32 {
@@ -1172,7 +1179,27 @@ pub(crate) fn encode_const_values(
                 total.checked_add(encoded_words(child, depth + 1, nodes)?)
             });
         }
-        Some(1 + ConstValueTag::of(value).payload_width())
+        Some(1 + ConstValueTag::of(value)?.payload_width())
+    }
+    fn contains_module(value: &crate::sema::ConstValue) -> bool {
+        match value {
+            crate::sema::ConstValue::Module(_) => true,
+            crate::sema::ConstValue::Aggregate(aggregate) => match &aggregate.kind {
+                crate::sema::ConstAggregateKind::Struct(values)
+                | crate::sema::ConstAggregateKind::Array(values) => {
+                    values.iter().any(contains_module)
+                }
+                crate::sema::ConstAggregateKind::Enum { payload, .. } => {
+                    payload.iter().any(contains_module)
+                }
+            },
+            _ => false,
+        }
+    }
+    if values.iter().any(contains_module) {
+        return Err(error(AirBuildErrorKind::ProducerInvariant(
+            "a module is not a constant value argument",
+        )));
     }
     let mut nodes = 0;
     let word_count = values.iter().try_fold(0usize, |count, value| {
@@ -1231,6 +1258,11 @@ pub(crate) fn encode_const_values(
                     u32::try_from(value.issuing_interner_ordinal())
                         .map_err(|_| error(AirBuildErrorKind::ResourceLimit))?,
                 );
+            }
+            crate::sema::ConstValue::Module(_) => {
+                return Err(error(AirBuildErrorKind::ProducerInvariant(
+                    "a module is not a constant value argument",
+                )));
             }
             crate::sema::ConstValue::Aggregate(aggregate) => {
                 fn append(

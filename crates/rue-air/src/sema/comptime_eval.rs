@@ -76,16 +76,6 @@ use super::info::FunctionCallInfo;
 use super::ordinary_engine::{OrdinaryBodyAnalysisHost, OrdinaryBodyEngine};
 
 impl ComptimeName for Spur {}
-/// Whether a reduced value is a module: a call to a module-returning `-> type`
-/// function reduces to one (RUE-2420). A module is never a compile-time value
-/// (10.4:6), so a body expression evaluated for its value — a `comptime`
-/// argument, a length, an operand — is not compile-time known when it reduces
-/// to one, exactly as an `@import` in the same position is not. Module paths
-/// and `let` bindings reach the module through the call's own analysis.
-fn is_module_value(value: &ConstValue) -> bool {
-    matches!(value, ConstValue::Type(ty) if ty.is_module())
-}
-
 impl ComptimeFile for FileId {}
 impl ComptimeIdentity for super::anon_structs::IssuedStableProducerId {}
 impl ComptimeIdentity for super::anon_structs::IssuedAnonymousNominalKey {}
@@ -266,6 +256,14 @@ impl super::comptime::ComptimeValue for ConstValue {
             _ => None,
         }
     }
+    /// A module a call reduced to (RUE-2420) roots paths when a block-local
+    /// `let` binds it, as `let m = @import(..)` does.
+    fn as_module_root(&self) -> Option<Type> {
+        match self {
+            Self::Module(module) => Some(Type::new_module(*module)),
+            _ => None,
+        }
+    }
     /// The element type an array literal takes from this value when no
     /// expected or resolved type names one. The result is interned as an
     /// array child, so it must be a type the pool can hold there: an untyped
@@ -280,7 +278,10 @@ impl super::comptime::ComptimeValue for ConstValue {
             ConstValue::Float(_) => Some(Type::F64),
             ConstValue::Aggregate(aggregate) => Some(aggregate.ty),
             ConstValue::Unit => Some(Type::UNIT),
-            ConstValue::Type(_) | ConstValue::Function(_) | ConstValue::String(_) => None,
+            ConstValue::Type(_)
+            | ConstValue::Function(_)
+            | ConstValue::String(_)
+            | ConstValue::Module(_) => None,
         }
     }
     fn aggregate_struct(ty: Type, fields: Vec<Self>) -> Option<Self> {
@@ -495,10 +496,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         ctx: &AnalysisContext,
     ) -> Option<ConstValue> {
         let mut env = ComptimeEnv::for_analysis(ctx);
-        self.eval_const_expr(inst_ref, &mut env)
-            .ok()
-            .flatten()
-            .filter(|value| !is_module_value(value))
+        self.eval_const_expr(inst_ref, &mut env).ok().flatten()
     }
 
     pub(crate) fn try_evaluate_const_with_resolved_types_and_membership(
@@ -619,9 +617,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         ctx: &AnalysisContext,
     ) -> CompileResult<Option<ConstValue>> {
         let mut env = ComptimeEnv::for_analysis(ctx);
-        Ok(self
-            .eval_const_expr(inst_ref, &mut env)?
-            .filter(|value| !is_module_value(value)))
+        self.eval_const_expr(inst_ref, &mut env)
     }
 
     /// Try to evaluate an RIR instruction to a compile-time constant value
@@ -1025,9 +1021,17 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         inst_ref: InstRef,
         env: &mut ComptimeEnv,
     ) -> CompileResult<Option<ConstValue>> {
-        ComptimeEngine::new(self)
+        // A call to a module-returning `-> type` function reduces to a module
+        // (RUE-2420), which is never a compile-time value (10.4:6). An
+        // expression evaluated for its value — a `comptime` argument, a
+        // length, an operand, a `let` the inference walk binds as a type — is
+        // therefore not compile-time known when it is one, exactly as an
+        // `@import` in the same position is not. `let` bindings and module
+        // path heads reach the module through the call's own analysis.
+        Ok(ComptimeEngine::new(self)
             .evaluate(ComptimeFrame::expression((), inst_ref), env)
-            .into_result(|trap| self.trap_failure(trap))
+            .into_result(|trap| self.trap_failure(trap))?
+            .filter(|value| !matches!(value, ConstValue::Module(_))))
     }
 
     fn trap_failure(&self, trap: ComptimeTrap) -> CompileError {
@@ -1952,7 +1956,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 ConstValue::Type(_) => expected == Type::COMPTIME_TYPE,
                 ConstValue::Float(_) => expected.is_float(),
                 ConstValue::String(_) => self.is_str_struct(expected),
-                ConstValue::Function(_) => false,
+                ConstValue::Function(_) | ConstValue::Module(_) => false,
                 ConstValue::Aggregate(_) => unreachable!(),
             };
             if valid {

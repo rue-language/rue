@@ -2256,9 +2256,9 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             // — a call to a module-returning `-> type` function — is no more
             // compile-time known than a module path in the same position
             // (RUE-2420).
-            if value
-                .as_type()
-                .is_some_and(|ty| self.host.type_is_module(&ty))
+            if self.host.comptime_method_receiver_policy()
+                == ComptimeMethodReceiverPolicy::SyntacticModulePath
+                && value.as_module_root().is_some()
             {
                 return ComptimeOutcome::RuntimeDependent;
             }
@@ -4003,7 +4003,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 if annotation.is_none()
                     && self.host.comptime_method_receiver_policy()
                         == ComptimeMethodReceiverPolicy::SyntacticModulePath
-                    && let Some(module) = value.as_type().filter(|ty| self.host.type_is_module(ty))
+                    && let Some(module) = value.as_module_root()
                 {
                     if let Some(name) = name {
                         env.locals.remove(&name);

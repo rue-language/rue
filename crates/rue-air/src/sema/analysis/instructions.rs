@@ -407,7 +407,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         });
                         Ok(AnalysisResult::new(air_ref, ty))
                     }
-                    None => Err(CompileError::new(
+                    // A module is not a compile-time value (10.4:6); the
+                    // root evaluation never yields one (RUE-2420).
+                    Some(ConstValue::Module(_)) | None => Err(CompileError::new(
                         ErrorKind::ComptimeEvaluationFailed {
                             reason:
                                 "expression contains values that cannot be known at compile time"

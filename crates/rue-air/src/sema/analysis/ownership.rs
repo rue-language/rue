@@ -2328,6 +2328,15 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     span,
                 ));
             }
+            // A module is not a value (10.4:6, RUE-2420).
+            ConstValue::Module(_) => {
+                return Err(CompileError::new(
+                    ErrorKind::ComptimeEvaluationFailed {
+                        reason: "a module is not a value".to_string(),
+                    },
+                    span,
+                ));
+            }
         })
     }
 
@@ -2771,6 +2780,15 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     return Err(CompileError::new(
                         ErrorKind::ConstExprNotSupported {
                             expr_kind: "a function reference".to_string(),
+                        },
+                        span,
+                    ));
+                }
+                // A module never binds a comptime parameter (RUE-2420).
+                ConstValue::Module(_) => {
+                    return Err(CompileError::new(
+                        ErrorKind::ConstExprNotSupported {
+                            expr_kind: "a module".to_string(),
                         },
                         span,
                     ));
