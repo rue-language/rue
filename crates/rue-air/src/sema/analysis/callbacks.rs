@@ -164,10 +164,29 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     }
 
     /// The dotted spelling of a callback argument's base (`m`, `m.S`,
-    /// `outer.inner`), for diagnostics and the callable's display.
+    /// `outer.inner`, `@import("x.rue").S`), for diagnostics and the
+    /// callable's display.
     fn member_base_display(&self, base: InstRef) -> Option<String> {
-        let spine = crate::sema::decode_module_spine(self.body_rir_ref(), base)?;
         let interner = self.body_interner();
+        // An inline-import root resolves through the same module walker as a
+        // named one (RUE-2416), so it binds as a callback exactly as
+        // `const x = @import("x.rue"); x.f` does.
+        if let Some(spine) =
+            crate::sema::decode_inline_import_spine(self.body_rir_ref(), interner, base)
+        {
+            return Some(
+                std::iter::once(format!("@import(\"{}\")", interner.resolve(&spine.path)))
+                    .chain(
+                        spine
+                            .fields
+                            .iter()
+                            .map(|name| interner.resolve(name).to_string()),
+                    )
+                    .collect::<Vec<_>>()
+                    .join("."),
+            );
+        }
+        let spine = crate::sema::decode_module_spine(self.body_rir_ref(), base)?;
         Some(
             std::iter::once(spine.root)
                 .chain(spine.fields.iter().copied())
