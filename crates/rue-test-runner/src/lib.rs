@@ -59,14 +59,23 @@ pub fn check_unreachable_trap(
             Some(signal) => vec![signal],
             None => vec![libc::SIGTRAP, libc::SIGILL],
         };
+        let expected_names = expected
+            .iter()
+            .map(|&signal| match signal {
+                libc::SIGTRAP => "SIGTRAP".to_string(),
+                libc::SIGILL => "SIGILL".to_string(),
+                other => format!("signal {other}"),
+            })
+            .collect::<Vec<_>>()
+            .join(" or ");
         match status.signal() {
             Some(signal) if expected.contains(&signal) => Ok(()),
             Some(signal) => Err(TestFailure::fatal(format!(
-                "TEST PROGRAM CRASH: expected the unreachable trap (signal {expected:?}), but the \
+                "TEST PROGRAM CRASH: expected the unreachable trap ({expected_names}), but the \
                  process was killed by signal {signal} ({status:?})\n--- program stderr ---\n{stderr}"
             ))),
             None => Err(TestFailure::assertion(format!(
-                "expected the unreachable trap (signal {expected:?}), but the program exited \
+                "expected the unreachable trap ({expected_names}), but the program exited \
                  normally ({status:?})\n--- program stderr ---\n{stderr}"
             ))),
         }
