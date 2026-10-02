@@ -1,0 +1,106 @@
+[section]
+id = "diagnostics.anonymous-type-display"
+name = "Anonymous Type Display Names"
+description = "Diagnostics call a body-local anonymous struct by its let binding, never by its generated digest name (RUE-2589)."
+
+[[case]]
+name = "let_bound_struct_mismatch_names_the_binding"
+description = "A struct bound by let reads by the binding's name in a type mismatch."
+source = """
+fn main() -> i32 {
+    let I = struct { v: i64 };
+    let J = struct { v: i64 };
+    let i: I = J { v: 1 };
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0206", "type mismatch: expected I, found J"]
+
+[[case]]
+name = "unbound_comptime_block_struct_reads_by_its_shape"
+description = "A comptime-block struct no let binds has no name, so it reads by its shape."
+source = """
+fn take(comptime T: type, x: T) -> i64 { 0 }
+fn main() -> i32 {
+    take(comptime { struct { v: i64, w: bool } }, 5);
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0206", "type mismatch: expected struct { v: i64, w: bool }, found {integer}"]
+
+[[case]]
+name = "constructor_body_local_structs_are_qualified_by_the_constructor"
+description = "Two structs a constructor's body binds read as `A(i64).B` and `A(i64).C`, not both as `A(i64)`."
+source = """
+fn Inner(comptime T: type) -> type { struct { x: T } }
+fn A(comptime T: type) -> type {
+    let B = struct { v: T };
+    let C = struct { v: T };
+    struct {
+        b: Inner(B),
+        c: Inner(C),
+        fn make(v: T) -> Self {
+            Self { b: Inner(B) { x: B { v: v } }, c: Inner(C) { x: C { v: v } } }
+        }
+        fn first(self) -> Inner(B) { self.c }
+    }
+}
+fn main() -> i32 {
+    let X = A(i64);
+    let x = X.make(1);
+    let b = x.first();
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0206", "type mismatch: expected Inner(A(i64).B), found Inner(A(i64).C)"]
+
+[[case]]
+name = "recursive_anonymous_struct_help_points_through_self"
+description = "E0483 names a let-bound struct by its binding and suggests `ptr const Self`, the spelling its own fields can use."
+source = """
+fn main() -> i32 {
+    let I = struct { v: i64, w: [Self; 1] };
+    0
+}
+"""
+compile_fail = true
+error_contains = [
+    "E0483",
+    "recursive type 'I' has infinite size (contains itself by value: I -> I)",
+    "(`ptr const Self` / `ptr mut Self`)",
+]
+
+[[case]]
+name = "method_body_error_names_the_struct_not_its_producer"
+description = "An error inside a body-local struct's method names the struct, not the function that declares it."
+source = """
+fn main() -> i32 {
+    let I = struct { v: i64, fn get(self) -> i64 { self.nope } };
+    let i = I { v: 1 };
+    @intCast(i.get())
+}
+"""
+compile_fail = true
+error_contains = ["E0401", "unknown field 'nope' in struct 'I'"]
+
+[[case]]
+name = "unsatisfied_bound_on_a_body_local_struct_names_it_and_offers_no_assertion"
+description = "E0305 names a body-local struct by its binding; no module-level assertion can name it, so the help says to declare it there."
+preview = "interfaces"
+source = """
+interface Getter { fn get(self) -> i64; }
+fn use(comptime T: Getter, x: T) -> i64 { x.get() }
+fn main() -> i32 {
+    let I = struct { v: i64 };
+    @intCast(use(I, I { v: 1 }))
+}
+"""
+compile_fail = true
+error_contains = [
+    "E0305",
+    "type `I` does not conform to interface `Getter`",
+    "an anonymous type local to a function body cannot be named by a conformance assertion; declare it at module scope as `struct Name is Getter { .. }`",
+]
