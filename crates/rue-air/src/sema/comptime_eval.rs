@@ -445,6 +445,7 @@ impl<'a>
             })),
             runtime_binding_names: ctx.params.iter().map(|param| param.name).collect(),
             locals: AHashMap::new(),
+            local_modules: AHashMap::new(),
             const_module_members: AHashMap::new(),
             defining_file: Some(ctx.current_file_id),
             expected_result: None,
@@ -3623,6 +3624,31 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeTypeAlgebra for OrdinaryBodyEngine
         self.resolve_module_qualified_struct_literal(module, name, span)
             .map(|struct_id| Some(Type::new_struct(struct_id)))
             .map_err(Into::into)
+    }
+    fn resolve_comptime_local_module(
+        &mut self,
+        file: FileId,
+        root_module: Option<&Type>,
+        segments: &[Spur],
+        span: Span,
+    ) -> ComptimeHostResult<Option<Type>, Self::Failure> {
+        // A path that does not walk to a module (a constant, a type) is not a
+        // module binding; the initializer is then evaluated as any other. A
+        // private hop is the E0706 the same `let` reports in a function body.
+        match OrdinaryBodyEngine::resolve_comptime_module_path(
+            self,
+            file,
+            root_module.copied(),
+            segments,
+            true,
+            span,
+        ) {
+            Ok(resolved) => Ok(resolved.map(|(module, _)| Type::new_module(module))),
+            Err(error) if matches!(error.kind, ErrorKind::PrivateMemberAccess { .. }) => {
+                Err(error.into())
+            }
+            Err(_) => Ok(None),
+        }
     }
     fn resolve_comptime_type_path(
         &mut self,

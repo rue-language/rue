@@ -181,6 +181,14 @@ where
     pub local_module_membership: Option<std::sync::Arc<dyn Fn(&N) -> Option<T> + 'a>>,
     pub runtime_binding_names: AHashSet<N>,
     pub locals: AHashMap<N, V>,
+    /// The expression-local `let` bindings whose initializer is a module path
+    /// (`let m = lib;`), each with its module-typed substitution, for a host
+    /// that reaches modules syntactically. They sit at the lexical level of
+    /// `locals`, and a name is in at most one of the two: a later `let`
+    /// rebinds it in whichever its initializer belongs to. A module path
+    /// rooted at one resolves from its module, and the name is never a
+    /// compile-time value (spec 10.4:1, RUE-2445).
+    pub local_modules: AHashMap<N, T>,
     pub const_module_members: AHashMap<InstRef, V>,
     pub defining_file: Option<F>,
     /// Expected result for the active frame. This is deliberately carried in
@@ -235,8 +243,14 @@ where
                 }
             }
         }
+        for (name, module) in &self.local_modules {
+            type_subst.insert(name.clone(), module.clone());
+            value_subst.remove(name);
+        }
         for (name, val) in &self.locals {
-            if let Some(t) = val.as_type() {
+            // A module value bound by a block-local `let` is a path root,
+            // as a module-typed substitution (RUE-2445).
+            if let Some(t) = val.as_type().or_else(|| val.as_module_root()) {
                 type_subst.insert(name.clone(), t);
                 value_subst.remove(name);
             } else if val.eligible_for_comptime_capture() {
@@ -263,6 +277,7 @@ where
             local_module_membership: None,
             runtime_binding_names: AHashSet::new(),
             locals: AHashMap::new(),
+            local_modules: AHashMap::new(),
             const_module_members: AHashMap::new(),
             defining_file: None,
             expected_result: None,
@@ -285,6 +300,7 @@ where
             local_module_membership: None,
             runtime_binding_names: AHashSet::new(),
             locals: AHashMap::new(),
+            local_modules: AHashMap::new(),
             const_module_members: AHashMap::new(),
             defining_file: None,
             expected_result: None,
