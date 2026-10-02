@@ -2295,6 +2295,11 @@ where
     /// parameters. A generic reference outside that environment is rejected,
     /// and structural types interned before a later failure remain confined to
     /// the scratch pool.
+    ///
+    /// Each parameter's flag says whether it is a comptime type parameter
+    /// ([`crate::DurableSignatureParameter::is_type_parameter`]), not merely
+    /// comptime: a comptime value parameter whose type is deferred to the
+    /// call site also carries the `ComptimeType` placeholder (RUE-2550).
     pub fn validate_callable_signature(
         &self,
         parameters: &[(SemanticImportType<K, M>, bool)],
@@ -2303,8 +2308,8 @@ where
         let type_pool = self.type_pool.clone();
         let generic_parameters = parameters
             .iter()
-            .filter(|(ty, is_comptime)| {
-                *is_comptime && matches!(ty, SemanticImportType::ComptimeType)
+            .filter(|(ty, is_type_parameter)| {
+                *is_type_parameter && matches!(ty, SemanticImportType::ComptimeType)
             })
             .map(|_| Type::COMPTIME_TYPE)
             .collect::<Vec<_>>();
