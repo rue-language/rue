@@ -1635,16 +1635,15 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeValueAlgebra
         let initializer = self.diagnostic_site(initializer);
         Self::admit_value_at(&mut value, ty, Some(&binding), Some(&initializer))?;
         // The binding has the annotation's type, so every use reads it there
-        // (5.1:8): an untyped integer literal takes the annotated integer
-        // type, and a float literal the annotated float width.
+        // (5.1:8): a float literal takes the annotated float width. An
+        // integer binding's type is the declared type the engine keeps for
+        // it.
         if let EvaluatedSemanticConst::Value(typed) = &value
-            && match (&typed.value, typed.ty.as_ref()) {
-                (DurableConstValue::Integer(_), None) => durable_int_width(ty).is_some(),
-                (DurableConstValue::Float(_), Some(DurableType::ComptimeFloat)) => {
-                    matches!(ty, DurableType::F32 | DurableType::F64)
-                }
-                _ => false,
-            }
+            && matches!(
+                (&typed.value, typed.ty.as_ref()),
+                (DurableConstValue::Float(_), Some(DurableType::ComptimeFloat))
+            )
+            && matches!(ty, DurableType::F32 | DurableType::F64)
         {
             value = EvaluatedSemanticConst::Value(Arc::new(TypedSemanticConst {
                 value: typed.value.clone(),

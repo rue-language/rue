@@ -2280,7 +2280,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             let parameter_type = self.host.comptime_call_parameter_type(binding, index);
             env.expected_result = parameter_type.clone();
             let value = match self.eval_typed(arg.value, parameter_type, env) {
-                ComptimeOutcome::Known(value) => value,
+                ComptimeOutcome::Known(value) => self.declared_integer_value(arg.value, value, env),
                 other => {
                     env.expected_result = previous_expected;
                     return Self::discard_rejection(other);
@@ -2488,6 +2488,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         env.expected_result = enclosing;
         match (value, slot) {
             (ComptimeOutcome::Known(value), Some(slot)) => {
+                let value = self.declared_integer_value(child, value, env);
                 let site = self.diagnostic_site(self.program_rir().get(child).span);
                 ComptimeOutcome::Known(host_value!(
                     self.host.admit_comptime_child(value, &slot, &site)
@@ -3441,6 +3442,60 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         ComptimeOutcome::Known(value)
     }
 
+    /// `value`, the reduced `root`, at the declared type its region reads:
+    /// an untyped integer computed from a local of declared type `T` (and
+    /// literals) is a `T`, as run time types it. A typed position that reads
+    /// it (a `let` annotation, a structural slot, a typed block's tail)
+    /// then checks that type (RUE-2617). Any other value is returned as is.
+    fn declared_integer_value(
+        &self,
+        root: InstRef,
+        value: H::Value,
+        env: &ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
+    ) -> H::Value {
+        let Some(integer) = value.as_integer() else {
+            return value;
+        };
+        if env.declared_integer_locals.is_empty() {
+            return value;
+        }
+        // The region's type is the value's run time type even where the
+        // evaluator typed its operations at the expected type instead.
+        match self.declared_result_type(root, env) {
+            Some(ty) => H::Value::integer_typed(integer, Some(ty)),
+            None => value,
+        }
+    }
+
+    /// The declared type of `root`'s value, if a declared local decides it:
+    /// its arithmetic region's checked type, or for an `if` the type either
+    /// arm declares when the arms do not disagree, since run time gives both
+    /// arms one type.
+    fn declared_result_type(
+        &self,
+        root: InstRef,
+        env: &ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
+    ) -> Option<H::Type> {
+        if let InstData::Branch {
+            then_block,
+            else_block: Some(else_block),
+            ..
+        } = self.program_rir().get(root).data
+        {
+            return match (
+                self.declared_result_type(then_block, env),
+                self.declared_result_type(else_block, env),
+            ) {
+                (Some(then_type), Some(else_type)) => self
+                    .same_declared_type(&then_type, &else_type)
+                    .then_some(then_type),
+                (Some(ty), None) | (None, Some(ty)) => Some(ty),
+                (None, None) => None,
+            };
+        }
+        self.declared_region(root, None, env).1
+    }
+
     /// Whether an instruction joins the arithmetic region of its parent: the
     /// integer operations whose operands run time types together. A
     /// comparison joins only as a region's root, since its result is a `bool`.
@@ -4069,8 +4124,18 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 }
                 H::Value::unit()
             } else {
+                let consumed_at_a_type =
+                    is_tail && (literal_type.is_some() || env.expected_result.is_some());
                 let literal_type = if is_tail { literal_type.clone() } else { None };
-                outcome_value!(self.eval_typed(stmt_ref, literal_type, env))
+                let value = outcome_value!(self.eval_typed(stmt_ref, literal_type, env));
+                // A tail read by a typed position is the block's value at
+                // its own type: `{ let a: i64 = 5; a }` is an `i64` while
+                // `a` is still in scope to say so (RUE-2617).
+                if consumed_at_a_type {
+                    self.declared_integer_value(stmt_ref, value, env)
+                } else {
+                    value
+                }
             };
             if is_tail {
                 result = value;
@@ -4212,6 +4277,15 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             || matches!(init_data, InstData::IntConst(_) | InstData::VarRef { .. });
         let region = (joins && (annotated.is_some() || !env.declared_integer_locals.is_empty()))
             .then(|| self.declared_region(init, annotated.clone(), env));
+        // An annotation is the type its initializer's operations take, as
+        // a call parameter's type is its argument's, rather than the type
+        // the enclosing expression expects: in `const K: i32 = { let x: i8
+        // = -6; ... }` the `-6` is an `i8` (RUE-2617). An unannotated `let`
+        // keeps the enclosing expectation.
+        let enclosing = match literal_type.as_ref() {
+            Some(ty) => Some(std::mem::replace(&mut env.expected_result, Some(ty.clone()))),
+            None => None,
+        };
         let (value, checked) = match region {
             Some((operations, checked)) if !operations.is_empty() => {
                 // A region is evaluated below `eval`, so a negated float
@@ -4228,16 +4302,30 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             Some((_, checked)) => (self.eval_typed(init, literal_type.clone(), env), checked),
             None => (self.eval_typed(init, literal_type.clone(), env), None),
         };
+        if let Some(enclosing) = enclosing {
+            env.expected_result = enclosing;
+        }
         let mut value = outcome_value!(value);
         if let Some(ty) = literal_type.as_ref() {
             let binding = self.diagnostic_site(span);
             let initializer = self.diagnostic_site(self.program_rir().get(init).span);
+            let value_at_its_type = self.declared_integer_value(init, value, env);
             value = host_value!(self.host.admit_comptime_binding(
-                value,
+                value_at_its_type,
                 ty,
                 &binding,
                 &initializer
             ));
+            // An integer binding keeps its value untyped and its annotated
+            // type as the declared type every region that reads it is
+            // checked at, as an integer literal binding always has: a typed
+            // value would meet the evaluator's untyped arithmetic, which has
+            // no type until inference gives it one (RUE-2360).
+            if let Some(integer) = value.as_integer()
+                && self.host.type_integer_semantics(ty).is_some()
+            {
+                return ComptimeOutcome::Known((H::Value::integer(integer), Some(ty.clone())));
+            }
         }
         let declared = checked.filter(|ty| {
             value.as_integer().is_some_and(|integer| {
