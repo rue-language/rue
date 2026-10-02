@@ -488,6 +488,8 @@ impl crate::durable_comptime::DurableComptimeHostAuthority for DurableComptimeRo
             .and_then(|nominal| nominal.binding)
     }
 
+    // Display only: it picks how a diagnostic spells a local (`P(i32).J` or
+    // `I`), and must never decide identity or acceptance (RUE-2612).
     fn function_returns_type(&self, function: &crate::StableDefinitionKey) -> bool {
         let Ok(Some(candidate)) =
             self.provider
