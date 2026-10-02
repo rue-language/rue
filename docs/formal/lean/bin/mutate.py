@@ -808,6 +808,9 @@ def decl_spans(t, witnesses=False):
         # `in_match`: the statement itself holds a `match … with` at depth 0, whose arms
         # start lines with `|` too (`Float/Lemmas.lean`'s `cmpScaled_at`), so from there on a
         # line-leading `|` is one of its arms and not an equation of the declaration.
+        # The flag is sticky: a theorem with a `match` in its statement *and* an
+        # equation-style proof (`| … => …`, no top-level `:=`) would be cut at an
+        # inner `:=` or raise "no proof found". No theorem has that shape today.
         d, i, b, in_match = 0, mm.end(), None, False
         while i < e:
             if mask[i]:

@@ -9,11 +9,12 @@ from seed `S` follow the seed cases in the same document; the seed defaults
 to 0. With `--profile` (RUE-2469) it prints instead the checker's acceptance
 profile over the same cases: how many `checkProgram` accepts and rejects, and
 each group's outcomes under `run`, a refusal by its violation. Without `--gen` the output is the seed corpus alone, exactly as Buck's
-`corpus.json` expects it. A generated case the export fuel does not complete is
-an error (exit 1, the cases named on stderr) rather than a silent omission,
-because `Gen.lean` guarantees every one terminates. A seed case it does not
-complete is named on stderr and left out (exit 0, as `Corpus.lean` documents).
-Every run first checks `Corpus.divergent`, programs that never terminate: each
+`corpus.json` expects it. A case the export fuel does not complete, seed or
+generated, is an error (exit 1, the cases named on stderr) rather than a
+silent omission: the seeds are written to terminate and `Gen.lean` guarantees
+every generated one does, so one that does not is a bug — in the semantics,
+the case or the generator — and dropping it would hide that from every gate
+that reads only the exit code (RUE-2488). Every run first checks `Corpus.divergent`, programs that never terminate: each
 must come back not completed at the export fuel, or the run fails (exit 1)
 (RUE-2488). The interpreter's native stack grows with the fuel, so this is
 also what shows the export fuel fits the stack Lean runs `main` on.
@@ -114,20 +115,22 @@ def main (args : List String) : IO UInt32 := do
         IO.eprintln (s!"ruecore-corpus: {finished.length} expected-divergence case(s) completed " ++
           "at the export fuel, which they never may: " ++ ", ".intercalate (finished.map (·.name)))
         return 1
-      -- A seed the export fuel does not complete is left out of the document,
-      -- as `Corpus.lean` says; say which, so that a seed going missing (under
-      -- a mutant, say) is reported as not finishing rather than only absent.
+      -- `jsonOf` leaves out a case the export fuel does not complete. Every
+      -- seed is written to terminate (`Corpus.lean`), so one that does not is
+      -- a bug, and leaving it out would pass every gate that reads only the
+      -- exit code (RUE-2488): an error, checked first so a diverging seed is
+      -- evaluated once.
       let unfinishedSeeds := RueCore.Corpus.cases.filter (fun c => !RueCore.Corpus.completed c)
       if !unfinishedSeeds.isEmpty then
-        IO.eprintln (s!"ruecore-corpus: {unfinishedSeeds.length} seed case(s) did not finish at " ++
-          "the export fuel and are not exported: " ++ ", ".intercalate (unfinishedSeeds.map (·.name)))
+        IO.eprintln (s!"ruecore-corpus: {unfinishedSeeds.length} seed case(s) did not finish " ++
+          "at the export fuel, which every seed must: " ++
+          ", ".intercalate (unfinishedSeeds.map (·.name)))
+        return 1
       let gen := match o.gen with
         | none => []
         | some n => RueCore.Gen.generate n o.seed
-      -- `jsonOf` leaves out a case the export fuel does not complete, which
-      -- is right for a hand-written seed but, for a generated one, would hide
-      -- a draw that broke the generator's termination guarantee (`Gen.lean`,
-      -- "Loops"). So a generated case that does not complete is an error.
+      -- Likewise a generated case: dropping it would hide a draw that broke
+      -- the generator's termination guarantee (`Gen.lean`, "Loops").
       let unfinished := gen.filter (fun c => !RueCore.Corpus.completed c)
       if !unfinished.isEmpty then
         IO.eprintln (s!"ruecore-corpus: {unfinished.length} generated case(s) did not complete " ++
