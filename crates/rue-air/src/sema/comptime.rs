@@ -4282,10 +4282,9 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         // the enclosing expression expects: in `const K: i32 = { let x: i8
         // = -6; ... }` the `-6` is an `i8` (RUE-2617). An unannotated `let`
         // keeps the enclosing expectation.
-        let enclosing = match literal_type.as_ref() {
-            Some(ty) => Some(std::mem::replace(&mut env.expected_result, Some(ty.clone()))),
-            None => None,
-        };
+        let enclosing = literal_type
+            .as_ref()
+            .map(|ty| env.expected_result.replace(ty.clone()));
         let (value, checked) = match region {
             Some((operations, checked)) if !operations.is_empty() => {
                 // A region is evaluated below `eval`, so a negated float

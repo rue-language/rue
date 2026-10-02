@@ -260,7 +260,8 @@ impl<'a, A: DurableComptimeHostAuthority + ?Sized> DurableComptimeHost<'a, A> {
         literal_site: Option<&DurableComptimeDiagnosticSite>,
     ) -> rue_air::ComptimeHostResult<(), DurableComptimeHostFailure> {
         Self::admit_contextual_integer(value, slot);
-        let reject_at = |site: Option<&DurableComptimeDiagnosticSite>, kind: rue_error::ErrorKind| {
+        let reject_at = |site: Option<&DurableComptimeDiagnosticSite>,
+                         kind: rue_error::ErrorKind| {
             durable_host_error(match site {
                 Some(site) => DurableComptimeFailure::kind_at_site(site, kind),
                 None => DurableComptimeFailure::failure(SemanticNucleusFailure::Diagnostic(kind)),
@@ -1641,7 +1642,10 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeValueAlgebra
         if let EvaluatedSemanticConst::Value(typed) = &value
             && matches!(
                 (&typed.value, typed.ty.as_ref()),
-                (DurableConstValue::Float(_), Some(DurableType::ComptimeFloat))
+                (
+                    DurableConstValue::Float(_),
+                    Some(DurableType::ComptimeFloat)
+                )
             )
             && matches!(ty, DurableType::F32 | DurableType::F64)
         {
