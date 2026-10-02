@@ -1904,14 +1904,14 @@ pub(crate) fn select_materialization_facts(
             // principle defer another, and none may be dropped.
             while !self.pending_slice_builtins.is_empty() {
                 for (kind, name) in std::mem::take(&mut self.pending_slice_builtins) {
-                    let query_ty = self
-                        .local_slice_sources
-                        .get(&name)
-                        .cloned()
-                        .unwrap_or_else(|| crate::TypeInstanceKey::BuiltinNominal {
-                            kind,
-                            name: name.clone(),
-                        });
+                    let query_ty =
+                        self.local_slice_sources
+                            .get(&name)
+                            .cloned()
+                            .unwrap_or_else(|| crate::TypeInstanceKey::BuiltinNominal {
+                                kind,
+                                name: name.clone(),
+                            });
                     self.request_builtin(kind, &name, query_ty);
                 }
             }
