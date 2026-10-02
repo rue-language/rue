@@ -2242,11 +2242,27 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeCallProtocol
         index: usize,
         _span: rue_span::Span,
     ) -> rue_air::ComptimeHostResult<bool, Self::Failure> {
-        let Some(parameter) = binding.parameter(index).cloned() else {
+        let Some(mut parameter) = binding.parameter(index).cloned() else {
             return Err(durable_host_error(DurableComptimeFailure::resolution(
                 "durable comptime call argument index is out of bounds",
             )));
         };
+        // A parameter whose declared type reads an earlier comptime argument
+        // takes its type at this call, from the arguments already bound
+        // (RUE-2550).
+        if parameter.deferred_type {
+            let candidate = binding.candidate().clone();
+            parameter.ty = self
+                .services
+                .resolve_dependent_parameter_type(
+                    &candidate,
+                    index,
+                    binding.type_arguments(),
+                    binding.value_arguments(),
+                )
+                .map_err(durable_provider_error)?;
+            parameter.deferred_type = false;
+        }
         let Some(header) = binding.shell_parameter(index).cloned() else {
             return Err(durable_host_error(DurableComptimeFailure::resolution(
                 "durable comptime call shell argument index is out of bounds",
@@ -2305,6 +2321,22 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeCallProtocol
         index: usize,
     ) -> Option<Self::Type> {
         let parameter = binding.parameter(index)?;
+        // A dependent parameter type (`comptime a: [i32; N]`) is resolved
+        // from the arguments bound before it, as the binding resolves it
+        // (RUE-2550); one that does not resolve leaves the argument untyped
+        // and binding reports the failure.
+        if parameter.deferred_type {
+            return self
+                .services
+                .resolve_dependent_parameter_type(
+                    binding.candidate(),
+                    index,
+                    binding.type_arguments(),
+                    binding.value_arguments(),
+                )
+                .ok()
+                .map(DurableComptimeType);
+        }
         let type_arguments = binding
             .type_arguments()
             .iter()
@@ -2624,13 +2656,42 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeStructuredTypes
                 .durable_session_mut()
                 .observe_dependency(alias);
         }
-        let admission = match self
+        let mut admission = match self
             .services
             .finish_structured_comptime_call_admission(start, argument_count)
         {
             Ok(admission) => admission,
             Err(error) => return durable_host_error_outcome(durable_provider_error(error)),
         };
+        // A constructor parameter whose declared type reads an earlier
+        // comptime argument (`comptime a: [i32; N]`) is validated at its type
+        // for this call, not at the signature's deferred placeholder
+        // (RUE-2550).
+        if admission
+            .parameters
+            .iter()
+            .any(|parameter| parameter.deferred_type)
+        {
+            let mut parameters = admission.parameters.to_vec();
+            for (index, parameter) in parameters.iter_mut().enumerate() {
+                if !parameter.deferred_type {
+                    continue;
+                }
+                parameter.ty = match self.services.resolve_dependent_parameter_type(
+                    &admission.candidate,
+                    index,
+                    request.type_arguments(),
+                    request.value_arguments(),
+                ) {
+                    Ok(ty) => ty,
+                    Err(error) => {
+                        return durable_host_error_outcome(durable_provider_error(error));
+                    }
+                };
+                parameter.deferred_type = false;
+            }
+            admission.parameters = parameters.into();
+        }
         let validated = match self
             .services
             .durable_session()

@@ -494,6 +494,63 @@ impl SemanticNucleusTypeProvider<'_> {
         .then_some(expected))
     }
 
+    /// The type of a callable's comptime value parameter whose declared type
+    /// reads another comptime parameter (`comptime a: [i32; N]`), at one call.
+    ///
+    /// The signature carries only the deferred `ComptimeType` placeholder for
+    /// it (RUE-2435, RUE-2550). The retained syntax is resolved again in the
+    /// callee's own scope with the call's arguments as the substitutions; the
+    /// arguments a parameter type may read precede it, so passing the whole
+    /// argument list is exact. A copy of this provider without the caller's
+    /// substitutions and deferred parameters, which may share a name with the
+    /// callee's, resolves it.
+    pub(in crate::revisioned_query_database) fn dependent_parameter_type(
+        &self,
+        declaration: &crate::declaration_candidate::DeclarationCandidateKey,
+        parameter_index: usize,
+        type_arguments: &[(Arc<str>, crate::durable_semantics::DurableType)],
+        value_arguments: &[(Arc<str>, crate::durable_semantics::DurableConstValue)],
+    ) -> Result<
+        crate::durable_semantics::DurableType,
+        rue_air::SemanticProviderError<
+            QueryAbort,
+            crate::semantic_query_nucleus::SemanticNucleusFailure,
+        >,
+    > {
+        let resolved = self.resolved_signature(declaration.clone())?;
+        let Some((syntax, root)) = resolved.callable_type_syntax.as_ref().and_then(|syntax| {
+            syntax
+                .parameters
+                .get(parameter_index)
+                .map(|root| (syntax, *root))
+        }) else {
+            return Self::provider_failure(
+                "a dependent comptime parameter type has no retained syntax",
+            );
+        };
+        let mut callee = self.clone();
+        callee.substitutions = type_arguments.iter().cloned().collect();
+        callee.value_substitutions = value_arguments.iter().cloned().collect();
+        callee.deferred_value_parameters = BTreeMap::new();
+        callee.deferred_value_read = false;
+        callee.dependency_source = resolved.definition.clone();
+        callee.dependency_kind = rue_air::DeclarationTypeDependencyKind::Signature;
+        rue_air::resolve_structured_semantic_type_syntax(
+            &mut callee,
+            &declaration.module,
+            &syntax.syntax,
+            root,
+        )
+        .map_err(|failure| match semantic_type_query_failure(failure) {
+            ResolveSemanticSignatureError::Abort(abort) => {
+                rue_air::SemanticProviderError::Abort(abort)
+            }
+            ResolveSemanticSignatureError::Failure(failure) => {
+                rue_air::SemanticProviderError::Failure(*failure)
+            }
+        })
+    }
+
     fn provider_domain_failure<T>(
         failure: crate::semantic_query_nucleus::SemanticNucleusFailure,
     ) -> Result<
@@ -2383,16 +2440,30 @@ impl rue_air::SemanticTypeSyntaxProvider<ModuleId, ModuleId, StableDefinitionKey
                 },
             );
         }
+        // A value parameter whose declared type reads an earlier comptime
+        // parameter (`comptime a: [i32; N]`) has only the deferred
+        // placeholder in the signature; its type is resolved here under this
+        // call's arguments (RUE-2550).
         for (name, value) in value_arguments {
-            let Some((_, parameter)) = head
+            let Some((index, (_, parameter))) = head
                 .parameters
                 .iter()
                 .zip(parameters.iter())
-                .find(|(header, _)| &header.name == name)
+                .enumerate()
+                .find(|(_, (header, _))| &header.name == name)
             else {
                 return Self::provider_failure("comptime value argument has no parameter");
             };
-            let expected = substitute_durable_generics(&parameter.ty, &concrete_type_arguments);
+            let expected = if parameter.deferred_type {
+                self.dependent_parameter_type(
+                    &declaration,
+                    index,
+                    type_arguments,
+                    value_arguments,
+                )?
+            } else {
+                substitute_durable_generics(&parameter.ty, &concrete_type_arguments)
+            };
             if let Some(failure) =
                 crate::durable_comptime::durable_structured_value_fit_failure(value, &expected)
             {
@@ -2979,6 +3050,42 @@ pub(in crate::revisioned_query_database) fn resolve_module_conformances(
         });
     }
     Ok(assertions)
+}
+
+/// Give each comptime value parameter whose declared type reads another
+/// comptime parameter (`comptime a: [i32; N]`, `comptime v: Sel(B)`) its type
+/// at one call. The signature carries only the deferred `ComptimeType`
+/// placeholder for it (RUE-2435, RUE-2550); `provider` holds the call's type
+/// and value arguments as its substitutions, so the retained syntax resolves
+/// to the concrete type. `types` holds the declared types of the value
+/// (non-type) parameters in order and is updated in place.
+pub(in crate::revisioned_query_database) fn resolve_deferred_value_parameter_types(
+    provider: &mut SemanticNucleusTypeProvider<'_>,
+    module: &ModuleId,
+    syntax: Option<&rue_air::DurableCallableTypeSyntax>,
+    parameters: &[crate::durable_semantics::DurableSemanticParameter],
+    types: &mut [crate::durable_semantics::DurableType],
+) -> Result<(), ResolveSemanticSignatureError> {
+    let value_parameters = parameters
+        .iter()
+        .enumerate()
+        .filter(|(_, parameter)| !parameter.is_type_parameter());
+    for ((index, parameter), ty) in value_parameters.zip(types.iter_mut()) {
+        if !parameter.deferred_type {
+            continue;
+        }
+        let Some(root) = syntax.and_then(|syntax| syntax.parameters.get(index).copied()) else {
+            return Err(ResolveSemanticSignatureError::failure(
+                crate::semantic_query_nucleus::SemanticNucleusFailure::Resolution(Arc::from(
+                    "a dependent comptime parameter type has no retained syntax",
+                )),
+            ));
+        };
+        let syntax = &syntax.expect("root came from the syntax").syntax;
+        *ty = rue_air::resolve_structured_semantic_type_syntax(provider, module, syntax, root)
+            .map_err(semantic_type_query_failure)?;
+    }
+    Ok(())
 }
 
 pub(in crate::revisioned_query_database) fn semantic_type_query_failure(

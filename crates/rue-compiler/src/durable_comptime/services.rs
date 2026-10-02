@@ -348,6 +348,25 @@ pub(crate) trait DurableComptimeSemanticAuthority {
     ) -> Result<bool, rue_air::SemanticProviderError<QueryAbort, SemanticNucleusFailure>> {
         Ok(true)
     }
+
+    /// The type, at one call, of a callable's comptime value parameter whose
+    /// declared type reads another comptime parameter (`comptime a: [i32;
+    /// N]`). The admitted signature carries only the deferred placeholder for
+    /// it (RUE-2550); the call's arguments resolve the retained syntax.
+    fn resolve_dependent_parameter_type(
+        &self,
+        _declaration: &DeclarationCandidateKey,
+        _parameter_index: usize,
+        _type_arguments: &[(Arc<str>, DurableType)],
+        _value_arguments: &[(Arc<str>, DurableConstValue)],
+    ) -> Result<DurableType, rue_air::SemanticProviderError<QueryAbort, SemanticNucleusFailure>>
+    {
+        Err(rue_air::SemanticProviderError::Failure(
+            SemanticNucleusFailure::Resolution(Arc::from(
+                "this comptime authority cannot resolve a dependent parameter type",
+            )),
+        ))
+    }
 }
 
 #[allow(dead_code)] // activated by the canonical durable AIR host
@@ -620,6 +639,22 @@ impl<A: DurableComptimeSemanticAuthority + ?Sized> DurableComptimeServices<'_, A
         ty: &DurableType,
     ) -> Result<bool, rue_air::SemanticProviderError<QueryAbort, SemanticNucleusFailure>> {
         self.authority.type_is_copy(ty)
+    }
+
+    pub(super) fn resolve_dependent_parameter_type(
+        &self,
+        declaration: &DeclarationCandidateKey,
+        parameter_index: usize,
+        type_arguments: &[(Arc<str>, DurableType)],
+        value_arguments: &[(Arc<str>, DurableConstValue)],
+    ) -> Result<DurableType, rue_air::SemanticProviderError<QueryAbort, SemanticNucleusFailure>>
+    {
+        self.authority.resolve_dependent_parameter_type(
+            declaration,
+            parameter_index,
+            type_arguments,
+            value_arguments,
+        )
     }
 
     /// Finish admission for a structured-type call.  Structured syntax has

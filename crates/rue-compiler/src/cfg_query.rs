@@ -1811,6 +1811,13 @@ fn build_cfg(
                 let detail = match failure {
                     crate::type_queries::TypeQueryFailure::Unavailable(detail)
                     | crate::type_queries::TypeQueryFailure::Invalid(detail) => detail,
+                    crate::type_queries::TypeQueryFailure::Diagnostic(kind) => {
+                        return Ok(CfgValue::Failure {
+                            errors: crate::CompileError::new(kind.clone(), materialized.body_span)
+                                .into(),
+                            body_span: materialized.body_span,
+                        });
+                    }
                 };
                 return Ok(internal_failure(
                     format!("call ABI unavailable for {callable:?}: {detail}"),

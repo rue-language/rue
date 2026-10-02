@@ -2188,9 +2188,7 @@ pub(super) fn exact_specialized_callable_types(
             Ok(ty) => runtime_parameters.push(ty),
             Err(ResolveSemanticSignatureError::Abort(abort)) => return Err(abort),
             Err(ResolveSemanticSignatureError::Failure(failure)) => {
-                return Ok(Err(TypeQueryFailure::Invalid(Arc::from(format!(
-                    "specialized callable parameter type failed to resolve: {failure:?}"
-                )))));
+                return Ok(Err(specialized_type_failure("parameter", *failure)));
             }
         }
     }
@@ -2198,12 +2196,42 @@ pub(super) fn exact_specialized_callable_types(
         Ok(result) => result,
         Err(ResolveSemanticSignatureError::Abort(abort)) => return Err(abort),
         Err(ResolveSemanticSignatureError::Failure(failure)) => {
-            return Ok(Err(TypeQueryFailure::Invalid(Arc::from(format!(
-                "specialized callable result type failed to resolve: {failure:?}"
-            )))));
+            return Ok(Err(specialized_type_failure("result", *failure)));
         }
     };
     Ok(Ok((runtime_parameters, result)))
+}
+
+/// A failure resolving a specialized callable's parameter or result type at
+/// one call. The call site already checked its comptime arguments, so a
+/// failure here is normally unreachable; one that names a user error (a
+/// constructor argument in a deferred signature type that does not fit, or a
+/// comptime evaluation failure) is still reported as that diagnostic rather
+/// than as an internal error (RUE-2550).
+fn specialized_type_failure(
+    position: &str,
+    failure: crate::semantic_query_nucleus::SemanticNucleusFailure,
+) -> crate::type_queries::TypeQueryFailure {
+    use crate::semantic_query_nucleus::SemanticNucleusFailure as F;
+    use crate::type_queries::TypeQueryFailure;
+    match failure {
+        F::Diagnostic(kind)
+        | F::DiagnosticAtParameter { kind, .. }
+        | F::DiagnosticAtSignatureType { kind, .. }
+        | F::DiagnosticAtDeclaration { kind, .. }
+        | F::DiagnosticAtProducerRange { kind, .. }
+        | F::DiagnosticAtModuleRange { kind, .. }
+        | F::DiagnosticWithHelp { kind, .. }
+        | F::DiagnosticWithNote { kind, .. } => TypeQueryFailure::Diagnostic(kind),
+        F::Resolution(reason) => {
+            TypeQueryFailure::Diagnostic(rue_error::ErrorKind::ComptimeEvaluationFailed {
+                reason: reason.to_string(),
+            })
+        }
+        failure => TypeQueryFailure::Invalid(Arc::from(format!(
+            "specialized callable {position} type failed to resolve: {failure:?}"
+        ))),
+    }
 }
 
 pub(super) fn query_callable_signature(

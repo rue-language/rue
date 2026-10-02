@@ -2117,6 +2117,14 @@ impl DurableComptimeBinding {
         &self.type_arguments
     }
 
+    pub(super) fn value_arguments(&self) -> &[(Arc<str>, DurableConstValue)] {
+        &self.value_arguments
+    }
+
+    pub(super) fn candidate(&self) -> &DeclarationCandidateKey {
+        &self.admission.candidate
+    }
+
     /// Finish binding only after every argument has passed the canonical
     /// parameter fit policy.  The resulting payload owns the substituted
     /// frame metadata; callers cannot reconstruct it from raw query values.
@@ -2243,10 +2251,11 @@ pub(crate) fn bind_durable_comptime_argument(
 ) -> Result<(), DurableComptimeFailure> {
     let TypedSemanticConst { value, ty } = argument;
     // A comptime value parameter whose declared type reads another comptime
-    // parameter (`comptime a: [i32; N]`) has its type only at an ordinary call
-    // site, which resolves the retained syntax (RUE-2435, RUE-2550). This
-    // binder has no such resolution, so it refuses the call rather than bind
-    // the value unchecked or misread the parameter as a type parameter.
+    // parameter (`comptime a: [i32; N]`) has its type only at a call, from
+    // the retained syntax (RUE-2435, RUE-2550). The host resolves it before
+    // binding (`resolve_dependent_parameter_type`); this pure binder cannot,
+    // so an unresolved one is refused rather than bound unchecked or misread
+    // as a type parameter.
     if parameter.deferred_type {
         return Err(DurableComptimeFailure::comptime_failure(format!(
             "comptime parameter `{parameter_name}` has a type that depends on another comptime parameter, which a compile-time evaluated call does not support"

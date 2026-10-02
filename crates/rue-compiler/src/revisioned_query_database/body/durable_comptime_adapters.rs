@@ -658,6 +658,27 @@ impl<'db> DurableComptimeRootAuthority<'db> {
 impl crate::durable_comptime::DurableComptimeSemanticAuthority
     for DurableComptimeRootAuthority<'_>
 {
+    fn resolve_dependent_parameter_type(
+        &self,
+        declaration: &crate::declaration_candidate::DeclarationCandidateKey,
+        parameter_index: usize,
+        type_arguments: &[(Arc<str>, crate::durable_semantics::DurableType)],
+        value_arguments: &[(Arc<str>, crate::durable_semantics::DurableConstValue)],
+    ) -> Result<
+        crate::durable_semantics::DurableType,
+        rue_air::SemanticProviderError<
+            QueryAbort,
+            crate::semantic_query_nucleus::SemanticNucleusFailure,
+        >,
+    > {
+        self.provider.dependent_parameter_type(
+            declaration,
+            parameter_index,
+            type_arguments,
+            value_arguments,
+        )
+    }
+
     fn type_is_copy(
         &self,
         ty: &crate::durable_semantics::DurableType,
