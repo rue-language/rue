@@ -6679,3 +6679,87 @@ fn Wrap(comptime T: type) -> type {
 fn main() -> i32 { let w = Wrap(i64) { v: 1 }; w.g(21) }
 """
 exit_code = 42
+
+[[case]]
+name = "comptime_type_argument_comptime_block"
+spec = ["4.14:5a", "4.14:27"]
+description = "A `comptime { … }` block whose value is a type binds a `comptime T: type` parameter to that type, including in the parameter and return types (RUE-2577)"
+source = """
+fn size(comptime T: type) -> i32 { @size_of(T) }
+fn first(comptime T: type, a: T, b: T) -> T { a }
+fn main() -> i32 {
+    let big: u16 = first(comptime { u16 }, 60000, 1);
+    let s = size(comptime { i32 }) + size(comptime { [i64; 3] });
+    if big == 60000 { s + 14 } else { 0 }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "comptime_type_argument_comptime_block_with_bindings"
+spec = ["4.14:5a", "4.14:27"]
+description = "A `comptime { … }` type argument may bind type values with `let` before its tail, and binds a type-constructor argument the same way (RUE-2577)"
+source = """
+fn size(comptime T: type) -> i32 { @size_of(T) }
+fn Pair(comptime T: type) -> type { struct { a: T, b: T } }
+fn main() -> i32 {
+    let s = size(comptime { let U = i64; [U; 4] });
+    s + size(Pair(comptime { i16 })) + 6
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "comptime_type_argument_comptime_block_over_enclosing_type_parameter"
+spec = ["4.14:5a", "4.14:27"]
+description = "A generic struct's method passes a `comptime { … }` block over the struct's type parameter as a type argument; it is substituted at each specialization (RUE-2577)"
+source = """
+fn size(comptime T: type) -> i32 { @size_of(T) }
+fn id(comptime T: type, x: T) -> T { x }
+fn Box(comptime T: type) -> type {
+    struct {
+        v: T,
+        fn n(self) -> i32 { size(comptime { T }) + size(comptime { [T; 3] }) }
+        fn get(self) -> T { id(comptime { T }, self.v) }
+    }
+}
+fn main() -> i32 {
+    let b = Box(i16) { v: 34 };
+    let v: i16 = b.get();
+    b.n() + @intCast(v)
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "comptime_type_argument_runtime_parameter_shadowing_type_parameter_rejected"
+spec = ["4.14:5a", "4.14:6"]
+description = "A method parameter `T: i32` shadows its generic struct's type parameter `T`, so `id(T, 5)` passes a runtime value, not a type, to a `comptime T: type` parameter (RUE-2577)"
+source = """
+fn id(comptime T: type, x: T) -> T { x }
+fn Box(comptime T: type) -> type {
+    struct {
+        v: T,
+        fn g(self, T: i32) -> i32 { id(T, 5) }
+    }
+}
+fn main() -> i32 { let b = Box(i64) { v: 1 }; b.g(3) }
+"""
+compile_fail = true
+error_contains = ["E1201", "comptime parameter requires a compile-time known value"]
+
+[[case]]
+name = "comptime_value_argument_runtime_parameter_shadowing_type_parameter"
+spec = ["4.14:5a"]
+description = "A method parameter `T: i32` shadowing its struct's type parameter reads as that value at a runtime argument, while a type argument naming the struct's type still works (RUE-2577)"
+source = """
+fn id(comptime T: type, x: T) -> T { x }
+fn Box(comptime T: type) -> type {
+    struct {
+        v: T,
+        fn g(self, T: i32) -> i32 { id(i32, T) + T }
+    }
+}
+fn main() -> i32 { let b = Box(i64) { v: 1 }; b.g(21) }
+"""
+exit_code = 42
