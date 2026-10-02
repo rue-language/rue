@@ -6278,15 +6278,15 @@ where
         // An associated function (`S.md()`) is a member callable whose
         // durable signature is a method's; reduced, it asks the same
         // canonical comptime query a free function does (RUE-2602).
-        let (parameters, result) = match DurableCallableSource::function(&self.source, &definition)
-        {
-            Some(function) => (function.parameters, function.result),
-            None => {
-                let method = DurableCallableSource::method(&self.source, &definition)
-                    .filter(|method| !method.has_self)?;
-                (method.parameters, method.result)
-            }
-        };
+        let (parameters, result, associated) =
+            match DurableCallableSource::function(&self.source, &definition) {
+                Some(function) => (function.parameters, function.result, false),
+                None => {
+                    let method = DurableCallableSource::method(&self.source, &definition)
+                        .filter(|method| !method.has_self)?;
+                    (method.parameters, method.result, true)
+                }
+            };
         // A self call asks the canonical comptime query like any other call.
         // The query is keyed by declaration *plus arguments*, so the recursive
         // step of a terminating comptime recursion (`f(1)` reducing `f(0)`) is
@@ -6393,6 +6393,19 @@ where
                 return Some(Err(diagnostic.into_compile_error(span)));
             }
         };
+        // An associated call reduces only to a module (RUE-2602). A type
+        // result would name its producer as a specialization of the member
+        // callable, which no body query can analyze, so it stays unreduced
+        // here — not compile-time known — in every position, as before
+        // associated calls reduced at all.
+        if associated
+            && !matches!(
+                reduced.result,
+                crate::SemanticComptimeCallResult::Type(crate::SemanticImportType::Module(_))
+            )
+        {
+            return Some(Ok(None));
+        }
         let producer = (|| {
             Some(FunctionInstanceKey::Specialization {
                 base: Node::new(FunctionInstanceKey::Definition(
