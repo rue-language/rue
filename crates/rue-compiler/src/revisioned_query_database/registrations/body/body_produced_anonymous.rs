@@ -93,7 +93,6 @@ macro_rules! register_body_body_produced_anonymous {
                     let Some(exact_type_syntax) = signature.callable_type_syntax.as_ref() else {
                         return Err(QueryAbort::Canceled);
                     };
-                    // Any other function body publishes from its transaction.
                     let Some(call) = comptime_call_for_anonymous_function(
                         &producer,
                         &key.instance,
@@ -101,6 +100,7 @@ macro_rules! register_body_body_produced_anonymous {
                         signature,
                         exact_type_syntax,
                     ) else {
+                        // Any other function body publishes from its transaction.
                         let transaction = context
                             .query_registered(&$transactions_for_produced_anonymous, key.clone())?;
                         let rue_query::QueryOutcome::Success(
