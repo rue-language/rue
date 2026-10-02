@@ -157,6 +157,14 @@ $runtime
                                     callable,
                                     parameter_index,
                                 } => {
+                                    let anonymous_nominals = with_type_anonymous_nominals(
+                                        context,
+                                        family,
+                                        &$produced_anonymous_for_semantic_nucleus,
+                                        &query.gate.ty,
+                                        &configuration,
+                                        anonymous_nominals.clone(),
+                                    )?;
                                     // The checker anchors its error in the
                                     // constructor's declaration; it is
                                     // reported where the argument was
