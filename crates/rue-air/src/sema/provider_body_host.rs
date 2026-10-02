@@ -4709,10 +4709,7 @@ where
         self.type_pool
             .try_intern_array(element, length)
             .map_err(|failure| {
-                CompileError::new(
-                    rue_error::ErrorKind::UnknownType(format!("array type: {failure:?}")),
-                    span,
-                )
+                structural_child_error(failure, "array type", "an array element", span)
             })
     }
 
@@ -4721,10 +4718,7 @@ where
         self.type_pool
             .try_intern_ptr_const(pointee)
             .map_err(|failure| {
-                CompileError::new(
-                    rue_error::ErrorKind::UnknownType(format!("pointer type: {failure:?}")),
-                    span,
-                )
+                structural_child_error(failure, "pointer type", "a pointer pointee", span)
             })
     }
 
@@ -4733,10 +4727,7 @@ where
         self.type_pool
             .try_intern_ptr_mut(pointee)
             .map_err(|failure| {
-                CompileError::new(
-                    rue_error::ErrorKind::UnknownType(format!("pointer type: {failure:?}")),
-                    span,
-                )
+                structural_child_error(failure, "pointer type", "a pointer pointee", span)
             })
     }
 
@@ -4777,6 +4768,14 @@ where
         span: Span,
     ) -> CompileResult<Type> {
         reject_function_child(element, "a slice element", span)?;
+        // The view's `ptr` field interns a pointer to `element`, which the
+        // pool refuses for a child it cannot hold; refused here, before the
+        // view is minted, rather than at that infallible interning.
+        self.type_pool
+            .validate_structural_child(element)
+            .map_err(|failure| {
+                structural_child_error(failure, "slice type", "a slice element", span)
+            })?;
         let Some(durable) = self.durable_type_from_concrete(element) else {
             // An element holding an anonymous nominal this body produces has
             // no durable form in this body's maps; its durable identity is
@@ -8993,6 +8992,24 @@ where
 /// Refuse a `fn` type as a structural child of another type (ADR-0096, spec
 /// 6.1:47): a callback is second-class and is never an element, pointee,
 /// slice element, or type argument.
+/// The diagnostic for a structural child the pool cannot hold. `type` as an
+/// element or pointee would be a type value at run time (4.14:6), reported as
+/// a declaration's parameter, field, payload, or return type reports it.
+fn structural_child_error(
+    failure: crate::TypeValidationError,
+    what: &str,
+    position: &str,
+    span: Span,
+) -> CompileError {
+    let kind = match failure {
+        crate::TypeValidationError::ComptimeStructuralChild => {
+            crate::declaration_validation::type_value_child(position)
+        }
+        failure => rue_error::ErrorKind::UnknownType(format!("{what}: {failure:?}")),
+    };
+    CompileError::new(kind, span)
+}
+
 fn reject_function_child(ty: Type, position: &str, span: Span) -> CompileResult<()> {
     if ty.is_function() {
         return Err(CompileError::new(

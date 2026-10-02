@@ -98,6 +98,26 @@ pub fn duplicate_variant(
     None
 }
 
+/// The E1200 for `type` held as an element, pointee, or slice element of a
+/// type written in a runtime position: such a type would hold a type value,
+/// and type values cannot exist at run time (4.14:6). `position` names the
+/// child as the `fn`-type child rejection does ("an array element", "a
+/// pointer pointee", "a slice element"), so the declaration resolver and the
+/// body's type syntax report one wording.
+pub fn type_value_child(position: &str) -> ErrorKind {
+    ErrorKind::ComptimeEvaluationFailed {
+        reason: format!("{position} cannot be `type`: type values cannot exist at runtime"),
+    }
+}
+
+/// The E1200 for a `fn` type taking or returning `type` (4.14:6, 6.1:47).
+pub fn fn_type_value() -> ErrorKind {
+    ErrorKind::ComptimeEvaluationFailed {
+        reason: "a `fn` type cannot take or return `type`: type values cannot exist at runtime"
+            .to_owned(),
+    }
+}
+
 pub fn linear_copy_struct(struct_name: &str, is_linear: bool, is_copy: bool) -> Option<ErrorKind> {
     (is_linear && is_copy).then(|| ErrorKind::LinearStructCopy(struct_name.to_owned()))
 }

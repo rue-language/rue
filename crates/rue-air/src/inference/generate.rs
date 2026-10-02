@@ -5443,6 +5443,11 @@ impl<'a> ConstraintGenerator<'a> {
             RirTypeSyntaxNode::Array { element, length } => {
                 let element =
                     self.infer_type_hint(arena, *element, subst, values, file_id, scope)?;
+                // `[type; N]` is no runtime type; semantic analysis reports
+                // the annotation rather than a mismatch against it (4.14:6).
+                if matches!(element, InferType::Concrete(ty) if ty.is_comptime_type()) {
+                    return None;
+                }
                 let length = match arena.node(*length)? {
                     RirTypeSyntaxNode::Integer(value) => u64::try_from(*value).ok()?,
                     RirTypeSyntaxNode::Named(symbol) => {
@@ -5469,12 +5474,15 @@ impl<'a> ConstraintGenerator<'a> {
                 let pointee = self
                     .infer_type_hint(arena, *pointee, subst, values, file_id, scope)?
                     .as_concrete()?;
+                // A pointee the pool cannot hold (`ptr const type`) leaves the
+                // hint unknown; semantic analysis resolves the annotation and
+                // reports it (4.14:6, RUE-2606).
                 let ty = match arena.node(syntax)? {
                     RirTypeSyntaxNode::PointerConst { .. } => {
-                        Type::new_ptr_const(self.type_pool.intern_ptr_const_from_type(pointee))
+                        self.type_pool.try_intern_ptr_const(pointee).ok()?
                     }
                     RirTypeSyntaxNode::PointerMut { .. } => {
-                        Type::new_ptr_mut(self.type_pool.intern_ptr_mut_from_type(pointee))
+                        self.type_pool.try_intern_ptr_mut(pointee).ok()?
                     }
                     _ => unreachable!(),
                 };
