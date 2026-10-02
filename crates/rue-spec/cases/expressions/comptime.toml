@@ -7510,7 +7510,7 @@ exit_code = 34
 [[case]]
 name = "type_constructor_wraps_its_own_local_through_nested_constructors"
 spec = ["4.14:22", "4.14:25"]
-description = "A type constructor's own local reaches a constructor through another constructor layer, including one that drops its argument, and through a second constructor's local (RUE-2608)"
+description = "A type constructor's own local reaches a constructor through another constructor layer, including one that drops its argument, through a second constructor's local, and from a constructor with no parameters (RUE-2608)"
 source = """
 fn W(comptime T: type) -> type { struct { v: T } }
 fn V(comptime T: type) -> type { struct { u: T, k: i64 } }
@@ -7518,12 +7518,13 @@ fn K(comptime T: type) -> type { struct { x: i32 } }
 fn G(comptime T: type) -> type { let L = struct { s: T }; W(V(L)) }
 fn D(comptime T: type) -> type { let L = struct { s: T }; W(K(L)) }
 fn H(comptime T: type) -> type { let M = struct { a: T, b: T }; G(M) }
+fn Z() -> type { let L = struct { s: i64, t: i32 }; W(L) }
 fn main() -> i32 {
     let I = struct { q: i8 };
-    @size_of(G(i32)) + @size_of(D(I)) + @size_of(H(i64)) + @size_of(H(I))
+    @size_of(G(i32)) + @size_of(D(I)) + @size_of(H(i64)) + @size_of(H(I)) + @size_of(Z())
 }
 """
-exit_code = 60
+exit_code = 76
 
 [[case]]
 name = "type_constructor_wraps_its_own_local_with_methods"
