@@ -493,6 +493,24 @@ impl<'a, A: DurableComptimeHostAuthority + ?Sized> DurableComptimeHost<'a, A> {
             .unwrap_or_else(|_| panic!("unregistered durable program at {span:?}"))
     }
 
+    /// Record a resolved named value's declaration dependency and the
+    /// anonymous nominals its value carries, and return the value.
+    fn observe_named_value(
+        &mut self,
+        projection: DurableComptimeNamedValueProjection,
+    ) -> EvaluatedSemanticConst {
+        let (value, dependency, anonymous_nominals) = projection.into_parts();
+        self.services
+            .durable_session_mut()
+            .observe_dependency(dependency);
+        for nominal in anonymous_nominals.iter().cloned() {
+            self.services
+                .durable_session_mut()
+                .observe_anonymous_nominal(nominal);
+        }
+        value
+    }
+
     fn diagnostic_site(
         &self,
         site: &rue_air::ComptimeDiagnosticSite<crate::body_query::DurableComptimeProgramKey>,
@@ -1237,6 +1255,49 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeTypeAlgebra
         Ok(value.as_type())
     }
 
+    fn resolve_comptime_module_struct_type(
+        &mut self,
+        module: Self::Value,
+        name: Self::Name,
+        site: &rue_air::ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> rue_air::ComptimeHostResult<Option<Self::Type>, Self::Failure> {
+        let EvaluatedSemanticConst::Module(module) = module else {
+            return Ok(None);
+        };
+        // The member is the provider's named value in that module, under its
+        // privacy decision (E0706). A name the module does not declare as a
+        // struct is the body literal's unknown type (E0204) rather than an
+        // unknown module member. Both are reported on the literal, as the
+        // body reports them (RUE-2440).
+        let literal_site = self.diagnostic_site(site);
+        let unknown_type = || {
+            rue_air::ComptimeHostError::HostFailure(durable_diagnostic_failure(
+                &literal_site,
+                rue_error::ErrorKind::UnknownType(name.as_str().to_owned()),
+            ))
+        };
+        let projection = self
+            .services
+            .resolve_named_value(&site.program().declaration, &module, name.as_str())
+            .map_err(|error| match error {
+                rue_air::SemanticProviderError::Failure(SemanticNucleusFailure::Diagnostic(
+                    kind,
+                )) => rue_air::ComptimeHostError::HostFailure(durable_diagnostic_failure(
+                    &literal_site,
+                    kind,
+                )),
+                error => durable_provider_error(error),
+            })?
+            .ok_or_else(unknown_type)?;
+        let value = self.observe_named_value(projection);
+        // A member that is not a struct type (an enum, a function, a value)
+        // is the same unknown type the body reports for it.
+        match value.as_type() {
+            Some(ty) if is_durable_struct_type(&ty.0) => Ok(Some(ty)),
+            _ => Err(unknown_type()),
+        }
+    }
+
     fn resolve_comptime_type_path(
         &mut self,
         _file: Self::File,
@@ -1590,15 +1651,7 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeValueAlgebra
                 ))),
             ));
         };
-        let (value, dependency, anonymous_nominals) = projection.into_parts();
-        self.services
-            .durable_session_mut()
-            .observe_dependency(dependency);
-        for nominal in anonymous_nominals.iter().cloned() {
-            self.services
-                .durable_session_mut()
-                .observe_anonymous_nominal(nominal);
-        }
+        let value = self.observe_named_value(projection);
         Ok(rue_air::ComptimeNamedValueResolution::Known(value))
     }
 
@@ -2098,15 +2151,7 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeValueAlgebra
             Ok(projection) => projection,
             Err(error) => return durable_host_error_outcome(durable_provider_error(error)),
         };
-        let (value, dependency, anonymous_nominals) = projection.into_parts();
-        self.services
-            .durable_session_mut()
-            .observe_dependency(dependency);
-        for nominal in anonymous_nominals.iter().cloned() {
-            self.services
-                .durable_session_mut()
-                .observe_anonymous_nominal(nominal);
-        }
+        let value = self.observe_named_value(projection);
         rue_air::ComptimeOutcome::Known(value)
     }
 }
