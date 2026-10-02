@@ -1741,6 +1741,13 @@ example : run demoOps dynDropCopyTrap demoFuel
 RUE-2341 and the second since RUE-2344. -/
 example : checkProgram dynWriteAfterDestructureViaField = false := by rfl
 example : checkProgram dynWriteAfterFieldMove = false := by rfl
+/-- The machine refuses the second with `useAfterMove` (RUE-2492): the dynamic
+step meets the moved-out array `⊘` at `h.x0`, which `Contents.resolveDyn`
+refuses as `getAt` refuses a constant step into a `⊘`, so the run falls under
+`no_use_after_move`'s reading rather than `typeConfusion`. -/
+example : run demoOps dynWriteAfterFieldMove demoFuel = .refused .useAfterMove := by rfl
+example : Contents.resolveDyn .movedOut [0] [[]] = .refused .useAfterMove := by rfl
+example : Contents.getAt .movedOut [0] = .error .useAfterMove := by rfl
 
 /-- **The refusals**, each the compiler's too: a non-`Copy` leaf read (probe
 q02) and `@drop(a[i])` of an affine element (probe q15), both E0904; a

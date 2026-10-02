@@ -656,8 +656,9 @@ must test the same thing, and because §7's proof reads it twice. -/
 def inBoundsIdx (i : Int) (n : Nat) : Bool := decide (0 ≤ i) && decide (i < (n : Int))
 
 /-- Where the dynamic tail of a place lands: the constant path it resolves to
-once every index is a value and in range, §6.5's bounds trap, or a refusal
-(helper). -/
+once every index is a value and in range, §6.5's bounds trap, or a refusal:
+`useAfterMove` where a dynamic step meets a moved-out `⊘`, as `getAt` refuses a
+constant one (helper). -/
 inductive DynStep where
   | ok (ρ : List Nat)
   | bounds
@@ -685,6 +686,10 @@ def Contents.resolveDyn : Contents → List Int → List (List Nat) → DynStep
              | .ok ρ => .ok (i.toNat :: (π ++ ρ))
              | r => r)
       else .bounds
+  -- A `⊘` reached with a dynamic step left to take is the use of a moved-out
+  -- place, the same `useAfterMove` `getAt` gives a `⊘` with a constant step
+  -- left (§7's first bullet), so `no_use_after_move` reads both alike.
+  | .movedOut, _ :: _, _ :: _ => .refused .useAfterMove
   | _, _, _ => .refused .typeConfusion
 
 /-- The index values of a dynamic place, as integers; `none` where one is not
