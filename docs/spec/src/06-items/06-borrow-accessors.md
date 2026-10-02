@@ -105,7 +105,17 @@ yield an accessor result, the join *is* an accessor result of that arm's root,
 and every rule above applies to it unchanged —
 `let b = if c { v.get_ref(i) } else { 0 };` is the same E0252 as
 `let b = v.get_ref(i);`. Consuming the join within its own full expression
-stays legal, exactly as consuming the call directly does.
+stays legal, exactly as consuming the call directly does. That includes
+calling a `borrow self` or `inout self` method on it (6.6:10): the method acts
+on the place the taken arm yields, so
+`(if c { v.get_mut(i) } else { v.get_mut(j) }).reset()` resets element `i` or
+element `j`, and an arm that diverges makes no call. Such a join is a place
+only when every arm that completes is itself an accessor call or a nested
+`if`/`else` or `match` of this kind, and all of those accessor results borrow
+the same root; otherwise the receiver is not a place and the call is rejected
+as 6.4:27 requires (E0425 for `inout self`, E0427 for `borrow self`). An arm
+that yields a temporary or a plain local is a value, not a place, and an arm
+that is a block with statements before its tail is not such a place either.
 
 {{ rule(id="6.6:10", cat="legality-rule") }}
 
