@@ -26,7 +26,7 @@ use crate::types::{StructId, Type};
 pub(crate) type FloatLiteralJoins = AHashMap<InstRef, CompileError>;
 
 /// A by-reference (`inout self` or `borrow self`) method call whose receiver
-/// is a join (`if`/`else` or `match`) of accessor results (spec 6.6:9,
+/// is a join (`if`/`else` or `match`) of accessor results (spec 6.6:9a,
 /// RUE-2374).
 ///
 /// A join has no place of its own: each arm yields a different place, and no
@@ -59,7 +59,7 @@ pub(crate) struct JoinReceiver {
     /// Each name the explicit arguments mention (and whether as a callee),
     /// with what it resolves to at the join. A `match` arm whose pattern
     /// bindings change one cannot host the call: the arguments would name the
-    /// arm's binding instead (spec 6.6:9).
+    /// arm's binding instead (spec 6.6:9a).
     pub arg_bindings: Vec<(Spur, bool, Option<super::ownership_state::LedgerRoot>)>,
 }
 
@@ -470,7 +470,7 @@ pub(crate) struct AnalysisContext<'a> {
     /// than expanding and loaning the accessor a second time.
     pub accessor_place_refs: AHashMap<InstRef, (crate::inst::AirPlaceRef, Spur, Type, bool, bool)>,
     /// The by-reference method call whose receiver is a join of accessor
-    /// results currently being distributed into that join's arms (spec 6.6:9,
+    /// results currently being distributed into that join's arms (spec 6.6:9a,
     /// RUE-2374). `None` outside such a receiver.
     pub join_receiver: Option<JoinReceiver>,
     /// Resolved-type overlays for accessor bodies currently being inlined,

@@ -119,9 +119,9 @@ the receiver is not a place and the call is rejected as 6.4:27 requires
 (E0425 for `inout self`, E0427 for `borrow self`). An arm that yields a
 temporary or a plain local is a value, not a place. An arm that is a block
 with statements before its tail is not such a place either. Because the call
-is made in each arm (6.6:12a), a `match` arm whose pattern binding would
-change what a name in the call's arguments refers to is also rejected (E0425
-or E0427); renaming the binding avoids it.
+is made in each arm (6.6:12a), a `match` arm whose pattern binds a name that
+the call's arguments mention is also rejected (E0425 or E0427); renaming the
+binding avoids it.
 
 {{ rule(id="6.6:10", cat="legality-rule") }}
 
@@ -180,8 +180,9 @@ calculus §5.8 dynamics note). No function call occurs at runtime.
 
 A `borrow self` or `inout self` method called on a join of accessor results
 (6.6:9a) acts on the place the taken arm yields. The call is made in that arm:
-the arm's accessor and its guards run first, then the call's arguments, then
-the call, as for a direct call on that accessor result. So
+the arm's accessor call, including its arguments and bounds checks, runs
+first, then the call's arguments, then the call, as for a direct call on that
+accessor result. So
 `(if c { v.get_mut(i) } else { v.get_mut(j) }).reset()` resets element `i` or
 element `j` and leaves the other unchanged. An arm that diverges makes no
 call.

@@ -1217,7 +1217,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
     /// Collect the join tree under `inst`: the `if`/`else` and `match`
     /// instructions whose arms carry the join's value, and the accessor calls
-    /// among those arms (spec 6.6:9). Any other arm is left out of both.
+    /// among those arms (spec 6.6:9a). Any other arm is left out of both.
     fn collect_join_receiver_tree(
         &self,
         inst: InstRef,
@@ -1289,7 +1289,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     }
 
     /// Analyze a by-reference method call whose receiver is a join of
-    /// accessor results (spec 6.6:9, RUE-2374):
+    /// accessor results (spec 6.6:9a, RUE-2374):
     /// `(if c { a.pmut() } else { a.emut(0) }).set()`.
     ///
     /// The join *is* an accessor result (6.6:9), so the call is a use of the
@@ -1377,7 +1377,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     }
 
     /// Analyze one arm of the `if`/`match` instruction `join`. When `join`
-    /// is the receiver of a distributed by-reference call (spec 6.6:9,
+    /// is the receiver of a distributed by-reference call (spec 6.6:9a,
     /// RUE-2374), an accessor arm makes the call on its result, a nested join
     /// distributes it further, and any other arm must diverge: its value is
     /// not a place. Otherwise the arm is analyzed as it stands.
@@ -1424,7 +1424,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 (
                     "this arm yields a value, not an accessor result",
                     "an `if` or `match` is a place only when every arm that completes \
-                     yields an accessor result (spec 6.6:9)",
+                     yields an accessor result (spec 6.6:9a)",
                 )
             };
             return Err(CompileError::new(
@@ -1442,7 +1442,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     }
 
     /// Make a distributed by-reference call on the accessor result `leaf`,
-    /// one arm of the receiver's join (spec 6.6:9, 6.6:10).
+    /// one arm of the receiver's join (spec 6.6:9a, 6.6:10).
     fn analyze_join_receiver_arm_call(
         &mut self,
         air: &mut Air,
@@ -1475,7 +1475,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             return Err(non_place(
                 "this accessor result has no root variable".to_string(),
                 "an `if` or `match` is a place only when every arm's accessor result \
-                 borrows a local or parameter (spec 6.6:9)",
+                 borrows a local or parameter (spec 6.6:9a)",
             ));
         };
         match consumer.root {
@@ -1491,7 +1491,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 return Err(non_place(
                     format!("this arm's accessor result borrows `{name}`"),
                     "an `if` or `match` is a place only when every arm's accessor result \
-                     borrows the same root (spec 6.6:9)",
+                     borrows the same root (spec 6.6:9a)",
                 )
                 .with_label(
                     format!("an earlier arm's accessor result borrows `{first_name}`"),
@@ -1513,7 +1513,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             return Err(non_place(
                 format!("this arm binds `{name}`, which the call's arguments name"),
                 "a method call on an `if` or `match` is made in each arm, so an arm \
-                 may not rebind a name its arguments use; rename the binding",
+                 may not rebind a name its arguments use; rename the binding (spec 6.6:9a)",
             ));
         }
         // The arguments are analyzed once per arm. Accessor places cached
