@@ -1072,3 +1072,22 @@ fn main() -> i32 {
 }
 """
 exit_code = 42
+
+[[case]]
+name = "named_struct_method_returns_a_constructor_of_self"
+spec = ["6.4:18"]
+description = "`Self` names a named struct in a type-constructor argument of its own method's result type (RUE-2585)"
+source = """
+fn Inner(comptime T: type) -> type { struct { x: T } }
+struct P {
+    v: i32,
+    fn wrap(self) -> Inner(Self) { Inner(P) { x: P { v: self.v + 2 } } }
+    fn make() -> [Inner(Self); 1] { [Inner(P) { x: P { v: 20 } }] }
+}
+fn main() -> i32 {
+    let w = P { v: 18 }.wrap();
+    let m = P.make();
+    w.x.v + m[0].x.v
+}
+"""
+exit_code = 40
