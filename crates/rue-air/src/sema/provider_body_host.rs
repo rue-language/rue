@@ -6317,11 +6317,8 @@ where
                 callee_types.get(&symbol).copied().map(|ty| {
                     (
                         parameter.name.clone(),
-                        self.durable_type_from_concrete(ty).or_else(|| {
-                            (!self.body_is_type_constructor())
-                                .then(|| self.local_durable_type(ty))
-                                .flatten()
-                        }),
+                        self.durable_type_from_concrete(ty)
+                            .or_else(|| self.local_durable_type(ty)),
                     )
                 })
             })
