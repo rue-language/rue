@@ -177,3 +177,56 @@ error_contains = "comptime evaluation failed"
 # """
 # compile_fail = true
 # error_contains = "method"
+
+[[case]]
+name = "body_local_anonymous_struct_method_cannot_read_a_runtime_local"
+description = "A method of a runtime body's anonymous struct cannot read the declaring body's runtime locals; the help names the rule (RUE-2587)."
+source = """
+fn main() -> i32 {
+    let y: i64 = 5;
+    let I = struct { x: i64, fn get(self) -> i64 { self.x + y } };
+    @intCast(I { x: 37 }.get())
+}
+"""
+compile_fail = true
+error_contains = [
+    "[E0201]",
+    "undefined variable 'y'",
+    "`y` is a runtime local or parameter of a function enclosing this anonymous struct, and a method of the struct cannot read it; pass it to the method as an argument or store it in a field",
+]
+
+[[case]]
+name = "anonymous_struct_method_cannot_read_a_runtime_parameter"
+description = "The same rule holds for a runtime parameter of a generic declaring body (RUE-2587)."
+source = """
+fn f(comptime N: i64, v: i64) -> i64 {
+    let W = struct { x: i64, fn get(self) -> i64 { self.x + v } };
+    W { x: N }.get()
+}
+fn main() -> i32 { @intCast(f(40, 2)) }
+"""
+compile_fail = true
+error_contains = [
+    "[E0201]",
+    "undefined variable 'v'",
+    "`v` is a runtime local or parameter of a function enclosing this anonymous struct",
+]
+
+[[case]]
+name = "anonymous_struct_method_unknown_name_gets_no_capture_help"
+description = "A name no enclosing body binds is an ordinary undefined variable, without the capture help (RUE-2587)."
+source = """
+fn main() -> i32 {
+    let I = struct { x: i64, fn get(self) -> i64 { self.x + zzz } };
+    @intCast(I { x: 42 }.get())
+}
+"""
+compile_fail = true
+expected_error = """
+error: [E0201]: undefined variable 'zzz'
+ --> test.rue:2:61
+  |
+2 |     let I = struct { x: i64, fn get(self) -> i64 { self.x + zzz } };
+  |                                                             ^^^
+  |
+"""
