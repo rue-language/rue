@@ -1172,9 +1172,10 @@ fn check_spec_case_with_known_gap_and_configuration(
         return CaseOutcome::Ineligible(IneligibleReason::TargetPinned);
     }
     // An `unreachable_trap` case pins the death of the process by the signal
-    // its target's trap instruction raises (SIGTRAP or SIGILL). That is a
-    // property of the native machine code, not an exit status or a typed
-    // runtime trap the oracle reports, so there is no observation to compare.
+    // its target's trap instruction raises (SIGTRAP or SIGILL). This harness
+    // does not compare native signal deaths, and the reads such cases pin (a
+    // `ptr mut !` read) are not modelled by the oracle either: it stops at a
+    // PointerRead model gap before any `TrapKind::Unreachable` it could raise.
     if case.unreachable_trap {
         return CaseOutcome::Ineligible(IneligibleReason::UnreachableTrap);
     }
@@ -1525,9 +1526,9 @@ fn unsupported_corpus_field(case: &Case) -> Option<IneligibleReason> {
     if executable_target.is_some() || *execute_if_native {
         return Some(IneligibleReason::TargetPinned);
     }
-    // The case pins the process's death by its target's trap signal, which
-    // the oracle, reporting exit statuses and typed runtime traps, has no
-    // observation of.
+    // The case pins the process's death by its target's trap signal. This
+    // harness does not compare native signal deaths, and the oracle does not
+    // model the read such a case pins (a PointerRead model gap).
     if *unreachable_trap {
         return Some(IneligibleReason::UnreachableTrap);
     }

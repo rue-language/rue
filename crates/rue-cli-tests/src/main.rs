@@ -112,6 +112,8 @@
 //! - `stdout` / `stdout_contains`: assert on the program's stdout
 //! - `runtime_error_contains`: assert on the program's stderr
 //! - `exit_code`: expected program exit code (default 0)
+//! - `unreachable_trap`: expect the program to be killed by its target's
+//!   `Terminator::Unreachable` trap (SIGTRAP on AArch64, SIGILL on x86-64)
 //! - `contract`: named execution contract supplying scheduling class and
 //!   separate compile/runtime budgets (ordinary cases default to 10s for each)
 //! - `tier = "slow"` on a section or `[[automatic_example]]`: keep exhaustive
@@ -4919,12 +4921,19 @@ fn invalid_replay_repro(case: &Case) -> Option<&'static str> {
     None
 }
 
-/// Return produced-program fields that are meaningless when `compile_only` or
-/// `driver_exit_code` stops the case before a program runs. Keep this list
-/// aligned with the assertions and inputs consumed exclusively by
-/// `run_case_program`.
+/// Return produced-program fields that are meaningless when the case never
+/// reaches `run_case_program`: `compile_only` or `driver_exit_code` stops it
+/// before a program runs, and a `watch`, `watch_test` or `daemon` scenario
+/// drives its own orchestration and asserts through the scenario's fields
+/// instead. Keep this list aligned with the assertions and inputs consumed
+/// exclusively by `run_case_program`.
 fn compile_only_runtime_fields(case: &Case) -> Vec<&'static str> {
-    if !case.compile_only && case.driver_exit_code.is_none() {
+    if !case.compile_only
+        && case.driver_exit_code.is_none()
+        && case.watch.is_none()
+        && case.watch_test.is_none()
+        && case.daemon.is_none()
+    {
         return Vec::new();
     }
     [
@@ -7424,6 +7433,33 @@ mod tests {
             ..Default::default()
         };
         assert!(compile_only_runtime_fields(&valid).is_empty());
+    }
+
+    /// A `watch`, `watch_test` or `daemon` scenario never reaches
+    /// `run_case_program`, so a produced-program field on it would assert
+    /// nothing and the case would pass regardless.
+    #[test]
+    fn scenario_cases_reject_produced_program_fields() {
+        for scenario in [
+            "[case.watch]\nkind = \"edit\"\nexpected_exit_codes = [1, 2]\nedits = []\n",
+            "[case.watch_test]\nkind = \"edit\"\nexpected_exit = 0\nedits = []\n",
+            "[case.daemon]\nsteps = []\n",
+        ] {
+            let file = toml::from_str::<TestFile>(&format!(
+                "[section]\nid = \"cli.probe\"\nname = \"Probe\"\n\n[[case]]\nname = \"probe\"\n{scenario}"
+            ))
+            .expect("scenario case parses");
+            let mut case = file.cases[0].clone();
+            assert!(compile_only_runtime_fields(&case).is_empty(), "{scenario}");
+            case.stdout = Some("never checked\n".to_string());
+            case.exit_code = Some(0);
+            case.unreachable_trap = true;
+            assert_eq!(
+                compile_only_runtime_fields(&case),
+                vec!["stdout", "exit_code", "unreachable_trap"],
+                "{scenario}"
+            );
+        }
     }
 
     /// One asserts an exact status and the other only "nonzero"; a case

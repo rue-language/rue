@@ -58,8 +58,7 @@ runtime_error = "division by zero"
 
 # Unreachable-trap test (killed by the target's trap signal)
 [[case]]
-name = "uninhabited_read"
-spec = ["9.2:6b"]
+name = "unreachable_trap_example"
 source = "..."
 unreachable_trap = true
 
@@ -116,8 +115,11 @@ crash that a `known_bug` or `preview` marker cannot absorb. The field excludes
 `runtime_exit_code`; `expected_stdout` and `stderr_contains` still check what
 the program wrote before the trap. The CLI corpus accepts the same field with
 the same meaning. The oracle differential reports such cases as ineligible
-(`unreachable trap signal`), because the in-process oracle observes exit
-statuses and typed runtime traps, not native signals.
+(`unreachable trap signal`): it does not compare native signal deaths, and the
+oracle does not model the reads that reach this trap today (a `ptr mut !` read
+stops at its PointerRead model gap). Such a read is undefined behaviour under
+Appendix B, so the one case using the field, in the CLI corpus, pins the
+compiler's current behaviour rather than a specification rule.
 
 #### Preview Feature Tests
 

@@ -590,9 +590,11 @@ pub struct Case {
     /// Expect the program to be killed by the trap a live
     /// `Terminator::Unreachable` lowers to: `SIGTRAP` on AArch64 hosts and
     /// `SIGILL` on x86-64 hosts (see [`crate::unreachable_trap_signal`]). A
-    /// normal exit or any other signal fails the case. Incompatible with
-    /// `exit_code` and `compile_fail`; `stdout`, `stdout_contains` and
-    /// `runtime_error_contains` still check what the program wrote first.
+    /// normal exit or any other signal fails the case. Rejected at load time
+    /// with `exit_code` or `compile_fail`, and in any case that runs no
+    /// program: `compile_only`, `driver_exit_code`, `watch`, `watch_test` or
+    /// `daemon`. `stdout`, `stdout_contains` and `runtime_error_contains` still
+    /// check what the program wrote first.
     #[serde(default)]
     pub unreachable_trap: bool,
     /// Expected failure: reference to the Linear issue tracking the bug.
