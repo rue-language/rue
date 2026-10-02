@@ -1,0 +1,106 @@
+# RUE-2440: a constant's struct literal named through a module
+# (`lib.S { .. }`, no constructor head) reduces as the same literal does in a
+# function body.
+#
+# Declaration-time evaluation declined every literal with a module and no
+# constructor head, so the constant was E1200 "did not reduce". It now reduces
+# the module base and resolves the struct as a member of that module, under
+# the same privacy rule, so a private or unknown name is the body literal's
+# E0706 or E0204 on the literal.
+
+[section]
+id = "cli.const_qualified_struct_literal"
+name = "Module-qualified struct literals in constants (RUE-2440)"
+description = "A constant's struct literal naming its struct through a module reduces as a body literal does."
+
+[[case]]
+name = "qualified_name_constants"
+description = "RUE-2440's repro, a nested module path and a const type alias read through the module."
+differential_opt = true
+files = [
+    { path = "main.rue", source = """
+const lib = @import("lib.rue");
+const A: lib.S = lib.S { a: 20 };
+const B: lib.m.S = lib.m.S { a: 15 };
+const C: lib.S = lib.T { a: 7 };
+fn main() -> i32 { A.a + B.a + C.a }
+""" },
+    { path = "lib.rue", source = """
+@copy pub struct S { a: i32 }
+pub const T = S;
+pub const m = @import("m.rue");
+""" },
+    { path = "m.rue", source = """
+@copy pub struct S { a: i32 }
+""" },
+]
+stdout = ""
+exit_code = 42
+
+[[case]]
+name = "qualified_name_nested_values"
+description = "An inline-import root, a struct-typed field from the same module, an array of module structs and a comptime block."
+files = [
+    { path = "main.rue", source = """
+const lib = @import("lib.rue");
+const I: lib.S = @import("lib.rue").S { a: 2 };
+const O: lib.O = lib.O { s: lib.S { a: 10 }, b: 20 };
+const A: [lib.S; 2] = [lib.S { a: 4 }, lib.S { a: 3 }];
+const K: lib.S = comptime { lib.S { a: 3 } };
+fn main() -> i32 { I.a + O.s.a + O.b + A[0].a + A[1].a + K.a }
+""" },
+    { path = "lib.rue", source = """
+@copy pub struct S { a: i32 }
+@copy pub struct O { s: S, b: i32 }
+""" },
+]
+exit_code = 42
+
+[[case]]
+name = "qualified_name_constant_as_comptime_argument"
+description = "The constant is a compile-time value: it binds a comptime parameter of the module's struct type."
+files = [
+    { path = "main.rue", source = """
+const lib = @import("lib.rue");
+const C: lib.S = lib.S { a: 21 };
+fn twice(comptime p: lib.S) -> i32 { p.a * 2 }
+fn main() -> i32 { twice(C) }
+""" },
+    { path = "lib.rue", source = """
+@copy pub struct S { a: i32 }
+""" },
+]
+exit_code = 42
+
+[[case]]
+name = "private_qualified_name_rejected"
+description = "A private struct named through a module from another directory is E0706 on the literal, as in a body."
+compile_fail = true
+error_contains = ["E0706", "struct `Priv` is private", "main.rue:2:11"]
+files = [
+    { path = "main.rue", source = """
+const p = @import("sub/p.rue");
+const C = p.Priv { a: 1 };
+fn main() -> i32 { 0 }
+""" },
+    { path = "sub/p.rue", source = """
+@copy struct Priv { a: i32 }
+""" },
+]
+
+[[case]]
+name = "unknown_qualified_name_rejected"
+description = "A name the module does not declare as a struct is E0204 on the literal, as in a body."
+compile_fail = true
+error_contains = ["E0204", "unknown type 'E'", "main.rue:2:18"]
+files = [
+    { path = "main.rue", source = """
+const lib = @import("lib.rue");
+const C: lib.S = lib.E { a: 1 };
+fn main() -> i32 { 0 }
+""" },
+    { path = "lib.rue", source = """
+@copy pub struct S { a: i32 }
+pub enum E { A }
+""" },
+]
