@@ -1410,9 +1410,6 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         ))
     }
 
-    /// Apply module-qualified visibility (E0706) to a nominal reached through
-    /// `m.Name`, whichever of the two ways it was named.
-    ///
     /// Resolve the struct a module-qualified literal names (`lib.S { .. }`,
     /// `lib.m.S { .. }`, `@import("x.rue").S { .. }`) once its module base
     /// has resolved to `module_id`.
@@ -1451,6 +1448,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         Ok(nominal.id)
     }
 
+    /// Apply module-qualified visibility (E0706) to a nominal reached through
+    /// `m.Name`, whichever of the two ways it was named.
+    ///
     /// A declaration is governed by its own `pub` and defining file. A `const`
     /// type alias is governed by the binding instead: `m.Alias` names the
     /// binding, not the declaration behind it, so the binding's `pub` and the
