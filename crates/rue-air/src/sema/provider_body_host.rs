@@ -7088,16 +7088,18 @@ where
                     _ => unreachable!("registered provider member points at FnDecl"),
                 };
                 let body_span = host.rir.rir().get(body).span;
-                let return_type = if matches!(
-                    host.rir.rir().type_syntax().node(return_type),
-                    Some(rue_rir::RirTypeSyntaxNode::Named(symbol))
-                        if host.rir.rir().type_syntax().symbol(*symbol)
-                            .is_some_and(|symbol| host.interner.resolve(symbol) == "Self")
-                ) {
-                    info.struct_type
-                } else {
-                    host.resolve_body_type(return_type, info.span)?
-                };
+                // `Self` names the owner wherever a type is expected in the
+                // result, composite or not (`-> [Self; 2]`, spec 6.4:18).
+                let self_substitution = host
+                    .intern_name("Self")
+                    .map(|symbol| AHashMap::from_iter([(symbol, info.struct_type)]));
+                let return_type = host.resolve_body_type_with_substitutions(
+                    return_type,
+                    info.span,
+                    self_substitution.as_ref(),
+                    None,
+                    None,
+                )?;
                 let params = host
                     .state
                     .param_data(info.params)
