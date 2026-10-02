@@ -2554,6 +2554,7 @@ impl rue_air::SemanticTypeSyntaxProvider<ModuleId, ModuleId, StableDefinitionKey
             },
             type_arguments: type_arguments.to_vec().into(),
             value_arguments: value_arguments.to_vec().into(),
+            lent_anonymous_nominals: Arc::from([]),
         });
         let _depth = SemanticComptimeCallDepthGuard::enter(head.key.name()).map_err(
             |error| match error {

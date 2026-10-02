@@ -297,6 +297,11 @@ pub(super) struct CanonicalAnonymousNominalRegistry {
     pub(super) by_identity:
         AHashMap<crate::AnonymousNominalKey, Rc<crate::durable_semantics::DurableAnonymousNominal>>,
     conflicting: AHashSet<crate::AnonymousNominalKey>,
+    /// Identities whose held facts are their producer's complete
+    /// publication: those a call reduced over lent nominals projected
+    /// (RUE-2590). Asking their producer again would reduce that call without
+    /// the loan, which waits on the body that is asking.
+    complete: AHashSet<crate::AnonymousNominalKey>,
 }
 
 impl CanonicalAnonymousNominalRegistry {
@@ -346,6 +351,24 @@ impl CanonicalAnonymousNominalRegistry {
                 }
             }
         }
+    }
+
+    /// [`Self::extend`] with facts that are their producers' complete
+    /// publications, which a later lookup reads as they are.
+    pub(super) fn extend_complete<'nominal>(
+        &mut self,
+        nominals: impl IntoIterator<Item = &'nominal crate::durable_semantics::DurableAnonymousNominal>,
+    ) {
+        for nominal in nominals {
+            self.extend([nominal]);
+            self.complete
+                .insert(nominal.identity.with_canonical_producer().into_owned());
+        }
+    }
+
+    pub(super) fn is_complete(&self, identity: &crate::AnonymousNominalKey) -> bool {
+        self.complete
+            .contains(identity.with_canonical_producer().as_ref())
     }
 
     pub(super) fn get(
@@ -648,7 +671,7 @@ impl<'a> CompilerBodyDurableSource<'a> {
                 } if !methods.is_empty()
             )
         });
-        if cached_has_methods {
+        if cached_has_methods || self.dynamic_anonymous.borrow().is_complete(key) {
             return Ok(cached);
         }
         let body_producer: Option<std::borrow::Cow<'_, crate::FunctionInstanceKey>> =
@@ -1227,6 +1250,86 @@ impl rue_air::DurableBodyLookupSource<crate::StableDefinitionKey, ModuleId>
         type_arguments: &[(Arc<str>, crate::DurableType)],
         value_arguments: &[(Arc<str>, crate::DurableConstValue)],
     ) -> rue_air::DurableComptimeCallOutcome<crate::StableDefinitionKey, ModuleId> {
+        self.reduce_comptime_call_lending(
+            definition,
+            type_arguments,
+            value_arguments,
+            Arc::from([]),
+        )
+    }
+
+    fn reduce_comptime_call_with_local_nominals(
+        &self,
+        definition: &crate::StableDefinitionKey,
+        type_arguments: &[(Arc<str>, crate::DurableType)],
+        value_arguments: &[(Arc<str>, crate::DurableConstValue)],
+        local: &[rue_air::SemanticProducedAnonymousNominal],
+        definitions: &[(rue_air::SemanticDefinitionToken, crate::StableDefinitionKey)],
+        modules: &[(rue_air::SemanticModuleToken, ModuleId)],
+    ) -> rue_air::DurableComptimeCallOutcome<crate::StableDefinitionKey, ModuleId> {
+        let definitions = definitions.iter().cloned().collect::<AHashMap<_, _>>();
+        let modules = modules.iter().cloned().collect::<AHashMap<_, _>>();
+        let Ok(local) = project_provider_produced_anonymous_nominals(local, &definitions, &modules)
+        else {
+            return rue_air::DurableComptimeCallOutcome::NotReduced;
+        };
+        // The arguments can also reach a type an earlier loaned call built
+        // over the locals (`W(V(I))`). Its producer is that call without
+        // the loan, so it is lent too, from the projection that call
+        // published, as is everything else such a type reaches.
+        let mut lent = local
+            .0
+            .iter()
+            .map(|nominal| {
+                let nominal = nominal.with_canonical_identity();
+                (nominal.identity.clone(), nominal)
+            })
+            .collect::<std::collections::BTreeMap<_, _>>();
+        let mut pending = BTreeSet::new();
+        for (_, ty) in type_arguments {
+            collect_anonymous_nominal_type_dependencies(ty, &mut pending);
+        }
+        for (_, value) in value_arguments {
+            collect_anonymous_nominal_value_dependencies(value, &mut pending);
+        }
+        for nominal in lent.values() {
+            collect_durable_anonymous_nominal_dependencies(nominal, &mut pending);
+        }
+        while let Some(identity) = pending.pop_first() {
+            let identity = identity.with_canonical_producer().into_owned();
+            if lent.contains_key(&identity) {
+                continue;
+            }
+            let dynamic = self.dynamic_anonymous.borrow();
+            if !dynamic.is_complete(&identity) {
+                continue;
+            }
+            let Ok(Some(nominal)) = dynamic.get(&identity) else {
+                continue;
+            };
+            collect_durable_anonymous_nominal_dependencies(&nominal, &mut pending);
+            lent.insert(identity, nominal.as_ref().clone());
+        }
+        self.reduce_comptime_call_lending(
+            definition,
+            type_arguments,
+            value_arguments,
+            lent.into_values().collect(),
+        )
+    }
+}
+
+impl CompilerBodyDurableSource<'_> {
+    /// Reduce one comptime call through the canonical query, keyed with the
+    /// facts of any anonymous nominals the calling runtime body lends because
+    /// it is still producing them (RUE-2590).
+    fn reduce_comptime_call_lending(
+        &self,
+        definition: &crate::StableDefinitionKey,
+        type_arguments: &[(Arc<str>, crate::DurableType)],
+        value_arguments: &[(Arc<str>, crate::DurableConstValue)],
+        lent: Arc<[crate::durable_semantics::DurableAnonymousNominal]>,
+    ) -> rue_air::DurableComptimeCallOutcome<crate::StableDefinitionKey, ModuleId> {
         let Some(candidate) = self.candidate(definition) else {
             return rue_air::DurableComptimeCallOutcome::NotReduced;
         };
@@ -1236,6 +1339,7 @@ impl rue_air::DurableBodyLookupSource<crate::StableDefinitionKey, ModuleId>
                 declaration: declaration.clone(),
                 type_arguments: type_arguments.to_vec().into(),
                 value_arguments: value_arguments.to_vec().into(),
+                lent_anonymous_nominals: Arc::clone(&lent),
             },
         );
         let value = match self.provider.nucleus_result(query) {
@@ -1438,11 +1542,11 @@ impl rue_air::DurableBodyLookupSource<crate::StableDefinitionKey, ModuleId>
                 break;
             }
         }
-        if projection
+        let minted = projection
             .anonymous_nominals
             .iter()
-            .any(|nominal| !argument_nominals.contains(&nominal.identity))
-        {
+            .any(|nominal| !argument_nominals.contains(&nominal.identity));
+        if minted {
             let producer = match crate::durable_comptime::canonical_specialized_function_instance(
                 definition,
                 type_arguments,
@@ -1456,25 +1560,41 @@ impl rue_air::DurableBodyLookupSource<crate::StableDefinitionKey, ModuleId>
                 .positive_references
                 .borrow_mut()
                 .insert(crate::body_query::BodyReference::Callable(producer.clone()));
-            let Some(produced_facts) =
-                rue_air::BodyFactProvider::producer_body_facts(self.provider, &producer)
-            else {
-                return rue_air::DurableComptimeCallOutcome::NotReduced;
-            };
-            match produced_facts {
-                crate::body_query::ProducedAnonymous::Produced(produced) => {
-                    self.dynamic_anonymous
-                        .borrow_mut()
-                        .extend(produced.0.iter());
-                }
-                crate::body_query::ProducedAnonymous::ProducerFailed(failure) => {
-                    *self
-                        .provider
-                        .queries
-                        .producer_transport_failure
-                        .borrow_mut() = Some(failure);
-                    self.provider.observe_abort(QueryAbort::Canceled);
+            // A call reduced over lent nominals publishes the facts of the
+            // nominals it minted in its own projection, exactly as their
+            // producer would publish them. The producer is that call keyed
+            // without the loan, which would wait on the body lending them.
+            if !lent.is_empty() {
+                let mut dynamic = self.dynamic_anonymous.borrow_mut();
+                dynamic.extend_complete(lent.iter());
+                dynamic.extend_complete(
+                    projection
+                        .anonymous_nominals
+                        .iter()
+                        .filter(|nominal| !argument_nominals.contains(&nominal.identity)),
+                );
+                dynamic.extend(projection.anonymous_nominals.iter());
+            } else {
+                let Some(produced_facts) =
+                    rue_air::BodyFactProvider::producer_body_facts(self.provider, &producer)
+                else {
                     return rue_air::DurableComptimeCallOutcome::NotReduced;
+                };
+                match produced_facts {
+                    crate::body_query::ProducedAnonymous::Produced(produced) => {
+                        self.dynamic_anonymous
+                            .borrow_mut()
+                            .extend(produced.0.iter());
+                    }
+                    crate::body_query::ProducedAnonymous::ProducerFailed(failure) => {
+                        *self
+                            .provider
+                            .queries
+                            .producer_transport_failure
+                            .borrow_mut() = Some(failure);
+                        self.provider.observe_abort(QueryAbort::Canceled);
+                        return rue_air::DurableComptimeCallOutcome::NotReduced;
+                    }
                 }
             }
         }
@@ -2688,6 +2808,7 @@ impl crate::durable_comptime::DurableComptimeForeignCallAuthority
             },
             type_arguments: type_arguments.to_vec().into(),
             value_arguments: value_arguments.to_vec().into(),
+            lent_anonymous_nominals: Arc::from([]),
         };
         let foreign_plan = crate::body_query::DurableComptimeProgramPlan {
             key: crate::body_query::DurableComptimeProgramKey {
@@ -3180,6 +3301,7 @@ impl rue_air::BodyFactProvider for CompilerBodyFactProvider<'_> {
                 declaration: self.declaration_query_key(decl),
                 type_arguments: type_arguments.to_vec().into(),
                 value_arguments: value_arguments.to_vec().into(),
+                lent_anonymous_nominals: Arc::from([]),
             },
         );
         match self.nucleus(query) {

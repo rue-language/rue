@@ -1046,6 +1046,23 @@ pub trait DurableBodyLookupSource<K, M>: Clone {
     ) -> DurableComptimeCallOutcome<K, M> {
         DurableComptimeCallOutcome::NotReduced
     }
+    /// [`Self::reduce_comptime_call`] for a call whose arguments name
+    /// anonymous nominals the calling runtime body is still producing (`let
+    /// I = struct { .. }; W(I)`, RUE-2590). Such a body publishes its
+    /// nominals only when its analysis finishes, so the call cannot ask their
+    /// producer for them; `local` lends their facts, as the body would export
+    /// them, with the tokens they name.
+    fn reduce_comptime_call_with_local_nominals(
+        &self,
+        _definition: &K,
+        _type_arguments: &[(Arc<str>, crate::SemanticImportType<K, M>)],
+        _value_arguments: &[(Arc<str>, crate::SemanticImportConstValue<K, M>)],
+        _local: &[crate::SemanticProducedAnonymousNominal],
+        _definitions: &[(SemanticDefinitionToken, K)],
+        _modules: &[(SemanticModuleToken, M)],
+    ) -> DurableComptimeCallOutcome<K, M> {
+        DurableComptimeCallOutcome::NotReduced
+    }
 }
 
 impl<P, S, K, M> super::semantic_body_export::SemanticBodyExportHost
@@ -3304,6 +3321,145 @@ where
         })
     }
 
+    /// Whether `ty` is an anonymous nominal this body declares itself, as
+    /// opposed to one minted from a durable fact.
+    fn is_local_anonymous(&self, ty: Type) -> bool {
+        self.issued_anonymous_identity(ty).is_some()
+            && !self.durable_anonymous_types.contains_key(&ty)
+            && self.endpoint.durable_anonymous_identity(ty).is_none()
+    }
+
+    /// The anonymous nominals this body declares itself that `roots` reach,
+    /// through composite types and the fields, payloads and type captures of
+    /// anonymous nominals: `I` for `W(V(I))` as well as for `W(I)`.
+    fn reached_local_anonymous_types(&self, roots: impl IntoIterator<Item = Type>) -> Vec<Type> {
+        let mut stack = roots.into_iter().collect::<Vec<_>>();
+        let mut seen = AHashSet::new();
+        let mut local = Vec::new();
+        while let Some(ty) = stack.pop() {
+            if !seen.insert(ty) {
+                continue;
+            }
+            match ty.kind() {
+                TypeKind::Array(id) => stack.push(self.type_pool.array_def(id).0),
+                TypeKind::PtrConst(id) => stack.push(self.type_pool.ptr_const_def(id)),
+                TypeKind::PtrMut(id) => stack.push(self.type_pool.ptr_mut_def(id)),
+                TypeKind::Function(id) => {
+                    let def = self.type_pool.function_def(id);
+                    stack.extend(def.params.iter().map(|param| param.ty));
+                    stack.push(def.result);
+                }
+                TypeKind::Struct(id) => {
+                    // A struct still being declared is not yet registered
+                    // as anonymous, but is already issued its identity.
+                    let is_local = self.is_local_anonymous(ty);
+                    if !is_local
+                        && !self.type_pool.is_anonymous_struct(id)
+                        && self.type_pool.text_view_kind(id)
+                            != Some(crate::types::TextViewKind::Slice)
+                    {
+                        continue;
+                    }
+                    if is_local {
+                        local.push(ty);
+                    }
+                    if let Some(def) = self.type_pool.try_struct_def(id) {
+                        stack.extend(def.fields.iter().map(|field| field.ty));
+                    }
+                    if let Some(captures) = self.anon_struct_type_subst.get(&id) {
+                        stack.extend(captures.values().copied());
+                    }
+                }
+                TypeKind::Enum(id) if self.type_pool.is_anonymous_enum(id) => {
+                    if self.is_local_anonymous(ty) {
+                        local.push(ty);
+                    }
+                    let def = self.type_pool.enum_def(id);
+                    for index in 0..def.variants.len() {
+                        stack.extend(def.variant_payload(index).iter().copied());
+                    }
+                }
+                _ => {}
+            }
+        }
+        local
+    }
+
+    /// Reduce a comptime call whose type arguments reach anonymous nominals
+    /// this runtime body declares itself (`let I = struct { .. }; W(I)`,
+    /// RUE-2590), or `None` when they reach none.
+    ///
+    /// The body publishes its nominals only when its analysis finishes, so
+    /// the call cannot ask their producer for their facts; it is lent them,
+    /// exported exactly as the body will publish them. The call is still
+    /// keyed by their canonical identities, so the same local type gives one
+    /// instance and two different ones give two. Each local is registered in
+    /// the identity pool under its durable key first, so a type the call
+    /// builds over it materializes with the body's own type in its fields.
+    fn reduce_lending_local_nominals(
+        &mut self,
+        definition: &K,
+        type_arguments: &[(Arc<str>, crate::SemanticImportType<K, M>)],
+        value_arguments: &[(Arc<str>, crate::SemanticImportConstValue<K, M>)],
+        concrete_types: impl IntoIterator<Item = Type>,
+    ) -> Option<DurableComptimeCallOutcome<K, M>> {
+        let local = self.reached_local_anonymous_types(concrete_types);
+        // A type constructor's own nominals are published by the comptime
+        // evaluation of its call, which the reduction reads.
+        if local.is_empty() || self.body_is_type_constructor() {
+            return None;
+        }
+        // A local still being declared has no export yet.
+        if local
+            .iter()
+            .any(|ty| !self.canonical_anonymous_types.contains_key(ty))
+        {
+            return Some(DurableComptimeCallOutcome::NotReduced);
+        }
+        let Ok(exports) = self.anonymous_nominal_exports(|ty, _| local.contains(&ty)) else {
+            return Some(DurableComptimeCallOutcome::NotReduced);
+        };
+        for ty in &local {
+            let Some(crate::SemanticImportType::AnonymousNominal(key)) =
+                self.local_durable_type(*ty)
+            else {
+                return Some(DurableComptimeCallOutcome::NotReduced);
+            };
+            let context = self.state.identity_context();
+            let Some(mut pool) = context.pool_mut() else {
+                return Some(DurableComptimeCallOutcome::NotReduced);
+            };
+            pool.alias_local_anonymous(&key, *ty);
+        }
+        let definitions = self
+            .function_tokens
+            .borrow()
+            .values()
+            .cloned()
+            .chain(self.nominal_tokens.borrow().values().cloned())
+            .chain(
+                self.anonymous_definition_tokens
+                    .borrow()
+                    .iter()
+                    .map(|(key, token)| (*token, key.clone())),
+            )
+            .collect::<Vec<_>>();
+        let modules = self
+            .module_tokens
+            .borrow()
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        Some(self.source.reduce_comptime_call_with_local_nominals(
+            definition,
+            type_arguments,
+            value_arguments,
+            &exports,
+            &definitions,
+            &modules,
+        ))
+    }
+
     /// The inference signature of a member of an anonymous struct this body
     /// declares, read from the signatures recorded when the struct was
     /// minted. Constraint generation runs before ordinary analysis reaches
@@ -3490,7 +3646,11 @@ where
             .pool_mut()?
             .resolve_provider_type(ty)
             .ok()?;
-        if let crate::SemanticImportType::AnonymousNominal(identity) = ty {
+        // A nominal the body declares itself is already installed, and asking
+        // the source for its methods would wait on this body (RUE-2590).
+        if let crate::SemanticImportType::AnonymousNominal(identity) = ty
+            && !self.is_local_anonymous(resolved)
+        {
             self.install_provider_anonymous_methods(identity, resolved)?;
         }
         Some(resolved)
@@ -3559,6 +3719,16 @@ where
         initial: &AHashSet<super::anon_structs::IssuedAnonymousNominalKey>,
     ) -> Result<Arc<[crate::SemanticProducedAnonymousNominal]>, crate::SemanticBodyExportFailure>
     {
+        self.anonymous_nominal_exports(|_, identity| !initial.contains(identity))
+    }
+
+    /// The export of every anonymous nominal this body holds that `include`
+    /// selects, as [`Self::produced_anonymous_nominals`] publishes it.
+    fn anonymous_nominal_exports(
+        &self,
+        include: impl Fn(Type, &super::anon_structs::IssuedAnonymousNominalKey) -> bool,
+    ) -> Result<Arc<[crate::SemanticProducedAnonymousNominal]>, crate::SemanticBodyExportFailure>
+    {
         fn mode(value: RirParamMode) -> crate::SemanticParameterMode {
             match value {
                 RirParamMode::Normal => crate::SemanticParameterMode::Value,
@@ -3622,7 +3792,7 @@ where
         let identities = self
             .canonical_anonymous_types
             .iter()
-            .filter(|(_, identity)| !initial.contains(*identity))
+            .filter(|(ty, identity)| include(**ty, identity))
             .map(|(ty, identity)| (*ty, identity.clone()))
             .collect::<Vec<_>>();
         let mut bindings: AHashMap<
@@ -4988,16 +5158,15 @@ where
             // An argument naming an anonymous nominal this body produces
             // (`Inner(ptr const Self)`, its struct still being declared) has
             // no durable form in this body's maps, so its identity is
-            // recovered from the issued one. Only a type constructor's body
-            // can lend it: that body's nominals are published by the comptime
-            // evaluation of its call, which the reduction reads. A runtime
-            // body publishes its nominals only when its own analysis
-            // finishes, so a reduction over one would wait on this analysis.
-            let Some(value) = self.durable_type_from_concrete(value).or_else(|| {
-                self.body_is_type_constructor()
-                    .then(|| self.local_durable_type(value))
-                    .flatten()
-            }) else {
+            // recovered from the issued one. A type constructor's body's
+            // nominals are published by the comptime evaluation of its call,
+            // which the reduction reads. A runtime body publishes its
+            // nominals only when its own analysis finishes, so it lends their
+            // facts to the reduction instead (RUE-2590).
+            let Some(value) = self
+                .durable_type_from_concrete(value)
+                .or_else(|| self.local_durable_type(value))
+            else {
                 return Ok(None);
             };
             durable_types.push((Arc::from(self.interner.resolve(&name)), value));
@@ -5009,17 +5178,24 @@ where
             };
             durable_values.push((Arc::from(self.interner.resolve(name)), value));
         }
-        let reduced =
-            match self
+        let outcome = match self.reduce_lending_local_nominals(
+            &definition,
+            &durable_types,
+            &durable_values,
+            type_arguments.iter().map(|(_, ty)| *ty),
+        ) {
+            Some(outcome) => outcome,
+            None => self
                 .source
-                .reduce_comptime_call(&definition, &durable_types, &durable_values)
-            {
-                DurableComptimeCallOutcome::Reduced(reduced) => reduced,
-                DurableComptimeCallOutcome::NotReduced => return Ok(None),
-                DurableComptimeCallOutcome::Diagnostic(diagnostic) => {
-                    return Err(diagnostic.into_compile_error(span));
-                }
-            };
+                .reduce_comptime_call(&definition, &durable_types, &durable_values),
+        };
+        let reduced = match outcome {
+            DurableComptimeCallOutcome::Reduced(reduced) => reduced,
+            DurableComptimeCallOutcome::NotReduced => return Ok(None),
+            DurableComptimeCallOutcome::Diagnostic(diagnostic) => {
+                return Err(diagnostic.into_compile_error(span));
+            }
+        };
         let value = match reduced.result {
             crate::SemanticComptimeCallResult::Type(ty) => {
                 crate::SemanticImportConstValue::Type(ty)
@@ -5027,7 +5203,11 @@ where
             crate::SemanticComptimeCallResult::Value(value) => value,
         };
         let materialized = self.materialize_durable_const_value(&value);
-        if let Some(ConstValue::Type(ty)) = materialized.as_ref() {
+        // A constructor that returns the body's own local (`Id(I)`) names no
+        // new type; the local keeps its own name.
+        if let Some(ConstValue::Type(ty)) = materialized.as_ref()
+            && !self.is_local_anonymous(*ty)
+        {
             let type_arguments = type_arguments.iter().cloned().collect();
             let value_arguments = value_arguments.iter().cloned().collect();
             OrdinaryBodyEngine::new(self).record_ctor_type_display(
@@ -6125,10 +6305,16 @@ where
             .iter()
             .filter_map(|parameter| {
                 let symbol = self.interner.get(parameter.name.as_ref())?;
-                callee_types
-                    .get(&symbol)
-                    .copied()
-                    .map(|ty| (parameter.name.clone(), self.durable_type_from_concrete(ty)))
+                callee_types.get(&symbol).copied().map(|ty| {
+                    (
+                        parameter.name.clone(),
+                        self.durable_type_from_concrete(ty).or_else(|| {
+                            (!self.body_is_type_constructor())
+                                .then(|| self.local_durable_type(ty))
+                                .flatten()
+                        }),
+                    )
+                })
             })
             .map(|(name, value)| value.map(|value| (name, value)))
             .collect::<Option<Vec<_>>>();
@@ -6179,18 +6365,26 @@ where
         // diagnosis; the request-local evaluator remains the fallback for the
         // value self call there, so no shape that reduced before stops
         // reducing.
-        let reduced =
-            match self
-                .source
-                .reduce_comptime_call(&definition, &type_arguments, &value_arguments)
-            {
-                DurableComptimeCallOutcome::Reduced(reduced) => reduced,
-                DurableComptimeCallOutcome::NotReduced if value_self_call => return None,
-                DurableComptimeCallOutcome::NotReduced => return Some(Ok(None)),
-                DurableComptimeCallOutcome::Diagnostic(diagnostic) => {
-                    return Some(Err(diagnostic.into_compile_error(span)));
-                }
-            };
+        let outcome = match self.reduce_lending_local_nominals(
+            &definition,
+            &type_arguments,
+            &value_arguments,
+            callee_types.values().copied(),
+        ) {
+            Some(outcome) => outcome,
+            None => {
+                self.source
+                    .reduce_comptime_call(&definition, &type_arguments, &value_arguments)
+            }
+        };
+        let reduced = match outcome {
+            DurableComptimeCallOutcome::Reduced(reduced) => reduced,
+            DurableComptimeCallOutcome::NotReduced if value_self_call => return None,
+            DurableComptimeCallOutcome::NotReduced => return Some(Ok(None)),
+            DurableComptimeCallOutcome::Diagnostic(diagnostic) => {
+                return Some(Err(diagnostic.into_compile_error(span)));
+            }
+        };
         let producer = (|| {
             Some(FunctionInstanceKey::Specialization {
                 base: Node::new(FunctionInstanceKey::Definition(
@@ -6255,7 +6449,9 @@ where
                 self.materialize_durable_const_value(&value)
             }
         };
-        if let Some(ConstValue::Type(ty)) = value.as_ref() {
+        if let Some(ConstValue::Type(ty)) = value.as_ref()
+            && !self.is_local_anonymous(*ty)
+        {
             OrdinaryBodyEngine::new(self).record_ctor_type_display(
                 name,
                 *ty,
