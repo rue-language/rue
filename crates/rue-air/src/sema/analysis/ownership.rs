@@ -1605,9 +1605,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // not a second loan; outer frames still represent genuinely nested
         // calls and must conflict.
         let frame_count = ctx.ownership.call_loaned_roots.len();
+        let root_key = Self::bound_ledger_root(root, ctx);
         for (frame_index, frame) in ctx.ownership.call_loaned_roots.iter().enumerate() {
             if frame.iter().any(|(r, kind, _view_materialized)| {
-                *r == root
+                Some(*r) == root_key
                     && !(frame_index + 1 == frame_count && *kind == CallLoanKind::Inout)
                     && (*kind == CallLoanKind::Inout || accessor_loan_kind == CallLoanKind::Inout)
             }) {
@@ -7539,8 +7540,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         span: Span,
         ctx: &AnalysisContext,
     ) -> CompileResult<()> {
+        let root_key = Self::bound_ledger_root(root, ctx);
         for frame in ctx.ownership.call_loaned_roots.iter().rev() {
-            if let Some((_, kind, _view_materialized)) = frame.iter().find(|(r, _, _)| *r == root) {
+            if let Some((_, kind, _view_materialized)) =
+                frame.iter().find(|(r, _, _)| Some(*r) == root_key)
+            {
                 let variable = self.body_interner().resolve(&root).to_string();
                 let kw = kind.keyword();
                 return Err(CompileError::new(
@@ -7615,12 +7619,13 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         span: Span,
         ctx: &AnalysisContext,
     ) -> CompileResult<()> {
-        let conflicting = ctx
-            .ownership
-            .call_loaned_roots
-            .iter()
-            .flatten()
-            .find(|(loaned, _kind, view_materialized)| *loaned == root && *view_materialized);
+        let Some(root_key) = Self::bound_ledger_root(root, ctx) else {
+            return Ok(());
+        };
+        let conflicting =
+            ctx.ownership.call_loaned_roots.iter().flatten().find(
+                |(loaned, _kind, view_materialized)| *loaned == root_key && *view_materialized,
+            );
         let Some((_, kind, _)) = conflicting else {
             return Ok(());
         };
@@ -7840,7 +7845,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// The ledger identity of `name` when it resolves to a runtime binding,
     /// for a conflict lookup: a name that is neither a local nor a parameter
     /// owns no storage, so no accessor loan or recorded use can name it.
-    fn bound_ledger_root(name: Spur, ctx: &AnalysisContext) -> Option<LedgerRoot> {
+    pub(crate) fn bound_ledger_root(name: Spur, ctx: &AnalysisContext) -> Option<LedgerRoot> {
         if let Some(local) = ctx.locals.get(&name) {
             return Some(LedgerRoot {
                 name,
@@ -8383,7 +8388,12 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     {
         // Loan-frame discipline (RUE-523): a by-value move of a root this call
         // passes `inout`/`borrow` conflicts in either argument order.
-        let frame: Vec<(Spur, CallLoanKind, bool)> = args
+        //
+        // Each root is recorded as the binding it resolves to here, so a
+        // shadowing `let` inside one of the arguments is not the loaned root
+        // (RUE-2377). A name that resolves to no runtime binding owns no
+        // storage and takes no loan.
+        let frame: Vec<(LedgerRoot, CallLoanKind, bool)> = args
             .clone()
             .enumerate()
             .filter_map(|(index, arg)| {
@@ -8406,6 +8416,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         // root their loan at the receiver (ADR-0062/RUE-1016).
                         self.place_root_with_accessors(arg.value, ctx)
                     })
+                    .and_then(|root| Self::bound_ledger_root(root, ctx))
                     .map(|root| (root, kind, view_materialized))
             })
             .collect();
@@ -8451,9 +8462,12 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             else {
                 continue;
             };
+            let Some(root_key) = Self::bound_ledger_root(root, ctx) else {
+                continue;
+            };
             let conflicting_outer_loan = ctx.ownership.call_loaned_roots.iter().flatten().find(
                 |(loaned, kind, view_materialized)| {
-                    *loaned == root && (*kind == CallLoanKind::Borrow || *view_materialized)
+                    *loaned == root_key && (*kind == CallLoanKind::Borrow || *view_materialized)
                 },
             );
             if let Some((_, kind, view_materialized)) = conflicting_outer_loan {

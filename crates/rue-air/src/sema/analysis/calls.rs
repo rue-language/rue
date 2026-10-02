@@ -1607,7 +1607,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     span,
                     ctx,
                 )?;
-                Some(vec![(root, CallLoanKind::Inout, false)])
+                Self::bound_ledger_root(root, ctx)
+                    .map(|key| vec![(key, CallLoanKind::Inout, false)])
             }
             (AirArgMode::Borrow, Some(root)) => {
                 self.reject_receiver_accessor_loan_conflict(
@@ -1617,7 +1618,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     span,
                     ctx,
                 )?;
-                Some(vec![(root, CallLoanKind::Borrow, false)])
+                Self::bound_ledger_root(root, ctx)
+                    .map(|key| vec![(key, CallLoanKind::Borrow, false)])
             }
             _ => None,
         };
