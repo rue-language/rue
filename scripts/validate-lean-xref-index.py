@@ -1192,8 +1192,10 @@ def check_syntax_forms(calculus: Calculus, modules: List[Module]) -> List[str]:
 
 CORPUS_FILE = Path("RueCore") / "Corpus.lean"
 CORPUS_STRING = re.compile(r'"((?:[^"\\]|\\.)*)"')
-CORPUS_RULES_FIELD = re.compile(r"^\s*rules\s*:=\s*\[(?P<body>.*)\]\s*,?\s*$")
-CORPUS_DESCRIPTION_FIELD = re.compile(r'^\s*description\s*:=\s*(?P<body>".*")\s*,?\s*$')
+CORPUS_TRAILING_COMMENT = r"(?:\s*--.*)?"
+CORPUS_RULES_FIELD = re.compile(r"^\s*rules\s*:=\s*\[(?P<body>.*)\]\s*,?" + CORPUS_TRAILING_COMMENT + "$")
+CORPUS_DESCRIPTION_FIELD = re.compile(r'^\s*description\s*:=\s*(?P<body>"(?:[^"\\]|\\.)*")\s*,?' + CORPUS_TRAILING_COMMENT + "$")
+CORPUS_ANY_FIELD = re.compile(r"^\s*(?:rules|description)\s*:=")
 
 
 def check_corpus_citations(lean_dir: Path, spec_paragraph_ids: set) -> List[str]:
@@ -1216,6 +1218,12 @@ def check_corpus_citations(lean_dir: Path, spec_paragraph_ids: set) -> List[str]
             field, strings = "rules", CORPUS_STRING.findall(rules.group("body"))
         elif description:
             field, strings = "description", CORPUS_STRING.findall(description.group("body"))
+        elif CORPUS_ANY_FIELD.match(line):
+            errors.append(
+                f"{CORPUS_FILE.as_posix()}:{number}: a `rules`/`description` field the gate "
+                f"cannot parse; keep it on one line"
+            )
+            continue
         else:
             continue
         for text in strings:
