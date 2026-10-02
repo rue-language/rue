@@ -2253,7 +2253,9 @@ where
                         .map_err(SemanticImportFailure::Interner)?;
                     // The view's `ptr` field points at `element`; an element
                     // the pool cannot hold (`[type]`) is an invalid structural
-                    // type, as it is for an array or pointer (RUE-2606).
+                    // type, as it is for an array or pointer (RUE-2606). A
+                    // backstop: declaration checks reject such a signature
+                    // with E1200 before it is imported.
                     let pointer = type_pool
                         .try_intern_ptr_const(element)
                         .map_err(|_| SemanticImportFailure::InvalidStructuralType)?;
