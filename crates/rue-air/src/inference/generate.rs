@@ -508,6 +508,11 @@ pub struct ConstraintGenerator<'a> {
     /// (RUE-599). `None` only in unit tests; production passes the map via
     /// [`Self::with_inline_ctor_head_types`].
     inline_ctor_head_types: Option<&'a AHashMap<InstRef, Type>>,
+    /// Sema's repeat counts that name a `comptime` block's `let` (repeat
+    /// `InstRef` -> count), when the pre-inference walk is sure of the
+    /// value. `None` only in unit tests; production passes the map via
+    /// [`Self::with_local_repeat_counts`] (RUE-2542).
+    local_repeat_counts: Option<&'a AHashMap<InstRef, u64>>,
     /// Sema's pre-resolved local annotations (binding-site Alloc `InstRef`
     /// -> concrete type). Qualified paths, type constructors, and specialized
     /// parameters need semantic resolution before inference can constrain
@@ -742,6 +747,7 @@ impl<'a> ConstraintGenerator<'a> {
             comptime_alias_types: AHashMap::new(),
             alias_scope_stack: Vec::new(),
             inline_ctor_head_types: None,
+            local_repeat_counts: None,
             local_annotations: None,
             extra_method_sigs: None,
             const_values: None,
@@ -808,6 +814,7 @@ impl<'a> ConstraintGenerator<'a> {
             comptime_alias_types: AHashMap::new(),
             alias_scope_stack: Vec::new(),
             inline_ctor_head_types: None,
+            local_repeat_counts: None,
             local_annotations: None,
             extra_method_sigs: None,
             const_values: None,
@@ -1128,6 +1135,16 @@ impl<'a> ConstraintGenerator<'a> {
         inline_ctor_head_types: &'a AHashMap<InstRef, Type>,
     ) -> Self {
         self.inline_ctor_head_types = Some(inline_ctor_head_types);
+        self
+    }
+
+    /// Provide sema's repeat counts that name a `comptime` block's `let`.
+    /// See the `local_repeat_counts` field (RUE-2542).
+    pub fn with_local_repeat_counts(
+        mut self,
+        local_repeat_counts: &'a AHashMap<InstRef, u64>,
+    ) -> Self {
+        self.local_repeat_counts = Some(local_repeat_counts);
         self
     }
 
@@ -3553,7 +3570,12 @@ impl<'a> ConstraintGenerator<'a> {
                     // type stayed an unconstrained variable that decayed to
                     // `<error>`, and sema reported the array-repeat literal as
                     // an un-annotatable empty array (E0903, RUE-1681).
-                    RepeatCount::Named(sym) if ctx.locals.contains_key(sym) => None,
+                    // A `comptime` block's `let` is a count only once the
+                    // block's walk has its value (RUE-2542).
+                    RepeatCount::Named(sym) if ctx.locals.contains_key(sym) => self
+                        .local_repeat_counts
+                        .and_then(|counts| counts.get(&inst_ref))
+                        .copied(),
                     RepeatCount::Named(sym)
                         if self
                             .comptime_values

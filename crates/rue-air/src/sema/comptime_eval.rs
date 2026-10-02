@@ -2395,6 +2395,26 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 discovered.inline_ctor_head_types.insert(inst_ref, ty);
             }
         }
+        // A repeat count naming a `comptime` block's `let` has a value only
+        // at compile time. Give inference that count where this walk is sure
+        // of it, so the repeat is an array of its element at that length and
+        // its element is typed by its uses, as with a literal count (4.14:27,
+        // RUE-2542).
+        if in_comptime
+            && let InstData::ArrayRepeat {
+                count: rue_rir::RepeatCount::Named(symbol),
+                ..
+            } = &self.body_rir_ref().get(inst_ref).data
+            && !scope.runtime.contains(symbol)
+            && !scope.types.contains_key(symbol)
+            && let Some(length) = scope
+                .values
+                .get(symbol)
+                .and_then(ConstValue::as_int_value)
+                .and_then(|value| u64::try_from(value).ok())
+        {
+            discovered.local_repeat_counts.insert(inst_ref, length);
+        }
         match &self.body_rir_ref().get(inst_ref).data {
             InstData::Block { instructions } => {
                 let instructions = instructions.clone();
@@ -2815,6 +2835,10 @@ pub(crate) struct PrecomputedTypeLocals {
     /// Inline type-constructor heads reduced in their lexical scope, keyed
     /// by the head instruction (see `inline_ctor_head_candidates`).
     pub(crate) inline_ctor_head_types: AHashMap<InstRef, Type>,
+    /// Repeat counts that name a `comptime` block's `let`, keyed by the
+    /// repeat instruction: the count the block binds, when the walk is sure
+    /// of it.
+    pub(crate) local_repeat_counts: AHashMap<InstRef, u64>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]

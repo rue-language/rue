@@ -396,6 +396,7 @@ struct PrecomputeSnapshot {
     comptime_local_bindings: Arc<AHashMap<InstRef, Type>>,
     local_annotations: Arc<AHashMap<InstRef, Type>>,
     inline_ctor_head_types: Arc<AHashMap<InstRef, Type>>,
+    local_repeat_counts: Arc<AHashMap<InstRef, u64>>,
 }
 
 fn elapsed_ns(started: Instant) -> u64 {
@@ -749,8 +750,13 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             target: "rue::timing",
             tracing::Level::INFO
         );
-        let (comptime_local_bindings, local_annotations, precompute_work, inline_ctor_head_types) =
-            if let Some(snapshot) = precompute_snapshot {
+        let (
+            comptime_local_bindings,
+            local_annotations,
+            precompute_work,
+            inline_ctor_head_types,
+            local_repeat_counts,
+        ) = if let Some(snapshot) = precompute_snapshot {
                 // The probe already walked and evaluated all reachable
                 // aliases/inline heads. Reuse that immutable checkpoint in
                 // every frontier and the final root pass; replaying these
@@ -761,6 +767,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     snapshot.local_annotations.clone(),
                     Default::default(),
                     snapshot.inline_ctor_head_types.clone(),
+                    snapshot.local_repeat_counts.clone(),
                 )
             } else {
                 let (precomputed_locals, precompute_work) = self.precompute_comptime_type_locals(
@@ -783,6 +790,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     Arc::new(local_annotations),
                     precompute_work,
                     Arc::new(inline_ctor_head_types),
+                    Arc::new(precomputed_locals.local_repeat_counts),
                 )
             };
         let precompute_ns = elapsed_ns(precompute_started);
@@ -849,6 +857,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 .with_comptime_local_bindings(&comptime_local_bindings)
                 .with_local_annotations(&local_annotations)
                 .with_inline_ctor_head_types(&inline_ctor_head_types)
+                .with_local_repeat_counts(&local_repeat_counts)
                 .with_comptime_values(value_subst)
                 .with_comptime_selections(selections, staged)
                 .with_comptime_frontier_mode(frontier_mode)
@@ -1163,6 +1172,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 comptime_local_bindings,
                 local_annotations,
                 inline_ctor_head_types,
+                local_repeat_counts,
             },
             float_literal_joins,
         ))
