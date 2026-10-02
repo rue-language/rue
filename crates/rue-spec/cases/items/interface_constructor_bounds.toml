@@ -215,3 +215,41 @@ fn main() {}
 """
 compile_fail = true
 error_contains = ["E0305"]
+
+[[case]]
+name = "dependent_parameter_type_checks_constructor_bound"
+spec = ["6.8:15", "6.8:24", "4.14:5"]
+preview = "interfaces"
+preview_should_pass = true
+description = "A comptime parameter whose type `W(T, N)` applies a bounded constructor checks the bound at each call: `K(No, 2, A)` and `f(No, 2, A)` are rejected for a `No` that does not conform (RUE-2550)"
+source = """
+interface Equatable { fn equals(borrow self, borrow other: Self) -> bool; }
+struct No { n: i64 }
+fn W(comptime T: Equatable, comptime N: i32) -> type { [i32; N] }
+fn K(comptime T: type, comptime N: i32, comptime a: W(T, N)) -> type { i32 }
+const A: [i32; 2] = [1, 2];
+const T2 = K(No, 2, A);
+fn main() -> i32 { let x: T2 = 1; x }
+"""
+compile_fail = true
+error_contains = ["E0305", "No", "Equatable"]
+
+[[case]]
+name = "dependent_parameter_type_accepts_conforming_bound"
+spec = ["6.8:15", "6.8:24", "4.14:5"]
+preview = "interfaces"
+preview_should_pass = true
+description = "The same dependent parameter type `W(T, N)` accepts a conforming `Yes` (RUE-2550)"
+source = """
+interface Equatable { fn equals(borrow self, borrow other: Self) -> bool; }
+struct Yes { n: i64, fn equals(borrow self, borrow other: Yes) -> bool { self.n == other.n } }
+Yes is Equatable;
+fn W(comptime T: Equatable, comptime N: i32) -> type { [i32; N] }
+fn K(comptime T: type, comptime N: i32, comptime a: W(T, N)) -> type { i32 }
+fn f(comptime T: type, comptime N: i32, comptime a: W(T, N)) -> i32 { a[1] }
+const A: [i32; 2] = [1, 2];
+const T2 = K(Yes, 2, A);
+const C: i32 = f(Yes, 2, A);
+fn main() -> i32 { let x: T2 = 1; x + C }
+"""
+exit_code = 3
