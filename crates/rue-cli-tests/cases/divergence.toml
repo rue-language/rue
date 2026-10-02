@@ -216,12 +216,16 @@ exit_code = 1
 
 # ── (c) a read at an uninhabited pointee (RUE-2556) ──────────────────────────
 
-# A `ptr mut !` read diverges, so the statements after it never run; the read
-# ends in `Terminator::Unreachable`, whose trap kills the process (SIGTRAP from
-# `brk #1` on AArch64, SIGILL from `ud2` on x86-64).
+# A `ptr mut !` read is undefined behaviour under Appendix B (B.3:2): no
+# pointer addresses valid, live storage for `!`. This case pins the compiler's
+# current behaviour, not a language guarantee: the read types as `!`, so the
+# statements after it never run, and it ends in `Terminator::Unreachable`,
+# whose trap kills the process (SIGTRAP from `brk #1` on AArch64, SIGILL from
+# `ud2` on x86-64). Whether the specification should define this read instead
+# is an open question on RUE-2548.
 [[case]]
 name = "ptr_read_never_pointee_traps"
-description = "A ptr mut ! read prints nothing after it and dies by its target's trap signal rather than exiting."
+description = "A ptr mut ! read (undefined behaviour under Appendix B) currently prints nothing after it and dies by its target's trap signal rather than exiting."
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
     let mut x: i32 = 7;

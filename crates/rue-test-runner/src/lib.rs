@@ -21,6 +21,13 @@ pub const DEFAULT_TIMEOUT_MS: u64 = 10_000;
 /// When a Rue program encounters a runtime error, it exits with this code.
 pub const RUNTIME_ERROR_EXIT_CODE: i32 = 101;
 
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::fs;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output, Stdio};
+use std::time::Duration;
+
 /// The signal a produced program dies of when it reaches a live
 /// `Terminator::Unreachable`, for a program of the given architecture.
 ///
@@ -88,12 +95,6 @@ pub fn check_unreachable_trap(
         )))
     }
 }
-use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::fs;
-use std::io::Write;
-use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
-use std::time::Duration;
 
 /// The coordinates of one slice in a sharded test corpus (RUE-1116).
 ///
