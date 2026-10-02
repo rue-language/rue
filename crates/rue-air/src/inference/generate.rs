@@ -1824,8 +1824,9 @@ impl<'a> ConstraintGenerator<'a> {
                 // left operand sets the expectation and the right one is
                 // checked against it, as for arithmetic (RUE-2566) and the
                 // semantic backstop `require_comparison_operand`, so
-                // `true == 1` reads "expected bool, found {integer}".
-                self.add_peer_equal(rhs_info.ty, lhs_info.ty, span);
+                // `true == 1` reads "expected bool, found {integer}" at the
+                // `1`, the operand found wanting (RUE-2583).
+                self.add_peer_equal(rhs_info.ty, lhs_info.ty, rhs_info.span);
                 InferType::Concrete(Type::BOOL)
             }
 

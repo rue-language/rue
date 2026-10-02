@@ -308,7 +308,8 @@ error_contains = ["E0206", "expected bool, found str", "test.rue:1:29"]
 
 # A comparison's left operand sets the expected type and its right operand is
 # the one found, as for arithmetic: the right operand used to be named as the
-# expectation (RUE-2582). The span is the whole comparison.
+# expectation (RUE-2582). The span is the right operand, as for arithmetic,
+# `@assert_eq` and the semantic backstop (RUE-2583).
 [[case]]
 name = "comparison_bool_left_names_bool_as_expected"
 source = """
@@ -317,7 +318,7 @@ fn main() -> i32 {
 }
 """
 compile_fail = true
-error_contains = ["E0206", "expected bool, found {integer}", "test.rue:2:8"]
+error_contains = ["E0206", "expected bool, found {integer}", "test.rue:2:16"]
 
 [[case]]
 name = "comparison_integer_literal_left_names_integer_as_expected"
@@ -327,7 +328,7 @@ fn main() -> i32 {
 }
 """
 compile_fail = true
-error_contains = ["E0206", "expected integer type, found bool", "test.rue:2:8"]
+error_contains = ["E0206", "expected integer type, found bool", "test.rue:2:13"]
 
 [[case]]
 name = "ordering_typed_integer_left_names_its_type_as_expected"
@@ -338,7 +339,7 @@ fn main() -> i32 {
 }
 """
 compile_fail = true
-error_contains = ["E0206", "expected i32, found comptime_float", "test.rue:3:8"]
+error_contains = ["E0206", "expected i32, found comptime_float", "test.rue:3:12"]
 
 [[case]]
 name = "comparison_struct_left_names_the_struct_as_expected"
@@ -350,7 +351,7 @@ fn main() -> i32 {
 }
 """
 compile_fail = true
-error_contains = ["E0206", "expected Point, found {integer}", "test.rue:4:8"]
+error_contains = ["E0206", "expected Point, found {integer}", "test.rue:4:13"]
 
 [[case]]
 name = "assert_eq_left_argument_names_its_type_as_expected"
