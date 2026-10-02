@@ -757,42 +757,42 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             inline_ctor_head_types,
             local_repeat_counts,
         ) = if let Some(snapshot) = precompute_snapshot {
-                // The probe already walked and evaluated all reachable
-                // aliases/inline heads. Reuse that immutable checkpoint in
-                // every frontier and the final root pass; replaying these
-                // recursive walks per selected body was the remaining source
-                // of quadratic staged work.
-                (
-                    snapshot.comptime_local_bindings.clone(),
-                    snapshot.local_annotations.clone(),
-                    Default::default(),
-                    snapshot.inline_ctor_head_types.clone(),
-                    snapshot.local_repeat_counts.clone(),
-                )
-            } else {
-                let (precomputed_locals, precompute_work) = self.precompute_comptime_type_locals(
-                    body,
-                    precompute_type_subst,
-                    value_subst,
-                    &runtime_params,
-                    precompute_attribution_enabled,
-                )?;
-                let comptime_local_bindings = precomputed_locals.aliases;
-                let local_annotations = precomputed_locals.local_annotations;
-                // Inline type-constructor heads (`F(args).Variant(..)`,
-                // `F(args) { ... }`; RUE-596) pre-reduced by the same walk under
-                // the aliases and `let`-bound modules in scope at each head,
-                // keyed by the head's `InstRef` — the nameless analogue of the
-                // alias map above (RUE-599, RUE-2426).
-                let inline_ctor_head_types = precomputed_locals.inline_ctor_head_types;
-                (
-                    Arc::new(comptime_local_bindings),
-                    Arc::new(local_annotations),
-                    precompute_work,
-                    Arc::new(inline_ctor_head_types),
-                    Arc::new(precomputed_locals.local_repeat_counts),
-                )
-            };
+            // The probe already walked and evaluated all reachable
+            // aliases/inline heads. Reuse that immutable checkpoint in
+            // every frontier and the final root pass; replaying these
+            // recursive walks per selected body was the remaining source
+            // of quadratic staged work.
+            (
+                snapshot.comptime_local_bindings.clone(),
+                snapshot.local_annotations.clone(),
+                Default::default(),
+                snapshot.inline_ctor_head_types.clone(),
+                snapshot.local_repeat_counts.clone(),
+            )
+        } else {
+            let (precomputed_locals, precompute_work) = self.precompute_comptime_type_locals(
+                body,
+                precompute_type_subst,
+                value_subst,
+                &runtime_params,
+                precompute_attribution_enabled,
+            )?;
+            let comptime_local_bindings = precomputed_locals.aliases;
+            let local_annotations = precomputed_locals.local_annotations;
+            // Inline type-constructor heads (`F(args).Variant(..)`,
+            // `F(args) { ... }`; RUE-596) pre-reduced by the same walk under
+            // the aliases and `let`-bound modules in scope at each head,
+            // keyed by the head's `InstRef` — the nameless analogue of the
+            // alias map above (RUE-599, RUE-2426).
+            let inline_ctor_head_types = precomputed_locals.inline_ctor_head_types;
+            (
+                Arc::new(comptime_local_bindings),
+                Arc::new(local_annotations),
+                precompute_work,
+                Arc::new(inline_ctor_head_types),
+                Arc::new(precomputed_locals.local_repeat_counts),
+            )
+        };
         let precompute_ns = elapsed_ns(precompute_started);
         let precompute_eval_provider_ns = precompute_work.eval_provider_ns.min(precompute_ns);
         let precompute_structural_ns = precompute_ns - precompute_eval_provider_ns;
