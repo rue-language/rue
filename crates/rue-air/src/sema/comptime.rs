@@ -494,6 +494,21 @@ pub trait ComptimeTypeAlgebra: ComptimeDomain {
     ) -> ComptimeHostResult<Option<Self::Type>, Self::Failure> {
         Ok(None)
     }
+    /// The module a decoded module path names, as a module-typed
+    /// substitution, for a host that reaches module receivers syntactically:
+    /// a block-local `let m = lib;` binds `m` to it, so `m` roots module paths
+    /// as a function body's `let`-bound module does (RUE-2445). `root_module`
+    /// is as for [`ComptimeTypeAlgebra::resolve_comptime_type_path`];
+    /// `Ok(None)` is a path that does not name a module.
+    fn resolve_comptime_local_module(
+        &mut self,
+        _file: Self::File,
+        _root_module: Option<&Self::Type>,
+        _segments: &[Self::Name],
+        _span: Span,
+    ) -> ComptimeHostResult<Option<Self::Type>, Self::Failure> {
+        Ok(None)
+    }
     /// Resolve an array literal's type from reduced child values. Contextual
     /// hosts may retain their resolved expression type; durable hosts use the
     /// typed value projection and never decode RIR here.
@@ -1316,6 +1331,9 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         if let Some(value) = env.locals.get(name) {
             return ComptimeArrayLengthBinding::LocalValue(value.clone());
         }
+        if env.local_modules.contains_key(name) {
+            return ComptimeArrayLengthBinding::Shadowed;
+        }
         if let Some(binding) = env
             .local_binding_membership
             .as_ref()
@@ -1431,8 +1449,13 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                     // frame and is nearer than the staged lexical checkpoint. This
                     // projection is also needed by raw-map callers such as
                     // composite TypeConst and TypeIntrinsic.
+                    if let Some(module) = env.local_modules.get(&name) {
+                        types.to_mut().insert(name.clone(), module.clone());
+                        values.to_mut().remove(&name);
+                        continue;
+                    }
                     if let Some(local) = env.locals.get(&name) {
-                        if let Some(ty) = local.as_type() {
+                        if let Some(ty) = local.as_type().or_else(|| local.as_module_root()) {
                             types.to_mut().insert(name.clone(), ty);
                             values.to_mut().remove(&name);
                         } else if local.eligible_for_comptime_capture() {
@@ -2104,6 +2127,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         // A local binding of the same name is the ordinary lexical answer and
         // shadows the builtin spelling, as it does for a named type value.
         if env.locals.contains_key(&name)
+            || env.local_modules.contains_key(&name)
             || env.type_subst.contains_key(&name)
             || env.value_subst.contains_key(&name)
         {
@@ -2818,7 +2842,9 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 .as_ref()
                 .and_then(|membership| membership(root))
         };
-        let lexical = if env.locals.contains_key(&root) {
+        let lexical = if let Some(module) = env.local_modules.get(&root) {
+            Some(Some(module.clone()))
+        } else if env.locals.contains_key(&root) {
             Some(None)
         } else if let Some(binding) = env
             .local_binding_membership
@@ -3821,12 +3847,31 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 &self.diagnostic_site(span),
             );
         }
+        // The block's bindings end with it, on every exit: its value locals,
+        // their declared integer types and its `let`-bound modules.
         let saved_locals = env.locals.clone();
         let saved_declared = if env.declared_integer_locals.is_empty() {
             Default::default()
         } else {
             env.declared_integer_locals.clone()
         };
+        let saved_modules = env.local_modules.clone();
+        let result = self.eval_block_statements(&stmt_refs, literal_type, env);
+        env.locals = saved_locals;
+        env.local_modules = saved_modules;
+        env.declared_integer_locals = saved_declared;
+        result
+    }
+
+    /// Evaluate a block's statements in order; [`Self::eval_block`] owns the
+    /// scope they bind in. A `let` whose initializer is a module path binds
+    /// a local module; any other `let` binds a value local.
+    fn eval_block_statements(
+        &mut self,
+        stmt_refs: &[InstRef],
+        literal_type: Option<H::Type>,
+        env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
+    ) -> ComptimeOutcome<H::Value, H::Failure> {
         let mut result = H::Value::unit();
         for (i, stmt_ref) in stmt_refs.iter().copied().enumerate() {
             let is_tail = i + 1 == stmt_refs.len();
@@ -3836,8 +3881,6 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                     InstData::Assign { .. }
                 )
             {
-                env.locals = saved_locals;
-                env.declared_integer_locals = saved_declared;
                 return self.host.reject_comptime_expression(
                     ComptimeSemanticRejection::Assignment,
                     &self.diagnostic_site(self.program_rir().get(stmt_ref).span),
@@ -3849,21 +3892,23 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 let name = name.map(|name| self.name_from_rir(name.into()));
                 let (init, annotation) = (*init, *ty);
                 let span = self.program_rir().get(stmt_ref).span;
-                let bound = self.eval_let(init, annotation, env, span);
-                let ComptimeOutcome::Known((value, declared)) = bound else {
-                    env.locals = saved_locals;
-                    env.declared_integer_locals = saved_declared;
-                    return match bound {
-                        ComptimeOutcome::Known(_) => unreachable!("matched above"),
-                        ComptimeOutcome::RuntimeDependent => ComptimeOutcome::RuntimeDependent,
-                        ComptimeOutcome::NotReady => ComptimeOutcome::NotReady,
-                        ComptimeOutcome::UnsupportedContext => ComptimeOutcome::UnsupportedContext,
-                        ComptimeOutcome::Trap(trap) => ComptimeOutcome::Trap(trap),
-                        ComptimeOutcome::HostFailure(error) => ComptimeOutcome::HostFailure(error),
-                        ComptimeOutcome::Abort(error) => ComptimeOutcome::Abort(error),
-                    };
+                let module = match annotation {
+                    None => outcome_value!(self.local_module_initializer(init, env, span)),
+                    Some(_) => None,
                 };
+                if let Some(module) = module {
+                    if let Some(name) = name {
+                        env.locals.remove(&name);
+                        env.declared_integer_locals.remove(&name);
+                        env.local_modules.insert(name, module);
+                    }
+                    // A `let` is unit-valued, which `result` already is
+                    // until the tail statement sets it.
+                    continue;
+                }
+                let (value, declared) = outcome_value!(self.eval_let(init, annotation, env, span));
                 if let Some(name) = name {
+                    env.local_modules.remove(&name);
                     match declared {
                         Some(ty) => env.declared_integer_locals.insert(name.clone(), ty),
                         None => env.declared_integer_locals.remove(&name),
@@ -3873,22 +3918,45 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 H::Value::unit()
             } else {
                 let literal_type = if is_tail { literal_type.clone() } else { None };
-                match self.eval_typed(stmt_ref, literal_type, env) {
-                    ComptimeOutcome::Known(value) => value,
-                    other => {
-                        env.locals = saved_locals;
-                        env.declared_integer_locals = saved_declared;
-                        return other;
-                    }
-                }
+                outcome_value!(self.eval_typed(stmt_ref, literal_type, env))
             };
             if is_tail {
                 result = value;
             }
         }
-        env.locals = saved_locals;
-        env.declared_integer_locals = saved_declared;
         ComptimeOutcome::Known(result)
+    }
+
+    /// The module a block-local `let`'s initializer names, when it is a
+    /// module path (`let m = lib;`, `let n = m.sub;`, `let m =
+    /// @import("x.rue");`) and the host reaches modules syntactically. Such a
+    /// binding is a path root, as a function body's `let`-bound module is
+    /// (spec 10.4:1, RUE-2426): it is never a compile-time value, so it binds
+    /// as a local module rather than being evaluated. A host
+    /// that evaluates module receivers already reduces the initializer to a
+    /// module value, which type resolution projects the same way
+    /// ([`ComptimeValue::as_module_root`]) (RUE-2445).
+    fn local_module_initializer(
+        &mut self,
+        init: InstRef,
+        env: &ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
+        span: Span,
+    ) -> ComptimeOutcome<Option<H::Type>, H::Failure> {
+        if self.host.comptime_method_receiver_policy()
+            != ComptimeMethodReceiverPolicy::SyntacticModulePath
+        {
+            return ComptimeOutcome::Known(None);
+        }
+        let Some(path) = self.decode_module_path(init, env) else {
+            return ComptimeOutcome::Known(None);
+        };
+        let module = host_value!(self.host.resolve_comptime_local_module(
+            path.file,
+            path.root_module.as_ref(),
+            &path.segments,
+            span,
+        ));
+        ComptimeOutcome::Known(module.filter(|ty| self.host.type_is_module(ty)))
     }
 
     /// Evaluate a block-local `let` initializer as trunk evaluates it, and
@@ -5232,6 +5300,10 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                         }
                         return ComptimeOutcome::RuntimeDependent;
                     }
+                    // A block-local module is a path root, never a type.
+                    if env.local_modules.contains_key(&type_symbol) {
+                        return ComptimeOutcome::RuntimeDependent;
+                    }
                     if let Some(binding) = env
                         .local_binding_membership
                         .as_ref()
@@ -5308,6 +5380,11 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 // 1. `let` bindings inside the comptime expression
                 if let Some(v) = env.locals.get(&name) {
                     return ComptimeOutcome::Known(v.clone());
+                }
+                // A `let`-bound module is a path root, not a compile-time
+                // value (10.4:6): it cannot escape as one (RUE-2445).
+                if env.local_modules.contains_key(&name) {
+                    return ComptimeOutcome::RuntimeDependent;
                 }
                 if let Some(binding) = env
                     .local_binding_membership

@@ -57,6 +57,16 @@ pub trait ComptimeValue: Clone {
         true
     }
 
+    /// The module-typed substitution a reduced module value stands for when
+    /// it is bound by a block-local `let` (`let m = lib;`). Type resolution
+    /// walks a path rooted at that name from the module, as a function body's
+    /// `let`-bound module (spec 10.4:1, RUE-2426, RUE-2445). The ordinary body
+    /// domain has no module values (its module locals are module-typed
+    /// substitutions already), so the default is `None`.
+    fn as_module_root(&self) -> Option<Self::Type> {
+        None
+    }
+
     /// Recover optional declared integer metadata carried by a host value.
     /// The ordinary body value domain returns `None`; durable hosts may use
     /// this to retain operand typing after a child reduction.
