@@ -40,59 +40,20 @@ $runtime
                             ),
                         ));
                     }
-                    if matches!(
-                        &key.instance,
-                        crate::FunctionInstanceKey::Definition(definition)
-                            if definition.kind() == crate::StableDefinitionKind::Function
-                    ) {
-                        match context
-                            .query_registered(&$transactions_for_produced_anonymous, key.clone())
-                        {
-                            Ok(transaction) => {
-                                let rue_query::QueryOutcome::Success(transaction) =
-                                    transaction.outcome()
-                                else {
-                                    unreachable!("BodyTransaction publishes typed values")
-                                };
-                                if let crate::body_query::BodyTransaction::Success {
-                                    produced_anonymous_nominals,
-                                    ..
-                                } = transaction
-                                    && produced_anonymous_nominals.0.is_empty()
-                                {
-                                    return Ok(QueryOutput::success(
-                                        crate::body_query::ProducedAnonymous::Produced(
-                                            produced_anonymous_nominals.clone(),
-                                        ),
-                                    ));
-                                }
-                                // A deterministic producer diagnostic is a
-                                // stable semantic fact, not cancellation. Let
-                                // the comptime projection below recover its
-                                // typed `ProducerFailed` value so anonymous
-                                // type consumers cannot abort the rooted
-                                // request while collecting that diagnostic.
-                                // Control outcomes remain unavailable until
-                                // their exact prerequisite is scheduled.
-                                if matches!(
-                                    transaction,
-                                    crate::body_query::BodyTransaction::Control(_)
-                                ) {
-                                    return Err(QueryAbort::Canceled);
-                                }
-                            }
-                            Err(QueryAbort::Canceled) => {}
-                            Err(abort) => return Err(abort),
-                        }
-                    }
-
                     // A declaration signature can name the result of a
                     // compile-time type constructor before body reachability
                     // has supplied that constructor's body transaction. Keep
                     // the fact producer-owned by publishing the constructor's
                     // exact semantic projection through this family; the
                     // AnonymousNominal consumer still has one canonical body-
-                    // produced dependency path.
+                    // produced dependency path. A constructor's projection is
+                    // read without its transaction, which itself observes the
+                    // projection: the transaction analyzes the constructor's
+                    // body, and a call there over the body's own local
+                    // (`fn M() -> type { let L = struct { .. }; W(L) }`) reads
+                    // `L` from this family (RUE-2608). A projection that
+                    // committed a diagnostic is the typed `ProducerFailed`
+                    // below, not cancellation.
                     let Some(definition) = function_definition_key(&key.instance).cloned() else {
                         return Err(QueryAbort::Canceled);
                     };
@@ -132,6 +93,7 @@ $runtime
                     let Some(exact_type_syntax) = signature.callable_type_syntax.as_ref() else {
                         return Err(QueryAbort::Canceled);
                     };
+                    // Any other function body publishes from its transaction.
                     let Some(call) = comptime_call_for_anonymous_function(
                         &producer,
                         &key.instance,
