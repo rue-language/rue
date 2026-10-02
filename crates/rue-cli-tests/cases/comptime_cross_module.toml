@@ -484,8 +484,8 @@ compile_fail = true
 error_contains = ["E1200", "this call produces a type value at runtime; a `type` result requires a fully-comptime call"]
 
 [[case]]
-name = "module_returning_type_call_rejected_not_ice"
-description = "A call to a `-> type` function whose body is an `@import` does not reduce in call position; it is rejected at the call rather than reaching codegen, and — having zero parameters — without the runtime-parameter help, which would point at a condition the call already meets (RUE-2417)."
+name = "module_returning_type_call_discarded_statement"
+description = "A call to a `-> type` function whose body is an `@import` reduces to that module in call position, so a discarded call is a module expression statement, accepted as `@import(..);` is (10.4:7). It once neither reduced nor reached codegen (RUE-2417), and was then rejected at the call (RUE-2420)."
 args = ["main.rue", "-o", "prog"]
 files = [
   { path = "lib.rue", source = """
@@ -499,6 +499,65 @@ fn main() -> i32 {
 }
 """ },
 ]
-compile_fail = true
-error_contains = ["E1200", "this function's body does not reduce to a type at compile time"]
-compile_stderr_not_contains = ["every parameter of the function is `comptime`"]
+exit_code = 42
+
+[[case]]
+name = "module_returning_type_call_binds_and_heads_paths"
+description = "A `-> type` function whose body is an `@import` reduces to that module wherever it is called, as a `const` binding of the same call does (10.4:8, 10.4:10): a `let` binds it and calls, struct literals and annotations walk through the local; the call itself heads a member call and a nested re-export path; a comptime parameter selects which module; and a callee in another directory resolves its import from its own file (RUE-2420)."
+args = ["main.rue", "-o", "prog"]
+files = [
+  { path = "lib.rue", source = """
+pub fn g() -> i32 { 1 }
+pub struct P { x: i32 }
+pub const sub = @import("sub.rue");
+""" },
+  { path = "sub.rue", source = """
+pub fn h() -> i32 { 2 }
+""" },
+  { path = "other.rue", source = """
+pub fn g() -> i32 { 4 }
+""" },
+  { path = "dir/lib.rue", source = """
+pub fn inner() -> type { @import("inner.rue") }
+""" },
+  { path = "dir/inner.rue", source = """
+pub fn v() -> i32 { 8 }
+""" },
+  { path = "main.rue", source = """
+const dir = @import("dir/lib.rue");
+fn f() -> type { @import("lib.rue") }
+fn pick(comptime first: bool) -> type { if first { @import("lib.rue") } else { @import("other.rue") } }
+fn main() -> i32 {
+    let m = f();
+    let p = m.P { x: 16 };
+    let q: m.P = p;
+    let o = pick(false);
+    let i = dir.inner();
+    m.g() + f().sub.h() + o.g() + i.v() + q.x + f().g() + pick(true).g() + 8
+}
+""" },
+]
+exit_code = 41
+
+[[case]]
+name = "module_returning_type_call_comptime_let"
+description = "A `let` inside a function body's `comptime` block binds the module a module-returning `-> type` call reduces to, and calls through it, as `let m = @import(..)` does there (RUE-2445, RUE-2420)."
+args = ["main.rue", "-o", "prog"]
+files = [
+  { path = "lib.rue", source = """
+pub fn add(comptime x: i32) -> i32 { x + 1 }
+""" },
+  { path = "other.rue", source = """
+pub fn add(comptime x: i32) -> i32 { x + 20 }
+""" },
+  { path = "main.rue", source = """
+fn f() -> type { @import("lib.rue") }
+fn pick(comptime first: bool) -> type { if first { @import("lib.rue") } else { @import("other.rue") } }
+fn main() -> i32 {
+    let a: i32 = comptime { let m = f(); m.add(1) };
+    let b: i32 = comptime { let m = pick(false); let n = m; n.add(20) };
+    a + b
+}
+""" },
+]
+exit_code = 42
