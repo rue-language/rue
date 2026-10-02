@@ -6936,3 +6936,114 @@ fn Box(comptime T: type) -> type {
 fn main() -> i32 { let b = Box(i64) { v: 1 }; b.n(41) }
 """
 exit_code = 42
+
+# =============================================================================
+# A comptime parameter whose type reads an earlier comptime value parameter,
+# and an aggregate comptime value as a signature constructor argument (RUE-2550)
+#
+# A `comptime` parameter's own declared type may name an earlier comptime value
+# parameter (4.14:5, 7.1:34); it is still a value parameter, its type resolved
+# per call. A comptime value parameter of aggregate type (4.14:5) may be a
+# type-constructor argument in a signature, specialized per argument value.
+# =============================================================================
+
+[[case]]
+name = "comptime_param_type_reads_earlier_value_param"
+spec = ["4.14:5", "7.1:34"]
+description = "`comptime a: [i32; N]` is a value parameter whose length is the call's `N`: a literal, a typed `const` and a forwarded comptime parameter all bind it (RUE-2550)"
+source = """
+fn ends(comptime N: i32, comptime a: [i32; N]) -> i32 { a[0] + a[N - 1] }
+fn outer(comptime M: i32, comptime b: [i32; M]) -> i32 { ends(M, b) }
+const XS: [i32; 3] = [4, 5, 6];
+
+fn main() -> i32 {
+    ends(3, [1, 2, 3]) + ends(3, XS) + outer(1, [7]) + comptime { ends(2, [1, 2]) }
+}
+"""
+exit_code = 31
+
+[[case]]
+name = "comptime_param_type_constructor_of_earlier_value_param"
+spec = ["4.14:5", "4.14:23"]
+description = "`comptime b: Wrap(N)` for a constructor `Wrap` takes the call's `Wrap(3)` value; a runtime parameter of the same dependent type sits beside it (RUE-2550)"
+source = """
+fn Wrap(comptime N: i32) -> type { [i32; N] }
+fn total(comptime N: i32, comptime b: Wrap(N), c: [i32; N]) -> i32 { b[0] + b[N - 1] + c[N - 1] }
+
+fn main() -> i32 {
+    total(3, [1, 2, 4], [0, 0, 8]) + total(1, [10], [20])
+}
+"""
+exit_code = 53
+
+[[case]]
+name = "comptime_param_dependent_length_mismatch_rejected"
+spec = ["4.14:5", "7.1:34"]
+description = "An argument for `comptime a: [i32; N]` must have the call's `N` elements: `ends(3, [1, 2])` is rejected (RUE-2550)"
+source = """
+fn ends(comptime N: i32, comptime a: [i32; N]) -> i32 { a[0] + a[N - 1] }
+
+fn main() -> i32 {
+    ends(3, [1, 2])
+}
+"""
+compile_fail = true
+expected_error_code = "E0901"
+
+[[case]]
+name = "aggregate_comptime_value_in_signature_constructor"
+spec = ["4.14:5", "4.14:23"]
+description = "An enum comptime parameter is a constructor argument in the return type `-> K(c)`; `f(Color.Red)` and `f(Color.Green)` specialize to an `i32` and an `i64` result (RUE-2550)"
+source = """
+enum Color { Red, Green }
+fn K(comptime c: Color) -> type { match c { Color.Red => i32, Color.Green => i64 } }
+fn f(comptime c: Color) -> K(c) { match c { Color.Red => 1, Color.Green => 2 } }
+
+fn main() -> i32 {
+    let a: i32 = f(Color.Red);
+    let b: i64 = f(Color.Green);
+    a + @intCast(b)
+}
+"""
+exit_code = 3
+
+[[case]]
+name = "aggregate_comptime_values_payload_struct_array_in_signature"
+spec = ["4.14:5", "4.14:23"]
+description = "A payload enum, a `@copy` struct and an array comptime value each pass to a signature constructor, which reads the value to choose the result type (RUE-2550)"
+source = """
+enum Shape { Circle(i32), Square(i32) }
+@copy struct P { x: i32, y: i32 }
+fn KS(comptime s: Shape) -> type { match s { Shape.Circle(_) => i32, Shape.Square(_) => i64 } }
+fn KP(comptime p: P) -> type { if p.x == 2 { i32 } else { i64 } }
+fn KA(comptime a: [i32; 2]) -> type { if a[0] == 1 { i32 } else { i64 } }
+fn fs(comptime s: Shape) -> KS(s) { match s { Shape.Circle(n) => @intCast(n), Shape.Square(n) => @intCast(n + 1) } }
+fn fp(comptime p: P) -> KP(p) { @intCast(p.y) }
+fn fa(comptime a: [i32; 2]) -> KA(a) { @intCast(a[1]) }
+
+fn main() -> i32 {
+    let s1: i32 = fs(Shape.Circle(2));
+    let s2: i64 = fs(Shape.Square(3));
+    let p1: i32 = fp(P { x: 2, y: 5 });
+    let p2: i64 = fp(P { x: 3, y: 6 });
+    let a1: i32 = fa([1, 6]);
+    let a2: i64 = fa([2, 7]);
+    s1 + @intCast(s2) + p1 + @intCast(p2) + a1 + @intCast(a2)
+}
+"""
+exit_code = 30
+
+[[case]]
+name = "aggregate_comptime_value_wrong_shape_for_signature_constructor"
+spec = ["4.14:5", "4.14:23"]
+description = "An array value bound through `-> K(a)` must fit `K`'s `[i32; 3]` parameter at each call: `f(2, [1, 6])` is a type mismatch at the call (RUE-2550)"
+source = """
+fn K(comptime a: [i32; 3]) -> type { i32 }
+fn f(comptime N: i32, comptime a: [i32; N]) -> K(a) { a[0] }
+
+fn main() -> i32 {
+    f(3, [1, 6, 0]) + f(2, [1, 6])
+}
+"""
+compile_fail = true
+expected_error_code = "E0206"
