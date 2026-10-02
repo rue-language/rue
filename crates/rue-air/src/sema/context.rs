@@ -45,7 +45,9 @@ pub(crate) struct JoinReceiver {
     pub leaves: AHashSet<InstRef>,
     /// The method being called.
     pub method: Spur,
-    /// The method's explicit arguments, analyzed once in each arm.
+    /// The method's explicit arguments, analyzed once in each accessor arm,
+    /// so their analysis and AIR are repeated per arm (and multiply when an
+    /// argument holds another such call).
     pub args: rue_rir::RirCallArgsRange,
     /// The span of the whole method call.
     pub span: Span,
@@ -54,10 +56,11 @@ pub(crate) struct JoinReceiver {
     /// The root of the first accessor result analyzed, with the span of its
     /// arm: every arm's result must share it.
     pub root: Option<(super::ownership_state::LedgerRoot, Span)>,
-    /// Each name the explicit arguments mention, with the binding it resolves
-    /// to at the join. An arm whose own bindings change one cannot host the
-    /// call: the arguments would name the arm's binding instead.
-    pub arg_bindings: Vec<(Spur, Option<super::ownership_state::LedgerRoot>)>,
+    /// Each name the explicit arguments mention (and whether as a callee),
+    /// with what it resolves to at the join. A `match` arm whose pattern
+    /// bindings change one cannot host the call: the arguments would name the
+    /// arm's binding instead (spec 6.6:9).
+    pub arg_bindings: Vec<(Spur, bool, Option<super::ownership_state::LedgerRoot>)>,
 }
 
 /// Information about a local variable.
@@ -962,13 +965,29 @@ impl<'a> AnalysisContext<'a> {
         kind: crate::LocalAtomKind,
         anchor: rue_rir::RirStructuralAnchor,
     ) -> u32 {
+        let content_seen = self.local_string_table.contains_key(&content);
         let dense_id = self.add_local_string_content(content.clone());
+        let identity = crate::LocalAtomId {
+            producer: self.canonical_function_identity.clone(),
+            kind,
+            anchor,
+        };
+        // One record per identity: a literal analyzed again — an argument of
+        // a method call made in each arm of a join receiver (RUE-2374) — is
+        // the same atom. An identity names its content, so only content
+        // already in the table can repeat one, and only while such a call is
+        // being analyzed.
+        if content_seen
+            && self.join_receiver.is_some()
+            && self
+                .local_atoms
+                .iter()
+                .any(|record| record.identity == identity)
+        {
+            return dense_id;
+        }
         self.local_atoms.push(crate::LocalAtomRecord {
-            identity: crate::LocalAtomId {
-                producer: self.canonical_function_identity.clone(),
-                kind,
-                anchor,
-            },
+            identity,
             content: content.into(),
             dense_id,
         });

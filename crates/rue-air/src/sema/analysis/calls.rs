@@ -1251,24 +1251,41 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         }
     }
 
-    /// The names an expression mentions as variables (read, assigned, or
-    /// called as a callback).
-    fn mentioned_names(&self, roots: impl IntoIterator<Item = InstRef>) -> Vec<Spur> {
+    /// The names an expression mentions: as a variable (read or assigned),
+    /// or as the callee of a call (`true`).
+    fn mentioned_names(&self, roots: impl IntoIterator<Item = InstRef>) -> Vec<(Spur, bool)> {
         let rir = self.body_rir_ref();
         let mut names = Vec::new();
         let mut pending: Vec<InstRef> = roots.into_iter().collect();
         while let Some(inst) = pending.pop() {
             match &rir.get(inst).data {
-                InstData::VarRef { name, .. }
-                | InstData::Assign { name, .. }
-                | InstData::Call { name, .. } => names.push(*name),
+                InstData::VarRef { name, .. } | InstData::Assign { name, .. } => {
+                    names.push((*name, false));
+                }
+                InstData::Call { name, .. } => names.push((*name, true)),
                 _ => {}
             }
             rir.child_instructions(inst, &mut pending);
         }
-        names.sort_unstable_by_key(|name| name.into_inner());
+        names.sort_unstable_by_key(|(name, callee)| (name.into_inner(), *callee));
         names.dedup();
         names
+    }
+
+    /// What a name in the arguments resolves to here. A variable names its
+    /// binding. A callee names a callback parameter only while no local of
+    /// that name hides it (ADR-0096); otherwise it names an item, which no
+    /// binding can shadow.
+    fn arg_name_resolution(
+        name: Spur,
+        callee: bool,
+        ctx: &AnalysisContext,
+    ) -> Option<crate::sema::ownership_state::LedgerRoot> {
+        if !callee {
+            return Self::bound_ledger_root(name, ctx);
+        }
+        (!ctx.locals.contains_key(&name) && ctx.param(name).is_some_and(|p| p.ty.is_function()))
+            .then_some(crate::sema::ownership_state::LedgerRoot { name, slot: None })
     }
 
     /// Analyze a by-reference method call whose receiver is a join of
@@ -1341,7 +1358,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let arg_bindings = self
             .mentioned_names(arg_values)
             .into_iter()
-            .map(|name| (name, Self::bound_ledger_root(name, ctx)))
+            .map(|(name, callee)| (name, callee, Self::arg_name_resolution(name, callee, ctx)))
             .collect();
         let consumer = crate::sema::context::JoinReceiver {
             joins,
@@ -1485,10 +1502,12 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         }
         // The call's arguments are analyzed in this arm, so they must name
         // what they name at the join, not a binding the arm introduces.
-        if let Some((name, _)) = consumer
+        if let Some((name, _, _)) = consumer
             .arg_bindings
             .iter()
-            .find(|(name, binding)| Self::bound_ledger_root(*name, ctx) != *binding)
+            .find(|(name, callee, binding)| {
+                Self::arg_name_resolution(*name, *callee, ctx) != *binding
+            })
         {
             let name = self.body_interner().resolve(name).to_string();
             return Err(non_place(
