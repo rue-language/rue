@@ -2141,16 +2141,20 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         ))
     }
 
-    /// The array type a `comptime T: type` argument written as `[T; N]`
-    /// denotes (spec 4.14:5a, RUE-2574).
+    /// The type a `comptime T: type` argument written as an array type
+    /// `[T; N]` or a `comptime { … }` block denotes (spec 4.14:5a, 4.14:27;
+    /// RUE-2574, RUE-2577).
     ///
     /// In expression position `[i32; 2]` parses as an array-repeat literal
     /// over the type value `i32`; the comptime evaluator reduces such a
     /// repeat to the array TYPE (RUE-565), which is how `Opt([i32; 2])` and
-    /// `const A = [i32; 2]` already bind it. A call argument bound to a
-    /// `comptime T: type` parameter is reduced through that same evaluator
-    /// to a type constant. `None` leaves any other operand, and a repeat
-    /// that does not reduce to a type, to ordinary analysis.
+    /// `const A = [i32; 2]` already bind it. A `comptime { … }` block whose
+    /// value is a type is comptime-evaluable like any other block (4.14:27);
+    /// analyzed as a value it would have to materialize that type at runtime
+    /// (4.14:6). A call argument of either form bound to a `comptime T: type`
+    /// parameter is reduced through the evaluator to a type constant. `None`
+    /// leaves any other operand, and one that does not reduce to a type, to
+    /// ordinary analysis.
     pub(crate) fn comptime_type_argument(
         &mut self,
         air: &mut Air,
@@ -2159,8 +2163,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     ) -> CompileResult<Option<AirRef>> {
         let inst = self.body_rir_ref().get(arg);
         let span = inst.span;
-        if !matches!(inst.data, InstData::ArrayRepeat { .. })
-            || ctx.resolved_type_of(arg) != Some(Type::COMPTIME_TYPE)
+        if !matches!(
+            inst.data,
+            InstData::ArrayRepeat { .. } | InstData::Comptime { .. }
+        ) || ctx.resolved_type_of(arg) != Some(Type::COMPTIME_TYPE)
         {
             return Ok(None);
         }

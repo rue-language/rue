@@ -8594,7 +8594,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 continue;
             }
             // `[i32; 2]` bound to a `comptime T: type` parameter is the array
-            // type, not a repeat of the type value `i32` (spec 4.14:5a).
+            // type, not a repeat of the type value `i32`, and `comptime { i32 }`
+            // there is the type it evaluates to (spec 4.14:5a).
             if param_mode == RirParamMode::Normal
                 && param_ty == Type::COMPTIME_TYPE
                 && let Some(value) = self.comptime_type_argument(air, arg.value, ctx)?
