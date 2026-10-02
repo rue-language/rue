@@ -619,7 +619,12 @@ pub(crate) struct OwnershipState {
     /// value (for example `borrow str`, or `StrBuf` narrowed to `inout str`),
     /// rather than passed by address; nested exclusive access must not
     /// invalidate such a snapshot.
-    pub call_loaned_roots: Vec<Vec<(Spur, CallLoanKind, bool)>>,
+    ///
+    /// Roots are keyed by binding, like the accessor ledgers ([`LedgerRoot`]):
+    /// a nested `let` that shadows a loaned root inside the argument list
+    /// (`gp(borrow a, { let mut a = mk(); a.pmut().c })`) is a different
+    /// variable, so its uses do not touch the loan (RUE-2377).
+    pub call_loaned_roots: Vec<Vec<(LedgerRoot, CallLoanKind, bool)>>,
     /// Collection variables currently held as a scoped shared borrow by an
     /// enclosing `for` loop (innermost last), spec 4.8:26 / RUE-233. While a
     /// name is here, any mutation of it in the loop body — whole-variable
@@ -1581,9 +1586,14 @@ mod tests {
             .mark_path_moved(&[], Span::new(1, 2));
         state.byref_arg_root = Some(x);
         state.drop_intrinsic_operand = Some(x);
-        state
-            .call_loaned_roots
-            .push(vec![(x, CallLoanKind::Inout, false)]);
+        state.call_loaned_roots.push(vec![(
+            LedgerRoot {
+                name: x,
+                slot: Some(0),
+            },
+            CallLoanKind::Inout,
+            false,
+        )]);
 
         let fork = state.fork_for_recheck();
         assert!(fork.byref_arg_root.is_none());
