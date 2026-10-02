@@ -429,3 +429,29 @@ fn main() -> i32 {
 """
 compile_fail = true
 error_contains = ["E0206", "expected integer type, found comptime_float", "test.rue:5:9"]
+
+[[case]]
+name = "unresolved_literal_join_does_not_replace_an_undefined_function_error"
+description = "A join a broken call would have resolved does not replace the call's own error: the undefined function is reported (RUE-2573)."
+source = """
+fn main() -> i32 {
+    let c = true;
+    nope(if c { 1 } else { 2.5 });
+    0
+}
+"""
+compile_fail = true
+error_contains = ["[E0202]", "undefined function 'nope'"]
+
+[[case]]
+name = "unresolved_literal_join_does_not_replace_an_array_length_error"
+description = "A join inside an array whose length annotation sema rejects keeps the length error (RUE-2573)."
+source = """
+fn main() -> i32 {
+    let n = 2;
+    let y: [f64; n] = [1, 2.5];
+    0
+}
+"""
+compile_fail = true
+error_contains = ["[E0481]"]

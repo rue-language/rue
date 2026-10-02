@@ -809,15 +809,24 @@ impl<'a> AnalysisContext<'a> {
         self.resolved_types.get(&inst_ref).copied()
     }
 
-    /// Return whether inference found a normal outgoing path for an
-    /// instruction. Missing entries occur only for instructions analyzed from
-    /// an inline overlay; their semantic result remains the fallback.
     /// The join diagnostic for a float literal, if its class is an
-    /// unresolved integer/float literal join.
+    /// unresolved integer/float literal join. An instruction an accessor-inline
+    /// overlay types belongs to the inlined body, not this body's inference,
+    /// so it has none.
     pub(crate) fn float_literal_join(&self, inst_ref: InstRef) -> Option<&CompileError> {
+        if self
+            .inline_resolved_types
+            .iter()
+            .any(|overlay| overlay.contains_key(&inst_ref))
+        {
+            return None;
+        }
         self.float_literal_joins.get(&inst_ref)
     }
 
+    /// Return whether inference found a normal outgoing path for an
+    /// instruction. Missing entries occur only for instructions analyzed from
+    /// an inline overlay; their semantic result remains the fallback.
     pub fn resolved_continues_of(&self, inst_ref: InstRef) -> Option<bool> {
         self.resolved_continues.get(&inst_ref).copied()
     }
