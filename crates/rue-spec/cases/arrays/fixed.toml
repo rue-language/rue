@@ -2384,6 +2384,24 @@ fn main() -> i32 {
 compile_fail = true
 
 [[case]]
+name = "array_length_in_comptime_block_names_computed_block_local_nested_beside_a_non_literal"
+error_contains = ["[E0800]", "literal value 300 is out of range for type 'u8'"]
+spec = ["7.1:32", "7.1:33", "4.14:26", "4.14:27"]
+description = "A literal row fixes an inner length naming a computed block local even beside a row that is not a literal, so its elements are typed at the annotation's element type (RUE-2546)"
+source = """
+fn main() -> i32 {
+    comptime {
+        let k = 1;
+        let n = k + 1;
+        let r = [1, 2];
+        let a: [[u8; n]; 2] = [r, [3, 300]];
+        3
+    }
+}
+"""
+compile_fail = true
+
+[[case]]
 name = "array_length_in_comptime_block_names_unshadowed_const"
 spec = ["7.1:32", "4.14:26"]
 source = """
