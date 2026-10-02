@@ -4377,12 +4377,13 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeCallProtocol for OrdinaryBodyEngin
 }
 
 impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeStructuredTypes for OrdinaryBodyEngine<'h, H> {
-    /// Resolve a type the evaluation spells. A length that is not a
-    /// non-negative integer constant (7.1:33) is the resolver's E0481: no
-    /// later pass checks a type only the evaluation resolves, so leaving it
-    /// runtime-dependent let a `comptime` block's `let a: [T; K]` with a
-    /// negative or undefined `K` go unchecked (RUE-2546). Any other failure
-    /// stays runtime-dependent, as before.
+    /// Resolve a type the evaluation spells. No later pass checks a type only
+    /// the evaluation resolves, so a failure is the resolver's diagnostic,
+    /// as the same type in a function body reports it: a length that is not
+    /// a non-negative integer constant (7.1:33) is E0481 (RUE-2546), and an
+    /// unknown or private name is E0204 or E0706 rather than an annotation
+    /// silently left unchecked (RUE-2445). The engine has already answered
+    /// runtime-dependent for a type naming a runtime binding.
     fn begin_comptime_type_syntax(
         &mut self,
         _program: &Self::ProgramKey,
@@ -4396,10 +4397,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeStructuredTypes for OrdinaryBodyEn
     > {
         match self.resolve_rir_type_with_bindings(syntax, types, values, None, span) {
             Ok(ty) => ComptimeOutcome::Known(ComptimeStructuredTypeResolution::Ready(ty)),
-            Err(error) if matches!(error.kind, ErrorKind::InvalidArrayLength { .. }) => {
-                ComptimeOutcome::HostFailure(error)
-            }
-            Err(_) => ComptimeOutcome::RuntimeDependent,
+            Err(error) => ComptimeOutcome::HostFailure(error),
         }
     }
     fn prepare_structured_type_call(
