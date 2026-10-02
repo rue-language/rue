@@ -2851,6 +2851,7 @@ fn render_const_info(
         V::String(value) => format!("string:{}", resolve_symbol(value.spur())),
         V::Float(value) => format!("float:{}", resolve_symbol(value.spur())),
         V::Aggregate(_) => "aggregate".to_owned(),
+        V::Module(value) => format!("module:{}", value.0),
     };
     ConstInfoRender {
         is_pub: info.is_pub,
