@@ -1303,15 +1303,27 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         runtime_bindings: Option<&AHashSet<Spur>>,
         span: Span,
     ) -> Option<Type> {
-        self.storage
-            .resolve_body_type_with_substitutions(
-                syntax,
-                span,
-                Some(type_subst),
-                Some(value_subst),
-                runtime_bindings,
-            )
+        self.resolve_rir_type_with_bindings(syntax, type_subst, value_subst, runtime_bindings, span)
             .ok()
+    }
+
+    /// [`Self::resolve_rir_type_under_runtime_bindings`], keeping the
+    /// resolver's diagnostic when the type does not resolve.
+    pub(crate) fn resolve_rir_type_with_bindings(
+        &mut self,
+        syntax: RirTypeSyntaxRef,
+        type_subst: &AHashMap<Spur, Type>,
+        value_subst: &AHashMap<Spur, ConstValue>,
+        runtime_bindings: Option<&AHashSet<Spur>>,
+        span: Span,
+    ) -> CompileResult<Type> {
+        self.storage.resolve_body_type_with_substitutions(
+            syntax,
+            span,
+            Some(type_subst),
+            Some(value_subst),
+            runtime_bindings,
+        )
     }
     /// Register the executable bodies of a freshly minted anonymous struct's
     /// methods.
