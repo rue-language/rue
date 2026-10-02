@@ -1854,10 +1854,37 @@ $runtime
                                                         },
                                                     )
                                                 }
-                                                Ok(EvaluatedSemanticConst::Module(_)) => {
-                                                    Value::Failure(Failure::Resolution(Arc::from(
-                                                        "comptime function returned a module",
-                                                    )))
+                                                // A `-> type` function whose body is a module
+                                                // expression (`@import("x.rue")`, `lib.sub`) reduces
+                                                // to that module, as the same body bound by a `const`
+                                                // does (spec 10.4:10, 4.14:28). The module travels as
+                                                // the module type it names (RUE-2420).
+                                                Ok(EvaluatedSemanticConst::Module(module)) => {
+                                                    Value::ComptimeCall(
+                                                        crate::semantic_query_nucleus::ComptimeCallProjection {
+                                                            result: crate::semantic_query_nucleus::ComptimeCallResultProjection::Type(
+                                                                crate::durable_semantics::DurableType::Module(module),
+                                                            ),
+                                                            anonymous_nominals: provider
+                                                                .anonymous_nominals
+                                                                .values()
+                                                                .cloned()
+                                                                .collect::<Vec<_>>()
+                                                                .into(),
+                                                            dependencies: provider
+                                                                .dependencies
+                                                                .iter()
+                                                                .cloned()
+                                                                .collect::<Vec<_>>()
+                                                                .into(),
+                                                            deferred_requirements: provider
+                                                                .deferred_requirements
+                                                                .iter()
+                                                                .cloned()
+                                                                .collect::<Vec<_>>()
+                                                                .into(),
+                                                        },
+                                                    )
                                                 }
                                                 Ok(EvaluatedSemanticConst::TargetEnum(_)) => {
                                                     Value::Failure(Failure::Resolution(Arc::from(

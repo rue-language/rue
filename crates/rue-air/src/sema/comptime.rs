@@ -2252,6 +2252,16 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 }
             };
             env.expected_result = previous_expected;
+            // A module is not a value (10.4:6), so an argument reducing to one
+            // — a call to a module-returning `-> type` function — is no more
+            // compile-time known than a module path in the same position
+            // (RUE-2420).
+            if value
+                .as_type()
+                .is_some_and(|ty| self.host.type_is_module(&ty))
+            {
+                return ComptimeOutcome::RuntimeDependent;
+            }
             let direct_unit_literal = matches!(
                 &self.host.program_rir(&program).get(arg.value).data,
                 InstData::UnitConst
@@ -3984,6 +3994,24 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                     continue;
                 }
                 let (value, declared) = outcome_value!(self.eval_let(init, annotation, env, span));
+                // An initializer that is not a module path but reduces to a
+                // module — a call to a module-returning `-> type` function,
+                // `let m = f();` — binds that module just as the path would:
+                // the name is a path root, never a value (10.4:6, RUE-2420).
+                // A host that evaluates module receivers keeps module values
+                // as locals, which type resolution already projects.
+                if annotation.is_none()
+                    && self.host.comptime_method_receiver_policy()
+                        == ComptimeMethodReceiverPolicy::SyntacticModulePath
+                    && let Some(module) = value.as_type().filter(|ty| self.host.type_is_module(ty))
+                {
+                    if let Some(name) = name {
+                        env.locals.remove(&name);
+                        env.declared_integer_locals.remove(&name);
+                        env.local_modules.insert(name, module);
+                    }
+                    continue;
+                }
                 if let Some(name) = name {
                     env.local_modules.remove(&name);
                     match declared {

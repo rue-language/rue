@@ -76,6 +76,16 @@ use super::info::FunctionCallInfo;
 use super::ordinary_engine::{OrdinaryBodyAnalysisHost, OrdinaryBodyEngine};
 
 impl ComptimeName for Spur {}
+/// Whether a reduced value is a module: a call to a module-returning `-> type`
+/// function reduces to one (RUE-2420). A module is never a compile-time value
+/// (10.4:6), so a body expression evaluated for its value — a `comptime`
+/// argument, a length, an operand — is not compile-time known when it reduces
+/// to one, exactly as an `@import` in the same position is not. Module paths
+/// and `let` bindings reach the module through the call's own analysis.
+fn is_module_value(value: &ConstValue) -> bool {
+    matches!(value, ConstValue::Type(ty) if ty.is_module())
+}
+
 impl ComptimeFile for FileId {}
 impl ComptimeIdentity for super::anon_structs::IssuedStableProducerId {}
 impl ComptimeIdentity for super::anon_structs::IssuedAnonymousNominalKey {}
@@ -485,7 +495,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         ctx: &AnalysisContext,
     ) -> Option<ConstValue> {
         let mut env = ComptimeEnv::for_analysis(ctx);
-        self.eval_const_expr(inst_ref, &mut env).ok().flatten()
+        self.eval_const_expr(inst_ref, &mut env)
+            .ok()
+            .flatten()
+            .filter(|value| !is_module_value(value))
     }
 
     pub(crate) fn try_evaluate_const_with_resolved_types_and_membership(
@@ -606,7 +619,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         ctx: &AnalysisContext,
     ) -> CompileResult<Option<ConstValue>> {
         let mut env = ComptimeEnv::for_analysis(ctx);
-        self.eval_const_expr(inst_ref, &mut env)
+        Ok(self
+            .eval_const_expr(inst_ref, &mut env)?
+            .filter(|value| !is_module_value(value)))
     }
 
     /// Try to evaluate an RIR instruction to a compile-time constant value

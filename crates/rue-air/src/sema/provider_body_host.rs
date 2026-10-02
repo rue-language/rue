@@ -3481,6 +3481,15 @@ where
     }
 
     fn materialize_durable_type(&mut self, ty: &crate::SemanticImportType<K, M>) -> Option<Type> {
+        // A comptime call reducing to a module (`fn m() -> type {
+        // @import("x.rue") }`) names that module; the pool has no module
+        // identity of its own, so it is registered as any import target this
+        // request reaches (RUE-2420).
+        if let crate::SemanticImportType::Module(module) = ty {
+            return self
+                .register_module_target(module.clone())
+                .map(|(id, _)| Type::new_module(id));
+        }
         self.register_import_nominal_identities(ty).ok()?;
         let resolved = self
             .state
@@ -6213,7 +6222,17 @@ where
                 },
             })
         })();
-        if let Some(producer) = producer {
+        // A call reducing to a module produces no type, so it lends this body
+        // nothing to specialize: its producer body is not analyzed, exactly as
+        // when a `const` binds the same call (RUE-2420). Analyzing it would
+        // check the module its body names against its `type` result.
+        let produces_module = matches!(
+            reduced.result,
+            crate::SemanticComptimeCallResult::Type(crate::SemanticImportType::Module(_))
+        );
+        if let Some(producer) = producer
+            && !produces_module
+        {
             self.observed_comptime_producers
                 .borrow_mut()
                 .insert(producer);
