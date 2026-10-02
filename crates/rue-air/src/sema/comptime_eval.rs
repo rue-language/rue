@@ -2169,10 +2169,62 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let Some(info) = self.function_info(name) else {
             return Ok(None);
         };
-        let admission = ComptimeCallAdmission {
+        self.reduce_admitted_comptime_call(
+            ComptimeCallAdmission {
+                name,
+                payload: info,
+            },
+            callee_types,
+            callee_values,
+            span,
+        )
+    }
+
+    /// The comptime-call admission of an associated function `S.f()` that
+    /// takes no parameters and returns `type`, keyed by its member callable
+    /// symbol. That symbol is the definition key the provider's canonical
+    /// comptime query is reached through, exactly as a free function's
+    /// symbol is, so the call reduces by the same evaluation (4.14:28,
+    /// RUE-2602). Any other associated function is not admitted.
+    pub(crate) fn associated_type_call_admission(
+        &mut self,
+        struct_id: crate::types::StructId,
+        function: Spur,
+        method: &super::info::MethodCallInfo,
+    ) -> CompileResult<Option<ComptimeCallAdmission<FunctionCallInfo, Spur>>> {
+        if method.has_self
+            || method.return_type != Type::COMPTIME_TYPE
+            || !self.body_param_data(method.params).names().is_empty()
+        {
+            return Ok(None);
+        }
+        let function_name = self.body_interner().resolve(&function).to_string();
+        let name = self.method_symbol_handle(struct_id, &function_name, false)?;
+        let owner = self.body_type_pool().struct_def(struct_id);
+        Ok(Some(ComptimeCallAdmission {
             name,
-            payload: info,
-        };
+            payload: FunctionCallInfo {
+                params: method.params,
+                return_type: method.return_type,
+                returns_type: true,
+                is_generic: false,
+                is_pub: owner.is_pub,
+                is_unchecked: false,
+                is_extern: false,
+                file_id: owner.file_id,
+            },
+        }))
+    }
+
+    /// Reduce an admitted comptime call under concrete substitutions; see
+    /// [`Self::reduce_type_ctor_body`].
+    pub(crate) fn reduce_admitted_comptime_call(
+        &mut self,
+        admission: ComptimeCallAdmission<FunctionCallInfo, Spur>,
+        callee_types: &AHashMap<Spur, Type>,
+        callee_values: &AHashMap<Spur, ConstValue>,
+        span: Span,
+    ) -> CompileResult<Option<ConstValue>> {
         let bound = OrdinaryComptimeBoundCall {
             callee_types: callee_types.clone(),
             callee_values: callee_values.clone(),

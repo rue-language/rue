@@ -6275,7 +6275,18 @@ where
             let (_, definition) = self.function_token_for_symbol(name)?;
             definition
         };
-        let signature = DurableCallableSource::function(&self.source, &definition)?;
+        // An associated function (`S.md()`) is a member callable whose
+        // durable signature is a method's; reduced, it asks the same
+        // canonical comptime query a free function does (RUE-2602).
+        let (parameters, result) = match DurableCallableSource::function(&self.source, &definition)
+        {
+            Some(function) => (function.parameters, function.result),
+            None => {
+                let method = DurableCallableSource::method(&self.source, &definition)
+                    .filter(|method| !method.has_self)?;
+                (method.parameters, method.result)
+            }
+        };
         // A self call asks the canonical comptime query like any other call.
         // The query is keyed by declaration *plus arguments*, so the recursive
         // step of a terminating comptime recursion (`f(1)` reducing `f(0)`) is
@@ -6293,15 +6304,13 @@ where
         // makes a value reached through a self call equal the same value
         // computed directly.
         let self_call = name == self.function_symbol;
-        let required_type_reduction =
-            matches!(signature.result, crate::SemanticImportType::ComptimeType);
+        let required_type_reduction = matches!(result, crate::SemanticImportType::ComptimeType);
         // A `-> type` self call already asked the canonical query and had no
         // local fallback; only the value-returning self call, which is the one
         // that used to opt out entirely, gains one. Keeping the two apart is
         // what makes this change a strict addition for type constructors.
         let value_self_call = self_call && !required_type_reduction;
-        let type_arguments = signature
-            .parameters
+        let type_arguments = parameters
             .iter()
             .filter_map(|parameter| {
                 let symbol = self.interner.get(parameter.name.as_ref())?;
@@ -6318,8 +6327,7 @@ where
             })
             .map(|(name, value)| value.map(|value| (name, value)))
             .collect::<Option<Vec<_>>>();
-        let value_arguments = signature
-            .parameters
+        let value_arguments = parameters
             .iter()
             .filter_map(|parameter| {
                 let symbol = self.interner.get(parameter.name.as_ref())?;
@@ -6391,8 +6399,7 @@ where
                     self.function_tokens.borrow().get(&name)?.0,
                 )),
                 arguments: crate::CanonicalArguments {
-                    types: signature
-                        .parameters
+                    types: parameters
                         .iter()
                         .filter(|parameter| parameter.is_type_parameter())
                         .map(|parameter| {
@@ -6402,8 +6409,7 @@ where
                         })
                         .collect::<Option<Vec<_>>>()?
                         .into(),
-                    values: signature
-                        .parameters
+                    values: parameters
                         .iter()
                         .filter(|parameter| !parameter.is_type_parameter())
                         .map(|parameter| {

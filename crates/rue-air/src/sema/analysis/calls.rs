@@ -1954,11 +1954,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 },
                 span,
             )?;
-        // Track this associated function/method as referenced (for lazy analysis)
-        ctx.referenced_methods.insert(method_key);
-
         // Check that this is an associated function (no self), not a method
         if method_info.has_self {
+            ctx.referenced_methods.insert(method_key);
             return Err(CompileError::new(
                 ErrorKind::MethodCalledAsAssocFn {
                     type_name: type_name_str,
@@ -1967,6 +1965,27 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 span,
             ));
         }
+
+        // A zero-parameter associated `-> type` function whose body is a
+        // module expression (`fn md() -> type { @import("x.rue") }`) reduces
+        // to that module by the comptime evaluation a free function's call
+        // takes, and is the module expression `md()` would be (10.4:6, 10.4:7,
+        // RUE-2602). Like a reduced free call, it contributes no lazy body
+        // edge, only the dependency on the declaration.
+        if let Some(admission) =
+            self.associated_type_call_admission(struct_id, function, &method_info)?
+        {
+            self.record_body_method_dependency(method_key)?;
+            if let Some(value @ ConstValue::Module(_)) = self
+                .reduce_admitted_comptime_call(admission, &AHashMap::new(), &AHashMap::new(), span)
+                .map_err(|e| Self::label_ctor_instantiation_site(e, span))?
+                && let Some(result) = reduced_type_call_result(air, value, span)
+            {
+                return Ok(result);
+            }
+        }
+        // Track this associated function as referenced (for lazy analysis)
+        ctx.referenced_methods.insert(method_key);
 
         let method_param_data = self.body_param_data(method_info.params);
         let method_param_types = method_param_data.types().to_vec();
@@ -2012,12 +2031,12 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // host renders both, so the call meets the definition it names.
         let call_name_sym = self.method_symbol_handle(struct_id, &function_name_str, false)?;
 
-        // This path does not attempt comptime reduction of the associated
-        // function's body (unlike `analyze_resolved_function_call`), so a
-        // zero-parameter or all-`comptime` associated function returning
-        // `type` reaches here having already met the "every parameter
-        // comptime" condition vacuously; only a genuine runtime parameter
-        // makes that help text accurate (RUE-2417 review, S2).
+        // Only a zero-parameter associated function's body is reduced above,
+        // and only a module result is taken, so a zero-parameter or
+        // all-`comptime` associated function returning `type` reaches here
+        // having already met the "every parameter comptime" condition
+        // vacuously; only a genuine runtime parameter makes that help text
+        // accurate (RUE-2417 review, S2).
         let has_runtime_param = method_param_comptime
             .iter()
             .any(|&is_comptime| !is_comptime);
