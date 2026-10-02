@@ -431,3 +431,58 @@ fn main() -> i32 {
 """ }]
 stdout = ""
 exit_code = 9
+
+# A module is not a runtime value (10.4:6), so `@drop` rejects it as `@dbg`
+# and `@to_string` do (RUE-2603).
+[[case]]
+name = "drop_of_inline_import_is_rejected"
+description = "`@drop(@import(\"lib.rue\"))` is E0702: a module is not a runtime value."
+compile_fail = true
+error_contains = ["E0702", "'@drop' expects a runtime value, found <module>"]
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    @drop(@import("lib.rue"));
+    0
+}
+""" },
+    { path = "lib.rue", source = """
+pub fn g() -> i32 { 1 }
+""" },
+]
+
+[[case]]
+name = "drop_of_module_binding_is_rejected"
+description = "`@drop(l)` where `l` is a `let`-bound module is E0702."
+compile_fail = true
+error_contains = ["E0702", "'@drop' expects a runtime value, found <module>"]
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    let l = @import("lib.rue");
+    @drop(l);
+    l.g()
+}
+""" },
+    { path = "lib.rue", source = """
+pub fn g() -> i32 { 1 }
+""" },
+]
+
+[[case]]
+name = "drop_of_module_const_is_rejected"
+description = "`@drop(lib)` where `lib` is a file-level module constant is E0702."
+compile_fail = true
+error_contains = ["E0702", "'@drop' expects a runtime value, found <module>"]
+files = [
+    { path = "main.rue", source = """
+const lib = @import("lib.rue");
+fn main() -> i32 {
+    @drop(lib);
+    0
+}
+""" },
+    { path = "lib.rue", source = """
+pub fn g() -> i32 { 1 }
+""" },
+]
