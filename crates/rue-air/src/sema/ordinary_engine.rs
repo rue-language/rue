@@ -1445,7 +1445,40 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
                 },
             ));
         }
+        // A call to one of these members from the body that declares the
+        // struct exports the member's producer-owned identity, exactly as a
+        // call reached through a provider endpoint does; the member body is
+        // then analyzed as its own anonymous-member producer (RUE-2587).
+        let owner = self.canonical_type_instance(struct_type).map_err(|failure| {
+            CompileError::new(
+                ErrorKind::InternalError(format!(
+                    "an anonymous struct's members could not name their owner: {failure:?}"
+                )),
+                struct_span,
+            )
+        })?;
         for (key, info) in staged {
+            let method_str = self.body_interner().resolve(&key.1).to_string();
+            let kind = if crate::drop_glue::is_anonymous_destructor(&method_str, info.has_self) {
+                crate::AnonymousMemberKind::Destructor
+            } else if info.has_self {
+                crate::AnonymousMemberKind::Method
+            } else {
+                crate::AnonymousMemberKind::AssociatedFunction
+            };
+            let callable = self
+                .method_symbol_handle(struct_id, &method_str, info.has_self)
+                .map_err(|error| error.with_primary_span(info.span))?;
+            self.register_synthesized_callable(
+                callable,
+                crate::FunctionInstanceKey::AnonymousMember {
+                    owner: Node::new(owner.clone()),
+                    member: crate::AnonymousMemberKey {
+                        kind,
+                        name: Arc::from(method_str.as_str()),
+                    },
+                },
+            );
             self.storage.install_anonymous_method(key, info);
         }
         Ok(())

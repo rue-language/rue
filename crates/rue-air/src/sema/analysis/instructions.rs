@@ -640,10 +640,18 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                             error.with_primary_span(inst.span)
                         }
                     })?;
-                if is_new && !descriptors.is_empty() {
-                    let struct_id = struct_ty
-                        .as_struct()
-                        .expect("anonymous struct must have a StructId");
+                let struct_id = struct_ty
+                    .as_struct()
+                    .expect("anonymous struct must have a StructId");
+                // The struct is this body's own producer-nominal type, but
+                // the comptime engine may have minted it first while reducing
+                // a `let` initializer or a type annotation, which installs
+                // the type without its members; the members are registered
+                // here the first time ordinary analysis reaches the
+                // declaration (RUE-2587).
+                if !descriptors.is_empty()
+                    && (is_new || !self.has_method((struct_id, descriptors[0].name)))
+                {
                     // Registration reports the rule each member breaks at
                     // that member's own declaration span (RUE-2259); the
                     // struct span is only the fallback for a shape the
@@ -660,6 +668,17 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                             struct_id,
                             ctx.comptime_type_vars.snapshot(),
                         );
+                    }
+                }
+                // A runtime body's struct is complete once its declaration is
+                // reached: every member body is checked and emitted with the
+                // body that declares it, called or not, as a named struct's
+                // methods are (4.14:10). A type constructor's members stay
+                // with the producer-owned anonymous-member transaction that
+                // a use of the constructed type starts.
+                if ctx.return_type != Type::COMPTIME_TYPE {
+                    for descriptor in &descriptors {
+                        ctx.referenced_methods.insert((struct_id, descriptor.name));
                     }
                 }
 
