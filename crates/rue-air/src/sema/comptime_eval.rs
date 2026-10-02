@@ -4228,6 +4228,31 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeCallProtocol for OrdinaryBodyEngin
         )
         .map_err(Into::into)
     }
+    /// A named struct receiver (`S.md()`) admits its zero-parameter
+    /// associated `-> type` function, keyed as call analysis keys it, so a
+    /// `comptime` block reduces the call by the same evaluation (RUE-2602).
+    fn admit_associated_comptime_call(
+        &mut self,
+        owner: Type,
+        function: Spur,
+        arg_count: usize,
+    ) -> ComptimeHostResult<Option<ComptimeCallAdmission<FunctionCallInfo, Spur>>, Self::Failure>
+    {
+        let Some(struct_id) = owner.as_struct() else {
+            return Ok(None);
+        };
+        let Some(info) = (arg_count == 0)
+            .then(|| self.call_facts().call_method_info(struct_id, function))
+            .flatten()
+        else {
+            return Ok(None);
+        };
+        let admission = self.associated_type_call_admission(struct_id, function, &info)?;
+        if admission.is_some() {
+            self.record_body_method_dependency((struct_id, function))?;
+        }
+        Ok(admission)
+    }
     fn admit_comptime_call(
         &mut self,
         name: Spur,
