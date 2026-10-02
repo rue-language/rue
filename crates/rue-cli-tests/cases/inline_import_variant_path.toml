@@ -1,0 +1,109 @@
+# RUE-2416: a value path rooted at an inline `@import("x.rue")` resolves as the
+# const-bound `const x = @import("x.rue"); x.E.B` does (10.4:1). Semantic
+# analysis recognized a module-qualified path only when its root was a name, so
+# `@import("x.rue").E.B` fell through to ordinary field access on a `type` value
+# (E0423 "field access on non-struct type 'type'") in every value position, and
+# `@import("x.rue").f` as a `fn` argument was E0216. The module walker now roots
+# such a spine at the imported module through the canonical-import lookup, then
+# applies the same per-hop visibility walk as a `let`-bound module root.
+
+[section]
+id = "cli.inline_import_variant_path"
+name = "Inline-import value paths (RUE-2416)"
+description = "A unit variant, nested-module path or callback rooted at an inline @import resolves as the const-bound form does."
+
+[[case]]
+name = "inline_import_unit_variant"
+description = "RUE-2416's repro: `@import(\"x.rue\").E.B` is the unit variant (was E0423)."
+files = [
+    { path = "main.rue", source = """
+const x = @import("x.rue");
+fn main() -> i32 { let v = @import("x.rue").E.B; match v { x.E.A(n) => n, x.E.B => 3 } }
+""" },
+    { path = "x.rue", source = """
+pub enum E { A(i32), B }
+""" },
+]
+exit_code = 3
+
+[[case]]
+name = "inline_import_unit_variant_operand_positions"
+description = "The inline unit variant as an `==` operand, a call argument and a struct field value."
+files = [
+    { path = "main.rue", source = """
+const x = @import("x.rue");
+struct W { e: x.E }
+fn f(e: x.E) -> i32 { match e { x.E.A(n) => n, x.E.B => 1 } }
+fn main() -> i32 {
+    let w = W { e: @import("x.rue").E.B };
+    let same = if w.e == @import("x.rue").E.B { 1 } else { 0 };
+    same + f(@import("x.rue").E.B) + f(w.e)
+}
+""" },
+    { path = "x.rue", source = """
+pub enum E { A(i32), B }
+""" },
+]
+exit_code = 3
+
+[[case]]
+name = "inline_import_nested_module_variant"
+description = "`@import(\"x.rue\").m.E.B` walks the re-exported module binding `m` (was E0423)."
+files = [
+    { path = "main.rue", source = """
+const x = @import("x.rue");
+fn main() -> i32 { let v = @import("x.rue").m.E.B; match v { x.m.E.A(n) => n, x.m.E.B => 3 } }
+""" },
+    { path = "x.rue", source = """
+pub const m = @import("y.rue");
+""" },
+    { path = "y.rue", source = """
+pub enum E { A(i32), B }
+""" },
+]
+exit_code = 3
+
+[[case]]
+name = "inline_import_unknown_variant"
+description = "An unknown variant through the inline form is E0420, as through the const form (was E0423)."
+compile_fail = true
+error_contains = ["E0420", "unknown variant 'Z' in enum 'E'"]
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 { let v = @import("x.rue").E.Z; 3 }
+""" },
+    { path = "x.rue", source = """
+pub enum E { A(i32), B }
+""" },
+]
+
+[[case]]
+name = "inline_import_payload_variant_without_payload"
+description = "A tuple variant used bare through the inline form is E0207, as through the const form (was E0423)."
+compile_fail = true
+error_contains = ["E0207", "expected 1 argument, found 0"]
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 { let v = @import("x.rue").E.A; 3 }
+""" },
+    { path = "x.rue", source = """
+pub enum E { A(i32), B }
+""" },
+]
+
+[[case]]
+name = "inline_import_callback_arguments"
+description = "`@import(\"x.rue\").f` and `@import(\"x.rue\").S.mk` bind to `fn` parameters (each was E0216)."
+files = [
+    { path = "main.rue", source = """
+const x = @import("x.rue");
+fn ap(g: fn(i32) -> i32, a: i32) -> i32 { g(a) }
+fn mk(g: fn() -> x.S) -> i32 { g().v }
+fn main() -> i32 { ap(@import("x.rue").f, 1) + mk(@import("x.rue").S.mk) }
+""" },
+    { path = "x.rue", source = """
+pub fn f(a: i32) -> i32 { a }
+pub struct S { v: i32, fn mk() -> S { S { v: 2 } } }
+""" },
+]
+exit_code = 3
