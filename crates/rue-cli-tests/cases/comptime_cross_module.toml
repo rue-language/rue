@@ -561,3 +561,135 @@ fn main() -> i32 {
 """ },
 ]
 exit_code = 42
+
+[[case]]
+name = "module_returning_type_call_array_element_not_a_value"
+description = "A module a `-> type` call reduces to is not an array element: `[f(); 2]` and `[f(); 0]` are the E0206 an `[@import(..); 2]` is, not a `[<module>; N]` array type (10.4:6). An earlier RUE-2420 revision built that type and panicked in the type pool."
+args = ["main.rue", "-o", "prog"]
+files = [
+  { path = "lib.rue", source = """
+pub fn g() -> i32 { 1 }
+""" },
+  { path = "main.rue", source = """
+fn f() -> type { @import("lib.rue") }
+fn main() -> i32 {
+    let a = [f(); 2];
+    let s = [f(); 0];
+    0
+}
+""" },
+]
+compile_fail = true
+error_contains = ["E0206", "expected a runtime value, found <module>", "main.rue:3:13"]
+
+[[case]]
+name = "module_returning_type_call_array_element_annotated"
+description = "An annotated array repeat of a module-reducing call reports the module against the element type, as the `@import` form does (10.4:6, RUE-2420)."
+args = ["main.rue", "-o", "prog"]
+files = [
+  { path = "lib.rue", source = """
+pub fn g() -> i32 { 1 }
+""" },
+  { path = "main.rue", source = """
+fn f() -> type { @import("lib.rue") }
+fn main() -> i32 {
+    let a: [i32; 2] = [f(); 2];
+    0
+}
+""" },
+]
+compile_fail = true
+error_contains = ["E0206", "expected i32, found <module>"]
+
+[[case]]
+name = "module_returning_type_call_array_as_comptime_type_argument"
+description = "An array repeat over a module-reducing call, at any nesting, is no comptime type argument: `h([[f(); 2]; 3])` is the E1201 `h([@import(..); 2])` is (10.4:6, RUE-2420)."
+args = ["main.rue", "-o", "prog"]
+files = [
+  { path = "lib.rue", source = """
+pub fn g() -> i32 { 1 }
+""" },
+  { path = "main.rue", source = """
+fn f() -> type { @import("lib.rue") }
+fn h(comptime T: type) -> i32 { 0 }
+fn main() -> i32 { h([[f(); 2]; 3]) }
+""" },
+]
+compile_fail = true
+error_contains = ["E1201", "comptime parameter requires a compile-time known value", "main.rue:3:22"]
+
+[[case]]
+name = "module_returning_type_call_array_in_comptime_block"
+description = "A comptime block folding an array repeat over a module-reducing call does not build a module array type; the block is not compile-time known, as with `@import` (10.4:6, RUE-2420)."
+args = ["main.rue", "-o", "prog"]
+files = [
+  { path = "lib.rue", source = """
+pub fn g() -> i32 { 1 }
+""" },
+  { path = "main.rue", source = """
+fn f() -> type { @import("lib.rue") }
+fn main() -> i32 {
+    let t = comptime { [f(); 2] };
+    0
+}
+""" },
+]
+compile_fail = true
+error_contains = ["E1200", "expression contains values that cannot be known at compile time"]
+
+[[case]]
+name = "module_returning_type_call_let_local_is_not_a_type"
+description = "A `let` bound to a module-reducing call names a module, not a type: in an annotation it is the E0204 a `let m = @import(..)` local is, including under `ptr const`, which an earlier RUE-2420 revision interned as a module pointee and panicked on."
+args = ["main.rue", "-o", "prog"]
+files = [
+  { path = "lib.rue", source = """
+pub fn g() -> i32 { 1 }
+""" },
+  { path = "main.rue", source = """
+fn f() -> type { @import("lib.rue") }
+fn main() -> i32 {
+    let m = f();
+    let y: ptr const m = @raw(0);
+    0
+}
+""" },
+]
+compile_fail = true
+error_contains = ["E0204", "unknown type 'm'", "main.rue:4:5"]
+
+[[case]]
+name = "module_returning_type_call_as_runtime_argument"
+description = "A module-reducing call passed to a runtime `i32` parameter is the E0206 naming `<module>` that 10.4:6 requires, as `h(@import(..))` is, not a `type` mismatch (RUE-2420)."
+args = ["main.rue", "-o", "prog"]
+files = [
+  { path = "lib.rue", source = """
+pub fn g() -> i32 { 1 }
+""" },
+  { path = "main.rue", source = """
+fn f() -> type { @import("lib.rue") }
+fn h(x: i32) -> i32 { x }
+fn main() -> i32 { h(f()) }
+""" },
+]
+compile_fail = true
+error_contains = ["E0206", "expected i32, found <module>", "main.rue:3:22"]
+
+[[case]]
+name = "zero_param_associated_type_call_no_runtime_param_help"
+description = "A zero-parameter associated function returning `type` whose body does not reduce is rejected at the call without the runtime-parameter help, which would point at a condition the call already meets (RUE-2417 review; re-pinned when RUE-2420 made the module-returning form reduce)."
+args = ["main.rue", "-o", "prog"]
+files = [
+  { path = "main.rue", source = """
+struct S {
+    n: i32,
+    fn ty() -> type { i32 }
+}
+fn main() -> i32 {
+    S.ty();
+    42
+}
+""" },
+]
+compile_fail = true
+error_contains = ["E1200", "this function's body does not reduce to a type at compile time"]
+compile_stderr_not_contains = ["every parameter of the function is `comptime`"]
