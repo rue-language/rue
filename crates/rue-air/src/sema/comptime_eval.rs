@@ -411,7 +411,10 @@ impl<'a>
     pub(crate) fn for_analysis(ctx: &'a AnalysisContext) -> Self {
         Self {
             canonical_identity: Some(ctx.canonical_producer.clone()),
-            type_subst: ctx.comptime_type_vars.snapshot(),
+            // A parameter that rebinds a type parameter's name reads as that
+            // parameter: a comptime value from `value_subst`, a runtime one
+            // through `runtime_binding_names`.
+            type_subst: ctx.value_visible_comptime_type_vars(),
             value_subst: ctx.comptime_value_vars.clone(),
             resolved_types: Some(ctx.resolved_types),
             // Borrow the caller's live locals instead of snapshotting their
@@ -422,23 +425,12 @@ impl<'a>
             // The borrowed-membership hook already exists and is already used by
             // the staged entry points; `is_runtime_local_name` consults both.
             runtime_local_names: AHashSet::new(),
-            // A runtime parameter shadows the enclosing specialization's type
-            // parameter exactly as a runtime local does, by the precedence a
-            // value read uses (`AnalysisContext::is_runtime_binding`): `T` in a
-            // generic struct's method `fn g(self, T: i32)` is the `i32` value.
             runtime_local_name_membership: Some(std::sync::Arc::new({
-                // Capture only the locals map and the parameter slice, not the
-                // whole context: `&ctx` is neither `Send` nor `Sync`, and an
-                // `Arc` over a closure holding it trips
-                // `clippy::arc_with_non_send_sync`.
+                // Capture only the locals map, not the whole context: `&ctx`
+                // is neither `Send` nor `Sync`, and an `Arc` over a closure
+                // holding it trips `clippy::arc_with_non_send_sync`.
                 let locals = &ctx.locals;
-                let params = ctx.params;
-                move |name: &Spur| {
-                    locals.contains_key(name)
-                        || params
-                            .iter()
-                            .any(|param| param.name == *name && !param.is_comptime)
-                }
+                move |name: &Spur| locals.contains_key(name)
             })),
             local_binding_membership: None,
             local_binding_capture: None,

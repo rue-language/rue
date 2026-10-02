@@ -1239,11 +1239,43 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         u64,
         u64,
     )> {
+        // A parameter other than a `comptime T: type` parameter shadows the
+        // enclosing specialization's same-named type parameter (RUE-2574,
+        // RUE-2577), as `AnalysisContext::value_visible_comptime_type_vars`
+        // does for analysis: `T` in a generic struct's method
+        // `fn g(self, comptime T: i32)` is that parameter's value, which the
+        // specialization supplies or which is otherwise unknown here.
+        let shadows_type_param = |name: &Spur, ty: &Type, is_comptime: bool| {
+            !(is_comptime && *ty == Type::COMPTIME_TYPE)
+                && type_subst.is_some_and(|subst| subst.contains_key(name))
+        };
+        let value_visible_type_subst = type_subst
+            .filter(|_| {
+                params
+                    .iter()
+                    .any(|(name, ty, _, is_comptime)| shadows_type_param(name, ty, *is_comptime))
+            })
+            .map(|subst| {
+                let mut subst = subst.clone();
+                for (name, ty, _, is_comptime) in params {
+                    if shadows_type_param(name, ty, *is_comptime) {
+                        subst.remove(name);
+                    }
+                }
+                subst
+            });
+        let type_subst = value_visible_type_subst.as_ref().or(type_subst);
         let mut runtime_bindings = inherited_scope;
         let mut scope_nodes = 0_u64;
         if runtime_bindings.is_none() {
             for (name, ty, mode, is_comptime) in params {
-                if !*is_comptime {
+                // A shadowing comptime value parameter the specialization
+                // gives no value reads as unknown, never as the type.
+                let unknown_shadowing_value = *is_comptime
+                    && value_visible_type_subst.is_some()
+                    && shadows_type_param(name, ty, true)
+                    && !value_subst.is_some_and(|values| values.contains_key(name));
+                if !*is_comptime || unknown_shadowing_value {
                     scope_nodes = scope_nodes.saturating_add(1);
                     runtime_bindings = self.push_frontier_scope(
                         &runtime_bindings,

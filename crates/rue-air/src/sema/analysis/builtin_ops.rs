@@ -529,12 +529,12 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     ///
     /// This is used when validating comptime arguments to detect variables
     /// that hold comptime type values (e.g., `let P = Point(); ... Line(P)`).
-    /// A runtime parameter of the same name shadows the type, by the
-    /// precedence a value read uses: `T` in a generic struct's method
-    /// `fn g(self, T: i32)` is the `i32` value, not the struct's `T`.
+    /// A parameter that is not a `comptime T: type` parameter shadows the
+    /// type, by the precedence a value read uses: `T` in a generic struct's
+    /// method `fn g(self, T: i32)` is the `i32` value, not the struct's `T`.
     pub(crate) fn is_comptime_type_var(&self, inst_ref: InstRef, ctx: &AnalysisContext) -> bool {
         if let InstData::VarRef { name, .. } = &self.body_rir_ref().get(inst_ref).data {
-            ctx.comptime_type_vars.contains_key(name) && !ctx.is_runtime_binding(*name)
+            ctx.comptime_type_vars.contains_key(name) && !ctx.param_shadows_comptime_type_var(*name)
         } else {
             false
         }
