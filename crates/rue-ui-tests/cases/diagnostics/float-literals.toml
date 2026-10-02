@@ -294,9 +294,9 @@ error_contains = [
 ]
 
 # An integer literal joined with a float literal that no float context
-# resolves is rejected at the join, in the constraint's direction: an
-# arithmetic operand meets the left operand's expectation, a comparison's left
-# operand the right one's (RUE-2573).
+# resolves is rejected at the join, in the constraint's direction: the right
+# operand meets the left operand's expectation, for arithmetic and, since
+# RUE-2582, for comparisons (RUE-2573).
 [[case]]
 name = "mixed_integer_and_float_literals_do_not_coerce_through_operators"
 source = """
@@ -330,13 +330,13 @@ error_contains = ["E0206", "expected integer type, found comptime_float", "test.
 name = "mixed_integer_and_float_literals_do_not_order"
 source = "fn main() -> i32 { let value = 1 < 2.0; 0 }"
 compile_fail = true
-error_contains = ["E0206", "expected comptime_float, found {integer}", "test.rue:1:32"]
+error_contains = ["E0206", "expected integer type, found comptime_float", "test.rue:1:32"]
 
 [[case]]
 name = "mixed_integer_and_float_literals_do_not_compare_for_equality"
 source = "fn main() -> i32 { let value = 1 == 2.0; 0 }"
 compile_fail = true
-error_contains = ["E0206", "expected comptime_float, found {integer}", "test.rue:1:32"]
+error_contains = ["E0206", "expected integer type, found comptime_float", "test.rue:1:32"]
 
 [[case]]
 name = "mixed_integer_and_float_literals_do_not_take_remainder"
