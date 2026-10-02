@@ -32,6 +32,7 @@ fn comptime_param(
         mode: SemanticParameterMode::Value,
         is_comptime: true,
         bounds: Arc::from([]),
+        deferred_type: false,
     }
 }
 

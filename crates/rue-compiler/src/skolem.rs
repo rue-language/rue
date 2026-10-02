@@ -243,7 +243,7 @@ pub(crate) fn skolem_check_roots(
                 .collect::<Vec<_>>();
             if comptime
                 .iter()
-                .any(|parameter| !matches!(parameter.ty, DurableType::ComptimeType))
+                .any(|parameter| !parameter.is_type_parameter())
                 || comptime.iter().all(|parameter| parameter.bounds.is_empty())
             {
                 return None;

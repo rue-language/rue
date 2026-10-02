@@ -271,10 +271,7 @@ pub(crate) fn durable_type_diagnostic_name_with_parameters(
         .iter()
         .map(|parameter| rue_air::CanonicalDisplayParameter {
             is_comptime: parameter.is_comptime,
-            is_type: matches!(
-                parameter.ty,
-                crate::durable_semantics::DurableType::ComptimeType
-            ),
+            is_type: parameter.is_type_parameter(),
         });
     rue_air::format_canonical_application(
         definition.name(),

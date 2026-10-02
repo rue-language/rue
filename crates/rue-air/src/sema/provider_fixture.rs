@@ -539,6 +539,7 @@ pub(crate) fn value_param(
         mode: SemanticParameterMode::Value,
         is_comptime: false,
         bounds: Arc::from([]),
+        deferred_type: false,
     }
 }
 
@@ -552,6 +553,7 @@ pub(crate) fn comptime_value_param(
         mode: SemanticParameterMode::Value,
         is_comptime: true,
         bounds: Arc::from([]),
+        deferred_type: false,
     }
 }
 
@@ -564,6 +566,7 @@ pub(crate) fn comptime_type_param(
         mode: SemanticParameterMode::Value,
         is_comptime: true,
         bounds: Arc::from([]),
+        deferred_type: false,
     }
 }
 
@@ -578,6 +581,7 @@ pub(crate) fn mode_param(
         mode,
         is_comptime: false,
         bounds: Arc::from([]),
+        deferred_type: false,
     }
 }
 

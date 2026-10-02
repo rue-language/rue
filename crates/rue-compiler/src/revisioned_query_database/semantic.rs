@@ -2054,7 +2054,7 @@ pub(super) fn anonymous_method_type(
 pub(super) fn durable_parameter_is_runtime(
     parameter: &crate::durable_semantics::DurableSemanticParameter,
 ) -> bool {
-    !parameter.is_comptime || parameter.ty != crate::durable_semantics::DurableType::ComptimeType
+    !parameter.is_type_parameter()
 }
 
 pub(super) fn anonymous_parameter_is_runtime(
@@ -2119,7 +2119,7 @@ pub(super) fn exact_specialized_callable_types(
         if !header.is_comptime {
             continue;
         }
-        if parameter.ty == crate::durable_semantics::DurableType::ComptimeType {
+        if parameter.is_type_parameter() {
             let Some(argument) = type_arguments
                 .next()
                 .map(crate::semantic_identity::semantic_type_from_instance)

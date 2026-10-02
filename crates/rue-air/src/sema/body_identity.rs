@@ -2535,6 +2535,25 @@ pub struct DurableSignatureParameter<K, M> {
     /// a bounded parameter exactly like `comptime T: type` (spec 6.8:16) and
     /// only the call site reads the bound (spec 6.8:15).
     pub bounds: Arc<[K]>,
+    /// The declared type reads a comptime value parameter of the same
+    /// signature (`a: [i32; N]`, `comptime b: Buf(N)`), so `ty` is the
+    /// call-site-resolved [`SemanticImportType::ComptimeType`] placeholder
+    /// rather than the `type` kind: each call resolves the retained syntax
+    /// again under its own comptime arguments (RUE-2435). A deferred comptime
+    /// parameter is a value parameter, never a type parameter (RUE-2550); see
+    /// [`Self::is_type_parameter`].
+    pub deferred_type: bool,
+}
+
+impl<K, M> DurableSignatureParameter<K, M> {
+    /// Whether this is a comptime type parameter: declared `comptime T: type`
+    /// or with an interface bound (spec 6.8:14). A comptime parameter whose
+    /// declared type is only deferred to the call site is a value parameter.
+    pub fn is_type_parameter(&self) -> bool {
+        self.is_comptime
+            && matches!(self.ty, SemanticImportType::ComptimeType)
+            && !self.deferred_type
+    }
 }
 
 /// Exact parser-structured parameter and result types retained by the
@@ -4053,6 +4072,7 @@ mod tests {
             mode,
             is_comptime,
             bounds: Arc::from([]),
+            deferred_type: false,
         }
     }
 
