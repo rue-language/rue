@@ -24804,8 +24804,9 @@ BinOp.ge.isCompare = true
 *inductive* · module `RueCore.Dynamics`
 
 Where the dynamic tail of a place lands: the constant path it resolves to
-once every index is a value and in range, §6.5's bounds trap, or a refusal
-(helper).
+once every index is a value and in range, §6.5's bounds trap, or a refusal:
+`useAfterMove` where a dynamic step meets a moved-out `⊘`, as `getAt` refuses a
+constant one (helper).
 
 ```lean
 inductive RueCore.DynStep : Type
