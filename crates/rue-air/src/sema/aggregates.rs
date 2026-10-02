@@ -14,9 +14,9 @@ use rue_rir::{InstData, InstRef, RepeatCount, RirParamMode};
 use rue_span::Span;
 
 use super::aggregate_resolution::{
-    ModuleSpine, ModuleSpineRoot, ModuleTypeMember, StructLiteralHead, decode_module_spine,
-    resolve_enum_type_name, resolve_struct_type_name, select_module_type_member,
-    select_struct_literal_head,
+    InlineImportSpine, ModuleSpine, ModuleSpineRoot, ModuleTypeMember, StructLiteralHead,
+    decode_inline_import_spine, decode_module_spine, resolve_enum_type_name,
+    resolve_struct_type_name, select_module_type_member, select_struct_literal_head,
 };
 use super::analysis::FirstClassStrSite;
 use super::context::{AnalysisContext, AnalysisResult, ConstValue};
@@ -1796,10 +1796,61 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         span: Span,
         ctx: &AnalysisContext,
     ) -> CompileResult<Option<crate::types::ModuleId>> {
+        if let Some(spine) =
+            decode_inline_import_spine(self.body_rir_ref(), self.body_interner(), inst_ref)
+        {
+            return self.resolve_inline_import_spine(&spine, span);
+        }
         let Some(spine) = decode_module_spine(self.body_rir_ref(), inst_ref) else {
             return Ok(None);
         };
         self.resolve_module_spine(&spine, span, ctx)
+    }
+
+    /// Resolve the module an inline-import spine (`@import("x.rue").inner`)
+    /// denotes (RUE-2416).
+    ///
+    /// The root is the imported module itself, bound through the same
+    /// canonical-import lookup that analyzes the intrinsic; no lexical binding
+    /// can shadow it. The remaining segments go through the one per-hop
+    /// visibility walk exactly as a `let`-bound module root's do, so
+    /// `@import("x.rue").E.B` resolves as `const x = @import("x.rue"); x.E.B`
+    /// does, and a private hop is E0706 in both.
+    fn resolve_inline_import_spine(
+        &mut self,
+        spine: &InlineImportSpine,
+        span: Span,
+    ) -> CompileResult<Option<crate::types::ModuleId>> {
+        let path = self.body_interner().resolve(&spine.path).to_owned();
+        let Ok(module) = self.resolve_canonical_import(&path, spine.root_span) else {
+            return Ok(None);
+        };
+        if spine.fields.is_empty() {
+            return Ok(Some(module));
+        }
+        let names: Vec<String> = spine
+            .fields
+            .iter()
+            .map(|name| self.body_interner().resolve(name).to_owned())
+            .collect();
+        let segments: Vec<&str> = names.iter().map(String::as_str).collect();
+        match self.resolve_type_module_prefix_from(
+            spine.root_span.file_id,
+            Some(module),
+            &segments,
+            span,
+        ) {
+            Ok((module, _, _)) => Ok(Some(module)),
+            Err(error)
+                if matches!(
+                    error.kind,
+                    ErrorKind::UnknownType(_) | ErrorKind::UnknownModuleMember { .. }
+                ) =>
+            {
+                Ok(None)
+            }
+            Err(error) => Err(error),
+        }
     }
 
     /// Try to analyze a module-qualified type-member call:
