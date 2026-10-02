@@ -1340,6 +1340,7 @@ fn provider_produced_anonymous_projection_rejects_conflicting_duplicate_identity
         },
         type_captures: Arc::from([]),
         value_captures: Arc::from([]),
+        binding: None,
     };
     let definitions = AHashMap::from([(
         token,
@@ -1390,6 +1391,7 @@ fn provider_produced_anonymous_projection_rejects_relocated_thin_rich_duplicate(
         },
         type_captures,
         value_captures: Arc::from([]),
+        binding: None,
     };
     let thin = produced(first_token, Arc::from([]));
     let rich = produced(
