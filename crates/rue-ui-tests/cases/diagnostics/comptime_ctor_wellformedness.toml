@@ -94,8 +94,10 @@ exit_code = 42
 # the enclosing `let` for an annotation. After RUE-2435 the forwarded form used
 # to build `Buf(3000000000)` anyway and add an E0906 "exceeds the maximum
 # supported object size" at the call, and the annotation anchored at `Buf`'s
-# declaration (1:1). A struct-literal head (`Buf(3000000000) { .. }`) still
-# reports twice, once at 1:1; that is RUE-2615.
+# declaration (1:1). A struct-literal head (`Buf(3000000000) { .. }`) reported
+# twice, once at 1:1, and a constructor forwarding its own argument to another
+# (`Outer(N)` building `Buf(N)`) reported "did not reduce" instead of the range
+# error; both now report the one range E1200 at the use (RUE-2615).
 [[case]]
 name = "forwarded_out_of_range_comptime_argument_reports_once_at_the_call"
 source = """
@@ -126,5 +128,58 @@ error: [E1200]: comptime evaluation failed: compile-time argument 'N' for 'Buf' 
   |
 2 | fn main() -> i32 { let b: Buf(3000000000) = 0; 0 }
   |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+"""
+
+[[case]]
+name = "out_of_range_constructor_argument_in_struct_literal_head_reports_once_at_the_head"
+source = """
+fn Buf(comptime N: i32) -> type { struct { data: [i32; N] } }
+fn main() -> i32 { let b = Buf(3000000000) { data: [0; 1] }; 0 }
+"""
+compile_fail = true
+expected_error = """
+error: [E1200]: comptime evaluation failed: compile-time argument 'N' for 'Buf' has value 3000000000 outside the range of i32
+ --> test.rue:2:28
+  |
+2 | fn main() -> i32 { let b = Buf(3000000000) { data: [0; 1] }; 0 }
+  |                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+"""
+
+[[case]]
+name = "out_of_range_argument_forwarded_through_nested_constructor_in_type_position"
+description = "The range error of the inner constructor surfaces through the outer one, anchored at the outermost use, not as `did not reduce`."
+source = """
+fn Buf(comptime N: i32) -> type { struct { data: [i32; N] } }
+fn Outer(comptime N: i64) -> type { struct { inner: Buf(N) } }
+fn main() -> i32 { let b: Outer(3000000000) = 0; 0 }
+"""
+compile_fail = true
+expected_error = """
+error: [E1200]: comptime evaluation failed: compile-time argument 'N' for 'Buf' has value 3000000000 outside the range of i32
+ --> test.rue:3:20
+  |
+3 | fn main() -> i32 { let b: Outer(3000000000) = 0; 0 }
+  |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+"""
+
+[[case]]
+name = "out_of_range_argument_forwarded_through_nested_constructor_in_call"
+description = "The same range error through a forwarded call whose return type applies the outer constructor."
+source = """
+fn Buf(comptime N: i32) -> type { struct { data: [i32; N] } }
+fn Outer(comptime N: i64) -> type { struct { inner: Buf(N) } }
+fn mk(comptime N: i64) -> Outer(N) { 0 }
+fn main() -> i32 { let b = mk(3000000000); 0 }
+"""
+compile_fail = true
+expected_error = """
+error: [E1200]: comptime evaluation failed: compile-time argument 'N' for 'Buf' has value 3000000000 outside the range of i32
+ --> test.rue:4:28
+  |
+4 | fn main() -> i32 { let b = mk(3000000000); 0 }
+  |                            ^^^^^^^^^^^^^^
   |
 """
