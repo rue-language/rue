@@ -302,3 +302,35 @@ fn main() -> i32 { let I = struct { q: i8, r: i8, z: i8 }; let X = G(I); @size_o
   { args = ["main.rue", "-o", "direct"], exit_code = 0, stdout_contains = ["Compiled main.rue -> direct"], run_output = "direct", run_output_exit_code = 6 },
   { args = ["daemon", "stop"], exit_code = 0, stdout_contains = ["stopped service pid"] },
 ] }
+
+[[case]]
+name = "service_rebuild_after_editing_a_let_bound_struct_that_applies_a_constructor_to_self"
+description = "Editing a `let`-bound struct whose field applies a type constructor to `Self` while the struct is still being declared, adding a field, holding the constructor by value (E0483) and reverting, rebuilds through the service to what a direct build of each text gives (RUE-2607)."
+files = [{ path = "main.rue", source = """
+fn Opt(comptime T: type) -> type { enum { Some(T), None } }
+fn W(comptime T: type) -> type { struct { v: T } }
+fn main() -> i32 { let I = struct { v: i64, next: Opt(ptr const Self) }; @size_of(I) }
+""" }]
+daemon = { steps = [
+  { args = ["--daemon=required", "main.rue", "-o", "app"], exit_code = 0, stdout_contains = ["Compiled main.rue -> app"], run_output = "app", run_output_exit_code = 24 },
+  { args = ["--daemon=off", "main.rue", "-o", "direct"], exit_code = 0, stdout_contains = ["Compiled main.rue -> direct"], run_output = "direct", run_output_exit_code = 24 },
+  { args = ["--daemon=required", "main.rue", "-o", "app2"], exit_code = 0, stdout_contains = ["Compiled main.rue -> app2"], run_output = "app2", run_output_exit_code = 32, writes = [{ path = "main.rue", source = """
+fn Opt(comptime T: type) -> type { enum { Some(T), None } }
+fn W(comptime T: type) -> type { struct { v: T } }
+fn main() -> i32 { let I = struct { v: i64, w: i64, next: Opt(ptr const Self) }; @size_of(I) }
+""" }] },
+  { args = ["--daemon=off", "main.rue", "-o", "direct2"], exit_code = 0, stdout_contains = ["Compiled main.rue -> direct2"], run_output = "direct2", run_output_exit_code = 32 },
+  { args = ["--daemon=required", "main.rue", "-o", "app3"], exit_code = 1, stderr_contains = ["error: [E0483]: recursive type 'I' has infinite size (contains itself by value: I -> W(I) -> I)", " --> main.rue:3:28"], writes = [{ path = "main.rue", source = """
+fn Opt(comptime T: type) -> type { enum { Some(T), None } }
+fn W(comptime T: type) -> type { struct { v: T } }
+fn main() -> i32 { let I = struct { v: i64, w: W(Self) }; @size_of(I) }
+""" }] },
+  { args = ["--daemon=off", "main.rue", "-o", "direct3"], exit_code = 1, stderr_contains = ["error: [E0483]: recursive type 'I' has infinite size (contains itself by value: I -> W(I) -> I)", " --> main.rue:3:28"] },
+  { args = ["--daemon=required", "main.rue", "-o", "app4"], exit_code = 0, stdout_contains = ["Compiled main.rue -> app4"], run_output = "app4", run_output_exit_code = 24, writes = [{ path = "main.rue", source = """
+fn Opt(comptime T: type) -> type { enum { Some(T), None } }
+fn W(comptime T: type) -> type { struct { v: T } }
+fn main() -> i32 { let I = struct { v: i64, next: Opt(ptr const Self) }; @size_of(I) }
+""" }] },
+  { args = ["--daemon=off", "main.rue", "-o", "direct4"], exit_code = 0, stdout_contains = ["Compiled main.rue -> direct4"], run_output = "direct4", run_output_exit_code = 24 },
+  { args = ["daemon", "stop"], exit_code = 0, stdout_contains = ["stopped service pid"] },
+] }
