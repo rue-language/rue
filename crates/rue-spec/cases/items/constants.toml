@@ -1701,3 +1701,158 @@ fn main() -> i32 {
 }
 """
 exit_code = 42
+
+# A region of operators that reads a local of declared type is evaluated at
+# that type, as run time evaluates it: its shifts, bitwise operators and `~`
+# have the declared width, and every other operand must have the same type
+# (E0206 on the operand, E0800 on a literal that does not fit) (RUE-2617).
+
+[[case]]
+name = "const_block_bitwise_and_shift_on_a_declared_local_use_its_width"
+spec = ["4.3a:1", "4.3a:4", "4.3a:6", "4.3a:10", "6.5:2"]
+description = "`~`, shifts and bitwise operators on `let` locals annotated u8, i8, u32 and u64 take the annotated width, and a u32 above i32's range compares at u32, as at run time (RUE-2617)"
+source = """
+const A: bool = { let a: u8 = 0; ~a == 255 };
+const B: bool = { let a: u8 = 255; (a << 1) == 254 };
+const C: bool = { let a: i8 = 64; (a << 1) < 0 };
+const D: bool = { let a: u32 = 0; ~a > 0 };
+const E: bool = { let a: u32 = 4000000000; a > 3000000000 };
+const F: bool = { let a: u64 = 18446744073709551615; ~a == 0 };
+fn main() -> i32 { if A && B && C && D && E && F { 42 } else { 1 } }
+"""
+exit_code = 42
+
+[[case]]
+name = "const_block_overflow_after_a_shift_on_a_declared_local"
+spec = ["6.5:12", "4.3a:10"]
+description = "A shift keeps an i8 local an i8, so the multiplication after it overflows at i8 (E1200) where run time traps (RUE-2617)"
+source = """
+const K: i32 = { let a: i8 = 100; let b: i8 = 2; if (a << 0) * b == 100 { 1 } else { 2 } };
+fn main() -> i32 { K }
+"""
+compile_fail = true
+error_contains = ["E1200", "integer overflow evaluating multiplication at type i8"]
+
+[[case]]
+name = "const_block_operands_of_two_declared_types_rejected"
+spec = ["4.2:1", "5.1:8", "6.5:2"]
+description = "Adding an i32 local to an i64 local is E0206 on the second operand, as in a function body (RUE-2617)"
+source = """
+const K: i32 = { let a: i64 = 5; let b: i32 = 6; let c: i32 = a + b; c };
+fn main() -> i32 { K }
+"""
+compile_fail = true
+error_contains = ["E0206", "expected i64, found i32", "--> test.rue:1:67"]
+
+[[case]]
+name = "const_block_comparison_of_two_declared_types_rejected"
+spec = ["4.3:1", "6.5:2"]
+description = "Comparing a u8 local with an i64 local is E0206 on the second operand (RUE-2617)"
+source = """
+const K: bool = { let a: u8 = 5; let b: i64 = 5; a == b };
+fn main() -> i32 { if K { 1 } else { 2 } }
+"""
+compile_fail = true
+error_contains = ["E0206", "expected u8, found i64", "--> test.rue:1:55"]
+
+[[case]]
+name = "const_block_shift_amount_of_another_type_rejected"
+spec = ["4.3a:9", "6.5:2"]
+description = "A shift amount must have the shifted value's type: a u32 amount for a u8 value is E0206 on the amount (RUE-2617)"
+source = """
+const K: i32 = { let a: u8 = 1; let b: u32 = 2; let c = a << b; 0 };
+fn main() -> i32 { K }
+"""
+compile_fail = true
+error_contains = ["E0206", "expected u8, found u32", "--> test.rue:1:62"]
+
+[[case]]
+name = "const_block_shift_of_a_declared_local_keeps_its_type"
+spec = ["4.3a:6", "6.5:5"]
+description = "Shifting a u8 local gives a u8, so it is E0206 as an i32 constant's value rather than the widened 510 (RUE-2617)"
+source = """
+const K: i32 = { let a: u8 = 255; a << 1 };
+fn main() -> i32 { K }
+"""
+compile_fail = true
+error_contains = ["E0206", "expected i32, found u8", "--> test.rue:1:1"]
+
+[[case]]
+name = "const_block_if_arms_of_two_declared_types_rejected"
+spec = ["4.6:4", "6.5:2"]
+description = "`if` arms reading an i64 and an i32 local are E0206 on the second arm (RUE-2617)"
+source = """
+const K: i32 = { let a: i64 = 5; let c: i32 = 1; let b: i32 = if true { a } else { c }; b };
+fn main() -> i32 { K }
+"""
+compile_fail = true
+error_contains = ["E0206", "expected i64, found i32", "--> test.rue:1:84"]
+
+[[case]]
+name = "const_block_match_arm_of_a_declared_type_checked"
+spec = ["4.7:12", "5.1:8"]
+description = "A `match` whose arm reads an i64 local is an i64, so binding it with an `i32` annotation is E0206 on the statement (RUE-2617)"
+source = """
+const K: i32 = { let a: i64 = 5; let b: i32 = match 1 { 1 => a, _ => 0 }; b };
+fn main() -> i32 { K }
+"""
+compile_fail = true
+error_contains = ["E0206", "expected i32, found i64", "--> test.rue:1:34"]
+
+[[case]]
+name = "const_block_integer_local_in_float_arithmetic_rejected"
+spec = ["3.12:11", "4.2:1", "6.5:2"]
+description = "An i32 local is not converted to f64 in arithmetic with an f64 local: E0206 on the integer operand (RUE-2617)"
+source = """
+const K: f64 = { let a: i32 = 1; let b: f64 = 2.5; b + a };
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0206", "expected f64, found i32", "--> test.rue:1:56"]
+
+[[case]]
+name = "const_block_float_locals_of_two_widths_rejected"
+spec = ["3.12:11", "4.2:1", "6.5:2"]
+description = "An f32 local added to an f64 local is E0206 on the f32 operand, as in a function body (RUE-2617)"
+source = """
+const K: f64 = { let a: f32 = 1.5; let b: f64 = 2.5; b + a };
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0206", "expected f64, found f32", "--> test.rue:1:58"]
+
+[[case]]
+name = "const_block_literal_out_of_range_for_a_declared_region"
+spec = ["3.1:17", "6.5:2"]
+description = "A literal compared with i8 arithmetic is an i8, so 200 is E0800 on the literal (RUE-2617)"
+source = """
+const K: bool = { let a: i8 = 100; let b: i8 = 2; a * b == 200 };
+fn main() -> i32 { if K { 1 } else { 2 } }
+"""
+compile_fail = true
+error_contains = ["E0800", "literal value 200 is out of range for type 'i8'", "--> test.rue:1:60"]
+
+[[case]]
+name = "const_comptime_callee_let_annotation_checked"
+spec = ["5.1:8", "6.5:2"]
+description = "A `let` in a function a constant calls meets its annotation too: an i32 parameter bound with a `bool` annotation is E0206 on the statement (RUE-2617)"
+source = """
+fn f(comptime n: i32) -> i32 { let a: bool = n; 3 }
+const K: i32 = f(1);
+fn main() -> i32 { K }
+"""
+compile_fail = true
+error_contains = ["E0206", "expected bool, found i32", "--> test.rue:1:32"]
+
+[[case]]
+name = "const_comptime_callee_selected_arm_types_accepted"
+spec = ["4.14:19", "6.5:2"]
+description = "In a function a constant calls, an `if` or `match` over a compile-time value selects its arm and the other arm is not type-checked, so arms that read locals of different types are accepted as in a function body (RUE-2617)"
+source = """
+fn f(comptime n: i32) -> i64 { let a: i64 = 5; let c: i32 = 1; if n == 0 { a } else { c } }
+fn g(comptime n: i32) -> i64 { let a: i64 = 6; let c: i32 = 1; match n { 0 => a, _ => c } }
+const A: i64 = f(0);
+const B: i64 = g(0);
+fn main() -> i32 { if A == 5 && B == 6 { 42 } else { 1 } }
+"""
+exit_code = 42
