@@ -3514,7 +3514,8 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
     /// its arithmetic region's checked type, or for an `if` or `match` the
     /// type its arms declare, since run time gives every arm one type. Arms
     /// that declare two different types are an error at the later arm,
-    /// returned with the earlier arm's type and its own. A `match` arm whose
+    /// returned with the earlier arm's type and its own, except in a called
+    /// function's body (see below). A `match` arm whose
     /// pattern can bind a name is not looked into: the binding can shadow a
     /// declared local.
     fn declared_result_type(
@@ -3544,13 +3545,24 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 .collect(),
             _ => return Ok(self.declared_region(root, None, env).1),
         };
+        // Inside a called function's body an `if` or `match` over a
+        // compile-time value selects its arm, and the other arms are not
+        // type-checked (4.14:19); which arm that was is not known here, so
+        // arms that disagree there give no type rather than an error.
+        let in_call = self.frames.iter().any(|frame| frame.name.is_some());
         let mut declared: Option<H::Type> = None;
         for arm in arms {
-            let Some(ty) = self.declared_result_type(arm, env)? else {
-                continue;
+            let ty = match self.declared_result_type(arm, env) {
+                Ok(Some(ty)) => ty,
+                Ok(None) => continue,
+                Err(_) if in_call => return Ok(None),
+                Err(conflict) => return Err(conflict),
             };
             match &declared {
                 Some(first) if !self.same_declared_type(first, &ty) => {
+                    if in_call {
+                        return Ok(None);
+                    }
                     return Err((arm, first.clone(), ty));
                 }
                 Some(_) => {}
