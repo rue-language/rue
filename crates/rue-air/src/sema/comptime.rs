@@ -1357,6 +1357,9 @@ pub struct ComptimeEngine<'e, H: ComptimeHost> {
     /// by the operator's first `eval`, so it is never observed by any other
     /// instruction.
     evaluated_operand: Option<(InstRef, ComptimeOutcome<H::Value, H::Failure>)>,
+    /// How many `let` locals evaluation has read: an `if` or `match` whose
+    /// condition reads none can be a compile-time selection (RUE-2617).
+    local_reads: u64,
     #[cfg(test)]
     provenance_classifications: usize,
 }
@@ -1367,6 +1370,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             host,
             frames: Vec::new(),
             evaluated_operand: None,
+            local_reads: 0,
             #[cfg(test)]
             provenance_classifications: 0,
         }
@@ -3542,13 +3546,51 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         root: InstRef,
         env: &ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
     ) -> Option<H::Type> {
-        match &self.program_rir().get(root).data {
-            InstData::Branch { .. } | InstData::Match { .. } => {
-                let arm = *env.selected_arms.get(&root)?;
-                self.declared_result_type(arm, env)
-            }
-            _ => self.declared_region(root, None, env).1,
+        let arms: Vec<InstRef> = match &self.program_rir().get(root).data {
+            InstData::Branch {
+                then_block,
+                else_block: Some(else_block),
+                ..
+            } => vec![*then_block, *else_block],
+            InstData::Branch { .. } => Vec::new(),
+            InstData::Match { arms, .. } => self
+                .program_rir()
+                .match_arms(arms)
+                .iter()
+                .filter(|(pattern, _)| {
+                    matches!(
+                        pattern.to_owned(),
+                        rue_rir::RirPattern::Wildcard(_)
+                            | rue_rir::RirPattern::Int { .. }
+                            | rue_rir::RirPattern::Bool(..)
+                    )
+                })
+                .map(|(_, body)| body)
+                .collect(),
+            _ => return self.declared_region(root, None, env).1,
+        };
+        let (selected, at_compile_time) = *env.selected_arms.get(&root)?;
+        if let Some(ty) = self.declared_result_type(selected, env) {
+            return Some(ty);
         }
+        if at_compile_time {
+            return None;
+        }
+        // A run-time `if` or `match` gives every arm one type, so an arm
+        // that declares none (a literal) takes the type the others declare
+        // when they agree.
+        let mut declared: Option<H::Type> = None;
+        for arm in arms.into_iter().filter(|arm| *arm != selected) {
+            let Some(ty) = self.declared_result_type(arm, env) else {
+                continue;
+            };
+            match &declared {
+                Some(first) if !self.same_declared_type(first, &ty) => return None,
+                Some(_) => {}
+                None => declared = Some(ty),
+            }
+        }
+        declared
     }
 
     /// Whether an instruction joins the arithmetic region of its parent: the
@@ -4673,6 +4715,19 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         }
     }
 
+    /// Whether an `if` or `match` whose condition was just evaluated, with
+    /// `reads` the local-read count before it, selects its arm at compile
+    /// time as run time does (4.14:19): in a specialization with comptime
+    /// value parameters, over a condition that read no `let` local, the same
+    /// rule the body type checker uses to prune an arm.
+    fn selects_at_compile_time(
+        &self,
+        reads: u64,
+        env: &ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
+    ) -> bool {
+        !env.value_subst.is_empty() && self.local_reads == reads
+    }
+
     #[inline(never)]
     fn eval_branch(
         &mut self,
@@ -4685,17 +4740,22 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
     ) -> ComptimeOutcome<H::Value, H::Failure> {
         // The selected arm is recorded once it has run, so a recursive
         // evaluation of the same `if` inside it cannot leave its own choice.
-        match self.eval(cond, env) {
+        let reads = self.local_reads;
+        let condition = self.eval(cond, env);
+        let at_compile_time = self.selects_at_compile_time(reads, env);
+        match condition {
             ComptimeOutcome::Known(value) if value.as_boolean() == Some(true) => {
                 let result = self.eval_typed(then_block, literal_type, env);
-                env.selected_arms.insert(branch, then_block);
+                env.selected_arms
+                    .insert(branch, (then_block, at_compile_time));
                 result
             }
             ComptimeOutcome::Known(value) if value.as_boolean() == Some(false) => {
                 match else_block {
                     Some(else_block) => {
                         let result = self.eval_typed(else_block, literal_type, env);
-                        env.selected_arms.insert(branch, else_block);
+                        env.selected_arms
+                            .insert(branch, (else_block, at_compile_time));
                         result
                     }
                     None => ComptimeOutcome::Known(H::Value::unit()),
@@ -5586,7 +5646,9 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             InstData::Match { scrutinee, arms } => {
                 let literal_type = env.literal_type.take();
                 let scrutinee = *scrutinee;
+                let reads = self.local_reads;
                 let scrut = outcome_value!(self.eval(scrutinee, env));
+                let at_compile_time = self.selects_at_compile_time(reads, env);
                 let arms = self
                     .program_rir()
                     .match_arms(arms)
@@ -5658,7 +5720,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                             if binds {
                                 env.selected_arms.remove(&inst_ref);
                             } else {
-                                env.selected_arms.insert(inst_ref, *body);
+                                env.selected_arms.insert(inst_ref, (*body, at_compile_time));
                             }
                             if let Some(saved_declared) = saved_declared {
                                 env.declared_integer_locals = saved_declared;
@@ -5993,6 +6055,11 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 let name = self.name_from_rir((*name).into());
                 // 1. `let` bindings inside the comptime expression
                 if let Some(v) = env.locals.get(&name) {
+                    // A host may bind a comptime parameter as a local too;
+                    // reading one is still reading the parameter.
+                    if !env.value_subst.contains_key(&name) {
+                        self.local_reads += 1;
+                    }
                     return ComptimeOutcome::Known(v.clone());
                 }
                 // A `let`-bound module is a path root, not a compile-time
