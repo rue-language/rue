@@ -671,14 +671,12 @@ impl Unifier {
                     // from a declaration — `let s: ! = "x"`, an argument at
                     // a `!` parameter — which rejects the literal as it does
                     // an integer one, but as a mismatch: a string literal
-                    // has no value range to check (RUE-2559). It also
-                    // reaches here from an if/match join with a continuing
-                    // `!`-typed place arm (`let v = return 5`, a `!`
-                    // parameter or field): that arm binds the join's result
-                    // to `!`, so `if c { v } else { "x" }` is rejected — as
-                    // the same join already rejects every other concrete
-                    // type (`true`, `1`). Whether such an arm should coerce
-                    // (3.4:4) is open (RUE-2561).
+                    // has no value range to check (RUE-2559). An if/match
+                    // join also drops a continuing arm whose value is
+                    // concretely `!` (`let v = return 5`, a `!` parameter or
+                    // payload binding), which coerces to its peers' type
+                    // (3.4:4), so `if c { v } else { "x" }` does not reach
+                    // here (RUE-2610).
                     if !self.string_literal_types.contains(t) {
                         return Self::string_literal_mismatch(InferType::Concrete(*t), side);
                     }
