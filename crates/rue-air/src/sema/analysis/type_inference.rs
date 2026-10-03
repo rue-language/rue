@@ -634,7 +634,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 collect_frontier_failures.then_some(&mut frontier_failures),
             );
         }
-        let reported_inline = frontier_failures.iter().all(|failure| failure.selects_nothing);
+        let reported_inline = frontier_failures
+            .iter()
+            .all(|failure| failure.selects_nothing);
         let (selections, call_facts) = match staged {
             Ok(staged) if reported_inline => staged,
             Ok(_) => {
@@ -1751,12 +1753,12 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         if recovered_errors.len() + distinct.len()
             > super::super::ordinary_engine::BODY_ANALYSIS_DIAGNOSTIC_BUDGET
         {
-            return Err(CompileError::without_span(ErrorKind::CompilerResourceLimit(
-                format!(
+            return Err(CompileError::without_span(
+                ErrorKind::CompilerResourceLimit(format!(
                     "body analysis exceeded the recovery diagnostic limit of {}",
                     super::super::ordinary_engine::BODY_ANALYSIS_DIAGNOSTIC_BUDGET
-                ),
-            )));
+                )),
+            ));
         }
         recovered_errors.extend(distinct);
         Ok(first)

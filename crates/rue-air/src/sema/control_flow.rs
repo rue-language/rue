@@ -4898,9 +4898,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             }
             let result = match outcome {
                 Ok(result) => result,
-                Err(error)
-                    if representable && self.body_analysis_error_is_recoverable(&error) =>
-                {
+                Err(error) if representable && self.body_analysis_error_is_recoverable(&error) => {
                     // A failed return/break/continue cannot be represented by
                     // a continuing ERROR value: doing so would invent a
                     // fallthrough edge and make later ownership checks
