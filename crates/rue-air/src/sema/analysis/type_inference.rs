@@ -587,13 +587,18 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // types and, should a frontier then fail while some walk had seen
         // stale types, stages again refreshing every walk that queues a
         // frontier; see `collect_staged_facts`.
-        // A probe that recovered from inference failures stages over the
-        // types that recovery poisoned. Staging is not recovery-aware, so when
-        // it fails with a source diagnostic the body reports the probe's first
-        // inference failure, as it would had the probe stopped there. A
-        // resource, input or internal failure keeps its own authority.
-        let first_probe_error = probe_errors.map(|failures| failures.first);
-        let staged = match self.stage_comptime_selections(
+        // Under statement recovery staging reports what an unstaged body
+        // would. A selected body whose own inference fails is recorded rather
+        // than stopping staging; when no such body could select further, the
+        // final pass types it inline and statement recovery reports its
+        // failures in place, with the body's other diagnostics. Otherwise,
+        // or when staging itself fails with a source diagnostic, the body
+        // reports the probe's recovered failures and staging's diagnostics
+        // in source order; see `staged_recovery_error`. A resource, input or
+        // internal failure keeps its own authority.
+        let collect_frontier_failures = self.body_analysis_error_recovery();
+        let mut frontier_failures = Vec::new();
+        let mut staged = self.stage_comptime_selections(
             infer_ctx,
             return_type,
             params,
@@ -607,36 +612,58 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             &mut stale_seen,
             &mut staged_breakdown,
             &mut work,
-        ) {
-            Ok(staged) => Ok(staged),
-            Err(_) if stale_seen => {
-                self.check_canceled()?;
-                self.stage_comptime_selections(
-                    infer_ctx,
-                    return_type,
-                    params,
-                    body,
-                    type_subst,
-                    value_subst,
-                    &precompute_snapshot,
-                    &mut probe_types,
-                    &mut probe_facts,
-                    true,
-                    &mut stale_seen,
-                    &mut staged_breakdown,
-                    &mut work,
-                )
+            collect_frontier_failures.then_some(&mut frontier_failures),
+        );
+        if (staged.is_err() || !frontier_failures.is_empty()) && stale_seen {
+            self.check_canceled()?;
+            frontier_failures.clear();
+            staged = self.stage_comptime_selections(
+                infer_ctx,
+                return_type,
+                params,
+                body,
+                type_subst,
+                value_subst,
+                &precompute_snapshot,
+                &mut probe_types,
+                &mut probe_facts,
+                true,
+                &mut stale_seen,
+                &mut staged_breakdown,
+                &mut work,
+                collect_frontier_failures.then_some(&mut frontier_failures),
+            );
+        }
+        let reported_inline = frontier_failures.iter().all(|failure| failure.selects_nothing);
+        let (selections, call_facts) = match staged {
+            Ok(staged) if reported_inline => staged,
+            Ok(_) => {
+                let staging_errors = frontier_failures
+                    .into_iter()
+                    .map(|failure| failure.error)
+                    .collect();
+                return Err(self.staged_recovery_error(body, probe_errors, staging_errors)?);
             }
-            Err(error) => Err(error),
-        };
-        let (selections, call_facts) = match (staged, first_probe_error) {
-            (Ok(staged), _) => staged,
-            (Err(error), Some(probe_error)) if is_source_diagnostic(&error) => {
-                self.check_canceled()?;
-                return Err(probe_error);
+            Err(error)
+                if is_source_diagnostic(&error)
+                    && (probe_errors.is_some() || !frontier_failures.is_empty()) =>
+            {
+                let mut staging_errors = frontier_failures
+                    .into_iter()
+                    .map(|failure| failure.error)
+                    .collect::<Vec<_>>();
+                staging_errors.push(error);
+                return Err(self.staged_recovery_error(body, probe_errors, staging_errors)?);
             }
-            (Err(error), _) => return Err(error),
+            Err(error) => return Err(error),
         };
+        // A selected body whose inference failed is typed again inline by the
+        // final pass. Should that pass and semantic analysis find nothing to
+        // report, the body is still rejected with the selected body's failure.
+        let staged_failure = frontier_failures
+            .into_iter()
+            .next()
+            .map(|failure| failure.error);
         let StagedWalkWork {
             fact_nodes,
             canonical_evaluations,
@@ -675,16 +702,18 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         breakdown.staged_binding_trie_lookups = breakdown
             .staged_binding_trie_lookups
             .saturating_add(scope_materializations.saturating_mul(33));
+        let mut statement_errors = result
+            .5
+            .map(|failures| failures.statements)
+            .unwrap_or_default();
+        statement_errors.staged_failure = staged_failure;
         Ok((
             result.0,
             result.1,
             selections,
             breakdown,
             result.4,
-            result
-                .5
-                .map(|failures| failures.statements)
-                .unwrap_or_default(),
+            statement_errors,
         ))
     }
 
@@ -709,6 +738,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         stale_seen: &mut bool,
         staged_breakdown: &mut InferenceBreakdown,
         work: &mut StagedWalkWork,
+        mut frontier_failures: Option<&mut Vec<StagedFrontierFailure>>,
     ) -> CompileResult<(
         AHashMap<InstRef, crate::sema::ComptimeSelection>,
         GenericCallFacts,
@@ -763,7 +793,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 }
                 work.scope_materializations = work.scope_materializations.saturating_add(1);
                 self.staged_frontier_started();
-                let mut staged = self.run_type_inference_pass(
+                let staged = self.run_type_inference_pass(
                     infer_ctx,
                     return_type,
                     params,
@@ -776,7 +806,26 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     true,
                     Some(precompute_snapshot),
                     Some(&front.bindings),
-                )?;
+                );
+                // Under statement recovery a selected body whose inference
+                // fails is recorded, and staging goes on with the bodies
+                // independent of it; the bodies it would select are never
+                // reached.
+                let mut staged = match (staged, frontier_failures.as_deref_mut()) {
+                    (Ok(staged), _) => staged,
+                    (Err(error), Some(failures))
+                        if is_source_diagnostic(&error)
+                            && self.body_analysis_error_is_recoverable(&error) =>
+                    {
+                        let selects_nothing = self.body_selects_nothing(front.body)?;
+                        failures.push(StagedFrontierFailure {
+                            error,
+                            selects_nothing,
+                        });
+                        continue;
+                    }
+                    (Err(error), _) => return Err(error),
+                };
                 staged_breakdown.staged_frontier_bodies =
                     staged_breakdown.staged_frontier_bodies.saturating_add(1);
                 staged_breakdown.staged_frontier_instructions = staged_breakdown
@@ -1421,7 +1470,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 };
                 Some(RecoveredInferenceFailures {
                     first,
-                    statements: InferenceStatementErrors { failures, poisoned },
+                    statements: InferenceStatementErrors {
+                        failures,
+                        poisoned,
+                        staged_failure: None,
+                    },
                 })
             }
         };
@@ -1576,6 +1629,158 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             })
         });
         (all_silenced_covered && decided_by_recovery.is_subset(&covered)).then_some(poisoned)
+    }
+
+    /// Whether a selected body holds no selector (`if` or `match`) and no
+    /// comptime fact site, so staging it gathers no selection or call fact.
+    fn body_selects_nothing(&mut self, body: InstRef) -> CompileResult<bool> {
+        let mut pending = vec![body];
+        let mut visited = AHashSet::new();
+        while let Some(instruction) = pending.pop() {
+            if !visited.insert(instruction) {
+                continue;
+            }
+            if matches!(
+                self.body_rir_ref().get(instruction).data,
+                rue_rir::InstData::Branch { .. } | rue_rir::InstData::Match { .. }
+            ) {
+                return Ok(false);
+            }
+            self.body_rir_ref()
+                .child_instructions(instruction, &mut pending);
+        }
+        Ok(!self.has_comptime_fact_sites(body)?.0)
+    }
+
+    /// The error a staged body under statement recovery stops with when
+    /// staging could not finish: the probe's recovered inference failures
+    /// and staging's own source diagnostics, in source order, enter the
+    /// recovery ledger, which owns the returned error as its first entry.
+    ///
+    /// As in an unstaged body, each top-level statement reports one failure:
+    /// a staging diagnostic is dropped inside a statement the probe already
+    /// reports, and inside one that reads a binding a failed or
+    /// recovery-poisoned statement bound, whose diagnostic would cascade
+    /// from that failure.
+    fn staged_recovery_error(
+        &mut self,
+        body: InstRef,
+        probe: Option<RecoveredInferenceFailures>,
+        staging: Vec<CompileError>,
+    ) -> CompileResult<CompileError> {
+        self.check_canceled()?;
+        let rue_rir::InstData::Block { instructions } = &self.body_rir_ref().get(body).data else {
+            return Ok(match probe {
+                Some(probe) => probe.first,
+                None => staging
+                    .into_iter()
+                    .next()
+                    .expect("a failed staging has a diagnostic"),
+            });
+        };
+        let statements = self
+            .body_rir_ref()
+            .block_insts(instructions)
+            .values()
+            .collect::<Vec<_>>();
+        let (fallback, probe_statements) = match probe {
+            Some(probe) => (Some(probe.first), probe.statements),
+            None => (None, InferenceStatementErrors::default()),
+        };
+        let containing = |engine: &Self, error: &CompileError| {
+            let span = error.span()?;
+            statements.iter().position(|&statement| {
+                let statement = engine.body_rir_ref().get(statement).span;
+                statement.file_id == span.file_id
+                    && statement.start <= span.start
+                    && span.end <= statement.end
+            })
+        };
+        let mut staged_by_statement = AHashMap::<usize, CompileError>::new();
+        let mut unattributed = Vec::new();
+        for error in staging {
+            match containing(self, &error) {
+                Some(index) => {
+                    staged_by_statement.entry(index).or_insert(error);
+                }
+                None => unattributed.push(error),
+            }
+        }
+        let mut errors = probe_statements
+            .failures
+            .values()
+            .flatten()
+            .cloned()
+            .collect::<Vec<_>>();
+        errors.extend(unattributed);
+        let mut tainted = AHashSet::new();
+        for (index, &statement) in statements.iter().enumerate() {
+            let failed = probe_statements.failures.contains_key(&statement)
+                || probe_statements.poisoned.contains(&statement);
+            let reads_tainted = !tainted.is_empty() && self.reads_any_name(statement, &tainted);
+            let mut reported = false;
+            if let Some(error) = staged_by_statement.remove(&index)
+                && !failed
+                && !reads_tainted
+            {
+                errors.push(error);
+                reported = true;
+            }
+            if let rue_rir::InstData::Alloc {
+                name: Some(name), ..
+            } = self.body_rir_ref().get(statement).data
+            {
+                if failed || reads_tainted || reported {
+                    tainted.insert(name);
+                } else {
+                    tainted.remove(&name);
+                }
+            }
+        }
+        errors.sort_by_key(|error| error.span().map(|span| span.start));
+        let mut distinct = Vec::with_capacity(errors.len());
+        for error in errors {
+            if !distinct.contains(&error) {
+                distinct.push(error);
+            }
+        }
+        let Some(first) = distinct.first().cloned().or(fallback) else {
+            unreachable!("a failed staging has a diagnostic");
+        };
+        let recovered_errors = self.body_analysis_recovered_errors_mut();
+        if recovered_errors.len() + distinct.len()
+            > super::super::ordinary_engine::BODY_ANALYSIS_DIAGNOSTIC_BUDGET
+        {
+            return Err(CompileError::without_span(ErrorKind::CompilerResourceLimit(
+                format!(
+                    "body analysis exceeded the recovery diagnostic limit of {}",
+                    super::super::ordinary_engine::BODY_ANALYSIS_DIAGNOSTIC_BUDGET
+                ),
+            )));
+        }
+        recovered_errors.extend(distinct);
+        Ok(first)
+    }
+
+    /// Whether `root` reads, assigns or calls through one of `names`.
+    fn reads_any_name(&self, root: InstRef, names: &AHashSet<Spur>) -> bool {
+        let mut pending = vec![root];
+        let mut visited = AHashSet::new();
+        while let Some(instruction) = pending.pop() {
+            if !visited.insert(instruction) {
+                continue;
+            }
+            if let rue_rir::InstData::VarRef { name, .. }
+            | rue_rir::InstData::Assign { name, .. }
+            | rue_rir::InstData::Call { name, .. } = &self.body_rir_ref().get(instruction).data
+                && names.contains(name)
+            {
+                return true;
+            }
+            self.body_rir_ref()
+                .child_instructions(instruction, &mut pending);
+        }
+        false
     }
 
     /// Name one side of a peer-array mismatch: a string literal no context
@@ -3153,4 +3358,13 @@ fn value_visible_type_subst(
 pub(crate) struct RecoveredInferenceFailures {
     first: CompileError,
     statements: InferenceStatementErrors,
+}
+
+/// A selected body whose inference failed while staging under statement
+/// recovery. `selects_nothing` when the body holds no selector or comptime
+/// fact site, so the selections and call facts staging gathered without it
+/// are complete.
+pub(crate) struct StagedFrontierFailure {
+    error: CompileError,
+    selects_nothing: bool,
 }
