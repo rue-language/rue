@@ -4877,9 +4877,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 }
                 continue;
             }
-            let recovery_checkpoint = self
-                .body_analysis_error_recovery()
-                .then(|| (air.checkpoint(), ctx.clone()));
+            // Only a statement recovery can represent is rolled back, so only
+            // it pays for a checkpoint. Cloning the context costs as much as
+            // the locals bound so far; a checkpoint per statement made a
+            // recovering body quadratic in its length.
+            let recovery_checkpoint = representable.then(|| (air.checkpoint(), ctx.clone()));
             // Each non-tail statement is a nested full expression. Enclosing
             // accessor loans remain active through it, but completed reads and
             // exclusive uses belong to the enclosing expression and must not
@@ -4897,16 +4899,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             let result = match outcome {
                 Ok(result) => result,
                 Err(error)
-                    if self.body_analysis_error_recovery()
-                        && ctx.statement_recovery_depth == 1
-                        && self.body_analysis_error_is_recoverable(&error)
-                        && recovery_facts.as_ref().is_some_and(|facts| facts.safe)
-                        && !matches!(
-                            self.body_rir_ref().get(inst_ref).data,
-                            rue_rir::InstData::Ret(_)
-                                | rue_rir::InstData::Break { .. }
-                                | rue_rir::InstData::Continue
-                        ) =>
+                    if representable && self.body_analysis_error_is_recoverable(&error) =>
                 {
                     // A failed return/break/continue cannot be represented by
                     // a continuing ERROR value: doing so would invent a
