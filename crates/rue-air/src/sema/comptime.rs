@@ -4328,9 +4328,11 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             env.declared_integer_locals.clone()
         };
         let saved_modules = env.local_modules.clone();
+        let saved_bound = env.bound_locals.clone();
         let result = self.eval_block_statements(&stmt_refs, literal_type, env);
         env.locals = saved_locals;
         env.local_modules = saved_modules;
+        env.bound_locals = saved_bound;
         env.declared_integer_locals = saved_declared;
         result
     }
@@ -4403,6 +4405,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                         Some(ty) => env.declared_integer_locals.insert(name.clone(), ty),
                         None => env.declared_integer_locals.remove(&name),
                     };
+                    env.bound_locals.insert(name.clone());
                     env.locals.insert(name, value);
                 }
                 H::Value::unit()
@@ -5712,8 +5715,10 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                             let saved_declared = (!env.declared_integer_locals.is_empty())
                                 .then(|| env.declared_integer_locals.clone());
                             let binds = !bindings.is_empty();
+                            let saved_bound = binds.then(|| env.bound_locals.clone());
                             for (name, value) in bindings {
                                 env.declared_integer_locals.remove(&name);
+                                env.bound_locals.insert(name.clone());
                                 previous.push((name.clone(), env.locals.insert(name, value)));
                             }
                             let result = self.eval_typed(*body, literal_type.clone(), env);
@@ -5724,6 +5729,9 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                             }
                             if let Some(saved_declared) = saved_declared {
                                 env.declared_integer_locals = saved_declared;
+                            }
+                            if let Some(saved_bound) = saved_bound {
+                                env.bound_locals = saved_bound;
                             }
                             for (name, value) in previous {
                                 match value {
@@ -6056,8 +6064,9 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 // 1. `let` bindings inside the comptime expression
                 if let Some(v) = env.locals.get(&name) {
                     // A host may bind a comptime parameter as a local too;
-                    // reading one is still reading the parameter.
-                    if !env.value_subst.contains_key(&name) {
+                    // reading one is still reading the parameter. A `let`
+                    // or pattern binding of the same name is a local.
+                    if !env.value_subst.contains_key(&name) || env.bound_locals.contains(&name) {
                         self.local_reads += 1;
                     }
                     return ComptimeOutcome::Known(v.clone());
