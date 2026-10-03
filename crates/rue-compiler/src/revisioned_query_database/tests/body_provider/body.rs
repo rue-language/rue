@@ -553,6 +553,7 @@ fn rooted_runtime_and_comptime_use_candidate_artifacts() {
             type_arguments: Arc::from([(Arc::from("T"), DurableType::I32)]),
             value_arguments: Arc::from([]),
             lent_anonymous_nominals: Arc::from([]),
+            declared_anonymous_nominals: Arc::from([]),
         }),
     );
 }
@@ -2571,6 +2572,7 @@ fn anonymous_producer_preserves_its_candidate_artifact_failure_before_member_pub
                 type_arguments: Arc::from([]),
                 value_arguments: Arc::from([]),
                 lent_anonymous_nominals: Arc::from([]),
+                declared_anonymous_nominals: Arc::from([]),
             },
         ),
     );

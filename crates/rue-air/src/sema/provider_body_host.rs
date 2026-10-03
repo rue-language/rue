@@ -1051,13 +1051,18 @@ pub trait DurableBodyLookupSource<K, M>: Clone {
     /// I = struct { .. }; W(I)`, RUE-2590). Such a body publishes its
     /// nominals only when its analysis finishes, so the call cannot ask their
     /// producer for them; `local` lends their facts, as the body would export
-    /// them, with the tokens they name.
+    /// them, with the tokens they name. `declared` names the ones still being
+    /// declared, `I` while `let I = struct { next: Opt(ptr const Self) }`
+    /// resolves its own members (RUE-2607): they have no facts yet, so the
+    /// call takes them by identity alone.
+    #[allow(clippy::too_many_arguments)]
     fn reduce_comptime_call_with_local_nominals(
         &self,
         _definition: &K,
         _type_arguments: &[(Arc<str>, crate::SemanticImportType<K, M>)],
         _value_arguments: &[(Arc<str>, crate::SemanticImportConstValue<K, M>)],
         _local: &[crate::SemanticProducedAnonymousNominal],
+        _declared: &[crate::AnonymousNominalKey<K, M>],
         _definitions: &[(SemanticDefinitionToken, K)],
         _modules: &[(SemanticModuleToken, M)],
     ) -> DurableComptimeCallOutcome<K, M> {
@@ -3089,7 +3094,12 @@ where
                     .endpoint
                     .mint_anonymous(identity)
                     .ok_or(crate::SemanticBodyExportFailure::MissingStableIdentity)?;
-                if self.canonical_anonymous_types.contains_key(&ty)
+                // A nominal this body declares, finished or still being
+                // declared (`Pick(true, Self)` reduces to the struct whose
+                // field is resolving, RUE-2607), is its own: its members are
+                // installed by its declaration, and asking the source for them
+                // would wait on this body.
+                if self.issued_anonymous_identity(ty).is_some()
                     || self.consulted_anonymous_types.borrow().contains_key(&ty)
                 {
                     return Ok(());
@@ -3390,8 +3400,9 @@ where
     /// returns over one materializes with the body's own type. False when one
     /// has no durable key or the pool is unavailable; callers then leave the
     /// call unreduced rather than mint a second type for the local. No source
-    /// program is known to reach that: callers pass only already-declared
-    /// locals, and a declared local always has a durable key (RUE-2608 review).
+    /// program is known to reach that: a local has a durable key whether it
+    /// is declared or still being declared, since its issued identity
+    /// reverses to one (RUE-2608 review, RUE-2607).
     fn alias_local_anonymous_types(&self, local: &[Type]) -> bool {
         for ty in local {
             let Some(crate::SemanticImportType::AnonymousNominal(key)) =
@@ -3445,14 +3456,25 @@ where
             return (!self.alias_local_anonymous_types(&declared))
                 .then_some(DurableComptimeCallOutcome::NotReduced);
         }
-        // A local still being declared has no export yet.
-        if local
+        // A local still being declared (`Self` while the struct's own fields
+        // and method signatures resolve) has no export yet: its facts are
+        // what this call helps settle. It is passed by identity alone, as a
+        // `const`-bound literal's call over `Self` is evaluated in place
+        // while the literal is unfinished (RUE-2607).
+        let (finished, declaring): (Vec<_>, Vec<_>) = local
             .iter()
-            .any(|ty| !self.canonical_anonymous_types.contains_key(ty))
-        {
-            return Some(DurableComptimeCallOutcome::NotReduced);
+            .copied()
+            .partition(|ty| self.canonical_anonymous_types.contains_key(ty));
+        let mut declared = Vec::with_capacity(declaring.len());
+        for ty in &declaring {
+            let Some(crate::SemanticImportType::AnonymousNominal(key)) =
+                self.local_durable_type(*ty)
+            else {
+                return Some(DurableComptimeCallOutcome::NotReduced);
+            };
+            declared.push(key);
         }
-        let Ok(exports) = self.anonymous_nominal_exports(|ty, _| local.contains(&ty)) else {
+        let Ok(exports) = self.anonymous_nominal_exports(|ty, _| finished.contains(&ty)) else {
             return Some(DurableComptimeCallOutcome::NotReduced);
         };
         if !self.alias_local_anonymous_types(&local) {
@@ -3482,6 +3504,7 @@ where
             type_arguments,
             value_arguments,
             &exports,
+            &declared,
             &definitions,
             &modules,
         ))
