@@ -748,7 +748,14 @@ impl DurableComptimeSession {
                     ));
                 }
                 let expected = substitute_durable_generics(&parameter.ty, &type_arguments);
-                if let Some(failure) = durable_structured_value_fit_failure(value, &expected) {
+                if let Some(failure) = durable_range_failure(
+                    request.head_key.name(),
+                    name,
+                    value,
+                    &expected,
+                )
+                .or_else(|| durable_structured_value_fit_failure(value, &expected))
+                {
                     return Err(DurableComptimeForeignCallError::StructuredFrame(
                         DurableComptimeStructuredFrameAdmissionError::ValueFit(Box::new(failure)),
                     ));

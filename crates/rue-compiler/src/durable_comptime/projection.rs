@@ -611,6 +611,32 @@ pub(crate) fn durable_call_result_mismatch(
     })
 }
 
+/// The hard error for an integer argument outside its parameter's range, in
+/// the words an application written at the use reports
+/// (`validate_comptime_value_for_type`). A structured constructor call whose
+/// argument is already concrete reports it as itself: as a resolution failure
+/// it would degrade an enclosing constructor that forwards its own argument
+/// to "did not reduce" and hide the cause (RUE-2615).
+pub(crate) fn durable_range_failure(
+    constructor: &str,
+    parameter: &str,
+    value: &DurableConstValue,
+    expected: &DurableType,
+) -> Option<SemanticNucleusFailure> {
+    let DurableComptimeValueFitFailure::IntegerOutOfRange { value, type_name } =
+        durable_value_fit_failure(value, expected)?
+    else {
+        return None;
+    };
+    Some(SemanticNucleusFailure::Diagnostic(
+        rue_error::ErrorKind::ComptimeEvaluationFailed {
+            reason: format!(
+                "compile-time argument '{parameter}' for '{constructor}' has value {value} outside the range of {type_name}"
+            ),
+        },
+    ))
+}
+
 /// Map the shared value-fit classification to the exact semantic channel used
 /// by structured durable calls.  Consumers may add presentation-specific
 /// wrappers, but they must not reimplement this mapping.
