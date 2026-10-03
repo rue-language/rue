@@ -148,20 +148,17 @@ if [[ "${#wrapper_flags[@]}" -gt 0 ]]; then
     fi
 fi
 
-# BuildBuddy sometimes terminates a BatchReadBlobs response mid-stream while
-# Buck is materializing an artifact it declared from a cache hit. The failure
-# happens before the requested action runs, so replaying the command can only
-# repeat work that was going to be attempted anyway.
+# A remote-cache BatchReadBlobs response can fail while Buck is materializing
+# an artifact it declared from a cache hit, including a truncated body or the
+# narrowly identified HTTP/2 remote stream reset below. The failure happens
+# before the requested action runs, so replaying the command can only repeat
+# work that was going to be attempted anyway.
 #
-# RUE-2003 removed the reason this fires at all: the hermetic toolchain
-# distributions, the only artifacts big enough to need a batch of thousands of
-# blobs, no longer travel through the remote CAS. This stays as the
-# belt-and-braces path for a merge-group run, which has no operator to press
-# rerun, and it is no longer scoped to the Zig tree: of the twenty-three
-# failing jobs surveyed for RUE-2003, three named the rustc or rust-std tree
-# instead and RUE-1949's zig-only classifier never fired for them. Note the
-# ceiling this buys: the replay rescued five of the twenty it did fire on,
-# because the failure is deterministic for a given batch. It is a mitigation,
+# RUE-2003 removed the known toolchain-CAS exposure that motivated the
+# original retry: those large distributions no longer travel through the
+# remote CAS. This does not cure the upstream transport failure, which can
+# affect other CAS artifacts. The replay remains a bounded mitigation for a
+# merge-group run, which has no operator to press rerun. It is a mitigation,
 # not a fix.
 #
 # Keep the exception deliberately narrower than a general remote-cache retry:
@@ -179,7 +176,10 @@ is_truncated_cas_materialization() {
         if [[ "$previous_is_materialization_failure" -eq 1 ]] &&
            [[ "$line" == *'Error: (Failed to make BatchReadBlobs request:'* ]] &&
            { [[ "$line" == *'missing grpc-status trailer, stream was terminated without a final status (possible truncation by a proxy or load balancer)'* ]] ||
-             [[ "$line" == *'Unexpected EOF decoding stream'* ]]; }; then
+             [[ "$line" == *'Unexpected EOF decoding stream'* ]] ||
+             { [[ "$line" == *'h2 protocol error: error reading a body from connection'* ]] &&
+               [[ "$line" == *'hyper::Error(Body, Error { kind: Reset(StreamId('* ]] &&
+               [[ "$line" == *'), INTERNAL_ERROR, Remote)'* ]]; }; }; then
             return 0
         fi
         if [[ "$line" =~ $materialization_failure_re ]]; then
@@ -226,7 +226,7 @@ if [[ "${#args[@]}" -gt 0 ]]; then
         if [[ "$first_status" -ne 0 ]] && [[ "$stdout_tee_status" -eq 0 ]] &&
            [[ "$stderr_tee_status" -eq 0 ]] &&
            is_truncated_cas_materialization "$retry_stderr"; then
-            echo "note: retrying Buck once after a truncated BuildBuddy CAS materialization" >&2
+            echo "note: retrying Buck once after a recognized remote CAS materialization transport failure" >&2
             cleanup_retry_capture
             trap - EXIT
             set +e

@@ -87,6 +87,14 @@ Error: (Failed to make BatchReadBlobs request: Unexpected EOF decoding stream)
 EOF
 }
 
+h2_reset_failure() {
+    # Buck stderr from GitHub Actions run 37157804382 (clippy, 2026-10-03).
+    cat <<'EOF'
+[2026-10-03T22:16:37.755+00:00] Internal error (stage: materialize_inputs_failed): Error materializing artifact at path `buck-out/v2/art/root/5c1b01ec01a662a2/third-party/__serde_json-1.0.147__/LPPM/libserde_json-0fd858d6.rmeta`: Error materializing files declared by action: 41a60da937035fcc3fdf9dac4ea14520addb8cf8bc66f5f3581d88c1f399f6ab:142 retrieved 3 seconds ago with ttl = 0 seconds, re_use_case = buck2-default: Remote Execution Error on materialize_files for ReSession GRPC-SESSION-ID
+[2026-10-03T22:16:37.755+00:00] Error: (Failed to make BatchReadBlobs request: code: 'Internal error', message: "h2 protocol error: error reading a body from connection", source: hyper::Error(Body, Error { kind: Reset(StreamId(1155), INTERNAL_ERROR, Remote) }): error reading a body from connection: stream error received: unexpected internal error encountered)
+EOF
+}
+
 # RUE-1949's classifier matched only the Zig tree. The same transport failure
 # lands on the rustc and rust-std distributions too, and those merge-group
 # ejections were never retried (RUE-2003).
@@ -474,14 +482,15 @@ test_buck_wrapper_retries_only_truncated_cas_materialization() {
 execution_platforms = root//platforms:remote_cache
 EOF
 
-    # Both transport endings observed for this incident classify, and a clean
-    # replay returns success while retaining both attempts' output.
-    for variant in grpc eof rust; do
+    # Both historical truncated-body forms and the observed HTTP/2 remote
+    # reset classify, and a clean replay returns success with both outputs.
+    for variant in grpc eof rust h2; do
         rm -f "$sb"/attempt.* "$sb"/retry.args.*
         case "$variant" in
             grpc) fixture="$(grpc_failure)" ;;
             eof) fixture="$(eof_failure)" ;;
             rust) fixture="$(rust_tree_failure)" ;;
+            h2) fixture="$(h2_reset_failure)" ;;
         esac
         write_retry_attempt "$sb" 1 41 "first attempt stdout ($variant)"
         write_retry_stderr_attempt "$sb" 1 "$fixture"
@@ -493,7 +502,7 @@ EOF
             WRAPPER_ENV="GITHUB_ACTIONS=true DOTSLASH_ATTEMPT_PREFIX=$sb/attempt" run_wrapper "$sb" retry.args build //:probe --config cli.test=value || rc=$?
         fi
         out="$(cat "$sb/retry.args.out")"
-        check "buck wrapper: $variant truncation retries and succeeds" \
+        check "buck wrapper: $variant transport failure retries and succeeds" \
             "$([ "$rc" -eq 0 ] && [ "$(cat "$sb/attempt.count")" -eq 2 ] && echo 0 || echo 1)"
         check "buck wrapper: $variant retry keeps both attempts visible" \
             "$([[ "$out" == *"materialize_inputs_failed"* ]] && [[ "$out" == *"second attempt succeeded ($variant)"* ]] && [[ "$out" == *"retrying Buck once"* ]] && echo 0 || echo 1)"
@@ -527,17 +536,52 @@ EOF
 
     # Classification is one adjacent Buck stderr diagnostic pair, not an
     # order-independent bag of words from program output or unrelated lines.
-    for variant in stdout disjoint; do
+    for variant in stdout disjoint h2_other_rpc h2_cancel h2_localreset h2_context h2_disjoint; do
         rm -f "$sb"/attempt.* "$sb"/retry.args.*
-        if [[ "$variant" == stdout ]]; then
-            write_retry_attempt "$sb" 1 27 "$(grpc_failure)"
-        else
-            write_retry_failure "$sb" 1 28 "$(disjoint_grpc_failure)"
-        fi
+        case "$variant" in
+            stdout)
+                write_retry_attempt "$sb" 1 27 "$(grpc_failure)"
+                expected_status=27
+                ;;
+            disjoint)
+                write_retry_failure "$sb" 1 28 "$(disjoint_grpc_failure)"
+                expected_status=28
+                ;;
+            h2_other_rpc)
+                fixture="$(h2_reset_failure)"
+                fixture="${fixture/BatchReadBlobs/GetActionResult}"
+                write_retry_failure "$sb" 1 28 "$fixture"
+                expected_status=28
+                ;;
+            h2_cancel)
+                fixture="$(h2_reset_failure)"
+                fixture="${fixture/INTERNAL_ERROR/CANCEL}"
+                write_retry_failure "$sb" 1 28 "$fixture"
+                expected_status=28
+                ;;
+            h2_localreset)
+                fixture="$(h2_reset_failure)"
+                fixture="${fixture/INTERNAL_ERROR, Remote/INTERNAL_ERROR, Local}"
+                write_retry_failure "$sb" 1 28 "$fixture"
+                expected_status=28
+                ;;
+            h2_context)
+                fixture="$(h2_reset_failure)"
+                fixture="${fixture/hyper::Error(Body, Error { kind: Reset(StreamId(1155), INTERNAL_ERROR, Remote) })/hyper::Error(Body, Error { kind: Other })}"
+                write_retry_failure "$sb" 1 28 "$fixture"
+                expected_status=28
+                ;;
+            h2_disjoint)
+                fixture="$(h2_reset_failure)"
+                fixture="${fixture/Error: (Failed/$'unrelated output\n[2026-10-03T22:16:37.755+00:00] Error: (Failed'}"
+                write_retry_failure "$sb" 1 28 "$fixture"
+                expected_status=28
+                ;;
+        esac
         rc=0
         WRAPPER_ENV="GITHUB_ACTIONS=true DOTSLASH_ATTEMPT_PREFIX=$sb/attempt" run_wrapper "$sb" retry.args run //:probe || rc=$?
         check "buck wrapper: $variant signature is not retried" \
-            "$([ "$(cat "$sb/attempt.count")" -eq 1 ] && { [ "$rc" -eq 27 ] || [ "$rc" -eq 28 ]; } && echo 0 || echo 1)"
+            "$([ "$(cat "$sb/attempt.count")" -eq 1 ] && [ "$rc" -eq "$expected_status" ] && echo 0 || echo 1)"
     done
 
     # Program arguments after `--` are not Buck flags. They cannot disable the
