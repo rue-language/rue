@@ -7689,3 +7689,146 @@ fn main() -> i32 {
 }
 """
 exit_code = 6
+
+[[case]]
+name = "array_type_constructor_argument_in_struct_literal_head"
+spec = ["4.14:22", "4.14:23"]
+description = "A constructor returning an array type reduces as an argument of an inline struct-literal head, alone and nested in itself, exactly as it does in an annotation (RUE-2611)"
+source = """
+fn Arr(comptime T: type, comptime N: i32) -> type { [T; N] }
+fn Pair(comptime A: type, comptime B: type) -> type { struct { a: A, b: B } }
+fn main() -> i32 {
+    let x = Pair(Arr(u8, 2), i32) { a: [1, 2], b: 3 };
+    let y: Pair(Arr(Arr(u8, 2), 2), i32) = Pair(Arr(Arr(u8, 2), 2), i32) { a: [[4, 5], [6, 7]], b: 8 };
+    let z: i32 = @intCast(x.a[1] + y.a[1][0]);
+    x.b + y.b + z
+}
+"""
+exit_code = 19
+
+[[case]]
+name = "array_type_constructor_bound_with_let"
+spec = ["4.14:22"]
+description = "A constructor returning an array type reduces in a `let` binding, and the bound type serves as a size operand, an annotation and a constructor argument (RUE-2611)"
+source = """
+fn Arr(comptime T: type) -> type { [T; 3] }
+fn Box(comptime T: type) -> type { struct { v: T } }
+fn main() -> i32 {
+    let A = Arr(i16);
+    let a: A = [1, 2, 3];
+    let B = Box(A);
+    let b = B { v: a };
+    @size_of(A) + @intCast(b.v[2])
+}
+"""
+exit_code = 9
+
+[[case]]
+name = "type_constructor_returning_another_constructors_array"
+spec = ["4.14:22", "4.14:23"]
+description = "A constructor whose result is an array of another constructor's array type, written as a repeat or as a nested application, reduces in a `let` binding, an annotation and a size operand, and both spellings denote the same type (RUE-2611)"
+source = """
+fn Arr(comptime T: type, comptime N: i32) -> type { [T; N] }
+fn Grid(comptime T: type) -> type { [Arr(T, 2); 3] }
+fn Flat(comptime T: type) -> type { Arr(Arr(T, 2), 3) }
+fn main() -> i32 {
+    let G = Grid(u8);
+    let g: G = [[1, 2], [3, 4], [5, 6]];
+    let F = Flat(u8);
+    let f: F = g;
+    let total: i32 = @intCast(f[2][1]);
+    @size_of(G) + @size_of(Grid(i32)) + total
+}
+"""
+exit_code = 36
+
+[[case]]
+name = "zero_parameter_constructor_over_an_array_of_its_own_struct"
+spec = ["4.14:22"]
+description = "A zero-parameter constructor whose array type has an element it declares, directly or through other constructors, reduces in a `let` binding and a size operand (RUE-2611)"
+source = """
+fn Arr(comptime T: type) -> type { [T; 3] }
+fn W(comptime T: type) -> type { struct { w: T } }
+fn Z() -> type { [struct { s: i16 }; 3] }
+fn Y() -> type { W(Arr(struct { s: i16 })) }
+fn main() -> i32 {
+    let A = Z();
+    let B = Y();
+    @size_of(A) + @size_of(B) + @size_of(Z())
+}
+"""
+exit_code = 18
+
+[[case]]
+name = "module_qualified_array_type_constructor_heads_and_bindings"
+spec = ["4.14:22", "4.14:23"]
+description = "A module-qualified constructor returning an array type reduces as an inline-head argument and in a `let` binding, as does one over an array of its own struct (RUE-2611)"
+source = """
+const lib = @import("lib.rue");
+fn main() -> i32 {
+    let x = lib.Pair(lib.Arr(u8, 2), i32) { a: [1, 2], b: 3 };
+    let A = lib.Arr(i16, 3);
+    let Q = lib.Z();
+    x.b + @size_of(A) + @size_of(Q)
+}
+"""
+aux_files = { "lib.rue" = """
+pub fn Arr(comptime T: type, comptime N: i32) -> type { [T; N] }
+pub fn Pair(comptime A: type, comptime B: type) -> type { struct { a: A, b: B } }
+pub fn Z() -> type { [struct { s: i16 }; 3] }
+""" }
+exit_code = 15
+
+[[case]]
+name = "constructor_struct_minted_inside_its_array_keeps_its_methods"
+spec = ["4.14:22"]
+description = "A struct a constructor mints and holds in an array, or returns as the array's element, keeps its methods when the constructor is bound with `let` or applied in a size operand (RUE-2611)"
+source = """
+fn Z() -> type {
+    let L = struct { s: i16, fn get(borrow self) -> i16 { self.s } };
+    struct {
+        items: [L; 2],
+        fn mk() -> Self { Self { items: [L { s: 3 }, L { s: 4 }] } }
+        fn total(borrow self) -> i16 { self.items[0].get() + self.items[1].get() }
+    }
+}
+fn Y() -> type { [struct { s: i16, fn get(borrow self) -> i16 { self.s } }; 3] }
+fn main() -> i32 {
+    let A = Z();
+    let a = A.mk();
+    @dbg(a.total());
+    let B = Y();
+    @dbg(@size_of(B));
+    @dbg(@size_of(Y()));
+    0
+}
+"""
+expected_stdout = """
+7
+6
+6
+"""
+exit_code = 0
+
+[[case]]
+name = "array_constructor_over_a_minted_droppable_element_drops_in_order"
+spec = ["4.14:22"]
+description = "An array constructor whose element is a struct with a destructor, minted by another constructor, drops each array's elements in order whether the type is bound with `let` or written as an annotation (RUE-2611)"
+source = """
+fn R(comptime T: type) -> type { struct { v: T, drop fn(self) { @dbg(self.v); } } }
+fn Arr(comptime T: type) -> type { let E = R(T); [E; 2] }
+fn main() -> i32 {
+    let E = R(i32);
+    let A = Arr(i32);
+    let _a: A = [E { v: 2 }, E { v: 3 }];
+    let _b: Arr(i32) = [E { v: 4 }, E { v: 5 }];
+    0
+}
+"""
+expected_stdout = """
+4
+5
+2
+3
+"""
+exit_code = 0

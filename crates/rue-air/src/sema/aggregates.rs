@@ -2323,8 +2323,24 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // (`[i32; 2]`, `[T; 3]`), reaches here only outside a `comptime T:
         // type` argument position (`comptime_type_argument` reduces it
         // there): as a value it is still the runtime repeat of a `type`
-        // value (spec 4.14:6, RUE-770).
+        // value, which cannot exist at runtime (the second paragraph of spec
+        // 4.14:6, RUE-770). A `-> type` constructor's body is the exception:
+        // it only ever runs at compile time, as type-function application
+        // (4.14:22), where the repeat is the array type, so a constructor
+        // that mints the element (`fn Z() -> type { [struct { s: i16 }; 3] }`)
+        // reduces it as the evaluator does rather than as a runtime value
+        // (RUE-2611).
         if ctx.resolved_type_of(inst_ref) == Some(Type::COMPTIME_TYPE) {
+            if ctx.return_type == Type::COMPTIME_TYPE
+                && let Some(ConstValue::Type(ty)) = self.evaluate_const_in_fn(inst_ref, ctx)?
+            {
+                let air_ref = air.add_inst(AirInst {
+                    data: AirInstData::TypeConst(ty),
+                    ty: Type::COMPTIME_TYPE,
+                    span,
+                });
+                return Ok(AnalysisResult::new(air_ref, Type::COMPTIME_TYPE));
+            }
             return Err(CompileError::new(
                 ErrorKind::ComptimeEvaluationFailed {
                     reason: "type values cannot exist at runtime".to_string(),
