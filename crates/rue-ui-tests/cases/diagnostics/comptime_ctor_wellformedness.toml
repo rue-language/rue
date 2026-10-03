@@ -183,3 +183,32 @@ error: [E1200]: comptime evaluation failed: compile-time argument 'N' for 'Buf' 
   |                            ^^^^^^^^^^^^^^
   |
 """
+
+# A comptime-selected arm that is not taken is never analysed (spec 4.14:19), so
+# an out-of-range constructor head in it is no error for that specialization;
+# the same head in the taken arm is reported once, at the use.
+[[case]]
+name = "out_of_range_head_in_untaken_comptime_arm_compiles"
+source = """
+fn Buf(comptime N: i32) -> type { struct { data: [i32; N] } }
+fn f(comptime K: i32) -> i32 { if K == 0 { 1 } else { let b = Buf(3000000000) { data: [0; 1] }; 2 } }
+fn main() -> i32 { f(0) }
+"""
+exit_code = 1
+
+[[case]]
+name = "out_of_range_head_in_taken_comptime_arm_reports_once_at_the_use"
+source = """
+fn Buf(comptime N: i32) -> type { struct { data: [i32; N] } }
+fn f(comptime K: i32) -> i32 { if K == 0 { 1 } else { let b = Buf(3000000000) { data: [0; 1] }; 2 } }
+fn main() -> i32 { f(1) }
+"""
+compile_fail = true
+expected_error = """
+error: [E1200]: comptime evaluation failed: compile-time argument 'N' for 'Buf' has value 3000000000 outside the range of i32
+ --> test.rue:2:63
+  |
+2 | fn f(comptime K: i32) -> i32 { if K == 0 { 1 } else { let b = Buf(3000000000) { data: [0; 1] }; 2 } }
+  |                                                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+"""
