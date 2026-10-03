@@ -219,6 +219,11 @@ where
     /// that reads no `let` local. Only then is an arm that was not selected
     /// left out of the expression's type (RUE-2617).
     pub selected_arms: AHashMap<InstRef, (InstRef, bool)>,
+    /// The names in [`Self::locals`] that a `let` or a pattern bound in the
+    /// current scope. A host may also bind a comptime parameter as a local;
+    /// a name in this set is a binding even when it shares a parameter's
+    /// name, so reading it is a local read (RUE-2617).
+    pub bound_locals: AHashSet<N>,
     /// The declared type the next evaluated expression's value takes: a
     /// structural literal's slot, a `let` annotation, a call argument's
     /// parameter or a call's return type. It flows only into the result
@@ -298,6 +303,7 @@ where
             declared_integer_checks: AHashMap::new(),
             declared_region_types: AHashMap::new(),
             selected_arms: AHashMap::new(),
+            bound_locals: AHashSet::new(),
             literal_type: None,
         }
     }
@@ -323,6 +329,7 @@ where
             declared_integer_checks: AHashMap::new(),
             declared_region_types: AHashMap::new(),
             selected_arms: AHashMap::new(),
+            bound_locals: AHashSet::new(),
             literal_type: None,
         }
     }

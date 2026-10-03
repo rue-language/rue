@@ -1987,3 +1987,33 @@ fn main() -> i32 {
 }
 """
 exit_code = 42
+
+[[case]]
+name = "comptime_parameter_shadowed_by_a_let_is_a_runtime_condition"
+spec = ["4.14:19", "4.6:4", "4.3a:4"]
+description = "A `let` that shadows a comptime parameter is a run-time local, so an `if` over it is not a compile-time selection: its literal arm takes the other arm's u8 type and `~x` is 0, in a constant, a `comptime` block and at run time alike (RUE-2617)"
+source = """
+fn g(comptime n: i32) -> bool { let a: u8 = 255; let n = n + 1; let x = if n > 100 { a } else { 255 }; ~x == 0 }
+fn h(comptime n: i32) -> bool { let a: u8 = 255; let n = n; let x = if n > 100 { a } else { 255 }; ~x == 0 }
+const K: bool = g(0);
+const L: bool = h(0);
+fn main() -> i32 {
+    let c: bool = comptime { g(0) };
+    if K && L && c && K == g(0) && L == h(0) { 42 } else { 1 }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "comptime_parameter_read_unshadowed_selects_at_compile_time"
+spec = ["4.14:19"]
+description = "An `if` over an unshadowed comptime parameter selects its arm at compile time, so its literal arm is not given the other arm's u8 type: `~x == 0` is false in a constant, a `comptime` block and at run time alike (RUE-2617)"
+source = """
+fn g(comptime n: i32) -> bool { let a: u8 = 255; let x = if n > 100 { a } else { 255 }; ~x == 0 }
+const K: bool = g(0);
+fn main() -> i32 {
+    let c: bool = comptime { g(0) };
+    if !K && !c && K == g(0) { 42 } else { 1 }
+}
+"""
+exit_code = 42
