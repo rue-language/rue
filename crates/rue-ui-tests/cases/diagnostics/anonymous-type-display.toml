@@ -74,6 +74,26 @@ error_contains = [
 ]
 
 [[case]]
+name = "let_bound_struct_holding_a_constructor_of_itself_by_value_is_infinite"
+description = "A `let`-bound struct whose field applies a constructor to `Self` by value contains itself, so it reports E0483 through the constructed type at the struct, as the `const`-bound literal does (RUE-2607)."
+source = """
+fn W(comptime T: type) -> type { struct { v: T } }
+fn main() -> i32 {
+    let I = struct { s: i64, v: W(Self) };
+    0
+}
+"""
+compile_fail = true
+expected_error = """
+error: [E0483]: recursive type 'I' has infinite size (contains itself by value: I -> W(I) -> I); break the cycle with a pointer (`ptr const Self` / `ptr mut Self`)
+ --> test.rue:3:13
+  |
+3 |     let I = struct { s: i64, v: W(Self) };
+  |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+"""
+
+[[case]]
 name = "method_body_error_names_the_struct_not_its_producer"
 description = "An error inside a body-local struct's method names the struct, not the function that declares it."
 source = """
