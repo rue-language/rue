@@ -92,6 +92,8 @@ jobs:
 
       - name: Bootstrap dotslash
         uses: ./.github/actions/bootstrap-dotslash
+        with:
+          with-website: 'true'
 
       - name: Build website with Gazette
         run: |

@@ -232,6 +232,7 @@ jobs:
         uses: ./.github/actions/bootstrap-dotslash
         with:
           cache-name: ${{ matrix.cache_name }}
+          with-peers: 'true'
 
       - name: Build the compiler and the runner
         run: |

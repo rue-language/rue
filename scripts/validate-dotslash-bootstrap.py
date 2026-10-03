@@ -20,14 +20,14 @@ the install or the cache step inside it -- or renaming the action out from
 under the callers -- would leave every workflow trivially conforming and this
 gate passing over nothing (the vacuous-pass failure mode of RUE-1152).
 
-And it holds the surviving key to the RUE-1854 rule. `buck2` is a bash
-wrapper; the pinned release digests live in the `buck2-bin` DotSlash
-manifest. A key hashing the wrapper does not change when the pin is bumped,
-so `actions/cache` reports an exact hit on a store that lacks the new binary
-and never saves the freshly downloaded one back -- every job re-downloads tens
-of megabytes, indefinitely and silently, because dotslash succeeds either
-way. So every `dotslash-` key in the action must hash `buck2-bin` and must
-not hash `buck2`.
+And it holds the Buck key to the RUE-1854 rule. `buck2` is a bash wrapper; the
+pinned release digests live in the `buck2-bin` DotSlash manifest. A key
+hashing the wrapper does not change when the pin is bumped, so `actions/cache`
+reports an exact hit on a store that lacks the new binary and never saves the
+freshly downloaded one back -- every job re-downloads tens of megabytes,
+indefinitely and silently, because dotslash succeeds either way. The Buck and
+Buck+BTD keys therefore hash `buck2-bin`; peer and website keys have separate
+identities tied to their own pinned manifests.
 
 The wrapper also owns the bounded GitHub-Actions-only remote-cache retry from
 RUE-1949. Every workflow must therefore invoke Buck through `./buck2`, never
@@ -43,7 +43,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from gatelib import run_gate
+from gatelib import job_blocks, run_gate
 
 ROOT = Path(__file__).resolve().parent.parent
 WORKFLOW_PATTERNS = ("*.yml", "*.yaml")
@@ -59,6 +59,10 @@ WRAPPER = "buck2"
 DIRECT_PINNED_MANIFEST = re.compile(
     r"(?:^|\s)(?:dotslash\s+)?(?:\./)?buck2-bin(?:\s|$)"
 )
+PEER_CACHE_KEY = re.compile(r"^\s*key:\s*.*dotslash-peers-")
+WEBSITE_CACHE_KEY = re.compile(r"^\s*key:\s*.*dotslash-website-")
+PEER_MANIFESTS = ("hugo", "zola")
+WEBSITE_MANIFESTS = ("tailwindcss",)
 
 
 def workflows_in(directory: Path) -> list[Path]:
@@ -109,7 +113,12 @@ def check_action(action: Path) -> list[str]:
             f"{action}: the canonical dotslash bootstrap is missing; every "
             "workflow would be free to install dotslash its own way again"
         ]
-    text = action.read_text()
+    return check_action_text(action.read_text(), action)
+
+
+def check_action_text(text: str, action: Path) -> list[str]:
+    """Validate pinned auxiliary-tool cache identities and safe warming."""
+
     errors: list[str] = []
     if UPSTREAM_INSTALLER not in text:
         errors.append(
@@ -123,6 +132,8 @@ def check_action(action: Path) -> list[str]:
             "the copies kept losing"
         )
     for key in keys:
+        if PEER_CACHE_KEY.match(key) or WEBSITE_CACHE_KEY.match(key):
+            continue
         hashed = [
             name
             for arguments in HASH_FILES.finditer(key)
@@ -140,6 +151,156 @@ def check_action(action: Path) -> list[str]:
                 "bumped pin would restore a store without the new binary and never "
                 "save it back (RUE-1854)"
             )
+    lines = text.splitlines()
+    for description, prefix, manifests, key_pattern, input_name in (
+        ("peer", "dotslash-peers-", PEER_MANIFESTS, PEER_CACHE_KEY, "with-peers"),
+        ("website", "dotslash-website-", WEBSITE_MANIFESTS, WEBSITE_CACHE_KEY, "with-website"),
+    ):
+        matching = [
+            (index, line) for index, line in enumerate(lines)
+            if key_pattern.match(line)
+        ]
+        if len(matching) != 1:
+            errors.append(
+                f"{action}: expected one {description} cache key with its own "
+                f"{prefix!r} identity"
+            )
+            continue
+        key_index, key = matching[0]
+        hashed = [
+            name
+            for arguments in HASH_FILES.finditer(key)
+            for name in QUOTED.findall(arguments.group("arguments"))
+        ]
+        for manifest in manifests:
+            if manifest not in hashed:
+                errors.append(
+                    f"{action}: {description} cache key does not hash the pinned "
+                    f"{manifest!r} manifest"
+                )
+        if "inputs.cache-name" not in key:
+            errors.append(
+                f"{action}: {description} cache key does not include the platform "
+                "cache-name identity"
+            )
+        if f"{input_name}:" not in text:
+            errors.append(f"{action}: missing opt-in input {input_name!r}")
+        step_starts = [
+            index for index, line in enumerate(lines)
+            if re.match(r"^    - name: ", line)
+        ]
+        step_start = max((index for index in step_starts if index < key_index), default=-1)
+        step_ends = [index for index in step_starts if index > step_start]
+        step_end = step_ends[0] if step_ends else len(lines)
+        cache_step = "\n".join(lines[step_start:step_end])
+        for required in (
+            f"if: inputs.{input_name} == 'true'",
+            "uses: actions/cache@v5",
+            "~/.cache/dotslash",
+            "~/Library/Caches/dotslash",
+        ):
+            if required not in cache_step:
+                errors.append(
+                    f"{action}: {description} cache step must be opt-in and cache "
+                    f"the DotSlash store ({required!r} missing)"
+                )
+        warming_command = (
+            "scripts/warm-dotslash-tools.sh peers"
+            if description == "peer"
+            else "scripts/warm-dotslash-tools.sh website"
+        )
+        if warming_command not in text:
+            errors.append(
+                f"{action}: {description} cache must run verified warming "
+                f"({warming_command}) after restoring its cache"
+            )
+        else:
+            warming_index = next(
+                index for index, line in enumerate(lines)
+                if warming_command in line
+            )
+            if warming_index < key_index:
+                errors.append(f"{action}: {description} warming must follow cache restore")
+            warm_start = max(
+                (index for index in step_starts if index < warming_index),
+                default=-1,
+            )
+            warm_ends = [index for index in step_starts if index > warm_start]
+            warm_end = warm_ends[0] if warm_ends else len(lines)
+            warm_step = "\n".join(lines[warm_start:warm_end])
+            if f"if: inputs.{input_name} == 'true'" not in warm_step:
+                errors.append(
+                    f"{action}: {description} warming step must use the "
+                    f"{input_name!r} opt-in"
+                )
+    if "continue-on-error: true" in text:
+        errors.append(f"{action}: verified fetch failures must remain fatal")
+    return errors
+
+
+def check_tool_cache_callers(workflows: dict[str, str]) -> list[str]:
+    """Require every evidenced peer/site consumer to opt into warming."""
+
+    errors: list[str] = []
+    for name, text in workflows.items():
+        consumer = None
+        input_name = None
+        if name == "ci.yml":
+            consumer, input_name = "scripts/gazette-corpus-diff.py peers", "with-peers"
+        elif name == "deploy-website.yml":
+            consumer, input_name = "website/build.sh", "with-website"
+        elif name in ("performance-collect.yml", "performance-calibration.yml"):
+            consumer, input_name = "--peer-state-dir", "with-peers"
+        if consumer is None or consumer not in text:
+            continue
+        for job, block in job_blocks(text).items():
+            if consumer not in block:
+                continue
+            lines = block.splitlines()
+            consumer_index = next(i for i, line in enumerate(lines) if consumer in line)
+            configured = False
+            for index, line in enumerate(lines):
+                if ACTION_REFERENCE not in line or index >= consumer_index:
+                    continue
+                starts = [
+                    prior for prior in range(index + 1)
+                    if re.match(r"^      - ", lines[prior])
+                ]
+                if not starts:
+                    continue
+                start = starts[-1]
+                ends = [
+                    later for later in range(index + 1, len(lines))
+                    if re.match(r"^      - ", lines[later])
+                ]
+                end = ends[0] if ends else len(lines)
+                if any(f"{input_name}: 'true'" in item for item in lines[start:end]):
+                    configured = True
+                    break
+            if not configured:
+                errors.append(
+                    f"{name}: job {job!r} must configure {input_name} on the "
+                    f"bootstrap step before its {consumer!r} consumer"
+                )
+    return errors
+
+
+def check_warmer_script(script: Path) -> list[str]:
+    """Keep the opt-in warmer on DotSlash's digest-verifying fetch path."""
+
+    if not script.is_file():
+        return [f"{script}: the pinned-tool warming script is missing"]
+    text = script.read_text()
+    errors = []
+    for command in (
+        "dotslash -- fetch ./hugo",
+        "dotslash -- fetch ./zola",
+        "dotslash -- fetch ./tailwindcss",
+    ):
+        if command not in text:
+            errors.append(f"{script}: verified warming must include {command!r}")
+    if "set -euo pipefail" not in text:
+        errors.append(f"{script}: a failed verified fetch must stop warming")
     return errors
 
 
@@ -147,6 +308,10 @@ def validate(github: Path) -> list[str]:
     workflows = workflows_in(github / "workflows")
     errors, callers = check_workflows(workflows)
     errors += check_action(github / "actions" / ACTION_DIRECTORY / "action.yml")
+    errors += check_tool_cache_callers(
+        {path.name: path.read_text() for path in workflows}
+    )
+    errors += check_warmer_script(ROOT / "scripts/warm-dotslash-tools.sh")
     if not callers:
         errors.append(
             f"no workflow uses {ACTION_REFERENCE}; a renamed bootstrap would "

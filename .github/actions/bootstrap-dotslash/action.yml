@@ -1,6 +1,7 @@
 name: Bootstrap dotslash
 description: >-
-  Install the pinned dotslash launcher and cache the buck2 binary it downloads.
+  Install pinned dotslash, cache the Buck binary, and optionally cache and warm
+  the pinned peer or website tools.
 
 # Every job that runs `./buck2` needs the same two steps, and for a long time
 # every one of them carried its own copy. The copies drifted: some cached only
@@ -32,6 +33,18 @@ inputs:
     description: >-
       Set to `true` in a job that also runs `./btd`, so the key hashes btd's
       pinned manifest as well and a btd pin bump invalidates the shared store.
+    required: false
+    default: 'false'
+  with-peers:
+    description: >-
+      Set to `true` in jobs that run the pinned Hugo and Zola peers. Their
+      cache identity is separate from the fast Buck-only store.
+    required: false
+    default: 'false'
+  with-website:
+    description: >-
+      Set to `true` in jobs that build the website with pinned Tailwind CSS.
+      Its cache identity is separate from the fast Buck-only store.
     required: false
     default: 'false'
 
@@ -81,3 +94,39 @@ runs:
         key: dotslash-${{ inputs.cache-name }}-${{ hashFiles('buck2-bin', 'btd') }}
         restore-keys: |
           dotslash-${{ inputs.cache-name }}-
+
+    # These stores have distinct identities because the fast compiler jobs can
+    # finish without ever asking DotSlash for the peer or website binaries.
+    # Hash each pinned manifest, so an exact hit always contains the requested
+    # release. The platform identity prevents restoring a foreign binary.
+    - name: Cache pinned peer artifacts
+      if: inputs.with-peers == 'true'
+      uses: actions/cache@v5
+      with:
+        path: |
+          ~/.cache/dotslash
+          ~/Library/Caches/dotslash
+        key: dotslash-peers-${{ inputs.cache-name }}-${{ hashFiles('hugo', 'zola') }}
+        restore-keys: |
+          dotslash-peers-${{ inputs.cache-name }}-
+
+    - name: Warm pinned peer artifacts
+      if: inputs.with-peers == 'true'
+      shell: bash
+      run: scripts/warm-dotslash-tools.sh peers
+
+    - name: Cache pinned website artifacts
+      if: inputs.with-website == 'true'
+      uses: actions/cache@v5
+      with:
+        path: |
+          ~/.cache/dotslash
+          ~/Library/Caches/dotslash
+        key: dotslash-website-${{ inputs.cache-name }}-${{ hashFiles('tailwindcss') }}
+        restore-keys: |
+          dotslash-website-${{ inputs.cache-name }}-
+
+    - name: Warm pinned website artifacts
+      if: inputs.with-website == 'true'
+      shell: bash
+      run: scripts/warm-dotslash-tools.sh website
