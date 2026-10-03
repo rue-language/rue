@@ -4177,12 +4177,12 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
     }
 
     /// Whether a `let` annotation names a primitive integer type directly
-    /// (`i8` through `u64`, `isize`, `usize`). Only such an annotation
-    /// declares a width: run time does not yet apply an annotation spelled as
-    /// a comptime type parameter, a module path or a type-constructor call to
-    /// the initializer (RUE-2209), so checking at it would reject programs
-    /// run time accepts. Those spellings can declare a width once run time
-    /// honours them.
+    /// (`i8` through `u64`, `isize`, `usize`). Only such an annotation seeds
+    /// the initializer's arithmetic region. Run time now also applies an
+    /// annotation spelled as a comptime type parameter, a module path or a
+    /// type-constructor call (`let x: id(u8) = 300` is E0800 in a body), and
+    /// [`Self::eval_let`] admits the value at those spellings too; only the
+    /// region seeding still keys on the direct spelling.
     fn names_primitive_integer(&self, annotation: rue_rir::RirTypeSyntaxRef) -> bool {
         let program = self.program_key();
         let type_syntax = self.host.program_rir(&program).type_syntax();
