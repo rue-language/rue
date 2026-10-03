@@ -6401,6 +6401,31 @@ where
         let Some(value_arguments) = value_arguments else {
             return Some(Ok(None));
         };
+        // A type constructor's arguments obey the contract of its
+        // parameters before the reduction trusts them, as in a type
+        // annotation (`type_syntax_reduce_comptime_call`). Reducing first
+        // would mint `Buf(3000000000)` and analyze its body, reporting the
+        // out-of-range argument a second time at the constructor's
+        // declaration rather than once at the use (RUE-2615).
+        if required_type_reduction
+            && parameters
+                .iter()
+                .filter(|parameter| parameter.is_comptime)
+                .count()
+                == callee_types.len() + callee_values.len()
+            && let Some(function) = self.function_info_for_symbol(name)
+        {
+            let (callee_types, callee_values) = (callee_types.clone(), callee_values.clone());
+            if let Err(error) = OrdinaryBodyEngine::new(self).validate_comptime_call_substitutions(
+                name,
+                &function,
+                &callee_types,
+                &callee_values,
+                span,
+            ) {
+                return Some(Err(error));
+            }
+        }
         // Every call reaching this point already bound every parameter to a
         // constant, so a durable `Diagnostic` is a real evaluation failure and
         // must surface rather than be swallowed into "not compile-time known"

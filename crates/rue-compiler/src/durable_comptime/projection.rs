@@ -1510,6 +1510,42 @@ mod tests {
     }
 
     #[test]
+    fn range_failure_is_a_hard_diagnostic_naming_constructor_and_parameter() {
+        assert_eq!(
+            durable_range_failure(
+                "Buf",
+                "N",
+                &DurableConstValue::Integer(3_000_000_000),
+                &DurableType::I32,
+            ),
+            Some(SemanticNucleusFailure::Diagnostic(
+                rue_error::ErrorKind::ComptimeEvaluationFailed {
+                    reason: "compile-time argument 'N' for 'Buf' has value 3000000000 outside the range of i32"
+                        .into(),
+                },
+            ))
+        );
+        assert_eq!(
+            durable_range_failure(
+                "Buf",
+                "N",
+                &DurableConstValue::Integer(1),
+                &DurableType::I32
+            ),
+            None
+        );
+        assert_eq!(
+            durable_range_failure(
+                "Buf",
+                "N",
+                &DurableConstValue::Bool(true),
+                &DurableType::I32
+            ),
+            None
+        );
+    }
+
+    #[test]
     fn structured_value_fit_mapping_preserves_each_exact_failure_channel() {
         let alias_key = crate::StableDefinitionKey::from_stable_parts(
             ModuleId::from_logical_path("structured-fit.rue").unwrap(),
