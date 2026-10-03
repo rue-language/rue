@@ -6408,12 +6408,25 @@ where
         // out-of-range argument a second time at the constructor's
         // declaration rather than once at the use (RUE-2615).
         if required_type_reduction
-            && parameters
-                .iter()
-                .filter(|parameter| parameter.is_comptime)
-                .count()
-                == callee_types.len() + callee_values.len()
             && let Some(function) = self.function_info_for_symbol(name)
+            && {
+                // The split must match the declaration's, as
+                // `validate_comptime_call_substitutions` requires, so it
+                // cannot reach its internal error.
+                let comptime = self.body_param_data(function.params).comptime().to_vec();
+                let is_type = self.comptime_type_param_flags(&function);
+                let types = comptime
+                    .iter()
+                    .zip(is_type.iter())
+                    .filter(|(c, t)| **c && **t)
+                    .count();
+                let values = comptime
+                    .iter()
+                    .zip(is_type.iter())
+                    .filter(|(c, t)| **c && !**t)
+                    .count();
+                types == callee_types.len() && values == callee_values.len()
+            }
         {
             let (callee_types, callee_values) = (callee_types.clone(), callee_values.clone());
             if let Err(error) = OrdinaryBodyEngine::new(self).validate_comptime_call_substitutions(
