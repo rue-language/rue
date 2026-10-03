@@ -123,7 +123,19 @@ final status (possible truncation by a proxy or load balancer)")
 ```
 
 with `Unexpected EOF decoding stream` as the other ending. Both mean the same
-thing: BuildBuddy's response body stopped part-way.
+thing: the CAS response body stopped part-way. A later CI failure used a
+different, explicit HTTP/2 reset form on `BatchReadBlobs`:
+
+```
+h2 protocol error: error reading a body from connection
+hyper::Error(Body, Error { kind: Reset(StreamId(...), INTERNAL_ERROR, Remote) })
+```
+
+The wrapper recognizes this exact combination of the `BatchReadBlobs` request,
+body-read error, and remote `INTERNAL_ERROR` stream reset. The captured CI
+diagnostics include Buck's timestamp prefix; the classifier permits that
+prefix while still requiring the materialization and transport diagnostics to
+be adjacent. It does not retry other HTTP/2 errors, reset codes, or RPCs.
 
 Across the failing pull-request and merge-group runs of those two days, the
 failing artifact was one of **exactly four action digests**, and all four are
@@ -149,10 +161,11 @@ because these action-cache entries come and go: a lane that finds one
 materializes the tree from the CAS and can be truncated, while a lane that
 misses extracts locally and cannot. That is why plain reruns sometimes passed,
 why merge-group runs stayed green through the evening of 2026-09-03 and began
-failing on 2026-09-04, and why the wrapper replay described below rescued only
-a quarter of the failures it caught.
+failing on 2026-09-04. The quarter-rescued figure below is from that historical
+truncation survey; it does not measure the newer HTTP/2 reset form.
 
-Two changes remove it, in that order of importance.
+Two changes removed the known large-tree CAS exposure, in that order of
+importance; they do not establish that the upstream transport problem is fixed.
 
 **The distributions are no longer cache artifacts.** `http_archive`'s
 extraction is an ordinary Buck action, so `[buck2] default_allow_cache_upload =
@@ -209,16 +222,18 @@ servers and proxies commonly enforce, and it is the knob to revisit if the
 signature returns.
 
 The `./buck2` wrapper keeps one bounded replay of the same DotSlash/Buck argv
-in GitHub Actions when the materialization failure and the transport cause
-occur as an adjacent pair of Buck stderr diagnostics on a failed execution
-command using the configured remote-cache platform. RUE-1949 introduced it
+in GitHub Actions when the materialization failure and a recognized transport
+cause occur as an adjacent pair of Buck stderr diagnostics on a failed
+execution command using the configured remote-cache platform. Recognized
+causes are the two truncated-body messages above and the narrowly matched
+remote `INTERNAL_ERROR` HTTP/2 reset on `BatchReadBlobs`. RUE-1949 introduced it
 scoped to the Zig path; it is now scoped to any artifact, because three of the
 twenty-three failing jobs surveyed named the rustc or rust-std tree and never
 qualified for a retry at all. **Read the ceiling honestly**: of the twenty jobs
-where it did fire, the replay rescued five. The failure is deterministic for a
-given batch, so replaying the same command usually reproduces it. The retry is
-there because a merge-group run has no operator to press rerun, not because it
-works.
+where it did fire, the replay rescued five. Those counts describe the earlier
+truncation cases only. Replay can still fail when the upstream transport issue
+persists; it is a bounded mitigation because a merge-group run has no operator
+to press rerun, not a cure for the service-side failure.
 
 A successful replay returns success; a failed replay preserves the first
 failure's status and both attempts' output, and is not retried again.
