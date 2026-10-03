@@ -1856,3 +1856,47 @@ const B: i64 = g(0);
 fn main() -> i32 { if A == 5 && B == 6 { 42 } else { 1 } }
 """
 exit_code = 42
+
+[[case]]
+name = "const_block_typed_operand_beside_a_declared_local_rejected"
+spec = ["4.3:1", "6.5:2"]
+description = "An i64 constant or call value compared with an i8 local is E0206 on the comparison, though neither operand's type is written in the region (RUE-2617)"
+source = """
+const A: i64 = 5;
+const K: bool = { let a: i8 = 5; a == A };
+fn main() -> i32 { if K { 1 } else { 2 } }
+"""
+compile_fail = true
+error_contains = ["E0206", "expected i8, found i64", "--> test.rue:2:34"]
+
+[[case]]
+name = "const_block_float_local_beside_an_integer_local_rejected"
+spec = ["3.12:11", "4.3:1", "6.5:2"]
+description = "An unannotated float local compared with an i8 local is E0206 on the float operand (RUE-2617)"
+source = """
+const K: bool = { let a: i8 = 5; let c = 2.5; a == c };
+fn main() -> i32 { if K { 1 } else { 2 } }
+"""
+compile_fail = true
+error_contains = ["E0206", "expected i8, found comptime_float", "--> test.rue:1:52"]
+
+[[case]]
+name = "const_block_unannotated_if_of_a_declared_local_keeps_its_type"
+spec = ["4.6:4", "5.1:7", "6.5:2"]
+description = "An unannotated `let` bound to an `if` whose arm reads a u8 local is a u8, so adding an i64 local to it is E0206 (RUE-2617)"
+source = """
+const K: i64 = { let a: u8 = 5; let b: i64 = 7; let c = if true { a } else { 1 }; c + b };
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0206", "expected u8, found i64", "--> test.rue:1:87"]
+
+[[case]]
+name = "const_block_unannotated_literal_arithmetic_takes_its_use_type"
+spec = ["5.1:7", "6.5:2"]
+description = "An unannotated `let` bound to literal arithmetic takes the type of the declared local it is used with, so `1 << 2` beside an i8 local is an i8 (RUE-2617)"
+source = """
+const K: bool = { let x: i8 = 5; let z = 1 << 2; z + x == 9 };
+fn main() -> i32 { if K { 42 } else { 1 } }
+"""
+exit_code = 42

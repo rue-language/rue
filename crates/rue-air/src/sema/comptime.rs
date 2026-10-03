@@ -3410,6 +3410,33 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         }
     }
 
+    /// Hold the reduced operands of a region operation to the region's
+    /// declared type: an operand that already has another integer type (a
+    /// constant, a call's value, a field, a local bound to one) is the body
+    /// path's E0206 on the operation, which the region's leaves alone
+    /// cannot show before evaluation (RUE-2617).
+    fn admit_region_operands(
+        &mut self,
+        env: &ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
+        inst_ref: InstRef,
+        operands: &[&H::Value],
+        span: Span,
+    ) -> ComptimeHostResult<(), H::Failure> {
+        let Some(ty) = env.declared_region_types.get(&inst_ref).cloned() else {
+            return Ok(());
+        };
+        for operand in operands {
+            if let Some(found) = operand.as_integer_type()
+                && !self.same_declared_type(&ty, &found)
+            {
+                let site = self.diagnostic_site(span);
+                self.host
+                    .admit_comptime_child((*operand).clone(), &ty, &site)?;
+            }
+        }
+        Ok(())
+    }
+
     fn integer_type_for(
         &mut self,
         env: &ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
@@ -3418,6 +3445,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         rhs: &H::Value,
         span: Span,
     ) -> ComptimeOutcome<Option<H::Type>, H::Failure> {
+        host_value!(self.admit_region_operands(env, inst_ref, &[lhs, rhs], span));
         // A declared/substituted parameter type is an explicit contract for
         // this evaluation.  It must win over the probe's provisional i32
         // expression type (notably for `use(Id(i8), 1 << 8)`).
@@ -3446,6 +3474,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         operand: &H::Value,
         span: Span,
     ) -> ComptimeOutcome<Option<H::Type>, H::Failure> {
+        host_value!(self.admit_region_operands(env, inst_ref, &[operand], span));
         let hint = env
             .expected_result
             .as_ref()
@@ -3735,6 +3764,11 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                     {
                         untyped_leaves.push(value);
                     } else {
+                        // A float local is a float operand whatever its
+                        // width: it cannot join an integer region.
+                        if self.host.float_value_text(value).is_some() {
+                            typed_leaves.push((inst_ref, DeclaredLeaf::FloatLiteral));
+                        }
                         opaque = true;
                     }
                 }
@@ -3943,6 +3977,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                         while let Some((_, marked, replaced)) = entered.pop() {
                             for operation in &marked {
                                 env.declared_integer_checks.remove(operation);
+                                env.declared_region_types.remove(operation);
                             }
                             if let Some(previous) = replaced {
                                 env.expected_result = previous;
@@ -3954,6 +3989,9 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 for operation in &region.operations {
                     env.declared_integer_checks
                         .insert(*operation, region.checked.clone());
+                    if let Some(ty) = region_type.as_ref() {
+                        env.declared_region_types.insert(*operation, ty.clone());
+                    }
                 }
                 let replaced = region_type.map(|ty| env.expected_result.replace(ty));
                 (region.operations, replaced)
@@ -3981,6 +4019,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             {
                 for operation in &marked {
                     env.declared_integer_checks.remove(operation);
+                    env.declared_region_types.remove(operation);
                 }
                 if let Some(previous) = replaced {
                     env.expected_result = previous;
@@ -4005,6 +4044,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             self.evaluated_operand = None;
             for operation in &marked {
                 env.declared_integer_checks.remove(operation);
+                env.declared_region_types.remove(operation);
             }
             if let Some(previous) = replaced {
                 env.expected_result = previous;
@@ -4043,6 +4083,11 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         region_type: Option<H::Type>,
         env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
     ) -> ComptimeOutcome<H::Value, H::Failure> {
+        if let Some(ty) = region_type.as_ref() {
+            for operation in &operations {
+                env.declared_region_types.insert(*operation, ty.clone());
+            }
+        }
         let replaced = region_type.map(|ty| env.expected_result.replace(ty));
         for operation in &operations {
             env.declared_integer_checks
@@ -4051,6 +4096,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         let outcome = self.eval_dispatch(root, None, env);
         for operation in &operations {
             env.declared_integer_checks.remove(operation);
+            env.declared_region_types.remove(operation);
         }
         if let Some(previous) = replaced {
             env.expected_result = previous;
@@ -4597,14 +4643,88 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 return ComptimeOutcome::Known((value, Some(ty.clone())));
             }
         }
-        let declared = checked.filter(|ty| {
+        let fits = |ty: &H::Type| {
             value.as_integer().is_some_and(|integer| {
                 self.host
                     .type_integer_semantics(ty)
                     .is_some_and(|semantics| semantics.fits_i128(integer))
             })
-        });
+        };
+        let mut declared = checked.filter(|ty| fits(ty));
+        // An unannotated binding of an `if` or `match` whose arms read a
+        // local of declared type has that type, as its region would.
+        if annotation.is_none() && declared.is_none() && value.as_integer().is_some() {
+            match self.declared_result_type(init, env) {
+                Ok(Some(ty)) if fits(&ty) => declared = Some(ty),
+                Ok(_) => {}
+                Err((arm, expected, found)) => {
+                    let site = self.diagnostic_site(self.program_rir().get(arm).span);
+                    let found = H::Value::integer_typed(0, Some(found));
+                    host_value!(self.host.admit_comptime_child(found, &expected, &site));
+                }
+            }
+        }
+        // An unannotated binding of literal arithmetic has no type of its
+        // own: run time gives it the type of its uses. The evaluator computed
+        // it at the untyped default, and when that is its exact value it is
+        // bound untyped, as a literal is, so a region that reads it beside a
+        // local of declared type takes it at that type (RUE-2617). A value
+        // the default width changed keeps that width.
+        if annotation.is_none()
+            && declared.is_none()
+            && let Some(integer) = value.as_integer()
+            && value.as_integer_type().is_some()
+            && self.exact_untyped_value(init, env) == Some(integer)
+        {
+            return ComptimeOutcome::Known((H::Value::integer(integer), None));
+        }
         ComptimeOutcome::Known((value, declared))
+    }
+
+    /// The exact value of `root` when it is arithmetic on integer literals
+    /// and untyped locals alone, computed without a width; `None` for any
+    /// other expression, or one whose value depends on a width (`~`, or an
+    /// overflow).
+    fn exact_untyped_value(
+        &self,
+        root: InstRef,
+        env: &ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
+    ) -> Option<i128> {
+        let exact = |inst: InstRef| self.exact_untyped_value(inst, env);
+        match self.program_rir().get(root).data {
+            InstData::IntConst(value) => Some(value as i128),
+            InstData::Neg { operand } => exact(operand)?.checked_neg(),
+            InstData::Add { lhs, rhs } => exact(lhs)?.checked_add(exact(rhs)?),
+            InstData::Sub { lhs, rhs } => exact(lhs)?.checked_sub(exact(rhs)?),
+            InstData::Mul { lhs, rhs } => exact(lhs)?.checked_mul(exact(rhs)?),
+            InstData::Div { lhs, rhs } => exact(lhs)?.checked_div(exact(rhs)?),
+            InstData::Mod { lhs, rhs } => exact(lhs)?.checked_rem(exact(rhs)?),
+            InstData::BitAnd { lhs, rhs } => Some(exact(lhs)? & exact(rhs)?),
+            InstData::BitOr { lhs, rhs } => Some(exact(lhs)? | exact(rhs)?),
+            InstData::BitXor { lhs, rhs } => Some(exact(lhs)? ^ exact(rhs)?),
+            InstData::Shl { lhs, rhs } => {
+                let (value, amount) = (exact(lhs)?, u32::try_from(exact(rhs)?).ok()?);
+                let shifted = value.checked_shl(amount).filter(|_| amount < 64)?;
+                (shifted >> amount == value).then_some(shifted)
+            }
+            InstData::Shr { lhs, rhs } => {
+                let amount = u32::try_from(exact(rhs)?)
+                    .ok()
+                    .filter(|amount| *amount < 64)?;
+                Some(exact(lhs)? >> amount)
+            }
+            InstData::VarRef { name, .. } => {
+                let name = self.name_from_rir(name.into());
+                if env.declared_integer_locals.contains_key(&name) {
+                    return None;
+                }
+                let value = env.locals.get(&name)?;
+                value
+                    .as_integer()
+                    .filter(|_| value.as_integer_type().is_none())
+            }
+            _ => None,
+        }
     }
 
     #[inline(never)]

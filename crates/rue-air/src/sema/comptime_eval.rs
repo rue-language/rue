@@ -462,6 +462,7 @@ impl<'a>
             expected_result: None,
             declared_integer_locals: AHashMap::new(),
             declared_integer_checks: AHashMap::new(),
+            declared_region_types: AHashMap::new(),
             literal_type: None,
         }
     }
