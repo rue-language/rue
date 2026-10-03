@@ -7594,3 +7594,98 @@ fn G(comptime T: type) -> type { let L = struct { s: T }; W(L) }
 fn main() -> i32 { let I = struct { q: i64 }; @size_of(G(i32)) + @size_of(G(I)) + @size_of(W(i8)) }
 """
 exit_code = 42
+
+[[case]]
+name = "let_bound_struct_field_applies_a_constructor_to_a_pointer_to_self"
+spec = ["4.14:22", "6.4:18"]
+description = "A `let`-bound anonymous struct's field applies a type constructor to `ptr const Self`, directly and nested, while the struct is still being declared, as the `const`-bound literal does; the finished struct is then a constructor argument itself (RUE-2607)"
+source = """
+fn Opt(comptime T: type) -> type { enum { Some(T), None } }
+fn W(comptime T: type) -> type { struct { v: T } }
+fn main() -> i32 {
+    let I = struct { v: i64, next: Opt(ptr const Self) };
+    let J = struct { v: i8, next: Opt(Opt(ptr const Self)) };
+    let K = W(I);
+    @size_of(I) + @size_of(J) + @size_of(K)
+}
+"""
+exit_code = 80
+
+[[case]]
+name = "let_bound_struct_method_signatures_apply_a_constructor_to_self"
+spec = ["4.14:22", "6.4:18"]
+description = "A `let`-bound anonymous struct's method returns a constructor applied to `Self` and builds it in its body, and another takes a constructor over `ptr const Self`, as the `const`-bound literal's methods do (RUE-2607)"
+source = """
+fn Opt(comptime T: type) -> type { enum { Some(T), None } }
+fn W(comptime T: type) -> type { struct { v: T } }
+fn main() -> i32 {
+    let I = struct {
+        s: i64,
+        fn wrap(self) -> W(Self) { W(Self) { v: self } }
+        fn pick(self, p: Opt(ptr const Self)) -> i64 { match p { _ => self.s } }
+    };
+    let w = I { s: 6 }.wrap();
+    @intCast(w.v.s) + @size_of(W(I))
+}
+"""
+exit_code = 14
+
+[[case]]
+name = "let_bound_struct_passes_self_by_value_to_constructors_that_do_not_contain_it"
+spec = ["3.0:5", "4.14:22", "6.4:18"]
+description = "A `let`-bound anonymous struct may pass `Self` by value to a constructor whose enum holds it behind a pointer, to one that ignores it, and to one that selects another type (RUE-2607)"
+source = """
+const NO: bool = false;
+fn Link(comptime T: type) -> type { enum { Cons(ptr const T), Nil } }
+fn Ph(comptime T: type) -> type { struct { x: i32 } }
+fn Pick(comptime b: bool, comptime T: type) -> type { if b { T } else { i32 } }
+fn main() -> i32 {
+    let I = struct {
+        v: i32,
+        e: Link(Self),
+        p: Ph(Self),
+        w: Pick(NO, Self),
+        fn tail(self) -> i32 { let K = Link(Self); match self.e { K.Cons(_) => 1, K.Nil => self.v } }
+    };
+    let K = Link(I);
+    let i = I { v: 9, e: K.Nil, p: Ph(I) { x: 20 }, w: 3 };
+    i.tail() + i.p.x + i.w + @size_of(I)
+}
+"""
+exit_code = 64
+
+[[case]]
+name = "local_struct_applies_a_constructor_to_self_in_every_body_kind"
+spec = ["4.14:22", "6.4:18"]
+description = "A local anonymous struct applies a constructor to `ptr const Self` in a type constructor's body, in each specialization of a generic function, and in the methods of a named and of a local struct (RUE-2607)"
+source = """
+fn Opt(comptime T: type) -> type { enum { Some(T), None } }
+fn W(comptime T: type) -> type { struct { v: T } }
+fn G(comptime T: type) -> type { let L = struct { v: T, n: Opt(ptr const Self) }; L }
+fn f(comptime T: type) -> i32 { let I = struct { v: T, n: Opt(ptr const Self) }; @size_of(I) + @size_of(W(I)) }
+struct P { a: i8, fn m(self) -> i32 { let J = struct { q: i8, n: Opt(ptr const Self) }; @size_of(J) } }
+fn main() -> i32 {
+    let I = struct { s: i8, fn m(self) -> i32 { let J = struct { q: i64, n: Opt(ptr const Self) }; @size_of(J) } };
+    @size_of(G(i8)) + f(i64) + f(i8) + P { a: 1 }.m() + I { s: 1 }.m()
+}
+"""
+exit_code = 168
+
+[[case]]
+name = "comptime_block_struct_applies_a_constructor_to_a_pointer_to_self"
+spec = ["4.14:22", "4.14:28", "6.4:18"]
+description = "An anonymous struct local to a `comptime` block applies a constructor to `ptr const Self` and is then a constructor argument, as a `const`-bound literal is (RUE-2607)"
+source = """
+fn Opt(comptime T: type) -> type { enum { Some(T), None } }
+fn W(comptime T: type) -> type { struct { v: T } }
+fn size(comptime T: type) -> i32 { 3 }
+fn main() -> i32 {
+    let n = comptime {
+        let I = struct { v: i64, next: Opt(ptr const Self) };
+        let J = struct { v: i64, w: W(ptr const Self) };
+        size(I) + size(W(J))
+    };
+    n
+}
+"""
+exit_code = 6
