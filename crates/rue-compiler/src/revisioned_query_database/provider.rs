@@ -1267,13 +1267,13 @@ impl rue_air::DurableBodyLookupSource<crate::StableDefinitionKey, ModuleId>
         definition: &crate::StableDefinitionKey,
         type_arguments: &[(Arc<str>, crate::DurableType)],
         value_arguments: &[(Arc<str>, crate::DurableConstValue)],
-        local: &[rue_air::SemanticProducedAnonymousNominal],
-        declared: &[crate::AnonymousNominalKey],
+        loan: rue_air::DurableLocalNominalLoan<'_, crate::StableDefinitionKey, ModuleId>,
         definitions: &[(rue_air::SemanticDefinitionToken, crate::StableDefinitionKey)],
         modules: &[(rue_air::SemanticModuleToken, ModuleId)],
     ) -> rue_air::DurableComptimeCallOutcome<crate::StableDefinitionKey, ModuleId> {
         let definitions = definitions.iter().cloned().collect::<AHashMap<_, _>>();
         let modules = modules.iter().cloned().collect::<AHashMap<_, _>>();
+        let rue_air::DurableLocalNominalLoan { local, declared } = loan;
         let Ok(local) = project_provider_produced_anonymous_nominals(local, &definitions, &modules)
         else {
             return rue_air::DurableComptimeCallOutcome::NotReduced;
