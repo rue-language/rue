@@ -453,7 +453,28 @@ class Client:
         # which matters only when there are no successes at all.
         scheduled = successful
         if successful == 0:
-            scheduled = int(self._runs(name).get("total_count", 0))
+            recent = self._runs(name, per_page="100")
+            total = recent.get("total_count") if isinstance(recent, dict) else None
+            runs = recent.get("workflow_runs") if isinstance(recent, dict) else None
+            if (
+                type(total) is not int
+                or total < 0
+                or not isinstance(runs, list)
+                or (total > 0 and not runs)
+                or any(not isinstance(run, dict) for run in runs)
+            ):
+                raise TransportError(
+                    f"GET scheduled history for {name} -> malformed response"
+                )
+            if any(run.get("conclusion") == "success" for run in runs):
+                raise TransportError(
+                    f"GET scheduled history for {name} -> inconsistent success history"
+                )
+            if any(not isinstance(run.get("conclusion"), str) for run in runs):
+                raise TransportError(
+                    f"GET scheduled history for {name} -> incomplete response"
+                )
+            scheduled = total
 
         return History(
             state=states[name],

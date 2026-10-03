@@ -53,6 +53,13 @@ not add daily comments; a recurrence after the issue closes creates a new
 issue. This makes the escalation visible in the work queue without changing
 which scheduled problems block a merge.
 
+The history reader first asks GitHub for successful scheduled runs. When that
+filtered count is zero, it checks the 100 most recent unfiltered scheduled runs
+before deciding that a workflow has never succeeded. A success in that page,
+or an unavailable, malformed, or incomplete fallback response, makes the
+history inconclusive and warns without blocking. Workflows with a reported
+success keep the one-query fast path.
+
 The reporter escalates never-succeeded safeguards, last-success staleness past
 the existing advisory window, and disabled workflows. Single failed runs,
 new schedules, expired waivers, and unknown API history do not create issues.

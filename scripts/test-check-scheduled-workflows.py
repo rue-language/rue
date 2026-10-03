@@ -405,6 +405,85 @@ class ClientTests(unittest.TestCase):
         csw.Client(transport, "r/r").history("fuzz.yml")
         self.assertEqual(sum(1 for u in transport.urls if "/runs?" in u), 1)
 
+    def test_a_success_in_recent_unfiltered_history_is_inconclusive(self):
+        """The filtered count can lag the unfiltered run listing."""
+        transport = MockTransport(
+            {
+                "actions/workflows?": LISTING,
+                "status=success": {"total_count": 0, "workflow_runs": []},
+                "per_page=100": {
+                    "total_count": 8,
+                    "workflow_runs": [
+                        {"event": "schedule", "conclusion": "failure"},
+                        {"event": "schedule", "conclusion": "success"},
+                    ],
+                },
+            }
+        )
+        report = csw.check(
+            [workflow("fuzz.yml")], csw.Client(transport, "r/r"), now=NOW
+        )
+        self.assertFalse(any(finding.blocks for finding in report.findings))
+        self.assertTrue(any("inconsistent success history" in warning
+                            for warning in report.warnings))
+        fallback = next(
+            url for url in transport.urls if "/runs?" in url and "per_page=100" in url
+        )
+        self.assertIn("event=schedule", fallback)
+
+    def test_a_page_of_failures_keeps_the_never_succeeded_block(self):
+        transport = MockTransport(
+            {
+                "actions/workflows?": LISTING,
+                "status=success": {"total_count": 0, "workflow_runs": []},
+                "per_page=100": {
+                    "total_count": 8,
+                    "workflow_runs": [
+                        {"event": "schedule", "conclusion": "failure"},
+                        {"event": "schedule", "conclusion": "cancelled"},
+                    ],
+                },
+            }
+        )
+        report = csw.check(
+            [workflow("fuzz.yml")], csw.Client(transport, "r/r"), now=NOW
+        )
+        self.assertTrue(any(finding.blocks for finding in report.findings))
+
+    def test_an_empty_scheduled_history_is_still_a_never_fired_warning(self):
+        transport = MockTransport(
+            {
+                "actions/workflows?": LISTING,
+                "status=success": {"total_count": 0, "workflow_runs": []},
+                "per_page=100": {"total_count": 0, "workflow_runs": []},
+            }
+        )
+        result = csw.Client(transport, "r/r").history("fuzz.yml")
+        finding = csw.classify(workflow("fuzz.yml"), result, NOW)
+        self.assertEqual(finding.severity, csw.WARN)
+        self.assertIn("never run", finding.summary)
+
+    def test_an_unavailable_or_malformed_fallback_cannot_block(self):
+        for response in [
+            csw.TransportError("HTTP 503"),
+            {"total_count": "8", "workflow_runs": []},
+            {"total_count": 8, "workflow_runs": []},
+            {"total_count": 8, "workflow_runs": [{"status": "in_progress"}]},
+        ]:
+            with self.subTest(response=response):
+                transport = MockTransport(
+                    {
+                        "actions/workflows?": LISTING,
+                        "status=success": {"total_count": 0, "workflow_runs": []},
+                        "per_page=100": response,
+                    }
+                )
+                report = csw.check(
+                    [workflow("fuzz.yml")], csw.Client(transport, "r/r"), now=NOW
+                )
+                self.assertFalse(any(finding.blocks for finding in report.findings))
+                self.assertTrue(report.warnings)
+
     def test_state_listing_is_fetched_once_for_all_workflows(self):
         transport = MockTransport(
             {"actions/workflows?": LISTING, "status=success": {"total_count": 1,
