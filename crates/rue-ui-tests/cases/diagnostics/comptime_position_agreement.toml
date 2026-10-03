@@ -330,3 +330,72 @@ fn main() -> i32 { 0 }
 aux_files = { "lib.rue" = "// padding\n// padding\npub const B: i8 = -129;\n" }
 compile_fail = true
 error_contains = ["E0800", "literal value -129 is out of range for type 'i8'", "lib.rue:3:19"]
+
+# Scalar values returned by declaration-time evaluation can fail the declared
+# integer range after evaluation. Keep the diagnostic on the value expression
+# just as the body path does, including when the declaration comes from import.
+[[case]]
+name = "positive_scalar_out_of_range_const_points_at_literal_u8"
+source = """
+const X: u8 = 256;
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+expected_error = """
+error: [E0800]: literal value 256 is out of range for type 'u8'
+ --> test.rue:1:15
+  |
+1 | const X: u8 = 256;
+  |               ^^^
+  |
+"""
+
+[[case]]
+name = "positive_scalar_out_of_range_const_points_at_literal_i8"
+source = """
+const X: i8 = 128;
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+expected_error = """
+error: [E0800]: literal value 128 is out of range for type 'i8'
+ --> test.rue:1:15
+  |
+1 | const X: i8 = 128;
+  |               ^^^
+  |
+"""
+
+[[case]]
+name = "positive_scalar_out_of_range_const_points_at_initializer_expression"
+source = """
+const X: u8 = 300 + 1;
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+expected_error = """
+error: [E0800]: literal value 300 is out of range for type 'u8'
+ --> test.rue:1:15
+  |
+1 | const X: u8 = 300 + 1;
+  |               ^^^^^^^
+  |
+"""
+
+[[case]]
+name = "positive_scalar_out_of_range_imported_const_points_at_literal"
+source = """
+const lib = @import("lib.rue");
+const A: i8 = lib.B;
+fn main() -> i32 { 0 }
+"""
+aux_files = { "lib.rue" = "pub const B: u8 = 256;\n" }
+compile_fail = true
+expected_error = """
+error: [E0800]: literal value 256 is out of range for type 'u8'
+ --> lib.rue:1:19
+  |
+1 | pub const B: u8 = 256;
+  |                   ^^^
+  |
+"""
