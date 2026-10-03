@@ -29,9 +29,9 @@ use rue_rir::{InstData, InstRef, RepeatCount, Rir, RirTypeSyntaxNode, RirTypeSyn
 use rue_rir::{RirArgMode, RirCallArg};
 use rue_span::{FileId, Span};
 
-use ahash::AHashMap;
 #[cfg(test)]
 use ahash::RandomState;
+use ahash::{AHashMap, AHashSet};
 #[cfg(test)]
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -549,6 +549,12 @@ pub struct ConstraintGenerator<'a> {
     /// During the probe, selector bodies are visited only for diagnostics and
     /// their result joins are deferred until a canonical selection is known.
     staged_comptime_selectors: bool,
+    /// The `-> type` calls whose result a staged pass left open because the
+    /// pre-pass had no fact for them yet (see
+    /// [`Self::type_call_fact_pending`]). Such a call is still a type value
+    /// or a module, never a runtime value, so an array repeat over one is
+    /// the array TYPE (RUE-2621).
+    open_type_calls: AHashSet<InstRef>,
     /// A frontier pass advances exactly one source-graph segment.  Even when
     /// a selector fact is already known, stop at that selector so its selected
     /// body is enqueued as a separate checkpoint rather than regenerating the
@@ -760,6 +766,7 @@ impl<'a> ConstraintGenerator<'a> {
             comptime_values: None,
             comptime_selections: None,
             staged_comptime_selectors: false,
+            open_type_calls: AHashSet::new(),
             comptime_frontier_mode: false,
             comptime_argument_values: None,
             generic_call_return_types: None,
@@ -828,6 +835,7 @@ impl<'a> ConstraintGenerator<'a> {
             comptime_values: None,
             comptime_selections: None,
             staged_comptime_selectors: false,
+            open_type_calls: AHashSet::new(),
             comptime_frontier_mode: false,
             comptime_argument_values: None,
             generic_call_return_types: None,
@@ -3626,8 +3634,12 @@ impl<'a> ConstraintGenerator<'a> {
                     // `[[i32; 2]; 3]` and a method's `comptime T: type`
                     // argument see a type. Sema reduces it to a type
                     // constant or rejects it. A specialization's type
-                    // parameter (`[T; 3]`) is a type value too.
-                    _ if value_info.ty == InferType::Concrete(Type::COMPTIME_TYPE) => {
+                    // parameter (`[T; 3]`) is a type value too, and so is a
+                    // `-> type` call whose result a staged pass left open:
+                    // `[R(T); 2]` with `R` minting a struct (RUE-2621).
+                    _ if value_info.ty == InferType::Concrete(Type::COMPTIME_TYPE)
+                        || self.open_type_calls.contains(value) =>
+                    {
                         InferType::Concrete(Type::COMPTIME_TYPE)
                     }
                     Some(length) => InferType::Array {
@@ -5266,19 +5278,22 @@ impl<'a> ConstraintGenerator<'a> {
             // `pick(comptime b: bool) -> type { if b { @import(..) } .. }`),
             // and is left open in a staged pass that has no fact for the call
             // yet, as the zero-parameter form is (RUE-2602).
-            self.module_call_result(call)
-                .or_else(|| {
-                    self.substituted_generic_return_type(func, &type_subst, &value_subst)
-                        .filter(|ty| {
-                            *ty != InferType::Concrete(Type::COMPTIME_TYPE)
-                                || !self.type_call_fact_pending(call)
-                        })
-                })
-                .or_else(|| {
-                    self.generic_call_return_types
-                        .and_then(|types| types.get(&call).copied())
-                        .map(|ty| self.type_to_infer(ty))
-                })
+            if let Some(module) = self.module_call_result(call) {
+                return module;
+            }
+            match self.substituted_generic_return_type(func, &type_subst, &value_subst) {
+                Some(ty)
+                    if ty == InferType::Concrete(Type::COMPTIME_TYPE)
+                        && self.type_call_fact_pending(call) =>
+                {
+                    return self.open_type_call_result(call);
+                }
+                Some(ty) => return ty,
+                None => {}
+            }
+            self.generic_call_return_types
+                .and_then(|types| types.get(&call).copied())
+                .map(|ty| self.type_to_infer(ty))
                 .unwrap_or_else(|| InferType::Var(self.fresh_var()))
         } else {
             func.return_type.clone()
@@ -5314,9 +5329,17 @@ impl<'a> ConstraintGenerator<'a> {
             && nullary
             && self.type_call_fact_pending(call)
         {
-            return InferType::Var(self.fresh_var());
+            return self.open_type_call_result(call);
         }
         return_type.clone()
+    }
+
+    /// The open result of a `-> type` call a staged pass has no pre-pass
+    /// fact for yet: a fresh variable, with the call remembered as a type
+    /// call so an array repeat over it is still the array type (RUE-2621).
+    fn open_type_call_result(&mut self, call: InstRef) -> InferType {
+        self.open_type_calls.insert(call);
+        InferType::Var(self.fresh_var())
     }
 
     /// Whether this is a staged pass that has no pre-pass fact for `call`
