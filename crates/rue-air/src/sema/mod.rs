@@ -145,9 +145,9 @@ pub use body_identity::{
 pub use call_resolution::ProviderCallFacts;
 pub use provider_body_host::{
     DurableBodyLookupSource, DurableBodyModuleBinding, DurableBodySourceLocator,
-    DurableComptimeCallOutcome, DurableComptimeDiagnostic, DurableReducedComptimeCall,
-    DurableTryProducer, ProviderAnonymousBody, ProviderBodyWork, ProviderOrdinaryBody,
-    ProviderSpecializedBody, ProviderWellKnownOptionFacts,
+    DurableComptimeCallOutcome, DurableComptimeDiagnostic, DurableLocalNominalLoan,
+    DurableReducedComptimeCall, DurableTryProducer, ProviderAnonymousBody, ProviderBodyWork,
+    ProviderOrdinaryBody, ProviderSpecializedBody, ProviderWellKnownOptionFacts,
     SemanticProducedAnonymousMethodSignature, SemanticProducedAnonymousMethodType,
     SemanticProducedAnonymousNominal, SemanticProducedAnonymousNominalShape,
     analyze_provider_anonymous_body, analyze_provider_ordinary_body,

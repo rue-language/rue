@@ -904,6 +904,17 @@ pub struct DurableBodySourceLocator {
     pub source_text: Arc<String>,
 }
 
+/// The anonymous nominals a runtime body passes to a comptime call while its
+/// own analysis is still running: `local` lends the facts of the finished
+/// ones, as the body will export them (RUE-2590), and `declared` names by
+/// identity alone the ones still being declared, `I` while `let I = struct {
+/// next: Opt(ptr const Self) }` resolves its own members (RUE-2607).
+#[derive(Clone, Copy)]
+pub struct DurableLocalNominalLoan<'a, K, M> {
+    pub local: &'a [crate::SemanticProducedAnonymousNominal],
+    pub declared: &'a [crate::AnonymousNominalKey<K, M>],
+}
+
 #[derive(Clone)]
 pub struct DurableReducedComptimeCall<K, M> {
     pub result: crate::SemanticComptimeCallResult<
@@ -1050,19 +1061,16 @@ pub trait DurableBodyLookupSource<K, M>: Clone {
     /// anonymous nominals the calling runtime body is still producing (`let
     /// I = struct { .. }; W(I)`, RUE-2590). Such a body publishes its
     /// nominals only when its analysis finishes, so the call cannot ask their
-    /// producer for them; `local` lends their facts, as the body would export
-    /// them, with the tokens they name. `declared` names the ones still being
-    /// declared, `I` while `let I = struct { next: Opt(ptr const Self) }`
-    /// resolves its own members (RUE-2607): they have no facts yet, so the
+    /// producer for them; `loan` lends the facts of the finished ones, as
+    /// the body would export them, with the tokens they name, and names the
+    /// ones still being declared (RUE-2607), which have no facts yet, so the
     /// call takes them by identity alone.
-    #[allow(clippy::too_many_arguments)]
     fn reduce_comptime_call_with_local_nominals(
         &self,
         _definition: &K,
         _type_arguments: &[(Arc<str>, crate::SemanticImportType<K, M>)],
         _value_arguments: &[(Arc<str>, crate::SemanticImportConstValue<K, M>)],
-        _local: &[crate::SemanticProducedAnonymousNominal],
-        _declared: &[crate::AnonymousNominalKey<K, M>],
+        _loan: DurableLocalNominalLoan<'_, K, M>,
         _definitions: &[(SemanticDefinitionToken, K)],
         _modules: &[(SemanticModuleToken, M)],
     ) -> DurableComptimeCallOutcome<K, M> {
@@ -3503,8 +3511,10 @@ where
             definition,
             type_arguments,
             value_arguments,
-            &exports,
-            &declared,
+            DurableLocalNominalLoan {
+                local: &exports,
+                declared: &declared,
+            },
             &definitions,
             &modules,
         ))
