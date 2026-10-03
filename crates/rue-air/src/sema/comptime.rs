@@ -3511,8 +3511,8 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
     /// literals) is a `T`, as run time types it. A typed position that reads
     /// it (a `let` annotation, a structural slot, a call argument, a typed
     /// block's tail) then checks that type (RUE-2617). An `if` or `match`
-    /// whose arms declare two different types is the body path's E0206 on
-    /// the later arm. Any other value is returned as is.
+    /// has the type of the arm it selected. Any other value is returned as
+    /// is.
     fn declared_integer_value(
         &mut self,
         root: InstRef,
@@ -3528,77 +3528,27 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         // The region's type is the value's run time type even where the
         // evaluator typed its operations at the expected type instead.
         match self.declared_result_type(root, env) {
-            Ok(Some(ty)) => ComptimeOutcome::Known(H::Value::integer_typed(integer, Some(ty))),
-            Ok(None) => ComptimeOutcome::Known(value),
-            Err((arm, expected, found)) => {
-                let site = self.diagnostic_site(self.program_rir().get(arm).span);
-                let found = H::Value::integer_typed(0, Some(found));
-                host_value!(self.host.admit_comptime_child(found, &expected, &site));
-                ComptimeOutcome::Known(value)
-            }
+            Some(ty) => ComptimeOutcome::Known(H::Value::integer_typed(integer, Some(ty))),
+            None => ComptimeOutcome::Known(value),
         }
     }
 
     /// The declared type of `root`'s value, if a declared local decides it:
     /// its arithmetic region's checked type, or for an `if` or `match` the
-    /// type its arms declare, since run time gives every arm one type. Arms
-    /// that declare two different types are an error at the later arm,
-    /// returned with the earlier arm's type and its own, except in a called
-    /// function's body (see below). A `match` arm whose
-    /// pattern can bind a name is not looked into: the binding can shadow a
-    /// declared local.
+    /// type of the arm it selected, which run time gives the whole
+    /// expression. An arm that was not selected is not looked at (4.14:19).
     fn declared_result_type(
         &self,
         root: InstRef,
         env: &ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
-    ) -> Result<Option<H::Type>, (InstRef, H::Type, H::Type)> {
-        let arms: Vec<InstRef> = match &self.program_rir().get(root).data {
-            InstData::Branch {
-                then_block,
-                else_block: Some(else_block),
-                ..
-            } => vec![*then_block, *else_block],
-            InstData::Match { arms, .. } => self
-                .program_rir()
-                .match_arms(arms)
-                .iter()
-                .filter(|(pattern, _)| {
-                    matches!(
-                        pattern.to_owned(),
-                        rue_rir::RirPattern::Wildcard(_)
-                            | rue_rir::RirPattern::Int { .. }
-                            | rue_rir::RirPattern::Bool(..)
-                    )
-                })
-                .map(|(_, body)| body)
-                .collect(),
-            _ => return Ok(self.declared_region(root, None, env).1),
-        };
-        // Inside a called function's body an `if` or `match` over a
-        // compile-time value selects its arm, and the other arms are not
-        // type-checked (4.14:19); which arm that was is not known here, so
-        // arms that disagree there give no type rather than an error.
-        let in_call = self.frames.iter().any(|frame| frame.name.is_some());
-        let mut declared: Option<H::Type> = None;
-        for arm in arms {
-            let ty = match self.declared_result_type(arm, env) {
-                Ok(Some(ty)) => ty,
-                Ok(None) => continue,
-                Err(_) if in_call => return Ok(None),
-                Err(conflict) => return Err(conflict),
-            };
-            match &declared {
-                Some(first) if !self.same_declared_type(first, &ty) => {
-                    if in_call {
-                        return Ok(None);
-                    }
-                    return Err((arm, first.clone(), ty));
-                }
-                Some(_) => {}
-                None => declared = Some(ty),
+    ) -> Option<H::Type> {
+        match &self.program_rir().get(root).data {
+            InstData::Branch { .. } | InstData::Match { .. } => {
+                let arm = *env.selected_arms.get(&root)?;
+                self.declared_result_type(arm, env)
             }
+            _ => self.declared_region(root, None, env).1,
         }
-        Ok(declared)
     }
 
     /// Whether an instruction joins the arithmetic region of its parent: the
@@ -4176,7 +4126,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 cond,
                 then_block,
                 else_block,
-            } => self.eval_branch(cond, then_block, else_block, literal_type, env),
+            } => self.eval_branch(inst_ref, cond, then_block, else_block, literal_type, env),
             InstData::Match { .. } => {
                 env.literal_type = literal_type;
                 self.eval_dispatch(inst_ref, None, env)
@@ -4654,14 +4604,10 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         // An unannotated binding of an `if` or `match` whose arms read a
         // local of declared type has that type, as its region would.
         if annotation.is_none() && declared.is_none() && value.as_integer().is_some() {
-            match self.declared_result_type(init, env) {
-                Ok(Some(ty)) if fits(&ty) => declared = Some(ty),
-                Ok(_) => {}
-                Err((arm, expected, found)) => {
-                    let site = self.diagnostic_site(self.program_rir().get(arm).span);
-                    let found = H::Value::integer_typed(0, Some(found));
-                    host_value!(self.host.admit_comptime_child(found, &expected, &site));
-                }
+            if let Some(ty) = self.declared_result_type(init, env)
+                && fits(&ty)
+            {
+                declared = Some(ty);
             }
         }
         // An unannotated binding of literal arithmetic has no type of its
@@ -4730,19 +4676,28 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
     #[inline(never)]
     fn eval_branch(
         &mut self,
+        branch: InstRef,
         cond: InstRef,
         then_block: InstRef,
         else_block: Option<InstRef>,
         literal_type: Option<H::Type>,
         env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
     ) -> ComptimeOutcome<H::Value, H::Failure> {
+        // The selected arm is recorded once it has run, so a recursive
+        // evaluation of the same `if` inside it cannot leave its own choice.
         match self.eval(cond, env) {
             ComptimeOutcome::Known(value) if value.as_boolean() == Some(true) => {
-                self.eval_typed(then_block, literal_type, env)
+                let result = self.eval_typed(then_block, literal_type, env);
+                env.selected_arms.insert(branch, then_block);
+                result
             }
             ComptimeOutcome::Known(value) if value.as_boolean() == Some(false) => {
                 match else_block {
-                    Some(else_block) => self.eval_typed(else_block, literal_type, env),
+                    Some(else_block) => {
+                        let result = self.eval_typed(else_block, literal_type, env);
+                        env.selected_arms.insert(branch, else_block);
+                        result
+                    }
                     None => ComptimeOutcome::Known(H::Value::unit()),
                 }
             }
@@ -5694,11 +5649,17 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                             // type, so it hides one it shadows.
                             let saved_declared = (!env.declared_integer_locals.is_empty())
                                 .then(|| env.declared_integer_locals.clone());
+                            let binds = !bindings.is_empty();
                             for (name, value) in bindings {
                                 env.declared_integer_locals.remove(&name);
                                 previous.push((name.clone(), env.locals.insert(name, value)));
                             }
                             let result = self.eval_typed(*body, literal_type.clone(), env);
+                            if binds {
+                                env.selected_arms.remove(&inst_ref);
+                            } else {
+                                env.selected_arms.insert(inst_ref, *body);
+                            }
                             if let Some(saved_declared) = saved_declared {
                                 env.declared_integer_locals = saved_declared;
                             }
