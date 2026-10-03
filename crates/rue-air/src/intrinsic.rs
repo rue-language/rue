@@ -667,6 +667,14 @@ impl IntrinsicOperation {
         matches!(self, Self::Raw | Self::RawMut | Self::FieldPtr)
     }
 
+    /// Whether the operation's result is a value read out of memory through
+    /// its pointer operand, so that its result type is the pointee type
+    /// (9.2:6b, 9.2:14k). A read whose pointee type is uninhabited has no
+    /// value to produce and cannot complete (RUE-2548).
+    pub fn reads_pointee(self) -> bool {
+        matches!(self, Self::PtrRead | Self::PtrReadUnaligned)
+    }
+
     /// Runtime-backed operations retain their ABI identity in this enum. Pure
     /// operations intentionally return `None` and never acquire a runtime
     /// metadata side channel.
