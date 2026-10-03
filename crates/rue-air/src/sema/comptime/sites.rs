@@ -208,6 +208,10 @@ where
     /// region is not checked. A region is the arithmetic and comparison
     /// operators connected to one root; see `ComptimeEngine::declared_region`.
     pub declared_integer_checks: AHashMap<InstRef, Option<T>>,
+    /// The declared type of the region each operation being evaluated
+    /// belongs to, when its leftmost declared local gives it one: every
+    /// operand of the operation must have that type (RUE-2617).
+    pub declared_region_types: AHashMap<InstRef, T>,
     /// The declared type the next evaluated expression's value takes: a
     /// structural literal's slot, a `let` annotation, a call argument's
     /// parameter or a call's return type. It flows only into the result
@@ -285,6 +289,7 @@ where
             expected_result: None,
             declared_integer_locals: AHashMap::new(),
             declared_integer_checks: AHashMap::new(),
+            declared_region_types: AHashMap::new(),
             literal_type: None,
         }
     }
@@ -308,6 +313,7 @@ where
             expected_result: None,
             declared_integer_locals: AHashMap::new(),
             declared_integer_checks: AHashMap::new(),
+            declared_region_types: AHashMap::new(),
             literal_type: None,
         }
     }
