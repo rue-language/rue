@@ -313,3 +313,190 @@ error: [E0206]: type mismatch: expected bool, found {integer}
   |
 error: aborting due to 2 previous errors
 """
+
+[[case]]
+name = "staged_if_on_comptime_parameter_reports_each_independent_error"
+description = "In a body specialized on a comptime parameter, an `if` on it does not stop the body at its first error: the mismatches before, inside each selected arm, and after it are all reported, each once across the two specializations."
+source = """
+fn g(comptime n: i32) -> i32 {
+    let a: bool = 1;
+    if n > 0 { let q: bool = 2; } else { let r: bool = 3; }
+    let b: u8 = true;
+    n
+}
+fn main() -> i32 { g(1) + g(0) }
+"""
+compile_fail = true
+expected_error = """
+error: [E0206]: type mismatch: expected bool, found {integer}
+ --> test.rue:2:5
+  |
+2 |     let a: bool = 1;
+  |     ^^^^^^^^^^^^^^^^
+  |
+error: [E0206]: type mismatch: expected bool, found {integer}
+ --> test.rue:3:16
+  |
+3 |     if n > 0 { let q: bool = 2; } else { let r: bool = 3; }
+  |                ^^^^^^^^^^^^^^^^
+  |
+error: [E0206]: type mismatch: expected bool, found {integer}
+ --> test.rue:3:42
+  |
+3 |     if n > 0 { let q: bool = 2; } else { let r: bool = 3; }
+  |                                          ^^^^^^^^^^^^^^^^
+  |
+error: [E0206]: type mismatch: expected u8, found bool
+ --> test.rue:4:5
+  |
+4 |     let b: u8 = true;
+  |     ^^^^^^^^^^^^^^^^^
+  |
+error: aborting due to 4 previous errors
+"""
+
+[[case]]
+name = "staged_selected_body_with_a_nested_selector_reports_each_independent_error"
+description = "A selected arm that itself selects reports its own mismatch beside the body's others; the arm its nested `if` does not select is not analyzed."
+source = """
+fn g(comptime n: i32) -> i32 {
+    let a: bool = 1;
+    if n > 0 {
+        let q: bool = 2;
+        if n > 1 { let z: u8 = true; }
+    }
+    let b: u8 = true;
+    n
+}
+fn main() -> i32 { g(1) }
+"""
+compile_fail = true
+expected_error = """
+error: [E0206]: type mismatch: expected bool, found {integer}
+ --> test.rue:2:5
+  |
+2 |     let a: bool = 1;
+  |     ^^^^^^^^^^^^^^^^
+  |
+error: [E0206]: type mismatch: expected bool, found {integer}
+ --> test.rue:4:9
+  |
+4 |         let q: bool = 2;
+  |         ^^^^^^^^^^^^^^^^
+  |
+error: [E0206]: type mismatch: expected u8, found bool
+ --> test.rue:7:5
+  |
+7 |     let b: u8 = true;
+  |     ^^^^^^^^^^^^^^^^^
+  |
+error: aborting due to 3 previous errors
+"""
+
+[[case]]
+name = "staged_match_on_comptime_parameter_reports_each_independent_error"
+description = "A `match` on a comptime parameter reports the selected arm's mismatch beside a later one."
+source = """
+fn g(comptime n: i32) -> i32 {
+    match n {
+        1 => { let q: bool = 2; },
+        _ => { },
+    }
+    let b: u8 = true;
+    n
+}
+fn main() -> i32 { g(1) }
+"""
+compile_fail = true
+expected_error = """
+error: [E0206]: type mismatch: expected bool, found {integer}
+ --> test.rue:3:16
+  |
+3 |         1 => { let q: bool = 2; },
+  |                ^^^^^^^^^^^^^^^^
+  |
+error: [E0206]: type mismatch: expected u8, found bool
+ --> test.rue:6:5
+  |
+6 |     let b: u8 = true;
+  |     ^^^^^^^^^^^^^^^^^
+  |
+error: aborting due to 2 previous errors
+"""
+
+[[case]]
+name = "staged_selected_mismatch_follows_an_undefined_variable"
+description = "A staged body reports a semantic error before an `if` on its comptime parameter and the selected arm's mismatch."
+source = """
+fn g(comptime n: i32) -> i32 {
+    let a: i32 = nope;
+    if n > 0 { let q: bool = 2; }
+    n
+}
+fn main() -> i32 { g(1) }
+"""
+compile_fail = true
+expected_error = """
+error: [E0201]: undefined variable 'nope'
+ --> test.rue:2:18
+  |
+2 |     let a: i32 = nope;
+  |                  ^^^^
+  |
+error: [E0206]: type mismatch: expected bool, found {integer}
+ --> test.rue:3:16
+  |
+3 |     if n > 0 { let q: bool = 2; }
+  |                ^^^^^^^^^^^^^^^^
+  |
+error: aborting due to 2 previous errors
+"""
+
+[[case]]
+name = "staged_selected_arm_reading_a_failed_binding_is_silent"
+description = "A selected arm that reads a binding whose initializer failed reports nothing of its own, as in a body that is not staged."
+source = """
+fn g(comptime n: i32) -> i32 {
+    let a: bool = 1;
+    if n > 0 { let q: u8 = a; }
+    n
+}
+fn main() -> i32 { g(1) }
+"""
+compile_fail = true
+expected_error = """
+error: [E0206]: type mismatch: expected bool, found {integer}
+ --> test.rue:2:5
+  |
+2 |     let a: bool = 1;
+  |     ^^^^^^^^^^^^^^^^
+  |
+"""
+
+[[case]]
+name = "specializations_report_a_shared_mistake_once"
+description = "Two specializations of one body report a mistake outside any comptime selection once."
+source = """
+fn g(comptime n: i32) -> i32 {
+    let a: bool = 1;
+    let b: u8 = true;
+    n
+}
+fn main() -> i32 { g(1) + g(0) }
+"""
+compile_fail = true
+expected_error = """
+error: [E0206]: type mismatch: expected bool, found {integer}
+ --> test.rue:2:5
+  |
+2 |     let a: bool = 1;
+  |     ^^^^^^^^^^^^^^^^
+  |
+error: [E0206]: type mismatch: expected u8, found bool
+ --> test.rue:3:5
+  |
+3 |     let b: u8 = true;
+  |     ^^^^^^^^^^^^^^^^^
+  |
+error: aborting due to 2 previous errors
+"""
