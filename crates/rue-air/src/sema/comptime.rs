@@ -3832,7 +3832,11 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 self.host.literal_out_of_range(value, &ty, &site),
             ));
         }
-        Ok(self.host.type_integer_semantics(&ty).is_some().then_some(ty))
+        Ok(self
+            .host
+            .type_integer_semantics(&ty)
+            .is_some()
+            .then_some(ty))
     }
 
     /// The operand an operator evaluates before anything else, when the
