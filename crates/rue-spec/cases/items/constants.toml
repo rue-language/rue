@@ -1778,16 +1778,15 @@ compile_fail = true
 error_contains = ["E0206", "expected i32, found u8", "--> test.rue:1:1"]
 
 [[case]]
-name = "const_block_if_arms_of_two_declared_types_rejected"
-spec = ["4.6:4", "6.5:2"]
-description = "`if` arms reading an i64 and an i32 local are E0206 on the second arm (RUE-2617)"
+name = "const_block_if_has_its_selected_arms_type"
+spec = ["4.6:4", "5.1:8", "6.5:2"]
+description = "An `if` whose selected arm reads an i64 local is an i64, so binding it with an `i32` annotation is E0206 on the statement (RUE-2617)"
 source = """
 const K: i32 = { let a: i64 = 5; let c: i32 = 1; let b: i32 = if true { a } else { c }; b };
 fn main() -> i32 { K }
 """
 compile_fail = true
-error_contains = ["E0206", "expected i64, found i32", "--> test.rue:1:84"]
-
+error_contains = ["E0206", "expected i32, found i64", "--> test.rue:1:50"]
 [[case]]
 name = "const_block_match_arm_of_a_declared_type_checked"
 spec = ["4.7:12", "5.1:8"]
@@ -1900,3 +1899,44 @@ const K: bool = { let x: i8 = 5; let z = 1 << 2; z + x == 9 };
 fn main() -> i32 { if K { 42 } else { 1 } }
 """
 exit_code = 42
+
+# In a function a constant calls, a value bound to an `if` or `match` over a
+# compile-time value has the type of the arm the evaluation selected, as at
+# run time; the other arm is not type-checked (4.14:19) (RUE-2617).
+
+[[case]]
+name = "const_comptime_callee_selected_arm_types_its_uses"
+spec = ["4.14:19", "4.3a:4", "6.5:2"]
+description = "In a called function, a local bound to an `if` or `match` that selected a u8 arm is a u8, so `~x` is 0 there as at run time, though the other arm reads an i64 (RUE-2617)"
+source = """
+fn g(comptime n: i32) -> bool { let a: u8 = 255; let b: i64 = 1; let x = if n > 0 { a } else { b }; ~x == 0 }
+fn h(comptime n: i32) -> bool { let a: u8 = 255; let b: i64 = 1; let x = match n { 1 => a, _ => b }; ~x == 0 }
+const A: bool = g(1);
+const B: bool = h(1);
+fn main() -> i32 { if A && B { 42 } else { 1 } }
+"""
+exit_code = 42
+
+[[case]]
+name = "const_comptime_callee_selected_arm_overflows_at_its_type"
+spec = ["4.14:19", "6.5:12"]
+description = "Adding 1 to a u8 255 selected by an `if` in a called function overflows at u8 (E1200), where run time traps (RUE-2617)"
+source = """
+fn g(comptime n: i32) -> bool { let a: u8 = 255; let b: i64 = 1; let x = if n > 0 { a } else { b }; (x + 1) > 255 }
+const K: bool = g(1);
+fn main() -> i32 { if K { 1 } else { 2 } }
+"""
+compile_fail = true
+error_contains = ["E1200", "integer overflow evaluating addition at type u8"]
+
+[[case]]
+name = "const_comptime_callee_selected_arm_checked_by_annotation"
+spec = ["4.14:19", "5.1:8"]
+description = "An `if` in a called function that selected a u8 arm is E0206 bound with an `i32` annotation, as in a function body (RUE-2617)"
+source = """
+fn f(comptime n: i32) -> i32 { let a: u8 = 255; let b: i32 = 1; let c: i32 = if n > 0 { a } else { b }; c + 1 }
+const K: i32 = f(1);
+fn main() -> i32 { K }
+"""
+compile_fail = true
+error_contains = ["E0206", "expected i32, found u8"]

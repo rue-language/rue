@@ -463,6 +463,7 @@ impl<'a>
             declared_integer_locals: AHashMap::new(),
             declared_integer_checks: AHashMap::new(),
             declared_region_types: AHashMap::new(),
+            selected_arms: AHashMap::new(),
             literal_type: None,
         }
     }

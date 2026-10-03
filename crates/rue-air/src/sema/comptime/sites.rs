@@ -212,6 +212,12 @@ where
     /// belongs to, when its leftmost declared local gives it one: every
     /// operand of the operation must have that type (RUE-2617).
     pub declared_region_types: AHashMap<InstRef, T>,
+    /// The arm each `if` or `match` last evaluated in this frame selected,
+    /// when its value can be typed by that arm alone (a `match` arm that
+    /// binds a pattern name is left out). Run time types the value by the
+    /// arm it runs; an arm that is not selected is not type-checked
+    /// (4.14:19) (RUE-2617).
+    pub selected_arms: AHashMap<InstRef, InstRef>,
     /// The declared type the next evaluated expression's value takes: a
     /// structural literal's slot, a `let` annotation, a call argument's
     /// parameter or a call's return type. It flows only into the result
@@ -290,6 +296,7 @@ where
             declared_integer_locals: AHashMap::new(),
             declared_integer_checks: AHashMap::new(),
             declared_region_types: AHashMap::new(),
+            selected_arms: AHashMap::new(),
             literal_type: None,
         }
     }
@@ -314,6 +321,7 @@ where
             declared_integer_locals: AHashMap::new(),
             declared_integer_checks: AHashMap::new(),
             declared_region_types: AHashMap::new(),
+            selected_arms: AHashMap::new(),
             literal_type: None,
         }
     }
