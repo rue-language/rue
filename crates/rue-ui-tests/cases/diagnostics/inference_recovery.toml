@@ -500,3 +500,171 @@ error: [E0206]: type mismatch: expected u8, found bool
   |
 error: aborting due to 2 previous errors
 """
+
+[[case]]
+name = "staged_body_over_the_diagnostic_budget_reports_the_first_errors_and_the_limit"
+description = "A staged body whose independent errors exceed the 100-diagnostic budget reports the first 100 in source order and then the resource limit, as an unstaged body does."
+source = """
+fn g(comptime n: i32) -> i32 {
+    let a0: bool = 0;
+    let a1: bool = 1;
+    let a2: bool = 2;
+    let a3: bool = 3;
+    let a4: bool = 4;
+    let a5: bool = 5;
+    let a6: bool = 6;
+    let a7: bool = 7;
+    let a8: bool = 8;
+    let a9: bool = 9;
+    let a10: bool = 10;
+    let a11: bool = 11;
+    let a12: bool = 12;
+    let a13: bool = 13;
+    let a14: bool = 14;
+    let a15: bool = 15;
+    let a16: bool = 16;
+    let a17: bool = 17;
+    let a18: bool = 18;
+    let a19: bool = 19;
+    let a20: bool = 20;
+    let a21: bool = 21;
+    let a22: bool = 22;
+    let a23: bool = 23;
+    let a24: bool = 24;
+    let a25: bool = 25;
+    let a26: bool = 26;
+    let a27: bool = 27;
+    let a28: bool = 28;
+    let a29: bool = 29;
+    let a30: bool = 30;
+    let a31: bool = 31;
+    let a32: bool = 32;
+    let a33: bool = 33;
+    let a34: bool = 34;
+    let a35: bool = 35;
+    let a36: bool = 36;
+    let a37: bool = 37;
+    let a38: bool = 38;
+    let a39: bool = 39;
+    let a40: bool = 40;
+    let a41: bool = 41;
+    let a42: bool = 42;
+    let a43: bool = 43;
+    let a44: bool = 44;
+    let a45: bool = 45;
+    let a46: bool = 46;
+    let a47: bool = 47;
+    let a48: bool = 48;
+    let a49: bool = 49;
+    let a50: bool = 50;
+    let a51: bool = 51;
+    let a52: bool = 52;
+    let a53: bool = 53;
+    let a54: bool = 54;
+    let a55: bool = 55;
+    let a56: bool = 56;
+    let a57: bool = 57;
+    let a58: bool = 58;
+    let a59: bool = 59;
+    let a60: bool = 60;
+    let a61: bool = 61;
+    let a62: bool = 62;
+    let a63: bool = 63;
+    let a64: bool = 64;
+    let a65: bool = 65;
+    let a66: bool = 66;
+    let a67: bool = 67;
+    let a68: bool = 68;
+    let a69: bool = 69;
+    let a70: bool = 70;
+    let a71: bool = 71;
+    let a72: bool = 72;
+    let a73: bool = 73;
+    let a74: bool = 74;
+    let a75: bool = 75;
+    let a76: bool = 76;
+    let a77: bool = 77;
+    let a78: bool = 78;
+    let a79: bool = 79;
+    let a80: bool = 80;
+    let a81: bool = 81;
+    let a82: bool = 82;
+    let a83: bool = 83;
+    let a84: bool = 84;
+    let a85: bool = 85;
+    let a86: bool = 86;
+    let a87: bool = 87;
+    let a88: bool = 88;
+    let a89: bool = 89;
+    let a90: bool = 90;
+    let a91: bool = 91;
+    let a92: bool = 92;
+    let a93: bool = 93;
+    let a94: bool = 94;
+    let a95: bool = 95;
+    let a96: bool = 96;
+    let a97: bool = 97;
+    let a98: bool = 98;
+    let a99: bool = 99;
+    let a100: bool = 100;
+    let a101: bool = 101;
+    let a102: bool = 102;
+    let a103: bool = 103;
+    let a104: bool = 104;
+    let a105: bool = 105;
+    let a106: bool = 106;
+    let a107: bool = 107;
+    let a108: bool = 108;
+    let a109: bool = 109;
+    let a110: bool = 110;
+    let a111: bool = 111;
+    let a112: bool = 112;
+    let a113: bool = 113;
+    let a114: bool = 114;
+    let a115: bool = 115;
+    let a116: bool = 116;
+    let a117: bool = 117;
+    let a118: bool = 118;
+    let a119: bool = 119;
+    let a120: bool = 120;
+    let a121: bool = 121;
+    let a122: bool = 122;
+    let a123: bool = 123;
+    let a124: bool = 124;
+    let a125: bool = 125;
+    let a126: bool = 126;
+    let a127: bool = 127;
+    let a128: bool = 128;
+    let a129: bool = 129;
+    let a130: bool = 130;
+    let a131: bool = 131;
+    let a132: bool = 132;
+    let a133: bool = 133;
+    let a134: bool = 134;
+    let a135: bool = 135;
+    let a136: bool = 136;
+    let a137: bool = 137;
+    let a138: bool = 138;
+    let a139: bool = 139;
+    let a140: bool = 140;
+    let a141: bool = 141;
+    let a142: bool = 142;
+    let a143: bool = 143;
+    let a144: bool = 144;
+    let a145: bool = 145;
+    let a146: bool = 146;
+    let a147: bool = 147;
+    let a148: bool = 148;
+    let a149: bool = 149;
+    if n > 0 { let q: bool = 2; if n > 1 { let z: u8 = 1; } }
+    n
+}
+fn main() -> i32 { g(1) }
+"""
+compile_fail = true
+error_contains = [
+    "[E1401]: compiler resource limit exceeded: body analysis exceeded the recovery diagnostic limit of 100",
+    "--> test.rue:2:5",
+    "--> test.rue:101:5",
+    "error: aborting due to 101 previous errors",
+]
