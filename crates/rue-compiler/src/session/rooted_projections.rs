@@ -3637,6 +3637,26 @@ fn semantic_diagnostic_input(
     )
 }
 
+/// Each diagnostic once, at its first occurrence. A body is analyzed once per
+/// specialization, so a diagnostic about source every specialization shares
+/// (`g(1) + g(0)` over a mistake outside any `if` on the comptime parameter)
+/// is reported by each; one report per distinct diagnostic is enough.
+/// Attribution keeps every owner (`per_body`): a specialization whose
+/// diagnostics another one already reported has still failed.
+fn distinct_diagnostics(errors: impl IntoIterator<Item = CompileError>) -> Vec<CompileError> {
+    let mut seen: AHashMap<Option<rue_span::Span>, Vec<usize>> = AHashMap::new();
+    let mut distinct = Vec::new();
+    for error in errors {
+        let same_span = seen.entry(error.span()).or_default();
+        if same_span.iter().any(|&index| distinct[index] == error) {
+            continue;
+        }
+        same_span.push(distinct.len());
+        distinct.push(error);
+    }
+    distinct
+}
+
 /// A body graph, or the diagnostics that rejected the request that asked for it.
 enum RootedBodyGraphAttempt {
     Graph(Box<RootedBodyGraph>),
@@ -3703,13 +3723,10 @@ impl RootedBodyGraphRejection {
         }
     }
 
-    /// The whole-run failure: every diagnostic, in publication order.
+    /// The whole-run failure: every distinct diagnostic, in publication
+    /// order.
     fn into_errors(self) -> CompileErrors {
-        self.entries
-            .into_iter()
-            .map(|(_, error)| error)
-            .collect::<Vec<_>>()
-            .into()
+        distinct_diagnostics(self.entries.into_iter().map(|(_, error)| error)).into()
     }
 
     /// The diagnostics of each failed body, keyed by the body, in the same
@@ -3735,11 +3752,7 @@ impl RootedBodyGraphRejection {
     /// bodies are broken would be worse than no listing. A global diagnostic is
     /// not here — such a rejection fails the request outright.
     fn body_diagnostics(&self) -> CompileErrors {
-        self.per_body()
-            .into_values()
-            .flatten()
-            .collect::<Vec<_>>()
-            .into()
+        distinct_diagnostics(self.per_body().into_values().flatten()).into()
     }
 
     /// Which analyzed body reaches which other analyzed body.
