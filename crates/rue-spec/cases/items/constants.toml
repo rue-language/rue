@@ -1940,3 +1940,50 @@ fn main() -> i32 { K }
 """
 compile_fail = true
 error_contains = ["E0206", "expected i32, found u8"]
+
+# An `if` or `match` that run time evaluates gives every arm one type, so an
+# arm that declares none (a literal) takes the type another arm's declared
+# local gives it, whichever arm is selected. Only a selection run time also
+# makes at compile time (4.14:19), in a function with comptime value
+# parameters over a condition that reads no `let` local, types the value by
+# the selected arm alone (RUE-2617).
+
+[[case]]
+name = "const_block_literal_arm_takes_the_other_arms_declared_type"
+spec = ["4.6:4", "4.7:12", "4.3a:4", "6.5:2"]
+description = "A literal arm selected beside an arm reading a u8 local is a u8, through `if false`, a `match` and a constant condition, and in a called function whose condition reads a `let` local, so `~x` is 0 as at run time (RUE-2617)"
+source = """
+fn g(comptime n: i32) -> bool { let a: u8 = 255; let k = n + 1; let x = if k > 100 { a } else { 255 }; ~x == 0 }
+const N: i32 = 0;
+const A: bool = { let a: u8 = 255; let x = if false { a } else { 255 }; ~x == 0 };
+const B: bool = { let a: u8 = 255; let x = match 1 { 0 => a, _ => 255 }; ~x == 0 };
+const C: bool = { let a: u8 = 255; let x = if N > 0 { a } else { 255 }; ~x == 0 };
+const D: bool = g(0);
+fn main() -> i32 { if A && B && C && D { 42 } else { 1 } }
+"""
+exit_code = 42
+
+[[case]]
+name = "const_block_literal_arm_overflows_at_the_other_arms_type"
+spec = ["4.6:4", "6.5:12"]
+description = "A selected literal arm beside an arm reading a u8 local is a u8, so adding 100 to 200 overflows at u8 (E1200), where run time traps (RUE-2617)"
+source = """
+const K: bool = { let a: u8 = 200; let x = if false { a } else { 200 }; x + 100 > 250 };
+fn main() -> i32 { if K { 1 } else { 2 } }
+"""
+compile_fail = true
+error_contains = ["E1200", "integer overflow evaluating addition at type u8"]
+
+[[case]]
+name = "comptime_parameter_selection_types_by_the_selected_arm"
+spec = ["4.14:19"]
+description = "In a function with a comptime parameter, an `if` over that parameter selects its arm at compile time, so a selected literal arm is not given the unselected arm's u8 type: `~x == 0` is false in a constant, a `comptime` block and at run time alike (RUE-2617)"
+source = """
+fn g(comptime n: i32) -> bool { let a: u8 = 255; let x = if n > 0 { a } else { 255 }; ~x == 0 }
+const K: bool = g(0);
+fn main() -> i32 {
+    let c: bool = comptime { g(0) };
+    if !K && !c && !g(0) { 42 } else { 1 }
+}
+"""
+exit_code = 42

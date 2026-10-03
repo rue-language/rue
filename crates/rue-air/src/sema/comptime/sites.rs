@@ -212,12 +212,13 @@ where
     /// belongs to, when its leftmost declared local gives it one: every
     /// operand of the operation must have that type (RUE-2617).
     pub declared_region_types: AHashMap<InstRef, T>,
-    /// The arm each `if` or `match` last evaluated in this frame selected,
-    /// when its value can be typed by that arm alone (a `match` arm that
-    /// binds a pattern name is left out). Run time types the value by the
-    /// arm it runs; an arm that is not selected is not type-checked
-    /// (4.14:19) (RUE-2617).
-    pub selected_arms: AHashMap<InstRef, InstRef>,
+    /// The arm each `if` or `match` last evaluated in this frame selected
+    /// (a `match` arm that binds a pattern name is left out), and whether
+    /// that selection is one run time makes at compile time too (4.14:19):
+    /// in a specialization with comptime value parameters, over a condition
+    /// that reads no `let` local. Only then is an arm that was not selected
+    /// left out of the expression's type (RUE-2617).
+    pub selected_arms: AHashMap<InstRef, (InstRef, bool)>,
     /// The declared type the next evaluated expression's value takes: a
     /// structural literal's slot, a `let` annotation, a call argument's
     /// parameter or a call's return type. It flows only into the result
