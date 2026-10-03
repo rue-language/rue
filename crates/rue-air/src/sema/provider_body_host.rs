@@ -6490,16 +6490,18 @@ where
                 },
             })
         })();
-        // A call reducing to a module produces no type, so it lends this body
-        // nothing to specialize: its producer body is not analyzed, exactly as
-        // when a `const` binds the same call (RUE-2420). Analyzing it would
-        // check the module its body names against its `type` result.
-        let produces_module = matches!(
-            reduced.result,
-            crate::SemanticComptimeCallResult::Type(crate::SemanticImportType::Module(_))
-        );
+        // A `-> type` call is consumed as its reduced result, so this body
+        // does not reach the producer's body through it. A reduction that
+        // minted a nominal roots its producer where the source reads that
+        // producer's facts; any other type result names nothing the producer
+        // body owns. Rooting it anyway analyzed a constructor's type-valued
+        // body as executable code: `[T; N]` became an array of type values
+        // (E1200, RUE-2611), and a module result was checked against its
+        // `type` return (RUE-2420). A position that names the same call as a
+        // type never rooted it either.
+        let produces_type = matches!(reduced.result, crate::SemanticComptimeCallResult::Type(_));
         if let Some(producer) = producer
-            && !produces_module
+            && !produces_type
         {
             self.observed_comptime_producers
                 .borrow_mut()
