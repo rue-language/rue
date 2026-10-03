@@ -7734,3 +7734,95 @@ fn g(comptime n: i32) -> type { let a: u8 = 5; let b: i64 = 1; let x = if n > 0 
 fn main() -> i32 { let v: g(1) = 9; v }
 """
 exit_code = 9
+
+[[case]]
+name = "type_constructor_returns_a_repeat_of_a_minting_constructor"
+spec = ["4.14:22", "4.14:28"]
+description = "A type constructor whose body is `[R(T); 2]`, with `R` minting a struct, reduces to that array type as a type annotation, an `@size_of` operand and a `let`-bound alias (RUE-2621)"
+source = """
+fn R(comptime T: type) -> type { struct { v: T } }
+fn Arr(comptime T: type) -> type { [R(T); 2] }
+
+fn main() -> i32 {
+    let a: Arr(i32) = [R(i32) { v: 3 }, R(i32) { v: 4 }];
+    let A = Arr(i32);
+    let b: A = a;
+    // 8 + 8 + 3 + 4
+    @intCast(@size_of(Arr(i32)) + @size_of(A)) + b[0].v + b[1].v
+}
+"""
+exit_code = 23
+
+[[case]]
+name = "type_constructor_repeats_a_constructor_over_a_local_or_inline_struct"
+spec = ["4.14:22", "4.14:28"]
+description = "A type constructor repeating `Arr(L, 2)` over a `let`-bound anonymous struct, or over one written inline at the argument, reduces to the nested array type (RUE-2621)"
+source = """
+fn Arr(comptime T: type, comptime n: u64) -> type { [T; n] }
+fn Z() -> type { let L = struct { s: i16 }; [Arr(L, 2); 3] }
+fn Y() -> type { [Arr(struct { s: i16 }, 2); 3] }
+
+fn main() -> i32 {
+    // 12 + 12
+    @intCast(@size_of(Z()) + @size_of(Y()))
+}
+"""
+exit_code = 24
+
+[[case]]
+name = "type_constructor_returns_a_nested_repeat_of_a_minting_constructor"
+spec = ["4.14:22", "4.14:28"]
+description = "A nested `[[R(T); 2]; 3]` in a type constructor's body reduces to the nested array type at each specialization (RUE-2621)"
+source = """
+fn R(comptime T: type) -> type { struct { v: T } }
+fn N(comptime T: type) -> type { [[R(T); 2]; 3] }
+
+fn main() -> i32 {
+    let n: N(i32) = [[R(i32) { v: 1 }, R(i32) { v: 2 }]; 3];
+    // 48 + 24 + 2
+    @intCast(@size_of(N(i64)) + @size_of(N(i32))) + n[2][1].v
+}
+"""
+exit_code = 74
+
+[[case]]
+name = "type_constructor_repeats_a_minted_struct_with_methods_and_drop"
+spec = ["4.14:22", "4.14:28"]
+description = "A repeated minted element keeps its methods and its destructor, which runs once per element (RUE-2621)"
+source = """
+fn R(comptime T: type) -> type {
+    struct {
+        v: T,
+        fn get(self) -> T { self.v }
+        drop fn(self) { @dbg(self.v); }
+    }
+}
+fn Arr(comptime T: type) -> type { [R(T); 2] }
+
+fn main() -> i32 {
+    let a: Arr(i32) = [R(i32) { v: 5 }, R(i32) { v: 6 }];
+    @intCast(@size_of(Arr(i32))) + a[0].get() + a[1].get()
+}
+"""
+expected_stdout = """
+5
+6
+"""
+exit_code = 19
+
+[[case]]
+name = "type_constructor_binds_a_repeat_of_a_minting_constructor"
+spec = ["4.14:22", "4.14:28"]
+description = "A `let`-bound `[R(T); 2]` in a type constructor's body is the array type, usable as the field type of a struct heading a struct literal (RUE-2621)"
+source = """
+fn R(comptime T: type) -> type { struct { v: T } }
+fn Arr(comptime T: type) -> type { let E = [R(T); 2]; E }
+fn S() -> type { struct { a: Arr(u8), fn n(self) -> u8 { self.a[1].v } } }
+
+fn main() -> i32 {
+    let s = S() { a: [R(u8) { v: 9 }, R(u8) { v: 10 }] };
+    // 10 + 2
+    @intCast(s.n()) + @intCast(@size_of(S()))
+}
+"""
+exit_code = 12
