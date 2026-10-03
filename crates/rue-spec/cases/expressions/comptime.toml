@@ -7689,3 +7689,92 @@ fn main() -> i32 {
 }
 """
 exit_code = 6
+
+[[case]]
+name = "array_type_constructor_argument_in_struct_literal_head"
+spec = ["4.14:22", "4.14:23"]
+description = "A constructor returning an array type reduces as an argument of an inline struct-literal head, alone and nested in itself, exactly as it does in an annotation (RUE-2611)"
+source = """
+fn Arr(comptime T: type, comptime N: i32) -> type { [T; N] }
+fn Pair(comptime A: type, comptime B: type) -> type { struct { a: A, b: B } }
+fn main() -> i32 {
+    let x = Pair(Arr(u8, 2), i32) { a: [1, 2], b: 3 };
+    let y: Pair(Arr(Arr(u8, 2), 2), i32) = Pair(Arr(Arr(u8, 2), 2), i32) { a: [[4, 5], [6, 7]], b: 8 };
+    let z: i32 = @intCast(x.a[1] + y.a[1][0]);
+    x.b + y.b + z
+}
+"""
+exit_code = 19
+
+[[case]]
+name = "array_type_constructor_bound_with_let"
+spec = ["4.14:22"]
+description = "A constructor returning an array type reduces in a `let` binding, and the bound type serves as a size operand, an annotation and a constructor argument (RUE-2611)"
+source = """
+fn Arr(comptime T: type) -> type { [T; 3] }
+fn Box(comptime T: type) -> type { struct { v: T } }
+fn main() -> i32 {
+    let A = Arr(i16);
+    let a: A = [1, 2, 3];
+    let B = Box(A);
+    let b = B { v: a };
+    @size_of(A) + @intCast(b.v[2])
+}
+"""
+exit_code = 9
+
+[[case]]
+name = "type_constructor_returning_another_constructors_array"
+spec = ["4.14:22", "4.14:23"]
+description = "A constructor whose result is an array of another constructor's array type, written as a repeat or as a nested application, reduces in a `let` binding, an annotation and a size operand, and both spellings denote the same type (RUE-2611)"
+source = """
+fn Arr(comptime T: type, comptime N: i32) -> type { [T; N] }
+fn Grid(comptime T: type) -> type { [Arr(T, 2); 3] }
+fn Flat(comptime T: type) -> type { Arr(Arr(T, 2), 3) }
+fn main() -> i32 {
+    let G = Grid(u8);
+    let g: G = [[1, 2], [3, 4], [5, 6]];
+    let F = Flat(u8);
+    let f: F = g;
+    let total: i32 = @intCast(f[2][1]);
+    @size_of(G) + @size_of(Grid(i32)) + total
+}
+"""
+exit_code = 36
+
+[[case]]
+name = "zero_parameter_constructor_over_an_array_of_its_own_struct"
+spec = ["4.14:22"]
+description = "A zero-parameter constructor whose array type has an element it declares, directly or through other constructors, reduces in a `let` binding and a size operand (RUE-2611)"
+source = """
+fn Arr(comptime T: type) -> type { [T; 3] }
+fn W(comptime T: type) -> type { struct { w: T } }
+fn Z() -> type { [struct { s: i16 }; 3] }
+fn Y() -> type { W(Arr(struct { s: i16 })) }
+fn main() -> i32 {
+    let A = Z();
+    let B = Y();
+    @size_of(A) + @size_of(B) + @size_of(Z())
+}
+"""
+exit_code = 18
+
+[[case]]
+name = "module_qualified_array_type_constructor_heads_and_bindings"
+spec = ["4.14:22", "4.14:23"]
+description = "A module-qualified constructor returning an array type reduces as an inline-head argument and in a `let` binding, as does one over an array of its own struct (RUE-2611)"
+source = """
+const lib = @import("lib.rue");
+fn main() -> i32 {
+    let x = lib.Pair(lib.Arr(u8, 2), i32) { a: [1, 2], b: 3 };
+    let A = lib.Arr(i16, 3);
+    let Q = lib.Z();
+    x.b + @size_of(A) + @size_of(Q)
+}
+"""
+aux_files = { "lib.rue" = """
+pub fn Arr(comptime T: type, comptime N: i32) -> type { [T; N] }
+pub fn Pair(comptime A: type, comptime B: type) -> type { struct { a: A, b: B } }
+pub fn Z() -> type { [struct { s: i16 }; 3] }
+""" }
+exit_code = 15
