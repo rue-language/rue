@@ -842,10 +842,19 @@ $runtime
                                             .with_terminal_kind(QueryTerminalKind::Failure));
                                         }
                                             };
-                                    let Some((_, declared_type, _root)) =
+                                    let Some((init, declared_type, _root)) =
                                         core.const_root()
                                     else {
                                         unreachable!("const core validated its root kind");
+                                    };
+                                    let initializer_span = core.rir.get(init).span;
+                                    let diagnostic_at_initializer = |kind| {
+                                        Failure::DiagnosticAtProducerRange {
+                                            kind,
+                                            producer: query.declaration.clone(),
+                                            start: initializer_span.start,
+                                            end: initializer_span.end,
+                                        }
                                     };
                                     let provider = SemanticNucleusTypeProvider {
                                                 context,
@@ -1228,7 +1237,18 @@ $runtime
                                                                         found: inferred_const_type_name(&value).to_owned(),
                                                                     },
                                                                 };
-                                                                Value::Failure(Failure::Diagnostic(kind))
+                                                                let failure = if matches!(
+                                                                    &kind,
+                                                                    rue_error::ErrorKind::LiteralOutOfRange { .. }
+                                                                ) {
+                                                                    // The durable value has already been evaluated
+                                                                    // against the declaration's type; retain its E0800
+                                                                    // policy and project the initializer's source range.
+                                                                    diagnostic_at_initializer(kind)
+                                                                } else {
+                                                                    Failure::Diagnostic(kind)
+                                                                };
+                                                                Value::Failure(failure)
                                                             }
                                                         }
                                                     }
@@ -1238,7 +1258,19 @@ $runtime
                                                         "target descriptor must be reduced by a declaration-time branch",
                                                     )))
                                                 }
-                                                Err(EvaluateSemanticConstError::Failure(failure)) => Value::Failure(*failure),
+                                                Err(EvaluateSemanticConstError::Failure(failure)) => {
+                                                    let failure = match *failure {
+                                                        Failure::Diagnostic(
+                                                            kind @ rue_error::ErrorKind::LiteralOutOfRange { .. },
+                                                        ) => {
+                                                            // Evaluation can discover an out-of-range
+                                                            // operand before declaration compatibility.
+                                                            diagnostic_at_initializer(kind)
+                                                        }
+                                                        failure => failure,
+                                                    };
+                                                    Value::Failure(failure)
+                                                }
                                                 Err(EvaluateSemanticConstError::Abort(QueryAbort::Cycle(nodes))) => {
                                                     Value::Failure(Failure::Cycle(
                                                         semantic_nucleus_cycle_names(&nodes),
