@@ -194,8 +194,14 @@ earlier fields (5.1:12), shadows as any let binding does (5.1:10), and takes
 its field's value by the rules of field access in value context (4.12): a Copy
 field is copied, a move field is moved out of the temporary, a field whose type
 carries a linear value cannot be discarded (E0478, 3.8), and a move field of a
-struct that has a destructor cannot be moved out (E0456, 3.9). Whatever the
-temporary still owns when the enclosing block ends is dropped then (3.9:4).
+struct that has a destructor cannot be moved out (E0456, 3.9). When the
+struct is declared `linear` (3.8:74) and has no destructor, the pattern, which
+names every field, consumes the temporary as a whole: it is a complete
+consuming destructure (3.8:33), each field read is an ordinary partial move out
+of the temporary (3.8:22), and a linear field moved into a binding keeps its
+obligation there. A pattern over a linear struct with no fields therefore
+consumes it outright. Whatever the temporary still owns when the
+enclosing block ends is dropped then (3.9:4).
 
 {{ rule(id="5.1:22") }}
 

@@ -454,6 +454,14 @@ pub(crate) struct AnalysisContext<'a> {
     /// consult this after analyzing an operand to reject binding a borrowed
     /// place beyond its full expression, naming the offending accessor.
     pub accessor_call_insts: AHashMap<InstRef, (Spur, Spur)>,
+    /// Hidden struct-pattern temporaries (5.1:21, 4.7:44) whose type is a
+    /// struct declared `linear` with no destructor. Such a pattern names
+    /// every field (5.1:20), so it takes the whole value apart: its field
+    /// reads are ordinary partial moves out of the temporary rather than
+    /// one-field destructures of it (3.8:33), and the temporary's
+    /// must-consume obligation is discharged once its linear fields are
+    /// consumed — vacuously for a struct with no fields (RUE-2540).
+    pub linear_pattern_temporaries: AHashSet<Spur>,
     /// AIR place handles for accessor calls already materialized in this
     /// expression. Compound assignment reuses the same yielded place rather
     /// than expanding and loaning the accessor a second time.
@@ -859,6 +867,7 @@ impl<'a> AnalysisContext<'a> {
             infer_ctx: self.infer_ctx,
             accessor_trailing_yield: self.accessor_trailing_yield,
             accessor_call_insts: self.accessor_call_insts.clone(),
+            linear_pattern_temporaries: self.linear_pattern_temporaries.clone(),
             accessor_place_refs: self.accessor_place_refs.clone(),
             inline_resolved_types: self.inline_resolved_types.clone(),
             place_aliases: self.place_aliases.clone(),

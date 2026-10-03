@@ -62,7 +62,15 @@ enum payload patterns (4.7:30), but no struct pattern in `let` or `match`.
    shadowing and scope (5.1:10, 5.1:12), the wildcard discard (5.1:16), Copy
    versus move of a field read, the linear must-consume obligation (E0478 on a
    discarded linear field), and the destructor-prefix rule (E0456 on a move
-   field of a struct with a destructor). No new ownership rule is introduced.
+   field of a struct with a destructor). For every head except one, no new
+   ownership rule is introduced. The exception (RUE-2540) is a struct declared
+   `linear` with no destructor: there the desugaring is *not* the semantics,
+   since under 3.8:33 its second field read would be a use after move and an
+   empty pattern would leave the obligation unmet. The pattern is instead a
+   new rule: a complete consuming destructure of the temporary (3.8:33's
+   phrase), in which each field read is a partial move (3.8:22) and a linear
+   field moved into a binding keeps its obligation there. The core calculus
+   has no matching destructure rule yet (RUE-2557).
 4. **Head checks.** The head must name a struct type (E0213, a new code) and
    the initializer must have exactly that type (E0206).
 5. **Preview gate.** The feature ships behind `--preview struct_patterns`
