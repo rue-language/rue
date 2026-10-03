@@ -45705,6 +45705,14 @@
       "platform": "x86_64-linux",
       "report": "1a569d7f051d158734011e2fe9b05cd3a0317b1b181d3c1e8be1577a4c12c31b",
       "suite_revision": 6
+    },
+    {
+      "commit": "e910164006b991fbdee7eb2034c4236e2c72050c",
+      "epoch": 6,
+      "finished_at": "2026-10-03T12:03:22Z",
+      "platform": "aarch64-macos",
+      "report": "0f473995fc597ead35c7c63ddbb3f63cb2c2d574f998ff2ea747049d79bdc307",
+      "suite_revision": 6
     }
   ],
   "schema_version": 1
