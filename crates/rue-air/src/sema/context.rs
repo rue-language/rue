@@ -37,6 +37,10 @@ pub(crate) struct InferenceStatementErrors {
     /// Statements without a failure whose types the unifier's recovery
     /// decided, or that hold a constraint the recovery silenced.
     pub poisoned: AHashSet<InstRef>,
+    /// The first failure of a selected body staging recorded and left to the
+    /// final pass to report in place. Should analysis report nothing, the
+    /// body is rejected with it.
+    pub staged_failure: Option<CompileError>,
 }
 
 impl InferenceStatementErrors {

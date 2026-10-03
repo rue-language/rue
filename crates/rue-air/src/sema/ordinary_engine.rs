@@ -3539,13 +3539,15 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         ctx.expected_type = None;
         // Every recovered inference failure belongs to a top-level statement
         // that statement recovery reported or poisoned, so the recovery
-        // ledger is never empty here. Keep the body rejected regardless.
+        // ledger is never empty here. Keep the body rejected regardless, and
+        // likewise when a selected body failed while staging.
         if self.body_analysis_recovered_errors_mut().is_empty()
             && let Some(error) = inference_statement_errors
                 .failures
                 .values()
                 .flatten()
                 .min_by_key(|error| error.span().map(|span| span.start))
+                .or(inference_statement_errors.staged_failure.as_ref())
         {
             return Err(error.clone());
         }
