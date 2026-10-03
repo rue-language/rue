@@ -195,11 +195,13 @@ where
     /// the environment rather than keyed by program so concurrent/nested
     /// instantiations cannot observe one another's integer context.
     pub expected_result: Option<T>,
-    /// The declared integer type of each expression-local `let` binding that
-    /// carries one: an annotated binding, or an unannotated one bound to an
-    /// operation that carries a declared type. Values keep the types the
-    /// engine computes for them; this map only range-checks the arithmetic
-    /// that run time performs at the declared type (RUE-2353).
+    /// The declared type of each expression-local `let` binding that carries
+    /// one: an annotated integer or float binding, or an unannotated one
+    /// bound to an operation that carries a declared integer type. An
+    /// integer binding's value stays untyped; this map is the type a region
+    /// of operators that reads it is evaluated and range-checked at, and the
+    /// type every other operand of that region must have (RUE-2353,
+    /// RUE-2617).
     pub declared_integer_locals: AHashMap<N, T>,
     /// The integer operations of the arithmetic regions being evaluated,
     /// each with the declared type its result must fit, or `None` when its
