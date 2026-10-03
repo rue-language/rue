@@ -176,6 +176,33 @@ struct DecodedModulePath<F, N, T> {
 
 /// Both operands of a binary arithmetic or ordering operation, classified by
 /// the value domain they were reduced to.
+/// A leaf of an arithmetic region whose type run time fixes before the
+/// region is typed: a local of declared type, or a float literal.
+#[derive(Clone)]
+enum DeclaredLeaf<T> {
+    Declared(T),
+    FloatLiteral,
+}
+
+/// What [`ComptimeEngine::analyze_declared_region`] finds in the arithmetic
+/// region rooted at one instruction.
+struct DeclaredRegion<T> {
+    /// The region's operations (empty when the root is a leaf).
+    operations: Vec<InstRef>,
+    /// The declared integer type the region's results are range-checked at.
+    checked: Option<T>,
+    /// The type of the region's leftmost local of declared type, integer or
+    /// float: the type run time gives every operand of the region.
+    leaf_type: Option<T>,
+    /// The first leaf that cannot have `leaf_type`: a local of another
+    /// declared type (with that type), or a float literal (`None`) in an
+    /// integer region.
+    conflict: Option<(InstRef, Option<T>)>,
+    /// The first integer literal leaf that does not fit an integer
+    /// `leaf_type`, with its value.
+    unfit_literal: Option<(InstRef, i128)>,
+}
+
 enum ArithOperands<V> {
     Integer(V, V),
     Float(V, V),
@@ -2280,7 +2307,15 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             let parameter_type = self.host.comptime_call_parameter_type(binding, index);
             env.expected_result = parameter_type.clone();
             let value = match self.eval_typed(arg.value, parameter_type, env) {
-                ComptimeOutcome::Known(value) => self.declared_integer_value(arg.value, value, env),
+                ComptimeOutcome::Known(value) => {
+                    match self.declared_integer_value(arg.value, value, env) {
+                        ComptimeOutcome::Known(value) => value,
+                        other => {
+                            env.expected_result = previous_expected;
+                            return Self::discard_rejection(other);
+                        }
+                    }
+                }
                 other => {
                     env.expected_result = previous_expected;
                     return Self::discard_rejection(other);
@@ -2488,7 +2523,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         env.expected_result = enclosing;
         match (value, slot) {
             (ComptimeOutcome::Known(value), Some(slot)) => {
-                let value = self.declared_integer_value(child, value, env);
+                let value = outcome_value!(self.declared_integer_value(child, value, env));
                 let site = self.diagnostic_site(self.program_rir().get(child).span);
                 ComptimeOutcome::Known(host_value!(
                     self.host.admit_comptime_child(value, &slot, &site)
@@ -3445,55 +3480,84 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
     /// `value`, the reduced `root`, at the declared type its region reads:
     /// an untyped integer computed from a local of declared type `T` (and
     /// literals) is a `T`, as run time types it. A typed position that reads
-    /// it (a `let` annotation, a structural slot, a typed block's tail)
-    /// then checks that type (RUE-2617). Any other value is returned as is.
+    /// it (a `let` annotation, a structural slot, a call argument, a typed
+    /// block's tail) then checks that type (RUE-2617). An `if` or `match`
+    /// whose arms declare two different types is the body path's E0206 on
+    /// the later arm. Any other value is returned as is.
     fn declared_integer_value(
-        &self,
+        &mut self,
         root: InstRef,
         value: H::Value,
         env: &ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
-    ) -> H::Value {
+    ) -> ComptimeOutcome<H::Value, H::Failure> {
         let Some(integer) = value.as_integer() else {
-            return value;
+            return ComptimeOutcome::Known(value);
         };
         if env.declared_integer_locals.is_empty() {
-            return value;
+            return ComptimeOutcome::Known(value);
         }
         // The region's type is the value's run time type even where the
         // evaluator typed its operations at the expected type instead.
         match self.declared_result_type(root, env) {
-            Some(ty) => H::Value::integer_typed(integer, Some(ty)),
-            None => value,
+            Ok(Some(ty)) => ComptimeOutcome::Known(H::Value::integer_typed(integer, Some(ty))),
+            Ok(None) => ComptimeOutcome::Known(value),
+            Err((arm, expected, found)) => {
+                let site = self.diagnostic_site(self.program_rir().get(arm).span);
+                let found = H::Value::integer_typed(0, Some(found));
+                host_value!(self.host.admit_comptime_child(found, &expected, &site));
+                ComptimeOutcome::Known(value)
+            }
         }
     }
 
     /// The declared type of `root`'s value, if a declared local decides it:
-    /// its arithmetic region's checked type, or for an `if` the type either
-    /// arm declares when the arms do not disagree, since run time gives both
-    /// arms one type.
+    /// its arithmetic region's checked type, or for an `if` or `match` the
+    /// type its arms declare, since run time gives every arm one type. Arms
+    /// that declare two different types are an error at the later arm,
+    /// returned with the earlier arm's type and its own. A `match` arm whose
+    /// pattern can bind a name is not looked into: the binding can shadow a
+    /// declared local.
     fn declared_result_type(
         &self,
         root: InstRef,
         env: &ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
-    ) -> Option<H::Type> {
-        if let InstData::Branch {
-            then_block,
-            else_block: Some(else_block),
-            ..
-        } = self.program_rir().get(root).data
-        {
-            return match (
-                self.declared_result_type(then_block, env),
-                self.declared_result_type(else_block, env),
-            ) {
-                (Some(then_type), Some(else_type)) => self
-                    .same_declared_type(&then_type, &else_type)
-                    .then_some(then_type),
-                (Some(ty), None) | (None, Some(ty)) => Some(ty),
-                (None, None) => None,
+    ) -> Result<Option<H::Type>, (InstRef, H::Type, H::Type)> {
+        let arms: Vec<InstRef> = match &self.program_rir().get(root).data {
+            InstData::Branch {
+                then_block,
+                else_block: Some(else_block),
+                ..
+            } => vec![*then_block, *else_block],
+            InstData::Match { arms, .. } => self
+                .program_rir()
+                .match_arms(arms)
+                .iter()
+                .filter(|(pattern, _)| {
+                    matches!(
+                        pattern.to_owned(),
+                        rue_rir::RirPattern::Wildcard(_)
+                            | rue_rir::RirPattern::Int { .. }
+                            | rue_rir::RirPattern::Bool(..)
+                    )
+                })
+                .map(|(_, body)| body)
+                .collect(),
+            _ => return Ok(self.declared_region(root, None, env).1),
+        };
+        let mut declared: Option<H::Type> = None;
+        for arm in arms {
+            let Some(ty) = self.declared_result_type(arm, env)? else {
+                continue;
             };
+            match &declared {
+                Some(first) if !self.same_declared_type(first, &ty) => {
+                    return Err((arm, first.clone(), ty));
+                }
+                Some(_) => {}
+                None => declared = Some(ty),
+            }
         }
-        self.declared_region(root, None, env).1
+        Ok(declared)
     }
 
     /// Whether an instruction joins the arithmetic region of its parent: the
@@ -3508,6 +3572,12 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 | InstData::Div { .. }
                 | InstData::Mod { .. }
                 | InstData::Neg { .. }
+                | InstData::BitAnd { .. }
+                | InstData::BitOr { .. }
+                | InstData::BitXor { .. }
+                | InstData::Shl { .. }
+                | InstData::Shr { .. }
+                | InstData::BitNot { .. }
         )
     }
 
@@ -3559,8 +3629,26 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         seed: Option<H::Type>,
         env: &ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
     ) -> (Vec<InstRef>, Option<H::Type>) {
+        let region = self.analyze_declared_region(root, seed, env);
+        (region.operations, region.checked)
+    }
+
+    /// [`Self::declared_region`] with what else the walk finds: the type
+    /// run time gives the whole region, which is its leftmost local of
+    /// declared type, and the first leaf that cannot have it (RUE-2617).
+    /// The bitwise operators, `~` and the shifts join a region as the
+    /// arithmetic operators do: run time types their operands together too,
+    /// and their results depend on the width.
+    fn analyze_declared_region(
+        &self,
+        root: InstRef,
+        seed: Option<H::Type>,
+        env: &ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
+    ) -> DeclaredRegion<H::Type> {
         let mut operations = Vec::new();
         let mut untyped_leaves = Vec::new();
+        let mut literal_leaves: Vec<(InstRef, i128)> = Vec::new();
+        let mut typed_leaves: Vec<(InstRef, DeclaredLeaf<H::Type>)> = Vec::new();
         let mut declared = seed;
         let mut opaque = false;
         let mut negates_value = false;
@@ -3572,7 +3660,12 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 | InstData::Sub { lhs, rhs }
                 | InstData::Mul { lhs, rhs }
                 | InstData::Div { lhs, rhs }
-                | InstData::Mod { lhs, rhs } => {
+                | InstData::Mod { lhs, rhs }
+                | InstData::BitAnd { lhs, rhs }
+                | InstData::BitOr { lhs, rhs }
+                | InstData::BitXor { lhs, rhs }
+                | InstData::Shl { lhs, rhs }
+                | InstData::Shr { lhs, rhs } => {
                     operations.push(inst_ref);
                     pending.extend([*rhs, *lhs]);
                 }
@@ -3590,13 +3683,26 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 InstData::Neg { operand: negated } => {
                     operations.push(inst_ref);
                     if let InstData::IntConst(magnitude) = self.program_rir().get(*negated).data {
-                        untyped_leaves.push(-(magnitude as i128));
+                        let value = -(magnitude as i128);
+                        untyped_leaves.push(value);
+                        literal_leaves.push((inst_ref, value));
                     } else {
                         negates_value = true;
                         pending.push(*negated);
                     }
                 }
-                InstData::IntConst(value) => untyped_leaves.push(*value as i128),
+                InstData::BitNot { operand } => {
+                    operations.push(inst_ref);
+                    pending.push(*operand);
+                }
+                InstData::IntConst(value) => {
+                    untyped_leaves.push(*value as i128);
+                    literal_leaves.push((inst_ref, *value as i128));
+                }
+                InstData::FloatConst { .. } => {
+                    typed_leaves.push((inst_ref, DeclaredLeaf::FloatLiteral));
+                    opaque = true;
+                }
                 InstData::VarRef { name, .. } => {
                     let name = self.name_from_rir((*name).into());
                     let Some(value) = env.locals.get(&name) else {
@@ -3604,6 +3710,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                         continue;
                     };
                     if let Some(ty) = env.declared_integer_locals.get(&name) {
+                        typed_leaves.push((inst_ref, DeclaredLeaf::Declared(ty.clone())));
                         match &declared {
                             Some(existing) if !self.same_declared_type(existing, ty) => {
                                 opaque = true;
@@ -3629,7 +3736,91 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                         && untyped_leaves.iter().all(|leaf| integer.fits_i128(*leaf))
                 })
         });
-        (operations, checked)
+        let leaf_type = typed_leaves.iter().find_map(|(_, leaf)| match leaf {
+            DeclaredLeaf::Declared(ty) => Some(ty.clone()),
+            DeclaredLeaf::FloatLiteral => None,
+        });
+        let integer = leaf_type
+            .as_ref()
+            .and_then(|ty| self.host.type_integer_semantics(ty));
+        let conflict = leaf_type.as_ref().and_then(|first| {
+            typed_leaves.iter().find_map(|(leaf, kind)| match kind {
+                DeclaredLeaf::Declared(ty) if !self.same_declared_type(first, ty) => {
+                    Some((*leaf, Some(ty.clone())))
+                }
+                DeclaredLeaf::FloatLiteral if integer.is_some() => Some((*leaf, None)),
+                _ => None,
+            })
+        });
+        let unfit_literal = match (integer, &conflict) {
+            (Some(integer), None) => literal_leaves
+                .iter()
+                .find(|(_, value)| !integer.fits_i128(*value))
+                .copied(),
+            _ => None,
+        };
+        DeclaredRegion {
+            operations,
+            checked,
+            leaf_type,
+            conflict,
+            unfit_literal,
+        }
+    }
+
+    /// Hold a region to the one type run time gives its operands before it
+    /// is evaluated (RUE-2617): a leaf of another declared type, or a float
+    /// literal in an integer region, is the body path's E0206 on that leaf,
+    /// expecting the leftmost declared type; an integer literal that does
+    /// not fit an integer region's type is E0800 on the literal. Returns the
+    /// integer type the region is evaluated at, if it has one, or the
+    /// failure outcome. A host that admits the leaf (the ordinary body host,
+    /// whose blocks are type-checked already) leaves the region untyped.
+    fn admit_declared_region(
+        &mut self,
+        region: &DeclaredRegion<H::Type>,
+        env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
+    ) -> Result<Option<H::Type>, ComptimeOutcome<H::Value, H::Failure>> {
+        let host_error = |error| match error {
+            ComptimeHostError::HostFailure(error) => ComptimeOutcome::HostFailure(error),
+            ComptimeHostError::Abort(error) => ComptimeOutcome::Abort(error),
+        };
+        let Some(ty) = region.leaf_type.clone() else {
+            return Ok(None);
+        };
+        if let Some((leaf, found)) = region.conflict.clone() {
+            let value = match found {
+                Some(found) => {
+                    let InstData::VarRef { name, .. } = self.program_rir().get(leaf).data else {
+                        return Ok(None);
+                    };
+                    let name = self.name_from_rir(name.into());
+                    let Some(value) = env.locals.get(&name).cloned() else {
+                        return Ok(None);
+                    };
+                    match value.as_integer() {
+                        Some(integer) => H::Value::integer_typed(integer, Some(found)),
+                        None => value,
+                    }
+                }
+                None => match self.eval(leaf, env) {
+                    ComptimeOutcome::Known(value) => value,
+                    other => return Err(other),
+                },
+            };
+            let site = self.diagnostic_site(self.program_rir().get(leaf).span);
+            self.host
+                .admit_comptime_child(value, &ty, &site)
+                .map_err(host_error)?;
+            return Ok(None);
+        }
+        if let Some((leaf, value)) = region.unfit_literal {
+            let site = self.diagnostic_site(self.program_rir().get(leaf).span);
+            return Err(ComptimeOutcome::HostFailure(
+                self.host.literal_out_of_range(value, &ty, &site),
+            ));
+        }
+        Ok(self.host.type_integer_semantics(&ty).is_some().then_some(ty))
     }
 
     /// The operand an operator evaluates before anything else, when the
@@ -3712,29 +3903,48 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         {
             return self.evaluated_operand.take().expect("operand outcome").1;
         }
-        // Each entered operator with the region operations it marked. The
-        // innermost operator comes last.
-        let mut entered: Vec<(InstRef, Vec<InstRef>)> = Vec::new();
+        // Each entered operator with the region operations it marked and,
+        // when its region is evaluated at a declared type, the expected
+        // result that type replaced. The innermost operator comes last.
+        type Entered<T> = (InstRef, Vec<InstRef>, Option<Option<T>>);
+        let mut entered: Vec<Entered<H::Type>> = Vec::new();
         let mut node = root;
         loop {
             let data = self.program_rir().get(node).data.clone();
             let operand = self
                 .chain_operand(&data)
                 .expect("an operator chain holds only chain operators");
-            let marked = if !env.declared_integer_locals.is_empty()
+            let (marked, replaced) = if !env.declared_integer_locals.is_empty()
                 && Self::is_declared_region_root(&data)
                 && !env.declared_integer_checks.contains_key(&node)
             {
-                let (operations, checked) = self.declared_region(node, None, env);
-                for operation in &operations {
+                let region = self.analyze_declared_region(node, None, env);
+                let region_type = match self.admit_declared_region(&region, env) {
+                    Ok(region_type) => region_type,
+                    Err(outcome) => {
+                        // Nothing in the chain has been evaluated: unmark
+                        // the regions entered so far and report.
+                        while let Some((_, marked, replaced)) = entered.pop() {
+                            for operation in &marked {
+                                env.declared_integer_checks.remove(operation);
+                            }
+                            if let Some(previous) = replaced {
+                                env.expected_result = previous;
+                            }
+                        }
+                        return outcome;
+                    }
+                };
+                for operation in &region.operations {
                     env.declared_integer_checks
-                        .insert(*operation, checked.clone());
+                        .insert(*operation, region.checked.clone());
                 }
-                operations
+                let replaced = region_type.map(|ty| env.expected_result.replace(ty));
+                (region.operations, replaced)
             } else {
-                Vec::new()
+                (Vec::new(), None)
             };
-            entered.push((node, marked));
+            entered.push((node, marked, replaced));
             if self
                 .chain_operand(&self.program_rir().get(operand).data)
                 .is_none()
@@ -3746,7 +3956,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         // The innermost operator evaluates its own first operand; each outer
         // one receives the outcome of the operator inside it.
         let mut operand_outcome: Option<(InstRef, ComptimeOutcome<H::Value, H::Failure>)> = None;
-        while let Some((node, marked)) = entered.pop() {
+        while let Some((node, marked, replaced)) = entered.pop() {
             // Every chain operator returns a host failure or an abort of its
             // first operand unchanged, without evaluating anything more, so
             // the rest of the chain only unwinds.
@@ -3755,6 +3965,9 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             {
                 for operation in &marked {
                     env.declared_integer_checks.remove(operation);
+                }
+                if let Some(previous) = replaced {
+                    env.expected_result = previous;
                 }
                 continue;
             }
@@ -3777,6 +3990,9 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             for operation in &marked {
                 env.declared_integer_checks.remove(operation);
             }
+            if let Some(previous) = replaced {
+                env.expected_result = previous;
+            }
             operand_outcome = Some((node, outcome));
         }
         operand_outcome.expect("an operator chain has a root").1
@@ -3788,20 +4004,30 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         root: InstRef,
         env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
     ) -> ComptimeOutcome<H::Value, H::Failure> {
-        let (operations, checked) = self.declared_region(root, None, env);
-        self.eval_declared_region(root, operations, checked, env)
+        let region = self.analyze_declared_region(root, None, env);
+        let region_type = match self.admit_declared_region(&region, env) {
+            Ok(region_type) => region_type,
+            Err(outcome) => return outcome,
+        };
+        self.eval_declared_region(root, region.operations, region.checked, region_type, env)
     }
 
     /// Evaluate a region root with its operations marked for the declared
-    /// integer check, then unmark them.
+    /// integer check, then unmark them. A region with a declared integer
+    /// type `region_type` is evaluated at it, as run time evaluates it: its
+    /// operations take that type rather than the enclosing expectation or
+    /// the untyped default, so a shift or `~` has the declared width and an
+    /// overflow is the declared type's (RUE-2617).
     #[inline(never)]
     fn eval_declared_region(
         &mut self,
         root: InstRef,
         operations: Vec<InstRef>,
         checked: Option<H::Type>,
+        region_type: Option<H::Type>,
         env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
     ) -> ComptimeOutcome<H::Value, H::Failure> {
+        let replaced = region_type.map(|ty| env.expected_result.replace(ty));
         for operation in &operations {
             env.declared_integer_checks
                 .insert(*operation, checked.clone());
@@ -3809,6 +4035,9 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         let outcome = self.eval_dispatch(root, None, env);
         for operation in &operations {
             env.declared_integer_checks.remove(operation);
+        }
+        if let Some(previous) = replaced {
+            env.expected_result = previous;
         }
         outcome
     }
@@ -4132,7 +4361,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 // its own type: `{ let a: i64 = 5; a }` is an `i64` while
                 // `a` is still in scope to say so (RUE-2617).
                 if consumed_at_a_type {
-                    self.declared_integer_value(stmt_ref, value, env)
+                    outcome_value!(self.declared_integer_value(stmt_ref, value, env))
                 } else {
                     value
                 }
@@ -4276,29 +4505,47 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         let joins = Self::is_declared_region_operation(init_data)
             || matches!(init_data, InstData::IntConst(_) | InstData::VarRef { .. });
         let region = (joins && (annotated.is_some() || !env.declared_integer_locals.is_empty()))
-            .then(|| self.declared_region(init, annotated.clone(), env));
+            .then(|| self.analyze_declared_region(init, annotated.clone(), env));
+        if let Some(region) = region.as_ref()
+            && !region.operations.is_empty()
+            && let Some(ty) = literal_type.as_ref()
+        {
+            // A region is evaluated below `eval`, so a negated float literal
+            // at its root is admitted here.
+            let init_inst = self.program_rir().get(init);
+            host_value!(self.admit_float_literal(&init_inst.data, ty, init_inst.span));
+        }
         // An annotation is the type its initializer's operations take, as
         // a call parameter's type is its argument's, rather than the type
         // the enclosing expression expects: in `const K: i32 = { let x: i8
-        // = -6; ... }` the `-6` is an `i8` (RUE-2617). An unannotated `let`
-        // keeps the enclosing expectation.
+        // = -6; ... }` the `-6` is an `i8` (RUE-2617). A region that reads
+        // a local of declared type is evaluated at that type instead, and
+        // the annotation then checks it. An unannotated `let` keeps the
+        // enclosing expectation.
         let enclosing = literal_type
             .as_ref()
             .map(|ty| env.expected_result.replace(ty.clone()));
         let (value, checked) = match region {
-            Some((operations, checked)) if !operations.is_empty() => {
-                // A region is evaluated below `eval`, so a negated float
-                // literal at its root is admitted here.
-                if let Some(ty) = literal_type.as_ref() {
-                    let init_inst = self.program_rir().get(init);
-                    host_value!(self.admit_float_literal(&init_inst.data, ty, init_inst.span));
+            Some(region) if !region.operations.is_empty() => {
+                let checked = region.checked.clone();
+                match self.admit_declared_region(&region, env) {
+                    Ok(region_type) => (
+                        self.eval_declared_region(
+                            init,
+                            region.operations,
+                            checked.clone(),
+                            region_type,
+                            env,
+                        ),
+                        checked,
+                    ),
+                    Err(outcome) => (outcome, checked),
                 }
-                (
-                    self.eval_declared_region(init, operations, checked.clone(), env),
-                    checked,
-                )
             }
-            Some((_, checked)) => (self.eval_typed(init, literal_type.clone(), env), checked),
+            Some(region) => (
+                self.eval_typed(init, literal_type.clone(), env),
+                region.checked,
+            ),
             None => (self.eval_typed(init, literal_type.clone(), env), None),
         };
         if let Some(enclosing) = enclosing {
@@ -4308,7 +4555,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         if let Some(ty) = literal_type.as_ref() {
             let binding = self.diagnostic_site(span);
             let initializer = self.diagnostic_site(self.program_rir().get(init).span);
-            let value_at_its_type = self.declared_integer_value(init, value, env);
+            let value_at_its_type = outcome_value!(self.declared_integer_value(init, value, env));
             value = host_value!(self.host.admit_comptime_binding(
                 value_at_its_type,
                 ty,
@@ -4324,6 +4571,14 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 && self.host.type_integer_semantics(ty).is_some()
             {
                 return ComptimeOutcome::Known((H::Value::integer(integer), Some(ty.clone())));
+            }
+            // A float binding records its annotated width the same way, so a
+            // region that mixes it with another width or an integer local is
+            // the body path's E0206 rather than a conversion (RUE-2617).
+            if self.host.float_value_text(&value).is_some()
+                && self.host.type_float_width(ty).is_some()
+            {
+                return ComptimeOutcome::Known((value, Some(ty.clone())));
             }
         }
         let declared = checked.filter(|ty| {
