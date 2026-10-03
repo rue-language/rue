@@ -876,6 +876,17 @@ pub(crate) struct ComptimeCallQueryKey {
     /// same call keyed without them would once the body has finished. Empty
     /// for every other call.
     pub(crate) lent_anonymous_nominals: Arc<[DurableAnonymousNominal]>,
+    /// The canonical identities of anonymous nominals the calling runtime
+    /// body is still declaring: `I` while `let I = struct { next:
+    /// Opt(ptr const Self) }` resolves its own fields and method signatures
+    /// (spec 6.4:18, RUE-2607). Such a nominal has no facts yet, since they
+    /// are what this call helps settle, so none is lent for it and none is
+    /// asked of its producer; the call names it by identity alone, as a
+    /// `const`-bound literal's in-place call does. Its facts never reach the
+    /// result, so the call reduces exactly as the same call does once the
+    /// struct is complete, and fails rather than guess where it would read
+    /// them. Empty for every other call.
+    pub(crate) declared_anonymous_nominals: Arc<[crate::AnonymousNominalKey]>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -995,18 +1006,31 @@ impl SemanticNucleusKey {
                 key.gate
             ),
             Self::ConstResolution(key) => format!("const:{}", key.stable_identity()),
-            Self::ComptimeCall(key) if key.lent_anonymous_nominals.is_empty() => format!(
-                "comptime:{}:{:?}:{:?}",
-                key.declaration.stable_identity(),
-                key.type_arguments,
-                key.value_arguments
-            ),
-            Self::ComptimeCall(key) => format!(
+            Self::ComptimeCall(key)
+                if key.lent_anonymous_nominals.is_empty()
+                    && key.declared_anonymous_nominals.is_empty() =>
+            {
+                format!(
+                    "comptime:{}:{:?}:{:?}",
+                    key.declaration.stable_identity(),
+                    key.type_arguments,
+                    key.value_arguments
+                )
+            }
+            Self::ComptimeCall(key) if key.declared_anonymous_nominals.is_empty() => format!(
                 "comptime:{}:{:?}:{:?}:lent:{:?}",
                 key.declaration.stable_identity(),
                 key.type_arguments,
                 key.value_arguments,
                 key.lent_anonymous_nominals
+            ),
+            Self::ComptimeCall(key) => format!(
+                "comptime:{}:{:?}:{:?}:lent:{:?}:declared:{:?}",
+                key.declaration.stable_identity(),
+                key.type_arguments,
+                key.value_arguments,
+                key.lent_anonymous_nominals,
+                key.declared_anonymous_nominals
             ),
             Self::AnonymousNominal(key) => format!(
                 "anonymous:{}:{:?}",

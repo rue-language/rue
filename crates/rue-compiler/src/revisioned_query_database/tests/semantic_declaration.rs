@@ -831,6 +831,7 @@ fn platform_native_direct_target_selected_comptime_evaluates_under_the_host_arch
                 crate::durable_semantics::DurableConstValue::Integer(0),
             )]),
             lent_anonymous_nominals: Arc::from([]),
+            declared_anonymous_nominals: Arc::from([]),
         }),
     );
     assert_direct_semantic_observation(
@@ -946,6 +947,7 @@ fn trusted_std_option_comptime_call_resolves_for_i64() {
             type_arguments: Arc::from([(Arc::from("T"), DurableType::I64)]),
             value_arguments: Arc::from([]),
             lent_anonymous_nominals: Arc::from([]),
+            declared_anonymous_nominals: Arc::from([]),
         }),
     );
 
@@ -1045,6 +1047,7 @@ fn cold_foreign_comptime_probe_admits_owned_program_without_value_evaluation() {
             type_arguments: Arc::from([]),
             value_arguments: Arc::from([]),
             lent_anonymous_nominals: Arc::from([]),
+            declared_anonymous_nominals: Arc::from([]),
         },
     );
     assert!(
@@ -1096,6 +1099,7 @@ fn ready_foreign_comptime_probe_reuses_full_projection_without_body_materializat
             crate::durable_semantics::DurableConstValue::Integer(0),
         )]),
         lent_anonymous_nominals: Arc::from([]),
+        declared_anonymous_nominals: Arc::from([]),
     });
     let value = request_semantic_nucleus(&database, revision, key.clone());
     let SemanticNucleusValue::ComptimeCall(projection) = value else {
@@ -1228,6 +1232,7 @@ fn comptime_anchor_identity_comes_from_the_candidate_artifact() {
             )]),
             value_arguments: Arc::from([]),
             lent_anonymous_nominals: Arc::from([]),
+            declared_anonymous_nominals: Arc::from([]),
         }),
     );
     match value {
@@ -3377,6 +3382,7 @@ fn durable_callable_admission_pipeline_preserves_policy_table() {
                 type_arguments: Arc::from([]),
                 value_arguments: Arc::from([]),
                 lent_anonymous_nominals: Arc::from([]),
+                declared_anonymous_nominals: Arc::from([]),
             }),
         );
         let diagnostic = format!("{value:?}");
@@ -3412,6 +3418,7 @@ fn durable_callable_admission_pipeline_preserves_policy_table() {
             type_arguments: Arc::from([]),
             value_arguments: Arc::from([]),
             lent_anonymous_nominals: Arc::from([]),
+            declared_anonymous_nominals: Arc::from([]),
         }),
     );
     assert!(
@@ -3469,6 +3476,7 @@ fn durable_callable_admission_pipeline_preserves_policy_table() {
             type_arguments: Arc::from([]),
             value_arguments: Arc::from([]),
             lent_anonymous_nominals: Arc::from([]),
+            declared_anonymous_nominals: Arc::from([]),
         }),
     );
     assert!(

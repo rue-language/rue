@@ -1258,6 +1258,7 @@ impl rue_air::DurableBodyLookupSource<crate::StableDefinitionKey, ModuleId>
             type_arguments,
             value_arguments,
             Arc::from([]),
+            Arc::from([]),
         )
     }
 
@@ -1267,6 +1268,7 @@ impl rue_air::DurableBodyLookupSource<crate::StableDefinitionKey, ModuleId>
         type_arguments: &[(Arc<str>, crate::DurableType)],
         value_arguments: &[(Arc<str>, crate::DurableConstValue)],
         local: &[rue_air::SemanticProducedAnonymousNominal],
+        declared: &[crate::AnonymousNominalKey],
         definitions: &[(rue_air::SemanticDefinitionToken, crate::StableDefinitionKey)],
         modules: &[(rue_air::SemanticModuleToken, ModuleId)],
     ) -> rue_air::DurableComptimeCallOutcome<crate::StableDefinitionKey, ModuleId> {
@@ -1318,6 +1320,10 @@ impl rue_air::DurableBodyLookupSource<crate::StableDefinitionKey, ModuleId>
             type_arguments,
             value_arguments,
             lent.into_values().collect(),
+            declared
+                .iter()
+                .map(|identity| identity.with_canonical_producer().into_owned())
+                .collect(),
         )
     }
 }
@@ -1325,13 +1331,15 @@ impl rue_air::DurableBodyLookupSource<crate::StableDefinitionKey, ModuleId>
 impl CompilerBodyDurableSource<'_> {
     /// Reduce one comptime call through the canonical query, keyed with the
     /// facts of any anonymous nominals the calling runtime body lends because
-    /// it is still producing them (RUE-2590).
+    /// it is still producing them (RUE-2590), and the identities of any it is
+    /// still declaring (RUE-2607).
     fn reduce_comptime_call_lending(
         &self,
         definition: &crate::StableDefinitionKey,
         type_arguments: &[(Arc<str>, crate::DurableType)],
         value_arguments: &[(Arc<str>, crate::DurableConstValue)],
         lent: Arc<[crate::durable_semantics::DurableAnonymousNominal]>,
+        declared: Arc<[crate::AnonymousNominalKey]>,
     ) -> rue_air::DurableComptimeCallOutcome<crate::StableDefinitionKey, ModuleId> {
         let Some(candidate) = self.candidate(definition) else {
             return rue_air::DurableComptimeCallOutcome::NotReduced;
@@ -1343,6 +1351,7 @@ impl CompilerBodyDurableSource<'_> {
                 type_arguments: type_arguments.to_vec().into(),
                 value_arguments: value_arguments.to_vec().into(),
                 lent_anonymous_nominals: Arc::clone(&lent),
+                declared_anonymous_nominals: Arc::clone(&declared),
             },
         );
         let value = match self.provider.nucleus_result(query) {
@@ -1573,8 +1582,10 @@ impl CompilerBodyDurableSource<'_> {
             // A call reduced over lent nominals publishes the facts of the
             // nominals it minted in its own projection, exactly as their
             // producer would publish them. The producer is that call keyed
-            // without the loan, which would wait on the body lending them.
-            if !lent.is_empty() {
+            // without the loan, which would wait on the body lending them,
+            // as it would on one still declaring a nominal it names
+            // (RUE-2607).
+            if !lent.is_empty() || !declared.is_empty() {
                 let mut dynamic = self.dynamic_anonymous.borrow_mut();
                 dynamic.extend_complete(lent.iter());
                 dynamic.extend_complete(
@@ -2882,6 +2893,7 @@ impl crate::durable_comptime::DurableComptimeForeignCallAuthority
             type_arguments: type_arguments.to_vec().into(),
             value_arguments: value_arguments.to_vec().into(),
             lent_anonymous_nominals: Arc::from([]),
+            declared_anonymous_nominals: Arc::from([]),
         };
         match self.context.join_registered_noncomputing(
             self.semantic_nucleus,
@@ -3318,6 +3330,7 @@ impl rue_air::BodyFactProvider for CompilerBodyFactProvider<'_> {
                 type_arguments: type_arguments.to_vec().into(),
                 value_arguments: value_arguments.to_vec().into(),
                 lent_anonymous_nominals: Arc::from([]),
+                declared_anonymous_nominals: Arc::from([]),
             },
         );
         match self.nucleus(query) {

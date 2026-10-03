@@ -1510,6 +1510,18 @@ $runtime
                                                 ) {
                                                     continue;
                                                 }
+                                                // A nominal the runtime caller is still
+                                                // declaring has no facts to lend or ask
+                                                // for; the call names it by identity
+                                                // alone (RUE-2607).
+                                                if call.declared_anonymous_nominals.iter().any(
+                                                    |declared| {
+                                                        declared.with_canonical_producer()
+                                                            == identity.with_canonical_producer()
+                                                    },
+                                                ) {
+                                                    continue;
+                                                }
                                                 // A nominal a body with no declaration
                                                 // of its own produced (`let K = struct
                                                 // { .. }` in an anonymous struct's
