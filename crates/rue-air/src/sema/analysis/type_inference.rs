@@ -1739,28 +1739,39 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 }
             }
         }
-        errors.sort_by_key(|error| error.span().map(|span| span.start));
-        let mut distinct = Vec::with_capacity(errors.len());
+        let position = |error: &CompileError| error.span().map(|span| (span.file_id.0, span.start));
+        errors.sort_by_key(position);
+        // Identical diagnostics share a position, so each is compared only
+        // with the kept diagnostics at its own position.
+        let mut distinct = Vec::<CompileError>::with_capacity(errors.len());
         for error in errors {
-            if !distinct.contains(&error) {
+            let duplicate = distinct
+                .iter()
+                .rev()
+                .take_while(|kept| position(kept) == position(&error))
+                .any(|kept| *kept == error);
+            if !duplicate {
                 distinct.push(error);
             }
         }
-        let Some(first) = distinct.first().cloned().or(fallback) else {
+        let errors = distinct;
+        let Some(first) = errors.first().cloned().or(fallback) else {
             unreachable!("a failed staging has a diagnostic");
         };
+        // Like statement recovery, report the diagnostics that fit the budget
+        // and then stop with the resource limit.
+        let budget = super::super::ordinary_engine::BODY_ANALYSIS_DIAGNOSTIC_BUDGET;
         let recovered_errors = self.body_analysis_recovered_errors_mut();
-        if recovered_errors.len() + distinct.len()
-            > super::super::ordinary_engine::BODY_ANALYSIS_DIAGNOSTIC_BUDGET
-        {
+        let room = budget.saturating_sub(recovered_errors.len());
+        if errors.len() > room {
+            recovered_errors.extend(errors.into_iter().take(room));
             return Err(CompileError::without_span(
                 ErrorKind::CompilerResourceLimit(format!(
-                    "body analysis exceeded the recovery diagnostic limit of {}",
-                    super::super::ordinary_engine::BODY_ANALYSIS_DIAGNOSTIC_BUDGET
+                    "body analysis exceeded the recovery diagnostic limit of {budget}"
                 )),
             ));
         }
-        recovered_errors.extend(distinct);
+        recovered_errors.extend(errors);
         Ok(first)
     }
 
