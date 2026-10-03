@@ -1126,19 +1126,23 @@ filegroup(
 # cache half entirely. `.github/actions/bootstrap-dotslash` owns the pairing;
 # this gate keeps it the only owner, and fails if the action stops doing
 # either half rather than passing vacuously over conforming callers. It also
-# holds the one surviving cache key to the RUE-1854 rule: hash the pinned
-# `buck2-bin` manifest, never the `buck2` wrapper.
+# holds the Buck/Buck+BTD keys to the RUE-1854 rule: hash the pinned
+# `buck2-bin` manifest, never the `buck2` wrapper. Opt-in peer and website
+# caches have separate identities hashed from their own tool manifests.
 rue_sh_test(
     name = "dotslash-bootstrap-validation",
     test = "scripts/validate-dotslash-bootstrap.py",
     args = ["$(location :dotslash-github-sources)/.github"],
-    resources = [":gatelib-sources"],
+    resources = [":gatelib-sources", "scripts/warm-dotslash-tools.sh"],
 )
 
 rue_tool_test(
     name = "dotslash-bootstrap-tool-tests",
     test = "scripts/test-dotslash-bootstrap.py",
-    resources = ["scripts/validate-dotslash-bootstrap.py"],
+    resources = [
+        "scripts/validate-dotslash-bootstrap.py",
+        "scripts/warm-dotslash-tools.sh",
+    ],
 )
 
 # The structural complement of the per-crate debug-assertion checks

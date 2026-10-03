@@ -318,6 +318,8 @@ jobs:
 
       - name: Bootstrap dotslash
         uses: ./.github/actions/bootstrap-dotslash
+        with:
+          with-peers: 'true'
 
       # BuildBuddy remote action cache (RUE-316/RUE-1006/RUE-1019); see the
       # clippy job for the secret-availability contract. Compiler
