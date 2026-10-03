@@ -7778,3 +7778,57 @@ pub fn Pair(comptime A: type, comptime B: type) -> type { struct { a: A, b: B } 
 pub fn Z() -> type { [struct { s: i16 }; 3] }
 """ }
 exit_code = 15
+
+[[case]]
+name = "constructor_struct_minted_inside_its_array_keeps_its_methods"
+spec = ["4.14:22"]
+description = "A struct a constructor mints and holds in an array, or returns as the array's element, keeps its methods when the constructor is bound with `let` or applied in a size operand (RUE-2611)"
+source = """
+fn Z() -> type {
+    let L = struct { s: i16, fn get(borrow self) -> i16 { self.s } };
+    struct {
+        items: [L; 2],
+        fn mk() -> Self { Self { items: [L { s: 3 }, L { s: 4 }] } }
+        fn total(borrow self) -> i16 { self.items[0].get() + self.items[1].get() }
+    }
+}
+fn Y() -> type { [struct { s: i16, fn get(borrow self) -> i16 { self.s } }; 3] }
+fn main() -> i32 {
+    let A = Z();
+    let a = A.mk();
+    @dbg(a.total());
+    let B = Y();
+    @dbg(@size_of(B));
+    @dbg(@size_of(Y()));
+    0
+}
+"""
+expected_stdout = """
+7
+6
+6
+"""
+exit_code = 0
+
+[[case]]
+name = "array_constructor_over_a_minted_droppable_element_drops_in_order"
+spec = ["4.14:22"]
+description = "An array constructor whose element is a struct with a destructor, minted by another constructor, drops each array's elements in order whether the type is bound with `let` or written as an annotation (RUE-2611)"
+source = """
+fn R(comptime T: type) -> type { struct { v: T, drop fn(self) { @dbg(self.v); } } }
+fn Arr(comptime T: type) -> type { let E = R(T); [E; 2] }
+fn main() -> i32 {
+    let E = R(i32);
+    let A = Arr(i32);
+    let _a: A = [E { v: 2 }, E { v: 3 }];
+    let _b: Arr(i32) = [E { v: 4 }, E { v: 5 }];
+    0
+}
+"""
+expected_stdout = """
+4
+5
+2
+3
+"""
+exit_code = 0
