@@ -82,6 +82,51 @@ def rue_test_suite(name, tier = "premerge", platform = None, labels = [], **kwar
         **kwargs
     )
 
+def _rue_forward_test_impl(ctx: AnalysisContext) -> list[Provider]:
+    """Give an existing external test a graph-owned Rue test target."""
+    test = ctx.attrs.test[ExternalRunnerTestInfo]
+    return [
+        ExternalRunnerTestInfo(
+            type = test.test_type,
+            command = test.command,
+            env = test.env,
+            labels = ctx.attrs.labels,
+            contacts = test.contacts,
+            use_project_relative_paths = test.use_project_relative_paths,
+            run_from_project_root = test.run_from_project_root,
+            default_executor = test.default_executor,
+            executor_overrides = test.executor_overrides,
+            local_resources = test.local_resources,
+            required_local_resources = test.required_local_resources,
+            worker = test.worker,
+            supports_test_execution_caching = test.supports_test_execution_caching,
+        ),
+        DefaultInfo(),
+    ]
+
+_rue_forward_test = rule(
+    impl = _rue_forward_test_impl,
+    attrs = {
+        "test": attrs.dep(providers = [ExternalRunnerTestInfo]),
+        "labels": attrs.list(attrs.string(), default = []),
+    },
+)
+
+def rue_forward_test(name, test, tier = "premerge", platform = None, labels = [], **kwargs):
+    """Wrap a generated executable test provider in a tiered Rue test target.
+
+    Rust doc-test subtargets are runnable but have no separate `*_test` rule
+    for Buck's live tier selector to discover. Forwarding their
+    ExternalRunnerTestInfo keeps the actual command and declared inputs while
+    giving CI one labeled test target.
+    """
+    _rue_forward_test(
+        name = name,
+        test = test,
+        labels = rue_test_labels(tier, platform, labels),
+        **kwargs
+    )
+
 # Every repository gate under scripts/ has a Python test of its own decision
 # logic (`test-validate-*.py`, `test-*.py`), declared with the same shape:
 # bytecode writing off so a Buck-materialized copy of the script tree stays

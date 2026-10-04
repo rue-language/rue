@@ -504,7 +504,11 @@ class ToolchainRegistrationTests(unittest.TestCase):
     def test_compiler_and_clippy_are_both_wrapped_by_the_policy_tool(self):
         source = Path(os.environ["RUE_RUST_TOOLCHAIN_RULE"]).read_text()
         validate_rule_forwarding(source)
-        self.assertIn("compiler = RunInfo(args = cmd_args(\n        unused_deps_wrapper,\n        rustc_bin,", source)
+        self.assertIn("rustc_wrapper_output = ctx.actions.declare_output(\"rustc_wrapper.sh\")", source)
+        self.assertIn("compiler = RunInfo(args = cmd_args(\n        rustc_wrapper,", source)
+        self.assertIn("relative_to = (rustc_wrapper_output, 1)", source)
+        self.assertIn('exec python3 \"$unused_deps_wrapper\" \"$rustc_path\" \"$@\"', source)
+        self.assertIn("hidden = [unused_deps_wrapper, rustc_bin, rustc_dist, std_dist]", source)
         self.assertIn('unused_deps_wrapper = ctx.attrs.unused_deps_wrapper[DefaultInfo].default_outputs[0]', source)
         self.assertIn('                "exec python3 ",', source)
         self.assertIn('                " \\\"$@\\\"",\n                delimiter = "",', source)

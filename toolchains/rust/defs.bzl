@@ -134,11 +134,39 @@ def _hermetic_rust_toolchain_impl(ctx: AnalysisContext) -> list[Provider]:
     # This is the relocatable, canonical approach ($ORIGIN RPATH), not an
     # absolute-path LD_LIBRARY_PATH hack.
     unused_deps_wrapper = ctx.attrs.unused_deps_wrapper[DefaultInfo].default_outputs[0]
-    compiler = RunInfo(args = cmd_args(
+    rustc_wrapper_output = ctx.actions.declare_output("rustc_wrapper.sh")
+    unused_deps_wrapper_from_wrapper = cmd_args(
         unused_deps_wrapper,
+        relative_to = (rustc_wrapper_output, 1),
+    )
+    rustc_bin_from_wrapper = cmd_args(
         rustc_bin,
-        hidden = [rustc_dist, std_dist],
+        relative_to = (rustc_wrapper_output, 1),
+    )
+    rustc_wrapper, _ = ctx.actions.write(
+        rustc_wrapper_output,
+        [
+            "#!/usr/bin/env bash",
+            "set -euo pipefail",
+            'wrapper_dir="$(cd -P "$(dirname "$0")" && pwd)"',
+            cmd_args(unused_deps_wrapper_from_wrapper, format = 'unused_deps_wrapper="$wrapper_dir/{}"'),
+            cmd_args(rustc_bin_from_wrapper, format = 'rustc_path="$wrapper_dir/{}"'),
+            'if [[ ! -x "$rustc_path" ]]; then',
+            '  echo "rustc wrapper: configured compiler is unavailable: $rustc_path" >&2',
+            "  exit 1",
+            "fi",
+            'exec python3 "$unused_deps_wrapper" "$rustc_path" "$@"',
+        ],
+        is_executable = True,
+        allow_args = True,
+    )
+    compiler = RunInfo(args = cmd_args(
+        rustc_wrapper,
+        hidden = [unused_deps_wrapper, rustc_bin, rustc_dist, std_dist],
     ))
+    # Rustdoc consumes the compiler RunInfo as its `--test-builder`; keeping
+    # rustdoc itself as the declared executable leaves that toolchain contract
+    # intact while the single-file compiler wrapper above handles the builder.
     rustdoc = RunInfo(args = cmd_args(rustdoc_bin, hidden = [rustc_dist, std_dist]))
 
     # clippy-driver dynamically loads librustc_driver from rustc/lib/, but
