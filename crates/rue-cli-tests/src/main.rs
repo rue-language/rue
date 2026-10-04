@@ -3368,28 +3368,66 @@ fn run_daemon_steps(
                 })
                 .collect()
         });
-        for (run, output) in outputs.into_iter().enumerate() {
-            let output = output?;
-            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-            let label = format!("daemon step {index} (`{}`, run {run})", step.args.join(" "));
-            if let Some(ice) = ice_message(&output.status, &stderr) {
-                return Err(TestFailure::assertion(format!("{label}: {ice}")));
-            }
-            let code = output.status.code().unwrap_or(-1);
-            if code != step.exit_code {
-                return Err(TestFailure::assertion(format!(
-                    "{label}: expected exit {}, got {code}\nstdout:\n{stdout}\nstderr:\n{stderr}",
-                    step.exit_code
-                )));
-            }
-            check_daemon_step_output(&label, step, &stdout, &stderr)?;
-        }
+        validate_daemon_step_outputs(index, step, outputs)?;
         if let Some(program) = &step.run_output {
             run_daemon_step_output(case, contract, dir, index, step, program)?;
         }
     }
     Ok(())
+}
+
+/// Validate every completed invocation, letting any fatal failure outrank
+/// ordinary expectation mismatches from earlier runs.
+fn validate_daemon_step_outputs(
+    index: usize,
+    step: &DaemonStep,
+    outputs: Vec<TestResult<Output>>,
+) -> TestResult {
+    let mut first_fatal = None;
+    let mut first_assertion = None;
+    for (run, output) in outputs.into_iter().enumerate() {
+        let label = format!("daemon step {index} (`{}`, run {run})", step.args.join(" "));
+        let output = match output {
+            Ok(output) => output,
+            Err(error) => {
+                let error = error.with_context(&label);
+                if error.is_fatal() {
+                    first_fatal.get_or_insert(error);
+                } else {
+                    first_assertion.get_or_insert(error);
+                }
+                continue;
+            }
+        };
+        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        if let Some(ice) = ice_message(&output.status, &stderr) {
+            first_fatal.get_or_insert_with(|| ice.with_context(&label));
+            continue;
+        }
+        let code = output.status.code().unwrap_or(-1);
+        if code != step.exit_code {
+            first_assertion.get_or_insert_with(|| {
+                TestFailure::assertion(format!(
+                    "{label}: expected exit {}, got {code}\nstdout:\n{stdout}\nstderr:\n{stderr}",
+                    step.exit_code
+                ))
+            });
+            continue;
+        }
+        if let Err(error) = check_daemon_step_output(&label, step, &stdout, &stderr) {
+            if error.is_fatal() {
+                first_fatal.get_or_insert(error);
+            } else {
+                first_assertion.get_or_insert(error);
+            }
+        }
+    }
+    if let Some(error) = first_fatal.or(first_assertion) {
+        Err(error)
+    } else {
+        Ok(())
+    }
 }
 
 /// Run the program a daemon step produced and check it behaves.
@@ -6174,6 +6212,17 @@ mod tests {
         (directory, binary)
     }
 
+    #[cfg(unix)]
+    fn daemon_step_output(exit_code: i32, stderr: &str) -> Output {
+        use std::os::unix::process::ExitStatusExt;
+
+        Output {
+            status: std::process::ExitStatus::from_raw(exit_code << 8),
+            stdout: vec![],
+            stderr: stderr.as_bytes().to_vec(),
+        }
+    }
+
     #[test]
     fn test_welcome_example_is_zero_exit() {
         // RUE-517: the onboarding docs (README, CONTRIBUTING, and the tutorial's
@@ -7717,6 +7766,119 @@ mod tests {
             known_bug_disposition("RUE-999999", Err(error)),
             KnownBugDisposition::Fail(message) if message.contains("INTERNAL COMPILER ERROR")
         ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn known_bug_cannot_absorb_fake_compiler_panic_in_daemon_step() {
+        let (_directory, binary) =
+            fake_compiler("#!/bin/sh\nprintf 'panicked at fake CLI compiler' >&2\nexit 101\n");
+        let case = Case {
+            name: "daemon_known_bug_panic".to_string(),
+            known_bug: Some("RUE-999999".to_string()),
+            ..Default::default()
+        };
+        let scenario = DaemonScenario {
+            steps: vec![DaemonStep {
+                args: vec!["daemon".to_string(), "status".to_string()],
+                exit_code: 1,
+                stdout_contains: vec![],
+                stdout_not_contains: vec![],
+                stderr_contains: vec![],
+                concurrency: 1,
+                run_output: None,
+                run_output_exit_code: 0,
+                run_output_stdout_contains: vec![],
+                writes: vec![],
+            }],
+        };
+        let contract = ExecutionContract {
+            class: ExecutionClass::Ordinary,
+            compile_timeout_ms: rue_test_runner::DEFAULT_TIMEOUT_MS,
+            runtime_timeout_ms: rue_test_runner::DEFAULT_TIMEOUT_MS,
+        };
+        let temp_dir = tempfile::tempdir().expect("temporary daemon step directory");
+        let result = run_daemon_steps(
+            &case,
+            &scenario,
+            &contract,
+            &binary,
+            Path::new("std"),
+            temp_dir.path(),
+            &temp_dir.path().join("endpoint"),
+        );
+        let error = result.expect_err("compiler panic must remain a fatal daemon-step failure");
+
+        assert!(error.is_fatal());
+        assert!(
+            error
+                .to_string()
+                .contains("daemon step 0 (`daemon status`, run 0)")
+        );
+        assert!(matches!(
+            known_bug_disposition("RUE-999999", Err(error)),
+            KnownBugDisposition::Fail(message) if message.contains("INTERNAL COMPILER ERROR")
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn daemon_step_results_prioritize_fatal_failures_and_keep_context() {
+        let step = DaemonStep {
+            args: vec!["daemon".to_string(), "status".to_string()],
+            exit_code: 0,
+            stdout_contains: vec![],
+            stdout_not_contains: vec![],
+            stderr_contains: vec![],
+            concurrency: 2,
+            run_output: None,
+            run_output_exit_code: 0,
+            run_output_stdout_contains: vec![],
+            writes: vec![],
+        };
+
+        let error = validate_daemon_step_outputs(
+            0,
+            &step,
+            vec![
+                Ok(daemon_step_output(1, "")),
+                Ok(daemon_step_output(101, "panicked at fake CLI compiler")),
+            ],
+        )
+        .expect_err("a later compiler panic must outrank an earlier mismatch");
+        assert!(error.is_fatal());
+        assert!(error.to_string().contains("run 1"));
+        assert!(matches!(
+            known_bug_disposition("RUE-999999", Err(error)),
+            KnownBugDisposition::Fail(message) if message.contains("INTERNAL COMPILER ERROR")
+        ));
+
+        let error = validate_daemon_step_outputs(
+            0,
+            &step,
+            vec![Ok(daemon_step_output(1, "")), Ok(daemon_step_output(2, ""))],
+        )
+        .expect_err("ordinary mismatches must still fail");
+        assert!(!error.is_fatal());
+        assert!(error.to_string().contains("run 0"));
+        assert!(matches!(
+            known_bug_disposition("RUE-999999", Err(error)),
+            KnownBugDisposition::Ignore(_)
+        ));
+
+        let error = validate_daemon_step_outputs(
+            0,
+            &step,
+            vec![Err(TestFailure::fatal("compiler invocation failed"))],
+        )
+        .expect_err("process failures must keep their step context");
+        assert!(error.is_fatal());
+        assert!(
+            error
+                .to_string()
+                .contains("daemon step 0 (`daemon status`, run 0)")
+        );
+        assert!(error.to_string().contains("compiler invocation failed"));
     }
 
     #[test]
