@@ -58,6 +58,36 @@ fn main() -> i32 {
 exit_code = 0
 
 [[case]]
+name = "unknown_inline_enum_variant"
+description = "An unknown variant on a reduced inline enum type is E0420, as for a named enum path."
+compile_fail = true
+error_contains = ["E0420", "unknown variant 'C' in enum 'E(i32)'"]
+files = [{ path = "main.rue", source = """
+fn E(comptime T: type) -> type { enum { A(T), B } }
+fn main() -> i32 { E(i32).C(1); 0 }
+""" }]
+
+[[case]]
+name = "unknown_inline_struct_assoc_function"
+description = "An unknown associated function on a reduced inline struct remains E0412."
+compile_fail = true
+error_contains = ["E0412", "no associated function named 'missing'"]
+files = [{ path = "main.rue", source = """
+fn S(comptime T: type) -> type { struct { value: T, fn make() -> Self { Self { value: 0 } } } }
+fn main() -> i32 { S(i32).missing(1); 0 }
+""" }]
+
+[[case]]
+name = "runtime_enum_receiver_unknown_method"
+description = "An unknown method on a runtime enum value remains E0413."
+compile_fail = true
+error_contains = ["E0413", "no method named 'missing' on type 'E'"]
+files = [{ path = "main.rue", source = """
+enum E { A, B }
+fn main() -> i32 { let e = E.A; e.missing(); 0 }
+""" }]
+
+[[case]]
 name = "bound_name_form_still_runs"
 description = "The equivalent bind-first form (`let R = F(args); R.Ok(..)`) runs identically."
 args = ["main.rue", "-o", "prog"]
