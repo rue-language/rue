@@ -18,6 +18,31 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
+fn durable_builtin_type(name: &str) -> Option<DurableType> {
+    Some(match name {
+        "i8" => DurableType::I8,
+        "i16" => DurableType::I16,
+        "i32" => DurableType::I32,
+        "i64" => DurableType::I64,
+        "u8" => DurableType::U8,
+        "u16" => DurableType::U16,
+        "u32" => DurableType::U32,
+        "u64" => DurableType::U64,
+        "bool" => DurableType::Bool,
+        "unit" => DurableType::Unit,
+        "never" => DurableType::Never,
+        "type" => DurableType::ComptimeType,
+        "f32" => DurableType::F32,
+        "f64" => DurableType::F64,
+        "comptime_float" => DurableType::ComptimeFloat,
+        "str" => DurableType::BuiltinNominal {
+            name: Arc::from("str"),
+            kind: rue_air::SemanticImportNominalKind::Struct,
+        },
+        _ => return None,
+    })
+}
+
 #[cfg(test)]
 pub(crate) fn set_enum_variant_child_tripwire(token: Option<CancellationToken>) {
     ENUM_VARIANT_CHILD_TRIPWIRE.with(|tripwire| *tripwire.borrow_mut() = token);
@@ -1299,28 +1324,7 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeTypeAlgebra
         name: Self::Name,
         span: rue_span::Span,
     ) -> rue_air::ComptimeHostResult<Option<Self::Type>, Self::Failure> {
-        let builtin = match name.as_str() {
-            "i8" => Some(DurableType::I8),
-            "i16" => Some(DurableType::I16),
-            "i32" => Some(DurableType::I32),
-            "i64" => Some(DurableType::I64),
-            "u8" => Some(DurableType::U8),
-            "u16" => Some(DurableType::U16),
-            "u32" => Some(DurableType::U32),
-            "u64" => Some(DurableType::U64),
-            "bool" => Some(DurableType::Bool),
-            "unit" => Some(DurableType::Unit),
-            "never" => Some(DurableType::Never),
-            "type" => Some(DurableType::ComptimeType),
-            "f32" => Some(DurableType::F32),
-            "f64" => Some(DurableType::F64),
-            "comptime_float" => Some(DurableType::ComptimeFloat),
-            "str" => Some(DurableType::BuiltinNominal {
-                name: Arc::from("str"),
-                kind: rue_air::SemanticImportNominalKind::Struct,
-            }),
-            _ => None,
-        };
+        let builtin = durable_builtin_type(name.as_str());
         if let Some(ty) = builtin {
             return Ok(Some(DurableComptimeType(ty)));
         }
@@ -1329,6 +1333,48 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeTypeAlgebra
         let rue_air::ComptimeNamedValueResolution::Known(value) = resolution else {
             return Ok(None);
         };
+        Ok(value.as_type())
+    }
+
+    fn resolve_comptime_struct_type(
+        &mut self,
+        program: &Self::ProgramKey,
+        name: Self::Name,
+        span: rue_span::Span,
+    ) -> rue_air::ComptimeHostResult<Option<Self::Type>, Self::Failure> {
+        // Built-in type names share the ordinary named-type path. In
+        // particular, this keeps their existing literal-shape diagnostics.
+        if durable_builtin_type(name.as_str()).is_some() {
+            return self.resolve_named_type_value(program, name, span);
+        }
+
+        // An absent projection in this one syntactic position is an unknown
+        // type, as in an ordinary function body. General comptime name lookup
+        // still reports an undefined constant. Resolve through the canonical
+        // declaration provider so successful lookups observe their dependency
+        // and anonymous nominal metadata exactly once.
+        let literal_site = self
+            .services
+            .durable_session()
+            .diagnostic_site(program, span)
+            .expect("durable AIR diagnostic must reference a registered declaration program");
+        let projection = self
+            .services
+            .resolve_named_value(
+                &program.declaration,
+                program.declaration.module(),
+                name.as_str(),
+            )
+            .map_err(durable_provider_error)?;
+        let Some(projection) = projection else {
+            return Err(rue_air::ComptimeHostError::HostFailure(
+                durable_diagnostic_failure(
+                    &literal_site,
+                    rue_error::ErrorKind::UnknownType(name.as_str().to_owned()),
+                ),
+            ));
+        };
+        let value = self.observe_named_value(projection);
         Ok(value.as_type())
     }
 
