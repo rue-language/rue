@@ -172,31 +172,31 @@ jobs:
         id: fuzz-lexer
         continue-on-error: true
         timeout-minutes: 10
-        run: ./buck2 run //crates/rue-fuzz:rue-fuzz -- --mutate --max-time=300 --evolve-corpus=crates/rue-fuzz/nightly-corpus/lexer lexer crates/rue-fuzz/nightly-input/lexer
+        run: ./buck2 run //crates/rue-fuzz:rue-fuzz -- --mutate --max-time=300 --crash-dir=crates/rue-fuzz/crashes --evolve-corpus=crates/rue-fuzz/nightly-corpus/lexer lexer crates/rue-fuzz/nightly-input/lexer
 
       - name: Fuzz parser (5 minutes)
         id: fuzz-parser
         continue-on-error: true
         timeout-minutes: 10
-        run: ./buck2 run //crates/rue-fuzz:rue-fuzz -- --mutate --max-time=300 --evolve-corpus=crates/rue-fuzz/nightly-corpus/parser parser crates/rue-fuzz/nightly-input/parser
+        run: ./buck2 run //crates/rue-fuzz:rue-fuzz -- --mutate --max-time=300 --crash-dir=crates/rue-fuzz/crashes --evolve-corpus=crates/rue-fuzz/nightly-corpus/parser parser crates/rue-fuzz/nightly-input/parser
 
       - name: Fuzz sema (5 minutes)
         id: fuzz-sema
         continue-on-error: true
         timeout-minutes: 10
-        run: ./buck2 run //crates/rue-fuzz:rue-fuzz -- --mutate --max-time=300 --evolve-corpus=crates/rue-fuzz/nightly-corpus/sema sema crates/rue-fuzz/nightly-input/sema
+        run: ./buck2 run //crates/rue-fuzz:rue-fuzz -- --mutate --max-time=300 --crash-dir=crates/rue-fuzz/crashes --evolve-corpus=crates/rue-fuzz/nightly-corpus/sema sema crates/rue-fuzz/nightly-input/sema
 
       - name: Fuzz compiler (5 minutes)
         id: fuzz-compiler
         continue-on-error: true
         timeout-minutes: 10
-        run: ./buck2 run //crates/rue-fuzz:rue-fuzz -- --mutate --max-time=300 --evolve-corpus=crates/rue-fuzz/nightly-corpus/compiler compiler crates/rue-fuzz/nightly-input/compiler
+        run: ./buck2 run //crates/rue-fuzz:rue-fuzz -- --mutate --max-time=300 --crash-dir=crates/rue-fuzz/crashes --evolve-corpus=crates/rue-fuzz/nightly-corpus/compiler compiler crates/rue-fuzz/nightly-input/compiler
 
       - name: Fuzz warm session (5 minutes)
         id: fuzz-warm-session
         continue-on-error: true
         timeout-minutes: 10
-        run: ./buck2 run //crates/rue-fuzz:rue-fuzz -- --mutate --max-time=300 --evolve-corpus=crates/rue-fuzz/nightly-corpus/warm_session warm_session crates/rue-fuzz/nightly-input/warm_session
+        run: ./buck2 run //crates/rue-fuzz:rue-fuzz -- --mutate --max-time=300 --crash-dir=crates/rue-fuzz/crashes --evolve-corpus=crates/rue-fuzz/nightly-corpus/warm_session warm_session crates/rue-fuzz/nightly-input/warm_session
 
       # These source-level variants stay on the x86-64 runner: they compile
       # deterministic source inputs to finished images but never execute the
@@ -207,43 +207,43 @@ jobs:
         id: fuzz-compiler-aarch64
         continue-on-error: true
         timeout-minutes: 10
-        run: ./buck2 run //crates/rue-fuzz:rue-fuzz -- --mutate --max-time=300 --evolve-corpus=crates/rue-fuzz/nightly-corpus/compiler_aarch64 compiler_aarch64 crates/rue-fuzz/nightly-input/compiler_aarch64
+        run: ./buck2 run //crates/rue-fuzz:rue-fuzz -- --mutate --max-time=300 --crash-dir=crates/rue-fuzz/crashes --evolve-corpus=crates/rue-fuzz/nightly-corpus/compiler_aarch64 compiler_aarch64 crates/rue-fuzz/nightly-input/compiler_aarch64
 
       - name: Fuzz compiler (x86-64 Linux O1, 5 minutes)
         id: fuzz-compiler-x86-64-o1
         continue-on-error: true
         timeout-minutes: 10
-        run: ./buck2 run //crates/rue-fuzz:rue-fuzz -- --mutate --max-time=300 --evolve-corpus=crates/rue-fuzz/nightly-corpus/compiler_x86_64_o1 compiler_x86_64_o1 crates/rue-fuzz/nightly-input/compiler_x86_64_o1
+        run: ./buck2 run //crates/rue-fuzz:rue-fuzz -- --mutate --max-time=300 --crash-dir=crates/rue-fuzz/crashes --evolve-corpus=crates/rue-fuzz/nightly-corpus/compiler_x86_64_o1 compiler_x86_64_o1 crates/rue-fuzz/nightly-input/compiler_x86_64_o1
 
       - name: Fuzz payload schemas (5 minutes)
         id: fuzz-payload-schemas
         continue-on-error: true
         timeout-minutes: 10
-        run: ./buck2 run //crates/rue-fuzz:rue-fuzz -- --mutate --max-time=300 --evolve-corpus=crates/rue-fuzz/nightly-corpus/payload_schemas payload_schemas crates/rue-fuzz/nightly-input/payload_schemas
+        run: ./buck2 run //crates/rue-fuzz:rue-fuzz -- --mutate --max-time=300 --crash-dir=crates/rue-fuzz/crashes --evolve-corpus=crates/rue-fuzz/nightly-corpus/payload_schemas payload_schemas crates/rue-fuzz/nightly-input/payload_schemas
 
       - name: Fuzz x86-64 emitter (5 minutes)
         id: fuzz-emitter
         continue-on-error: true
         timeout-minutes: 10
-        run: ./buck2 run //crates/rue-fuzz:rue-fuzz -- --mutate --max-time=300 --evolve-corpus=crates/rue-fuzz/nightly-corpus/emitter emitter crates/rue-fuzz/nightly-input/emitter
+        run: ./buck2 run //crates/rue-fuzz:rue-fuzz -- --mutate --max-time=300 --crash-dir=crates/rue-fuzz/crashes --evolve-corpus=crates/rue-fuzz/nightly-corpus/emitter emitter crates/rue-fuzz/nightly-input/emitter
 
       - name: Fuzz aarch64 emitter (5 minutes)
         id: fuzz-emitter-aarch64
         continue-on-error: true
         timeout-minutes: 10
-        run: ./buck2 run //crates/rue-fuzz:rue-fuzz -- --mutate --max-time=300 --evolve-corpus=crates/rue-fuzz/nightly-corpus/emitter_aarch64 emitter_aarch64 crates/rue-fuzz/nightly-input/emitter_aarch64
+        run: ./buck2 run //crates/rue-fuzz:rue-fuzz -- --mutate --max-time=300 --crash-dir=crates/rue-fuzz/crashes --evolve-corpus=crates/rue-fuzz/nightly-corpus/emitter_aarch64 emitter_aarch64 crates/rue-fuzz/nightly-input/emitter_aarch64
 
       - name: Fuzz x86-64 emitter sequences (5 minutes)
         id: fuzz-emitter-sequence
         continue-on-error: true
         timeout-minutes: 10
-        run: ./buck2 run //crates/rue-fuzz:rue-fuzz -- --mutate --max-time=300 --evolve-corpus=crates/rue-fuzz/nightly-corpus/emitter_sequence emitter_sequence crates/rue-fuzz/nightly-input/emitter_sequence
+        run: ./buck2 run //crates/rue-fuzz:rue-fuzz -- --mutate --max-time=300 --crash-dir=crates/rue-fuzz/crashes --evolve-corpus=crates/rue-fuzz/nightly-corpus/emitter_sequence emitter_sequence crates/rue-fuzz/nightly-input/emitter_sequence
 
       - name: Fuzz aarch64 emitter sequences (5 minutes)
         id: fuzz-emitter-sequence-aarch64
         continue-on-error: true
         timeout-minutes: 10
-        run: ./buck2 run //crates/rue-fuzz:rue-fuzz -- --mutate --max-time=300 --evolve-corpus=crates/rue-fuzz/nightly-corpus/emitter_sequence_aarch64 emitter_sequence_aarch64 crates/rue-fuzz/nightly-input/emitter_sequence_aarch64
+        run: ./buck2 run //crates/rue-fuzz:rue-fuzz -- --mutate --max-time=300 --crash-dir=crates/rue-fuzz/crashes --evolve-corpus=crates/rue-fuzz/nightly-corpus/emitter_sequence_aarch64 emitter_sequence_aarch64 crates/rue-fuzz/nightly-input/emitter_sequence_aarch64
 
       # Differential fuzzing: generate valid programs and cross-check the
       # rue-oracle reference interpreter against the compiled native binary

@@ -81,6 +81,7 @@ def validate_target(workflow: str, target: str) -> list[str]:
 
     command = (
         "--mutate --max-time=300 "
+        "--crash-dir=crates/rue-fuzz/crashes "
         f"--evolve-corpus=crates/rue-fuzz/nightly-corpus/{target} "
         f"{target} crates/rue-fuzz/nightly-input/{target}"
     )
