@@ -1368,6 +1368,7 @@ impl CompilerBodyDurableSource<'_> {
                         kind: rue_air::comptime_call_cycle_diagnostic(definition.name()),
                         span: None,
                         help: None,
+                        note: None,
                     },
                 );
             }
@@ -1399,6 +1400,7 @@ impl CompilerBodyDurableSource<'_> {
                         kind,
                         span: None,
                         help: None,
+                        note: None,
                     },
                 );
             }
@@ -1416,6 +1418,7 @@ impl CompilerBodyDurableSource<'_> {
                         kind,
                         span: None,
                         help: Some(help),
+                        note: None,
                     },
                 );
             }
@@ -1425,6 +1428,8 @@ impl CompilerBodyDurableSource<'_> {
                     producer,
                     start,
                     end,
+                    help,
+                    note,
                 },
             ) => {
                 let span = self.provider.producer_relative_span(&producer, start, end);
@@ -1432,7 +1437,8 @@ impl CompilerBodyDurableSource<'_> {
                     rue_air::DurableComptimeDiagnostic {
                         kind,
                         span,
-                        help: None,
+                        help,
+                        note,
                     },
                 );
             }
@@ -1447,6 +1453,7 @@ impl CompilerBodyDurableSource<'_> {
                         kind: rue_air::comptime_call_cycle_diagnostic(definition.name()),
                         span: None,
                         help: None,
+                        note: None,
                     },
                 );
             }
@@ -1483,7 +1490,7 @@ impl CompilerBodyDurableSource<'_> {
                         gate.source.end,
                     );
                     return rue_air::DurableComptimeCallOutcome::Diagnostic(
-                        rue_air::DurableComptimeDiagnostic { kind, span, help: None },
+                    rue_air::DurableComptimeDiagnostic { kind, span, help: None, note: None },
                     );
                 }
                 // An interface bound this call's arguments failed (spec
@@ -1510,6 +1517,7 @@ impl CompilerBodyDurableSource<'_> {
                             kind: error.kind,
                             span: None,
                             help,
+                            note: None,
                         },
                     );
                 }

@@ -246,7 +246,7 @@ impl DurableComptimeFailure {
                 }
                 Self::resolution("comptime arithmetic operand is not an integer")
             }
-            ComptimeSemanticRejection::UnaryOperandNotInteger(value) => match value {
+            ComptimeSemanticRejection::UnaryOperandNotInteger { value, .. } => match value {
                 EvaluatedSemanticConst::Module(_) => {
                     Self::resolution("module used where a value is required")
                 }
@@ -299,6 +299,26 @@ impl DurableComptimeFailure {
                 Self::resolution("expression is not supported in declaration-time comptime")
             }
         }
+    }
+
+    pub(crate) fn comptime_rejection_at(
+        rejection: ComptimeSemanticRejection<EvaluatedSemanticConst>,
+        site: &DurableComptimeDiagnosticSite,
+    ) -> Self {
+        if let ComptimeSemanticRejection::UnaryOperandNotInteger {
+            operation: ComptimeUnaryOperation::Neg,
+            value: EvaluatedSemanticConst::Value(value),
+        } = &rejection
+            && matches!(value.value, DurableConstValue::Bool(_))
+        {
+            return Self::kind_at_site_with_metadata(
+                site,
+                rue_error::ErrorKind::CannotNegate("bool".to_owned()),
+                None,
+                Some("unary `-` requires a signed integer or floating-point operand".to_owned()),
+            );
+        }
+        Self::comptime_rejection(rejection)
     }
 
     /// The depth-overrun terminal, worded by the one AIR authority so the
@@ -359,11 +379,22 @@ impl DurableComptimeFailure {
         site: &DurableComptimeDiagnosticSite,
         kind: rue_error::ErrorKind,
     ) -> Self {
+        Self::kind_at_site_with_metadata(site, kind, None, None)
+    }
+
+    pub(crate) fn kind_at_site_with_metadata(
+        site: &DurableComptimeDiagnosticSite,
+        kind: rue_error::ErrorKind,
+        help: Option<String>,
+        note: Option<String>,
+    ) -> Self {
         Self::failure(SemanticNucleusFailure::DiagnosticAtProducerRange {
             kind,
             producer: site.producer.clone(),
             start: site.start,
             end: site.end,
+            help: help.map(Into::into),
+            note: note.map(Into::into),
         })
     }
 
@@ -445,14 +476,16 @@ pub(super) fn durable_diagnostic_failure(
 /// failure it builds does, so a gate whose diagnostic is meaningless without
 /// its remedy (the preview gates) uses this instead.
 pub(super) fn durable_diagnostic_failure_with_help(
-    _site: &DurableComptimeDiagnosticSite,
+    site: &DurableComptimeDiagnosticSite,
     kind: rue_error::ErrorKind,
     help: String,
 ) -> DurableComptimeHostFailure {
-    DurableComptimeHostFailure::semantic(Box::new(SemanticNucleusFailure::DiagnosticWithHelp {
+    durable_host_failure(DurableComptimeFailure::kind_at_site_with_metadata(
+        site,
         kind,
-        help: std::sync::Arc::from(help.as_str()),
-    }))
+        Some(help),
+        None,
+    ))
 }
 
 pub(super) fn durable_host_error(
@@ -1176,7 +1209,10 @@ mod terminal_adapter_tests {
                 "comptime arithmetic operand is not an integer",
             ),
             (
-                ComptimeSemanticRejection::UnaryOperandNotInteger(unit.clone()),
+                ComptimeSemanticRejection::UnaryOperandNotInteger {
+                    operation: ComptimeUnaryOperation::Neg,
+                    value: unit.clone(),
+                },
                 "comptime arithmetic operand is not an integer",
             ),
             (

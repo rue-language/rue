@@ -75,6 +75,25 @@ compile_fail = true
 error_contains = ["E1100", "concurrency"]
 
 [[case]]
+name = "const_anonymous_bound_marker_preview_points_to_declaration_and_keeps_help"
+source = """
+fn Token() -> type { @thread_bound struct { value: i32 } }
+const T = Token();
+fn main() -> i32 { let x = T { value: 0 }; x.value }
+"""
+compile_fail = true
+expected_error = """
+error: [E1100]: a concurrency transferability marker requires preview feature `concurrency`
+ --> test.rue:1:36
+  |
+1 | fn Token() -> type { @thread_bound struct { value: i32 } }
+  |                                    ^^^^^^^^^^^^^^^^^^^^^
+  |
+  = help: use --preview concurrency to enable this feature (ADR-0098)
+  = help: use --preview concurrency to enable this feature (ADR-0098)
+"""
+
+[[case]]
 name = "const_anonymous_audit_marker_requires_preview"
 source = """
 fn Token() -> type { @unchecked_transfer("thread-independent") struct { value: i32 } }

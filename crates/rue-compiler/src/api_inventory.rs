@@ -1977,7 +1977,7 @@ const REGISTRATION_LEAF_ONE_SHOT_IDENTITIES: [(usize, u64); 45] = [
     (970, 16_733_311_749_340_788_625),
     (2_583, 15_262_418_539_020_264_161),
     (9_645, 2_959_791_739_730_858_267),
-    (154_278, 8_983_071_183_044_057_611),
+    (154_390, 16_344_786_196_623_622_454),
     (3_254, 11_949_940_325_034_004_149),
     (5_552, 14_658_861_127_087_730_967),
     (872, 14_092_162_116_261_787_003),
@@ -9190,6 +9190,8 @@ fn durable_roots_share_one_terminal_classifier() {
 fn durable_projection_failures_have_one_shared_semantic_mapping() {
     let durable = DURABLE_COMPTIME_DIAGNOSTICS_SOURCE;
     let database = REVISIONED_DATABASE_SOURCE;
+    let semantic_failure = include_str!("semantic_query_nucleus.rs");
+    let rooted_projection = include_str!("session/rooted_projections.rs");
     assert_eq!(
         durable
             .matches("pub(crate) fn durable_candidate_rir_semantic_failure(")
@@ -9211,6 +9213,17 @@ fn durable_projection_failures_have_one_shared_semantic_mapping() {
     assert!(projection.contains("durable_materialization_semantic_failure(failure)"));
     assert!(!projection.contains("CandidateRirRejected(errors)"));
     assert!(!projection.contains("Materialization::Build(error)"));
+    assert!(
+        semantic_failure
+            .contains("DiagnosticAtProducerRange {\n        kind: rue_error::ErrorKind")
+    );
+    assert!(semantic_failure.contains("help: Option<Arc<str>>"));
+    assert!(semantic_failure.contains("note: Option<Arc<str>>"));
+    assert!(
+        rooted_projection
+            .contains("F::DiagnosticAtProducerRange {\n            kind, help, note, ..")
+    );
+    assert!(durable.contains("kind_at_site_with_metadata("));
     let candidate_wrapper = database
         .split("fn candidate_rir_semantic_failure(")
         .nth(1)

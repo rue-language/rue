@@ -2946,6 +2946,8 @@ fn resolve_conformance_facts(
                 producer: producer.clone(),
                 start,
                 end,
+                help: None,
+                note: None,
             },
         )
     };
@@ -3965,6 +3967,8 @@ pub(in crate::revisioned_query_database) fn resolve_parsed_semantic_signature(
                             .expect("enum signature has a declaration candidate"),
                             start: *start,
                             end: *end,
+                            help: None,
+                            note: None,
                         },
                     ),
                     None => diagnostic(kind),
@@ -3990,6 +3994,8 @@ pub(in crate::revisioned_query_database) fn resolve_parsed_semantic_signature(
                             .expect("enum signature has a declaration candidate"),
                             start: *start,
                             end: *end,
+                            help: None,
+                            note: None,
                         },
                     ),
                     None => diagnostic(kind),

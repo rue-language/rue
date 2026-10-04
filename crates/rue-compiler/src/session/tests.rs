@@ -3146,6 +3146,52 @@ fn main() -> i32 {
 }
 
 #[test]
+fn durable_preview_help_projects_through_imported_producer_and_current_snapshot() {
+    let main = r#"const lib = @import("lib.rue");
+const T = lib.Token();
+fn main() -> i32 { 0 }"#;
+    let helper = "pub fn Token() -> type { @thread_bound struct { value: i32 } }";
+    let options = CompileOptions::default();
+    let mut session = CompilerSession::new();
+
+    for prefix in ["", "// shifted source\n"] {
+        let current_helper = format!("{prefix}{helper}");
+        let source = snapshot(
+            &[
+                (1, "/p/main.rue", "main.rue", main),
+                (2, "/p/lib.rue", "lib.rue", current_helper.as_str()),
+            ],
+            1,
+        );
+        publish_with_test_imports(&mut session, &source);
+        let errors = session.rooted_cfg(&options).unwrap_err();
+        let error = errors
+            .iter()
+            .find(|error| {
+                matches!(
+                    error.kind,
+                    ErrorKind::PreviewFeatureRequired {
+                        feature: PreviewFeature::Concurrency,
+                        ..
+                    }
+                )
+            })
+            .unwrap_or_else(|| panic!("missing durable preview diagnostic: {errors:?}"));
+        let span = error
+            .span()
+            .expect("preview gate retains its producer span");
+        let source_start = current_helper.find("struct {").unwrap() as u32;
+        let source_end = source_start + "struct { value: i32 }".len() as u32;
+        assert_eq!(span.file_id, FileId::new(2));
+        assert_eq!(span.start, source_start);
+        assert_eq!(span.end, source_end);
+        assert!(error.diagnostic().helps.iter().any(|help| {
+            help.0 == "use --preview concurrency to enable this feature (ADR-0098)"
+        }));
+    }
+}
+
+#[test]
 fn same_file_accessor_cfg_failure_reprojects_without_caller_remap() {
     let program = r#"struct Box {
     value: i32,

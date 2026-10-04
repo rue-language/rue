@@ -2825,6 +2825,13 @@ fn comptime_generic_contract_has_no_local_lexical_or_call_payloads() {
             < evaluated_neg.find("unary_integer_type_for").unwrap(),
         "nonliteral negation must extract the scalar before unary type policy"
     );
+    assert!(evaluated_neg.contains("operation: ComptimeUnaryOperation::Neg"));
+    let bitnot_dispatch = production
+        .split("InstData::BitNot { operand } => {")
+        .nth(2)
+        .and_then(|source| source.split("// These control-flow").next())
+        .expect("bitwise NOT dispatch");
+    assert!(bitnot_dispatch.contains("operation: ComptimeUnaryOperation::BitNot"));
     assert!(production.contains("Root expression frames are intentionally ticket-free"));
     assert!(production.contains("if frame.name.is_none()"));
     assert!(!production.contains("eval_const_expr"));

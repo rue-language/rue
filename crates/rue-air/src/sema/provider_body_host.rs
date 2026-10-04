@@ -930,15 +930,20 @@ pub struct DurableComptimeDiagnostic {
     pub span: Option<Span>,
     /// The remedy attached by the semantic authority, if present.
     pub help: Option<Arc<str>>,
+    /// Additional explanation attached by the semantic authority, if present.
+    pub note: Option<Arc<str>>,
 }
 
 impl DurableComptimeDiagnostic {
     fn into_compile_error(self, fallback: Span) -> CompileError {
-        let error = CompileError::new(self.kind, self.span.unwrap_or(fallback));
-        match self.help {
-            Some(help) => error.with_help(help.as_ref()),
-            None => error,
+        let mut error = CompileError::new(self.kind, self.span.unwrap_or(fallback));
+        if let Some(help) = self.help {
+            error = error.with_help(help.as_ref());
         }
+        if let Some(note) = self.note {
+            error = error.with_note(note.as_ref());
+        }
+        error
     }
 }
 
