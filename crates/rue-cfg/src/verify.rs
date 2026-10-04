@@ -106,6 +106,21 @@ enum RootFact {
 const SEMANTIC_STATE_A: u8 = 1;
 const SEMANTIC_STATE_B: u8 = 2;
 
+#[derive(Clone, Copy)]
+enum StorageEventKind {
+    Live,
+    Dead,
+    Access,
+}
+
+#[derive(Clone, Copy)]
+struct StorageEvent {
+    value: CfgValue,
+    kind: StorageEventKind,
+}
+
+type StorageEventIndex = ahash::AHashMap<(u32, Type), ahash::AHashMap<usize, Vec<StorageEvent>>>;
+
 #[cfg(test)]
 #[derive(Debug, Clone, Copy, Default)]
 struct SemanticWork {
@@ -114,6 +129,7 @@ struct SemanticWork {
     block_visits: usize,
     edge_visits: usize,
     validation_instruction_visits: usize,
+    storage_event_visits: usize,
     instruction_operand_visits: usize,
     terminator_operand_visits: usize,
     root_nodes: usize,
@@ -132,6 +148,7 @@ std::thread_local! {
             block_visits: 0,
             edge_visits: 0,
             validation_instruction_visits: 0,
+            storage_event_visits: 0,
             instruction_operand_visits: 0,
             terminator_operand_visits: 0,
             root_nodes: 0,
@@ -596,6 +613,7 @@ impl<'a> Verifier<'a> {
 
         let mut storage_regions = AHashSet::<(u32, Type)>::new();
         let mut storage_keys = Vec::new();
+        let mut storage_events = StorageEventIndex::default();
         let mut droppable_value_set = AHashSet::<CfgValue>::new();
         let mut droppable_values = Vec::new();
         let mut static_roots = vec![RootFact::Unknown; self.cfg.value_count()];
@@ -621,15 +639,27 @@ impl<'a> Verifier<'a> {
                         // RUE-2453) can share a slot and type while
                         // distinct lexical regions overlap. CFG has no
                         // declaration identity with which to separate them.
-                        if self.abi_slot_count(
+                        let has_storage = self.abi_slot_count(
                             local_ty,
                             block.id,
                             value,
                             "semantic storage marker",
-                        )? != 0
-                            && storage_regions.insert((slot, local_ty))
-                        {
+                        )? != 0;
+                        if has_storage && storage_regions.insert((slot, local_ty)) {
                             storage_keys.push((slot, local_ty));
+                        }
+                        if has_storage {
+                            let kind = match inst.data {
+                                CfgInstData::StorageLive { .. } => StorageEventKind::Live,
+                                CfgInstData::StorageDead { .. } => StorageEventKind::Dead,
+                                _ => unreachable!(),
+                            };
+                            storage_events
+                                .entry((slot, local_ty))
+                                .or_default()
+                                .entry(block.id.as_u32() as usize)
+                                .or_default()
+                                .push(StorageEvent { value, kind });
                         }
                     }
                     CfgInstData::Drop { value: dropped } => {
@@ -644,6 +674,17 @@ impl<'a> Verifier<'a> {
                         }
                     }
                     _ => {}
+                }
+                if let Some(key) = self.local_storage_access(&inst.data, inst.ty) {
+                    storage_events
+                        .entry(key)
+                        .or_default()
+                        .entry(block.id.as_u32() as usize)
+                        .or_default()
+                        .push(StorageEvent {
+                            value,
+                            kind: StorageEventKind::Access,
+                        });
                 }
                 if let Some(root) = self.instruction_owner_root(block.id, value)? {
                     static_roots[value.as_u32() as usize] = RootFact::Known(root);
@@ -688,6 +729,10 @@ impl<'a> Verifier<'a> {
         // block. The peak path-state memory is O(B), never O(B * F). Root
         // provenance uses a dependency worklist whose nodes change at most
         // twice, so its time is O(P + A), where A is incoming phi arguments.
+        // Storage lifetime facts use one sparse, ordered index of S reachable
+        // markers and local accesses; each key visits only its own events in
+        // transfer and validation. The index uses O(S + F + B) auxiliary
+        // memory, with no per-key block matrix.
         // If O is the number of instruction operand references and T is the
         // number of terminator operand references (including edge arguments),
         // overall semantic time is
@@ -700,7 +745,7 @@ impl<'a> Verifier<'a> {
         // memory is O(B + V + P + A + F) plus the entry-edge table, O(E), and
         // O(W + B) per solved flag slot; no state dimension is multiplied by F.
         for key in storage_keys {
-            self.verify_storage_fact(key)?;
+            self.verify_storage_fact(key, &storage_events)?;
         }
         for key in raw_keys {
             self.verify_raw_init_fact(key)?;
@@ -1097,20 +1142,30 @@ impl<'a> Verifier<'a> {
         }
     }
 
-    fn verify_storage_fact(&self, key: (u32, Type)) -> Result<(), CfgVerificationError> {
+    fn verify_storage_fact(
+        &self,
+        key: (u32, Type),
+        storage_events: &StorageEventIndex,
+    ) -> Result<(), CfgVerificationError> {
         const DEAD: u8 = SEMANTIC_STATE_A;
         const LIVE: u8 = SEMANTIC_STATE_B;
 
         let inputs = self.solve_semantic_fact(|block, mut state| {
-            for &value in &self.cfg.get_block(block).insts {
-                match self.cfg.get_inst(value).data {
-                    CfgInstData::StorageLive { slot, local_ty } if (slot, local_ty) == key => {
-                        state = LIVE;
+            let block_index = block.as_u32() as usize;
+            if let Some(events) = storage_events
+                .get(&key)
+                .and_then(|blocks| blocks.get(&block_index))
+            {
+                for event in events {
+                    #[cfg(test)]
+                    SEMANTIC_WORK.with(|work| {
+                        work.borrow_mut().storage_event_visits += 1;
+                    });
+                    match event.kind {
+                        StorageEventKind::Live => state = LIVE,
+                        StorageEventKind::Dead => state = DEAD,
+                        StorageEventKind::Access => {}
                     }
-                    CfgInstData::StorageDead { slot, local_ty } if (slot, local_ty) == key => {
-                        state = DEAD;
-                    }
-                    _ => {}
                 }
             }
             state
@@ -1121,51 +1176,61 @@ impl<'a> Verifier<'a> {
                 continue;
             }
             let mut state = inputs[block.id.as_u32() as usize];
-            for &value in &block.insts {
-                #[cfg(test)]
-                SEMANTIC_WORK.with(|work| {
-                    work.borrow_mut().validation_instruction_visits += 1;
-                });
-                let inst = self.cfg.get_inst(value);
-                let location = CfgVerificationLocation::Instruction {
-                    block: block.id,
-                    value,
-                };
-                if self.local_storage_access(&inst.data, inst.ty) == Some(key) && state != LIVE {
-                    return Err(self.semantic_error(
-                        location,
-                        format_args!(
-                            "instruction {} in block {} accesses local storage ({}, {:?}) that is not live on every reaching path",
-                            value, block.id, key.0, key.1
-                        ),
-                    ));
-                }
-                match inst.data {
-                    CfgInstData::StorageLive { slot, local_ty } if (slot, local_ty) == key => {
-                        if state != DEAD {
-                            return Err(self.semantic_error(
-                                location,
-                                format_args!(
-                                    "StorageLive instruction {} in block {} starts local storage ({}, {:?}) that is not dead on every reaching path",
-                                    value, block.id, slot, local_ty
-                                ),
-                            ));
-                        }
-                        state = LIVE;
+            let block_index = block.id.as_u32() as usize;
+            if let Some(events) = storage_events
+                .get(&key)
+                .and_then(|blocks| blocks.get(&block_index))
+            {
+                for event in events {
+                    let value = event.value;
+                    #[cfg(test)]
+                    SEMANTIC_WORK.with(|work| {
+                        let mut work = work.borrow_mut();
+                        work.storage_event_visits += 1;
+                        work.validation_instruction_visits += 1;
+                    });
+                    let location = CfgVerificationLocation::Instruction {
+                        block: block.id,
+                        value,
+                    };
+                    if matches!(event.kind, StorageEventKind::Access) && state != LIVE {
+                        return Err(self.semantic_error(
+                            location,
+                            format_args!(
+                                "instruction {} in block {} accesses local storage ({}, {:?}) that is not live on every reaching path",
+                                value, block.id, key.0, key.1
+                            ),
+                        ));
                     }
-                    CfgInstData::StorageDead { slot, local_ty } if (slot, local_ty) == key => {
-                        if state != LIVE {
-                            return Err(self.semantic_error(
-                                location,
-                                format_args!(
-                                    "StorageDead instruction {} in block {} ends local storage ({}, {:?}) that is not live on every reaching path",
-                                    value, block.id, slot, local_ty
-                                ),
-                            ));
+                    match event.kind {
+                        StorageEventKind::Live => {
+                            let (slot, local_ty) = key;
+                            if state != DEAD {
+                                return Err(self.semantic_error(
+                                    location,
+                                    format_args!(
+                                        "StorageLive instruction {} in block {} starts local storage ({}, {:?}) that is not dead on every reaching path",
+                                        value, block.id, slot, local_ty
+                                    ),
+                                ));
+                            }
+                            state = LIVE;
                         }
-                        state = DEAD;
+                        StorageEventKind::Dead => {
+                            let (slot, local_ty) = key;
+                            if state != LIVE {
+                                return Err(self.semantic_error(
+                                    location,
+                                    format_args!(
+                                        "StorageDead instruction {} in block {} ends local storage ({}, {:?}) that is not live on every reaching path",
+                                        value, block.id, slot, local_ty
+                                    ),
+                                ));
+                            }
+                            state = DEAD;
+                        }
+                        StorageEventKind::Access => {}
                     }
-                    _ => {}
                 }
             }
             if matches!(block.terminator, Terminator::Return { .. }) && state & LIVE != 0 {
@@ -3317,6 +3382,135 @@ mod tests {
         cfg.set_terminator(entry, Terminator::Return { value: None });
 
         cfg.finish(&FrozenTypeInternPool::new()).unwrap();
+    }
+
+    #[test]
+    fn semantic_verifier_keeps_storage_keys_type_qualified_and_ignores_unreachable_events() {
+        let mut cfg = Cfg::new(Type::UNIT, 1, 0, "typed_storage".to_string(), vec![]);
+        let entry = cfg.new_block();
+        let unreachable = cfg.new_block();
+        cfg.entry = entry;
+        for local_ty in [Type::I32, Type::BOOL] {
+            push(
+                &mut cfg,
+                entry,
+                CfgInstData::StorageLive { slot: 0, local_ty },
+                Type::UNIT,
+            );
+        }
+        for local_ty in [Type::BOOL, Type::I32] {
+            push(
+                &mut cfg,
+                entry,
+                CfgInstData::StorageDead { slot: 0, local_ty },
+                Type::UNIT,
+            );
+        }
+        cfg.set_terminator(entry, Terminator::Return { value: None });
+        push(
+            &mut cfg,
+            unreachable,
+            CfgInstData::StorageLive {
+                slot: 0,
+                local_ty: Type::I32,
+            },
+            Type::UNIT,
+        );
+        cfg.set_terminator(unreachable, Terminator::Unreachable);
+
+        cfg.finish(&FrozenTypeInternPool::new()).unwrap();
+    }
+
+    #[test]
+    fn semantic_verifier_rejects_repeated_live_and_access_after_dead() {
+        let mut duplicate_live = Cfg::new(Type::UNIT, 1, 0, "duplicate_live".to_string(), vec![]);
+        let entry = duplicate_live.new_block();
+        duplicate_live.entry = entry;
+        for _ in 0..2 {
+            push(
+                &mut duplicate_live,
+                entry,
+                CfgInstData::StorageLive {
+                    slot: 0,
+                    local_ty: Type::I32,
+                },
+                Type::UNIT,
+            );
+        }
+        duplicate_live.set_terminator(entry, Terminator::Return { value: None });
+        let error = duplicate_live
+            .finish(&FrozenTypeInternPool::new())
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("not dead on every reaching path")
+        );
+
+        let mut duplicate_dead = Cfg::new(Type::UNIT, 1, 0, "duplicate_dead".to_string(), vec![]);
+        let entry = duplicate_dead.new_block();
+        duplicate_dead.entry = entry;
+        for data in [
+            CfgInstData::StorageLive {
+                slot: 0,
+                local_ty: Type::I32,
+            },
+            CfgInstData::StorageDead {
+                slot: 0,
+                local_ty: Type::I32,
+            },
+            CfgInstData::StorageDead {
+                slot: 0,
+                local_ty: Type::I32,
+            },
+        ] {
+            push(&mut duplicate_dead, entry, data, Type::UNIT);
+        }
+        duplicate_dead.set_terminator(entry, Terminator::Return { value: None });
+        let error = duplicate_dead
+            .finish(&FrozenTypeInternPool::new())
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("not live on every reaching path")
+        );
+
+        let mut after_dead = Cfg::new(Type::UNIT, 1, 0, "after_dead".to_string(), vec![]);
+        let entry = after_dead.new_block();
+        after_dead.entry = entry;
+        for data in [
+            CfgInstData::StorageLive {
+                slot: 0,
+                local_ty: Type::I32,
+            },
+            CfgInstData::StorageDead {
+                slot: 0,
+                local_ty: Type::I32,
+            },
+        ] {
+            push(&mut after_dead, entry, data, Type::UNIT);
+        }
+        let access = push(
+            &mut after_dead,
+            entry,
+            CfgInstData::Load { slot: 0 },
+            Type::I32,
+        );
+        after_dead.set_terminator(entry, Terminator::Return { value: None });
+        let error = after_dead.finish(&FrozenTypeInternPool::new()).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("not live on every reaching path")
+        );
+        assert_eq!(
+            error.location(),
+            CfgVerificationLocation::Instruction {
+                block: entry,
+                value: access,
+            }
+        );
     }
 
     #[test]
@@ -5836,13 +6030,62 @@ mod tests {
             assert!(work.peak_binary_state_slots <= blocks * 3);
             assert!(work.block_visits <= REGIONS as usize * blocks);
             assert!(work.edge_visits <= REGIONS as usize * (blocks - 1));
-            assert_eq!(
-                work.validation_instruction_visits,
-                REGIONS as usize * REGIONS as usize * 2
-            );
+            assert_eq!(work.validation_instruction_visits, REGIONS as usize * 2);
+            // Storage facts should visit only the declared region's events,
+            // not every instruction in every block for every local.
+            assert!(work.storage_event_visits <= REGIONS as usize * 4);
             assert_eq!(work.instruction_operand_visits, 0);
             assert_eq!(work.terminator_operand_visits, 0);
         });
+    }
+
+    #[test]
+    fn semantic_verifier_storage_event_visits_scale_with_events_in_fixed_cfg() {
+        for regions in [16usize, 32, 64] {
+            let mut cfg = Cfg::new(
+                Type::UNIT,
+                regions as u32,
+                0,
+                "fixed_cfg_storage_events".to_string(),
+                vec![],
+            );
+            let entry = cfg.new_block();
+            cfg.entry = entry;
+            for slot in 0..regions as u32 {
+                push(
+                    &mut cfg,
+                    entry,
+                    CfgInstData::StorageLive {
+                        slot,
+                        local_ty: Type::I32,
+                    },
+                    Type::UNIT,
+                );
+            }
+            for slot in 0..regions as u32 {
+                push(
+                    &mut cfg,
+                    entry,
+                    CfgInstData::StorageDead {
+                        slot,
+                        local_ty: Type::I32,
+                    },
+                    Type::UNIT,
+                );
+            }
+            cfg.set_terminator(entry, Terminator::Return { value: None });
+
+            super::SEMANTIC_WORK.with(|work| *work.borrow_mut() = Default::default());
+            cfg.finish(&FrozenTypeInternPool::new()).unwrap();
+            super::SEMANTIC_WORK.with(|work| {
+                let work = *work.borrow();
+                assert_eq!(work.fact_solves, regions);
+                assert_eq!(work.storage_event_visits, regions * 4);
+                assert_eq!(work.validation_instruction_visits, regions * 2);
+                assert_eq!(work.block_visits, regions);
+                assert_eq!(work.edge_visits, 0);
+            });
+        }
     }
 
     #[test]
