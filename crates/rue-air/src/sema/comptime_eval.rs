@@ -3843,6 +3843,23 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeValueAlgebra for OrdinaryBodyEngin
                 )));
             }
         }
+        if let ComptimeLiteralShape::EnumVariant { variant, payloads } = shape
+            && let TypeKind::Enum(id) = ty.kind()
+        {
+            let definition = self.body_type_pool().enum_def(id);
+            if let Some(index) = definition.find_variant(self.body_interner().resolve(variant)) {
+                let expected = definition.variant_payload(index).len();
+                if expected != payloads {
+                    return Err(ComptimeHostError::HostFailure(CompileError::new(
+                        ErrorKind::WrongArgumentCount {
+                            expected,
+                            found: payloads,
+                        },
+                        site.span(),
+                    )));
+                }
+            }
+        }
         Ok(())
     }
     fn resolve_comptime_array_repeat(

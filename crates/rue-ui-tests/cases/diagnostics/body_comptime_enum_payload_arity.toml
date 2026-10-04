@@ -1,0 +1,128 @@
+# Body comptime enum construction reports declared payload arity at the
+# constructor site, before malformed retained values reach materialization.
+
+[section]
+id = "diagnostics.body_comptime_enum_payload_arity"
+name = "Body comptime enum payload arity"
+description = "Body comptime validates enum payload arity at the literal site."
+
+[[case]]
+name = "too_many_enum_payloads"
+source = """
+enum E { A(i32), B }
+fn main() -> i32 { let v: E = comptime { E.A(1, 2) }; 0 }
+"""
+compile_fail = true
+error_contains = ["E0207", "expected 1 argument, found 2"]
+
+[[case]]
+name = "too_few_enum_payloads"
+source = """
+enum E { A(i32), B }
+fn main() -> i32 { let v: E = comptime { E.A() }; 0 }
+"""
+compile_fail = true
+error_contains = ["E0207", "expected 1 argument, found 0"]
+
+[[case]]
+name = "unit_variant_with_extra_payload"
+source = """
+enum E { A(i32), B }
+fn main() -> i32 { let v: E = comptime { E.B(1) }; 0 }
+"""
+compile_fail = true
+error_contains = ["E0207", "expected 0 arguments, found 1"]
+
+[[case]]
+name = "nested_enum_payload_arity_is_checked_at_inner_literal"
+source = """
+enum Inner { A(i32) }
+enum Outer { Wrap(Inner) }
+fn main() -> i32 {
+    let value: Outer = comptime { Outer.Wrap(Inner.A(1, 2)) };
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0207", "expected 1 argument, found 2", ":4:46"]
+
+[[case]]
+name = "ordinary_body_constructor_remains_e0207_control"
+source = """
+enum E { A(i32), B }
+fn main() -> i32 { let v: E = E.A(1, 2); 0 }
+"""
+compile_fail = true
+error_contains = ["E0207", "expected 1 argument, found 2"]
+
+[[case]]
+name = "direct_const_constructor_remains_e0207_control"
+source = """
+enum E { A(i32), B }
+const VALUE: E = E.A(1, 2);
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0207", "expected 1 argument, found 2"]
+
+[[case]]
+name = "correct_arity_noncopy_enum_keeps_copy_guard"
+source = """
+struct Token { value: i32 }
+drop fn Token(self) {}
+enum E { A(Token) }
+fn main() -> i32 { let value: E = comptime { E.A(Token { value: 1 }) }; 0 }
+"""
+compile_fail = true
+error_contains = ["E1200", "structural comptime values require a Copy type"]
+
+[[case]]
+name = "wrong_arity_precedes_runtime_dependent_child"
+source = """
+enum E { A(i32), B }
+fn main() -> i32 { let v: E = comptime { E.A(1, missing()) }; 0 }
+"""
+compile_fail = true
+error_contains = ["E0207", "expected 1 argument, found 2"]
+
+[[case]]
+name = "executed_unused_constructor_still_checks_arity"
+source = """
+enum E { A(i32), B }
+fn main() -> i32 { comptime { let _unused = E.A(1, 2); 42 } }
+"""
+compile_fail = true
+error_contains = ["E0207", "expected 1 argument, found 2"]
+
+[[case]]
+name = "correct_arity_preserves_runtime_dependent_child"
+source = """
+enum E { A(i32), B }
+fn main() -> i32 { let v: E = comptime { E.A(missing()) }; 0 }
+"""
+compile_fail = true
+error_contains = ["E1200", "expression contains values that cannot be known at compile time"]
+
+[[case]]
+name = "valid_enum_payload_is_materialized_and_usable"
+source = """
+enum E { A(i32), B }
+fn main() -> i32 {
+    let v: E = comptime { E.A(40) };
+    match v { E.A(n) => n + 2, E.B => 0 }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "unselected_constructor_remains_lazy"
+source = """
+enum E { A(i32), B }
+fn main() -> i32 {
+    comptime {
+        if false { let _unused = E.A(1, 2); }
+        42
+    }
+}
+"""
+exit_code = 42
