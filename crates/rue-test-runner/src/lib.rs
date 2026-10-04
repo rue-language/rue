@@ -467,9 +467,8 @@ pub struct Case {
     /// The input is piped to the program before execution starts.
     #[serde(default)]
     pub stdin: Option<String>,
-    /// Expected stderr output (substring match).
-    /// For runtime errors, use `runtime_error` instead. This field is for
-    /// checking stderr content in successful runs (e.g., panic messages).
+    /// Expected stderr output (substring match), checked alongside
+    /// `runtime_error` when both are specified.
     #[serde(default)]
     pub stderr_contains: Option<String>,
     /// Parameter sets for generating multiple test instances from a template.
@@ -3465,6 +3464,7 @@ pub fn run_test_case(case: &Case, rue_binary: &Path) -> TestResult {
             )));
         }
 
+        check_program_output(case, &run_output.stdout, &stderr)?;
         return Ok(());
     }
 
@@ -3487,8 +3487,9 @@ pub fn run_test_case(case: &Case, rue_binary: &Path) -> TestResult {
     Ok(())
 }
 
-/// Check the successful-run output assertions, `expected_stdout` and
-/// `stderr_contains`, shared by a normal exit and an `unreachable_trap` death.
+/// Check the program output assertions, `expected_stdout` and
+/// `stderr_contains`, shared by normal exits, runtime errors, and
+/// `unreachable_trap` deaths.
 fn check_program_output(case: &Case, stdout: &[u8], stderr: &str) -> TestResult {
     // Check expected stdout output (e.g., from @dbg calls).
     //
@@ -3511,7 +3512,7 @@ fn check_program_output(case: &Case, stdout: &[u8], stderr: &str) -> TestResult 
         }
     }
 
-    // Check stderr contains expected substring (for non-error cases)
+    // Check stderr contains the expected substring.
     if let Some(ref expected) = case.stderr_contains {
         if !stderr.contains(expected.as_str()) {
             return Err(TestFailure::assertion(format!(
@@ -4921,6 +4922,91 @@ chmod +x "$output"
         assert_eq!(unreachable_trap_signal("aarch64"), Some(libc::SIGTRAP));
         assert_eq!(unreachable_trap_signal("x86-64"), Some(libc::SIGILL));
         assert_eq!(unreachable_trap_signal("riscv64"), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runtime_error_checks_expected_stdout_and_stderr() {
+        let (_directory, binary) =
+            fake_compiler_with_program_ending("printf 'panic: expected' >&2; exit 101");
+        let mut case = Case {
+            name: "runtime_error_output".to_string(),
+            source: "fn main() -> i32 { 0 }".to_string(),
+            runtime_error: Some("panic: expected".to_string()),
+            expected_stdout: Some("after\n".to_string()),
+            stderr_contains: Some("panic: expected".to_string()),
+            ..Default::default()
+        };
+
+        let error =
+            run_test_case(&case, &binary).expect_err("runtime errors must check expected stdout");
+        assert!(!error.is_fatal());
+        assert!(error.contains("Stdout mismatch"), "{error}");
+
+        case.expected_stdout = Some("before\n".to_string());
+        case.stderr_contains = Some("missing stderr text".to_string());
+        let error =
+            run_test_case(&case, &binary).expect_err("runtime errors must check stderr_contains");
+        assert!(!error.is_fatal());
+        assert!(error.contains("Stderr mismatch"), "{error}");
+
+        case.stderr_contains = Some("panic: expected".to_string());
+        case.expected_stdout = Some("after\n".to_string());
+        case.runtime_exit_code = Some(1);
+        let error = run_test_case(&case, &binary)
+            .expect_err("runtime exit code must be checked before output assertions");
+        assert!(!error.is_fatal());
+        assert!(
+            error.contains("Runtime error exit code mismatch"),
+            "{error}"
+        );
+
+        case.runtime_exit_code = None;
+        case.runtime_error = Some("missing runtime message".to_string());
+        let error = run_test_case(&case, &binary)
+            .expect_err("runtime_error must be checked before output assertions");
+        assert!(!error.is_fatal());
+        assert!(error.contains("Runtime error message mismatch"), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runtime_error_output_assertions_allow_matches_and_no_extra_expectations() {
+        let (_directory, binary) =
+            fake_compiler_with_program_ending("printf 'panic: expected' >&2; exit 101");
+        let mut case = Case {
+            name: "runtime_error_output".to_string(),
+            source: "fn main() -> i32 { 0 }".to_string(),
+            runtime_error: Some("panic: expected".to_string()),
+            expected_stdout: Some("before\n".to_string()),
+            stderr_contains: Some("panic: expected".to_string()),
+            ..Default::default()
+        };
+
+        run_test_case(&case, &binary).expect("matching runtime error output must pass");
+        case.expected_stdout = None;
+        case.stderr_contains = None;
+        run_test_case(&case, &binary).expect("runtime errors without extra output checks pass");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ordinary_successful_exit_still_checks_program_output() {
+        let (_directory, binary) = fake_compiler_with_program_ending("exit 0");
+        let mut case = Case {
+            name: "ordinary_output".to_string(),
+            source: "fn main() -> i32 { 0 }".to_string(),
+            exit_code: Some(0),
+            expected_stdout: Some("after\n".to_string()),
+            ..Default::default()
+        };
+
+        let error = run_test_case(&case, &binary)
+            .expect_err("ordinary successful exits must continue checking stdout");
+        assert!(error.contains("Stdout mismatch"), "{error}");
+
+        case.expected_stdout = Some("before\n".to_string());
+        run_test_case(&case, &binary).expect("matching ordinary stdout must pass");
     }
 
     #[test]
