@@ -120,19 +120,23 @@
 //! loop the next iteration's `load b` reads a root the verifier (correctly)
 //! calls consumed (RUE-2380).
 //!
-//! So neither rule forwards a load of a value whose type needs drop to a
-//! replacement rooted at a *different* local that is not [`SlotWrites::One`]
-//! (the only local that can be reinitialized after the move is one with more
-//! than one whole write), or at a writable parameter. A single-write root cannot be rewritten while a
-//! value moved out of it is still live: its one write is its declaration, and
-//! a loop re-executes that only after the local's storage ended. A parameter
-//! root counts as reinitializable exactly when the parameter is writable: a
-//! `mut self` receiver is owned, by value and reassignable, so `let t = self;
-//! self = S { .. };` re-roots `t`'s drop exactly as a mutated local does. An
-//! `inout` parameter is writable too but cannot be moved out of, so treating
-//! it the same costs nothing, and any other parameter is never written. Each
-//! accepted substitution keeps this property, so chains resolved below keep it
-//! too.
+//! A reinitializable root is hazardous only when some reachable `Drop` can
+//! consume that root. After collecting all candidate substitutions, the pass
+//! gathers possible Drop roots through both each original value and every
+//! proposed substitution, plus every incoming edge of each block parameter.
+//! This order-independent union remains conservative if an intermediate
+//! substitution is later refused: the original path and its roots remain in
+//! the graph. Candidate provenance uses the same graph. A candidate is
+//! declined when any possible root is a different reinitializable local that
+//! can be consumed by a reachable Drop, or a writable parameter that can be
+//! consumed by a reachable Drop. This protects ordinary rewritten uses after
+//! a Drop as well as Drop operands, without modeling lifetime state. A
+//! single-write root cannot be rewritten while a value moved out of it is
+//! still live, and a writable parameter is treated like a mutated local. The
+//! new ownership graph scans each reachable value and edge once, gathers Drop
+//! roots in one visited-set walk, then propagates capped `None`/`One`/`Many`
+//! summaries backward. Each summary changes at most twice, so this added
+//! analysis processes each graph edge at most twice, including phi cycles.
 //!
 //! ## Applying substitutions and cleanup
 //!
@@ -148,7 +152,7 @@
 
 use crate::{BlockId, Cfg, CfgInstData, CfgValue, PlaceBase, Terminator};
 use ahash::{AHashMap, AHashSet};
-use rue_air::FrozenTypeInternPool;
+use rue_air::{FrozenTypeInternPool, Type};
 
 use super::dce;
 use super::slot_facts::{self, SlotWrites};
@@ -182,6 +186,14 @@ pub struct Stats {
     /// parameter that can be reinitialized (RUE-2380; module docs, "Owner
     /// roots").
     pub loads_declined_reinitializable_root: u64,
+    /// Value nodes visited while building the shared ownership-root graph.
+    pub owner_root_values_scanned: u64,
+    /// Substitution and block-parameter edges visited in the shared graph.
+    pub owner_root_edges_scanned: u64,
+    /// Summary-propagation edge visits; each graph edge is visited at most twice.
+    pub owner_root_propagation_edges: u64,
+    /// Changes to the capped (none / one / many) provenance summaries.
+    pub owner_root_summary_updates: u64,
 }
 
 /// Whether `value`'s type is a raw pointer.
@@ -289,7 +301,6 @@ pub fn run(cfg: &mut Cfg, type_pool: &FrozenTypeInternPool) -> Result<Stats, cra
     // on later rewriting, so one scan suffices.
     // ------------------------------------------------------------------
     let slot_class = slot_facts::classify_slot_writes(cfg, Some(&reachable));
-    let mut roots = OwnerRoots::default();
 
     // ------------------------------------------------------------------
     // Forward rewriting walk. One pass over every block-attached instruction
@@ -297,6 +308,9 @@ pub fn run(cfg: &mut Cfg, type_pool: &FrozenTypeInternPool) -> Result<Stats, cra
     // `last_store` table.
     // ------------------------------------------------------------------
     let mut subst: Vec<Option<CfgValue>> = vec![None; cfg.value_count()];
+    let mut proposed_rule: Vec<Option<ForwardRule>> = vec![None; cfg.value_count()];
+    let mut proposed_write_block: Vec<Option<BlockId>> = vec![None; cfg.value_count()];
+    let mut proposed_load_block: Vec<Option<BlockId>> = vec![None; cfg.value_count()];
     // Distinct (single-write block, forwarded load block) pairs for the
     // dominance correctness check. Same-block pairs are never recorded:
     // dominance is reflexive, so they cannot fail. After simplify's block
@@ -354,22 +368,11 @@ pub fn run(cfg: &mut Cfg, type_pool: &FrozenTypeInternPool) -> Result<Stats, cra
                             stats.loads_declined_type_mismatch += 1;
                             continue;
                         }
-                        if roots.reinitializable_other_root(
-                            cfg,
-                            type_pool,
-                            &slot_class,
-                            &reachable,
-                            slot,
-                            write_value,
-                        ) {
-                            stats.loads_declined_reinitializable_root += 1;
-                            continue;
-                        }
-                        subst[value.as_u32() as usize] = Some(write_value);
-                        stats.loads_forwarded_single_write += 1;
-                        if write_block != block_id {
-                            rule1_dominance_checks.insert((write_block, block_id));
-                        }
+                        let index = value.as_u32() as usize;
+                        subst[index] = Some(write_value);
+                        proposed_rule[index] = Some(ForwardRule::SingleWrite);
+                        proposed_write_block[index] = Some(write_block);
+                        proposed_load_block[index] = Some(block_id);
                     } else if untracked_slot.get(slot as usize) == Some(&false) {
                         // Rule 2: block-local forwarding for multi-write slots.
                         if let Some(&Some(stored)) = last_store.get(slot as usize) {
@@ -383,19 +386,9 @@ pub fn run(cfg: &mut Cfg, type_pool: &FrozenTypeInternPool) -> Result<Stats, cra
                                 stats.loads_declined_type_mismatch += 1;
                                 continue;
                             }
-                            if roots.reinitializable_other_root(
-                                cfg,
-                                type_pool,
-                                &slot_class,
-                                &reachable,
-                                slot,
-                                stored,
-                            ) {
-                                stats.loads_declined_reinitializable_root += 1;
-                                continue;
-                            }
-                            subst[value.as_u32() as usize] = Some(stored);
-                            stats.loads_forwarded_block_local += 1;
+                            let index = value.as_u32() as usize;
+                            subst[index] = Some(stored);
+                            proposed_rule[index] = Some(ForwardRule::BlockLocal);
                         }
                     }
                 }
@@ -447,6 +440,83 @@ pub fn run(cfg: &mut Cfg, type_pool: &FrozenTypeInternPool) -> Result<Stats, cra
         }
     }
 
+    // Ownership-root checks wait until every candidate is known. Resolving a
+    // candidate through a substitution discovered in a later block must not
+    // depend on block index order, and every phi arm must be part of the same
+    // conservative root closure. Skip the graph entirely when no proposed
+    // forward carries an owned value or no reachable Drop can consume roots.
+    let has_owned_candidate = subst
+        .iter()
+        .flatten()
+        .any(|&candidate| super::classify::materializes_owned_value(cfg, type_pool, candidate));
+    if subst.iter().any(Option::is_some) && has_owned_candidate {
+        let mut roots = OwnerRoots::default();
+        let summaries = roots.analyze(cfg, type_pool, &slot_class, &reachable, &subst, &mut stats);
+        if let Some(summaries) = summaries {
+            for index in 0..subst.len() {
+                let Some(candidate) = subst[index] else {
+                    continue;
+                };
+                let value = CfgValue::from_raw(index as u32);
+                let CfgInstData::Load { slot } = &cfg.get_inst(value).data else {
+                    continue;
+                };
+                if roots.reinitializable_other_root(
+                    cfg,
+                    type_pool,
+                    *slot,
+                    cfg.get_inst(value).ty,
+                    candidate,
+                    &summaries,
+                ) {
+                    subst[index] = None;
+                    proposed_rule[index] = None;
+                    proposed_write_block[index] = None;
+                    proposed_load_block[index] = None;
+                    stats.loads_declined_reinitializable_root += 1;
+                    continue;
+                }
+                count_accepted_forward(
+                    index,
+                    &proposed_rule,
+                    &proposed_write_block,
+                    &proposed_load_block,
+                    &mut stats,
+                    &mut rule1_dominance_checks,
+                );
+            }
+        } else {
+            // No reinitializable root can be consumed by a Drop, so all
+            // eligible proposals are safe under the owner-root restriction.
+            for index in 0..subst.len() {
+                if subst[index].is_some() {
+                    count_accepted_forward(
+                        index,
+                        &proposed_rule,
+                        &proposed_write_block,
+                        &proposed_load_block,
+                        &mut stats,
+                        &mut rule1_dominance_checks,
+                    );
+                }
+            }
+        }
+    } else {
+        // No owned substitutions need the ownership-root analysis.
+        for index in 0..subst.len() {
+            if subst[index].is_some() {
+                count_accepted_forward(
+                    index,
+                    &proposed_rule,
+                    &proposed_write_block,
+                    &proposed_load_block,
+                    &mut stats,
+                    &mut rule1_dominance_checks,
+                );
+            }
+        }
+    }
+
     let forwarded = stats.loads_forwarded_single_write + stats.loads_forwarded_block_local;
     if forwarded == 0 {
         return Ok(stats);
@@ -481,84 +551,258 @@ pub fn run(cfg: &mut Cfg, type_pool: &FrozenTypeInternPool) -> Result<Stats, cra
     Ok(stats)
 }
 
-/// Owner-root queries for the "Owner roots" rule in the module docs.
-///
-/// The block-parameter incoming table is built on the first query that meets
-/// a block parameter, so a function without owned forwards through a phi pays
-/// nothing for it.
+fn count_accepted_forward(
+    index: usize,
+    proposed_rule: &[Option<ForwardRule>],
+    proposed_write_block: &[Option<BlockId>],
+    proposed_load_block: &[Option<BlockId>],
+    stats: &mut Stats,
+    rule1_dominance_checks: &mut AHashSet<(BlockId, BlockId)>,
+) {
+    match proposed_rule[index] {
+        Some(ForwardRule::SingleWrite) => {
+            stats.loads_forwarded_single_write += 1;
+            if let (Some(write_block), Some(load_block)) =
+                (proposed_write_block[index], proposed_load_block[index])
+                && write_block != load_block
+            {
+                rule1_dominance_checks.insert((write_block, load_block));
+            }
+        }
+        Some(ForwardRule::BlockLocal) => stats.loads_forwarded_block_local += 1,
+        None => unreachable!("every proposed substitution has a forwarding rule"),
+    }
+}
+
+#[derive(Clone, Copy)]
+enum ForwardRule {
+    SingleWrite,
+    BlockLocal,
+}
+
+#[derive(Clone, Copy, Hash, PartialEq, Eq)]
+enum OwnerRootLocation {
+    Local(u32, Type),
+    Param(u32, Type),
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum OwnerRootSummary {
+    #[default]
+    None,
+    One(OwnerRootLocation),
+    Many,
+}
+
+impl OwnerRootSummary {
+    fn join(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Many, _) | (_, Self::Many) => Self::Many,
+            (Self::None, root) | (root, Self::None) => root,
+            (Self::One(left), Self::One(right)) if left == right => Self::One(left),
+            (Self::One(_), Self::One(_)) => Self::Many,
+        }
+    }
+}
+
+/// Shared provenance analysis for the "Owner roots" rule in the module docs.
+/// Block-parameter inputs are materialized lazily only if a proposed owned
+/// substitution or reachable Drop closure touches a phi.
 #[derive(Default)]
 struct OwnerRoots {
     incoming: Option<AHashMap<CfgValue, Vec<CfgValue>>>,
 }
 
 impl OwnerRoots {
-    /// Whether forwarding a `Load` of `load_slot` to `candidate` would re-root
-    /// an owned value at a different local, or a parameter, that can be
-    /// written again.
+    /// Compute roots reachable from every Drop and propagate dangerous-root
+    /// summaries backward through the potential substitution/phi graph.
     ///
-    /// The candidate's roots mirror the verifier's provenance: a whole-slot
-    /// `Load` or whole-local `PlaceRead` roots at that local, a `Param` or
-    /// whole-parameter `PlaceRead` at that parameter, and a block parameter at
-    /// every root among its incoming arguments (transitively).
-    /// Any other value has no root. Taking every incoming root, rather
-    /// than only roots all arguments agree on, is the conservative side.
-    fn reinitializable_other_root(
+    /// Each reachable value is scanned once to build forward/reverse edges. Drop roots
+    /// are collected by one graph walk. Summary states move monotonically from
+    /// None to One(root) to Many, so every node is updated at most twice and
+    /// every edge is processed at most twice.
+    fn analyze(
         &mut self,
         cfg: &Cfg,
         type_pool: &FrozenTypeInternPool,
         slot_class: &[SlotWrites],
         reachable: &dce::BitSet,
+        subst: &[Option<CfgValue>],
+        stats: &mut Stats,
+    ) -> Option<Vec<OwnerRootSummary>> {
+        let mut starts = Vec::new();
+        for block in cfg.blocks() {
+            if !reachable.contains(block.id.as_u32()) {
+                continue;
+            }
+            for &value in &block.insts {
+                if let CfgInstData::Drop { value: dropped } = &cfg.get_inst(value).data
+                    && super::classify::materializes_owned_value(cfg, type_pool, *dropped)
+                {
+                    starts.push(*dropped);
+                }
+            }
+        }
+        if starts.is_empty() {
+            return None;
+        }
+
+        let mut children = vec![Vec::<usize>::new(); cfg.value_count()];
+        let mut parents = vec![Vec::<usize>::new(); cfg.value_count()];
+        let mut direct_roots = vec![None; cfg.value_count()];
+
+        let mut seen_value = vec![false; cfg.value_count()];
+        let mut reachable_values = Vec::new();
+        for block in cfg.blocks() {
+            if !reachable.contains(block.id.as_u32()) {
+                continue;
+            }
+            for &(param, _) in &block.params {
+                let index = param.as_u32() as usize;
+                if !seen_value[index] {
+                    seen_value[index] = true;
+                    reachable_values.push(index);
+                }
+            }
+            for &value in &block.insts {
+                let index = value.as_u32() as usize;
+                if !seen_value[index] {
+                    seen_value[index] = true;
+                    reachable_values.push(index);
+                }
+            }
+        }
+
+        for index in reachable_values {
+            stats.owner_root_values_scanned += 1;
+            let value = CfgValue::from_raw(index as u32);
+            direct_roots[index] = owner_root_location(cfg, value);
+            if let Some(replacement) = subst[index] {
+                add_owner_edge(index, replacement, &mut children, &mut parents, stats);
+            }
+            let args = if matches!(cfg.get_inst(value).data, CfgInstData::BlockParam { .. }) {
+                self.incoming
+                    .get_or_insert_with(|| block_param_incoming(cfg, reachable))
+                    .get(&value)
+                    .cloned()
+            } else {
+                None
+            };
+            if let Some(args) = args {
+                for arg in args {
+                    add_owner_edge(index, arg, &mut children, &mut parents, stats);
+                }
+            }
+        }
+
+        let mut drop_roots = AHashSet::new();
+        let mut drop_visited = vec![false; cfg.value_count()];
+        let mut stack = starts;
+        while let Some(value) = stack.pop() {
+            let index = value.as_u32() as usize;
+            if drop_visited[index] {
+                continue;
+            }
+            drop_visited[index] = true;
+            if let Some(root) = direct_roots[index] {
+                drop_roots.insert(root);
+            }
+            stack.extend(
+                children[index]
+                    .iter()
+                    .map(|&child| CfgValue::from_raw(child as u32)),
+            );
+        }
+
+        let is_reinitializable = |root: OwnerRootLocation| match root {
+            OwnerRootLocation::Local(slot, _) => {
+                !matches!(slot_class.get(slot as usize), Some(SlotWrites::One { .. }))
+            }
+            OwnerRootLocation::Param(param, _) => cfg.is_param_writable(param),
+        };
+        let dangerous_roots: AHashSet<_> = drop_roots
+            .into_iter()
+            .filter(|root| is_reinitializable(*root))
+            .collect();
+        if dangerous_roots.is_empty() {
+            return None;
+        }
+
+        let mut summaries = vec![OwnerRootSummary::None; cfg.value_count()];
+        let mut queue = Vec::new();
+        for (index, root) in direct_roots.into_iter().enumerate() {
+            if let Some(root) = root.filter(|root| dangerous_roots.contains(root)) {
+                summaries[index] = OwnerRootSummary::One(root);
+                queue.push(index);
+                stats.owner_root_summary_updates += 1;
+            }
+        }
+        let mut cursor = 0;
+        while cursor < queue.len() {
+            let child = queue[cursor];
+            cursor += 1;
+            for &parent in &parents[child] {
+                stats.owner_root_propagation_edges += 1;
+                let next = summaries[parent].join(summaries[child]);
+                if next != summaries[parent] {
+                    summaries[parent] = next;
+                    stats.owner_root_summary_updates += 1;
+                    queue.push(parent);
+                }
+            }
+        }
+        Some(summaries)
+    }
+
+    fn reinitializable_other_root(
+        &self,
+        cfg: &Cfg,
+        type_pool: &FrozenTypeInternPool,
         load_slot: u32,
+        load_ty: Type,
         candidate: CfgValue,
+        summaries: &[OwnerRootSummary],
     ) -> bool {
         if !super::classify::materializes_owned_value(cfg, type_pool, candidate) {
             return false;
         }
-        let reinitializable = |slot: u32| {
-            slot != load_slot
-                && !matches!(slot_class.get(slot as usize), Some(SlotWrites::One { .. }))
-        };
-        let mut visited = AHashSet::new();
-        let mut stack = vec![candidate];
-        while let Some(value) = stack.pop() {
-            if !visited.insert(value) {
-                continue;
+        match summaries[candidate.as_u32() as usize] {
+            OwnerRootSummary::None => false,
+            OwnerRootSummary::One(OwnerRootLocation::Local(slot, ty)) => {
+                slot != load_slot || ty != load_ty
             }
-            match &cfg.get_inst(value).data {
-                CfgInstData::Load { slot } => {
-                    if reinitializable(*slot) {
-                        return true;
-                    }
-                }
-                CfgInstData::PlaceRead { place } => {
-                    if let Some(slot) = place.as_local()
-                        && reinitializable(slot)
-                    {
-                        return true;
-                    }
-                    if let Some(param) = place.as_param()
-                        && cfg.is_param_writable(param)
-                    {
-                        return true;
-                    }
-                }
-                CfgInstData::Param { index } => {
-                    if cfg.is_param_writable(*index) {
-                        return true;
-                    }
-                }
-                CfgInstData::BlockParam { .. } => {
-                    let incoming = self
-                        .incoming
-                        .get_or_insert_with(|| block_param_incoming(cfg, reachable));
-                    if let Some(args) = incoming.get(&value) {
-                        stack.extend(args.iter().copied());
-                    }
-                }
-                _ => {}
-            }
+            OwnerRootSummary::One(OwnerRootLocation::Param(_, _)) | OwnerRootSummary::Many => true,
         }
-        false
+    }
+}
+
+fn add_owner_edge(
+    parent: usize,
+    child: CfgValue,
+    children: &mut [Vec<usize>],
+    parents: &mut [Vec<usize>],
+    stats: &mut Stats,
+) {
+    let child = child.as_u32() as usize;
+    children[parent].push(child);
+    parents[child].push(parent);
+    stats.owner_root_edges_scanned += 1;
+}
+
+/// Root identity mirrors `CfgVerifier::place_owner_root`: projected reads
+/// retain their Local/Param base root.
+fn owner_root_location(cfg: &Cfg, value: CfgValue) -> Option<OwnerRootLocation> {
+    match &cfg.get_inst(value).data {
+        CfgInstData::Load { slot } => Some(OwnerRootLocation::Local(*slot, cfg.get_inst(value).ty)),
+        CfgInstData::PlaceRead { place } => match place.base {
+            PlaceBase::Local(slot) => Some(OwnerRootLocation::Local(slot, place.base_type)),
+            PlaceBase::Param(param) => Some(OwnerRootLocation::Param(param, place.base_type)),
+            PlaceBase::Accessor(_) | PlaceBase::Indirect(_) => None,
+        },
+        CfgInstData::Param { index } => {
+            Some(OwnerRootLocation::Param(*index, cfg.get_inst(value).ty))
+        }
+        _ => None,
     }
 }
 
@@ -1292,6 +1536,153 @@ mod tests {
         assert_eq!(again.loads_forwarded_single_write, 0);
         assert_eq!(again.loads_forwarded_block_local, 0);
     }
+
+    #[test]
+    fn test_owner_root_graph_work_is_linear_for_chain_and_shared_phi() {
+        let (pool, owning, _) = owning_and_plain_struct_pool();
+        const CHAIN: u32 = 32;
+        let unrelated_slot = CHAIN + 1;
+        let mut cfg = Cfg::new(
+            Type::UNIT,
+            unrelated_slot + 1,
+            4,
+            "test".to_string(),
+            vec![false; 4],
+        );
+        let entry = cfg.new_block();
+        // Deliberately scan the join before its predecessors.
+        let join = cfg.new_block();
+        let left = cfg.new_block();
+        let right = cfg.new_block();
+        cfg.entry = entry;
+
+        let first = push_in(&mut cfg, entry, CfgInstData::Param { index: 0 }, owning);
+        push_in(
+            &mut cfg,
+            entry,
+            CfgInstData::Alloc {
+                slot: 0,
+                init: first,
+            },
+            Type::UNIT,
+        );
+        let mut tail = push_in(&mut cfg, entry, CfgInstData::Load { slot: 0 }, owning);
+        for slot in 1..=CHAIN {
+            push_in(
+                &mut cfg,
+                entry,
+                CfgInstData::Alloc { slot, init: tail },
+                Type::UNIT,
+            );
+            tail = push_in(&mut cfg, entry, CfgInstData::Load { slot }, owning);
+        }
+
+        let old_unrelated = push_in(&mut cfg, entry, CfgInstData::Param { index: 1 }, owning);
+        push_in(
+            &mut cfg,
+            entry,
+            CfgInstData::Alloc {
+                slot: unrelated_slot,
+                init: old_unrelated,
+            },
+            Type::UNIT,
+        );
+        let latest_unrelated = push_in(&mut cfg, entry, CfgInstData::Param { index: 2 }, owning);
+        push_in(
+            &mut cfg,
+            entry,
+            CfgInstData::Store {
+                slot: unrelated_slot,
+                value: latest_unrelated,
+            },
+            Type::UNIT,
+        );
+        let unrelated_load = push_in(
+            &mut cfg,
+            entry,
+            CfgInstData::Load {
+                slot: unrelated_slot,
+            },
+            owning,
+        );
+        push_in(
+            &mut cfg,
+            entry,
+            CfgInstData::Drop {
+                value: unrelated_load,
+            },
+            Type::UNIT,
+        );
+        let cond = push_in(&mut cfg, entry, CfgInstData::Param { index: 3 }, Type::BOOL);
+        cfg.set_branch(entry, cond, left, [], right, []);
+
+        let phi = cfg.add_block_param(join, owning);
+        cfg.set_goto(left, join, [tail]);
+        cfg.set_goto(right, join, [tail]);
+        push_in(&mut cfg, join, CfgInstData::Drop { value: phi }, Type::UNIT);
+        cfg.set_terminator(join, Terminator::Return { value: None });
+
+        let value_count = cfg.value_count() as u64;
+        let stats = super::run(&mut cfg, &pool).unwrap();
+        assert_eq!(stats.loads_declined_reinitializable_root, 0);
+        assert!(stats.owner_root_values_scanned <= value_count);
+        assert!(stats.owner_root_edges_scanned >= CHAIN as u64);
+        assert!(stats.owner_root_propagation_edges <= 2 * stats.owner_root_edges_scanned);
+        assert!(stats.owner_root_summary_updates <= 2 * value_count);
+    }
+
+    #[test]
+    fn test_owner_root_many_summary_converges_across_phi_cycle() {
+        let (pool, owning, _) = owning_and_plain_struct_pool();
+        let mut cfg = Cfg::new(Type::UNIT, 2, 3, "test".to_string(), vec![false; 3]);
+        let entry = cfg.new_block();
+        let header = cfg.new_block();
+        let backedge = cfg.new_block();
+        let exit = cfg.new_block();
+        cfg.entry = entry;
+
+        let root0 = push_in(&mut cfg, entry, CfgInstData::Load { slot: 0 }, owning);
+        let root1 = push_in(&mut cfg, entry, CfgInstData::Load { slot: 1 }, owning);
+        let cond = push_in(&mut cfg, entry, CfgInstData::Param { index: 2 }, Type::BOOL);
+        let phi0 = cfg.add_block_param(header, owning);
+        let phi1 = cfg.add_block_param(header, owning);
+        cfg.set_goto(entry, header, [root0, root1]);
+        cfg.set_branch(header, cond, backedge, [], exit, []);
+        cfg.set_goto(backedge, header, [phi1, phi0]);
+        push_in(
+            &mut cfg,
+            exit,
+            CfgInstData::Drop { value: phi0 },
+            Type::UNIT,
+        );
+        cfg.set_terminator(exit, Terminator::Return { value: None });
+
+        let reachable = super::super::dce::compute_reachable_blocks(&cfg);
+        let slot_class = vec![SlotWrites::Disqualified; 2];
+        let substitutions = vec![None; cfg.value_count()];
+        let mut stats = Stats::default();
+        let summaries = OwnerRoots::default()
+            .analyze(
+                &cfg,
+                &pool,
+                &slot_class,
+                &reachable,
+                &substitutions,
+                &mut stats,
+            )
+            .expect("the Drop closure contains reinitializable local roots");
+
+        assert!(matches!(
+            summaries[phi0.as_u32() as usize],
+            OwnerRootSummary::Many
+        ));
+        assert!(matches!(
+            summaries[phi1.as_u32() as usize],
+            OwnerRootSummary::Many
+        ));
+        assert!(stats.owner_root_propagation_edges <= 2 * stats.owner_root_edges_scanned);
+        assert!(stats.owner_root_summary_updates <= 2 * stats.owner_root_values_scanned);
+    }
     #[test]
     fn test_load_in_unreachable_block_not_forwarded() {
         // A constant-folded-away arm can still hold a Load of a single-write
@@ -1489,7 +1880,14 @@ mod tests {
                     interner.get_or_intern(name),
                     StructDef {
                         name: name.into(),
-                        fields: Vec::new(),
+                        fields: if destructor.is_some() {
+                            vec![rue_air::StructField {
+                                name: "payload".into(),
+                                ty: Type::I64,
+                            }]
+                        } else {
+                            Vec::new()
+                        },
                         is_copy: false,
                         is_linear: false,
                         declared_linear: false,
@@ -1570,6 +1968,196 @@ mod tests {
     }
 
     #[test]
+    fn test_rejected_intermediate_substitution_does_not_hide_drop_root() {
+        let (pool, owning, _) = owning_and_plain_struct_pool();
+        let mut cfg = Cfg::new(owning, 3, 2, "test".to_string(), vec![false; 2]);
+        let entry = cfg.new_block();
+        let body = cfg.new_block();
+        cfg.entry = entry;
+        let initial = push_in(&mut cfg, entry, CfgInstData::Param { index: 0 }, owning);
+        push_in(
+            &mut cfg,
+            entry,
+            CfgInstData::Alloc {
+                slot: 0,
+                init: initial,
+            },
+            Type::UNIT,
+        );
+        cfg.set_goto(entry, body, []);
+
+        // The first load cannot be forwarded: slot 0 has a write in another
+        // block and is reinitialized below. The next two loads form a
+        // two-edge candidate chain, both of which must see that root even
+        // though the middle edge is rejected.
+        let moved = push_in(&mut cfg, body, CfgInstData::Load { slot: 0 }, owning);
+        push_in(
+            &mut cfg,
+            body,
+            CfgInstData::Alloc {
+                slot: 1,
+                init: moved,
+            },
+            Type::UNIT,
+        );
+        let middle = push_in(&mut cfg, body, CfgInstData::Load { slot: 1 }, owning);
+        push_in(
+            &mut cfg,
+            body,
+            CfgInstData::Alloc {
+                slot: 2,
+                init: middle,
+            },
+            Type::UNIT,
+        );
+        let outer = push_in(&mut cfg, body, CfgInstData::Load { slot: 2 }, owning);
+        let fresh = push_in(&mut cfg, body, CfgInstData::Param { index: 1 }, owning);
+        push_in(
+            &mut cfg,
+            body,
+            CfgInstData::Store {
+                slot: 0,
+                value: fresh,
+            },
+            Type::UNIT,
+        );
+        let current = push_in(&mut cfg, body, CfgInstData::Load { slot: 0 }, owning);
+        push_in(
+            &mut cfg,
+            body,
+            CfgInstData::Drop { value: current },
+            Type::UNIT,
+        );
+        cfg.set_terminator(body, Terminator::Return { value: Some(outer) });
+        cfg.verify_with_type_pool(&pool).unwrap();
+
+        let stats = super::run(&mut cfg, &pool).unwrap();
+        assert_eq!(stats.loads_declined_reinitializable_root, 2);
+        assert!(matches!(
+            cfg.get_inst(middle).data,
+            CfgInstData::Load { slot: 1 }
+        ));
+        assert!(matches!(
+            cfg.get_inst(outer).data,
+            CfgInstData::Load { slot: 2 }
+        ));
+        cfg.verify_with_type_pool(&pool).unwrap();
+    }
+
+    #[test]
+    fn test_owned_forward_without_drop_is_not_declined() {
+        // `let t = b; b = q; Pair { a: t, b }`: both owners transfer to the
+        // returned aggregate, so the helper has no Drop of either source root.
+        // The earlier Load of `b` forwards to its parameter before the later
+        // `Load t` is considered; the RUE-2380 guard must inspect that complete
+        // substitution chain rather than the stale local root.
+        let interner = lasso::ThreadedRodeo::default();
+        let types = TypeInternPool::new();
+        let owning_id = types
+            .register_struct(
+                interner.get_or_intern("Owning"),
+                StructDef {
+                    name: "Owning".into(),
+                    fields: vec![],
+                    is_copy: false,
+                    is_linear: false,
+                    declared_linear: false,
+                    destructor: Some("Owning.__drop".into()),
+                    is_builtin: false,
+                    is_pub: false,
+                    file_id: rue_span::FileId::DEFAULT,
+                },
+            )
+            .0;
+        let owning = Type::new_struct(owning_id);
+        let pair_id = types
+            .register_struct(
+                interner.get_or_intern("Pair"),
+                StructDef {
+                    name: "Pair".into(),
+                    fields: vec![
+                        rue_air::StructField {
+                            name: "a".into(),
+                            ty: owning,
+                        },
+                        rue_air::StructField {
+                            name: "b".into(),
+                            ty: owning,
+                        },
+                    ],
+                    is_copy: false,
+                    is_linear: false,
+                    declared_linear: false,
+                    destructor: None,
+                    is_builtin: false,
+                    is_pub: false,
+                    file_id: rue_span::FileId::DEFAULT,
+                },
+            )
+            .0;
+        let pair = Type::new_struct(pair_id);
+        let pool = types.freeze();
+        let mut cfg = Cfg::new(pair, 2, 2, "test".to_string(), vec![false; 2]);
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        let original = push(&mut cfg, CfgInstData::Param { index: 0 }, owning);
+        push(
+            &mut cfg,
+            CfgInstData::Alloc {
+                slot: 0,
+                init: original,
+            },
+            Type::UNIT,
+        );
+        let moved = push(&mut cfg, CfgInstData::Load { slot: 0 }, owning);
+        push(
+            &mut cfg,
+            CfgInstData::Alloc {
+                slot: 1,
+                init: moved,
+            },
+            Type::UNIT,
+        );
+        let latest = push(&mut cfg, CfgInstData::Param { index: 1 }, owning);
+        push(
+            &mut cfg,
+            CfgInstData::Store {
+                slot: 0,
+                value: latest,
+            },
+            Type::UNIT,
+        );
+        let first = push(&mut cfg, CfgInstData::Load { slot: 1 }, owning);
+        let second = push(&mut cfg, CfgInstData::Load { slot: 0 }, owning);
+        let fields = cfg.push_struct_fields([first, second]).unwrap();
+        let pair_value = push(
+            &mut cfg,
+            CfgInstData::StructInit {
+                struct_id: pair_id,
+                fields,
+            },
+            pair,
+        );
+        cfg.set_terminator(
+            entry,
+            Terminator::Return {
+                value: Some(pair_value),
+            },
+        );
+        cfg.verify_with_type_pool(&pool).unwrap();
+
+        let stats = super::run(&mut cfg, &pool).unwrap();
+        assert_eq!(stats.loads_declined_reinitializable_root, 0);
+        assert_eq!(stats.loads_forwarded_single_write, 1);
+        assert_eq!(stats.loads_forwarded_block_local, 2);
+        assert_eq!(
+            cfg.get_struct_fields(&cfg.get_inst(pair_value).data),
+            &[original, latest]
+        );
+        cfg.verify_with_type_pool(&pool).unwrap();
+    }
+
+    #[test]
     fn test_owned_move_forwarded_when_source_single_write() {
         // Without the reinit `b` has one write and cannot be rewritten while
         // `t` is live: the drop may take the moved value directly.
@@ -1603,9 +2191,12 @@ mod tests {
         let (pool, owning, _) = owning_and_plain_struct_pool();
         let mut cfg = Cfg::new(Type::UNIT, 2, 3, "test".to_string(), vec![false; 3]);
         let entry = cfg.new_block();
+        // Give the join a lower block index than its predecessors. The owner
+        // and Drop analysis must see their incoming values independently of
+        // the forwarder's block-scan order.
+        let join = cfg.new_block();
         let then_block = cfg.new_block();
         let else_block = cfg.new_block();
-        let join = cfg.new_block();
         cfg.entry = entry;
         let p0 = push_in(&mut cfg, entry, CfgInstData::Param { index: 0 }, owning);
         push_in(
@@ -1655,6 +2246,343 @@ mod tests {
             })
             .unwrap();
         assert_eq!(drop_operand, dropped);
+    }
+
+    #[test]
+    fn test_phi_drop_closure_includes_proposed_incoming_rewrites() {
+        let (pool, owning, _) = owning_and_plain_struct_pool();
+        let mut cfg = Cfg::new(owning, 2, 2, "test".to_string(), vec![false; 2]);
+        let entry = cfg.new_block();
+        // Deliberately assign the join a lower index than its incoming arm.
+        let join = cfg.new_block();
+        let arm = cfg.new_block();
+        let exit = cfg.new_block();
+        cfg.entry = entry;
+
+        let initial = push_in(&mut cfg, entry, CfgInstData::Param { index: 0 }, owning);
+        push_in(
+            &mut cfg,
+            entry,
+            CfgInstData::Alloc {
+                slot: 0,
+                init: initial,
+            },
+            Type::UNIT,
+        );
+        cfg.set_goto(entry, arm, []);
+
+        let moved = push_in(&mut cfg, arm, CfgInstData::Load { slot: 0 }, owning);
+        push_in(
+            &mut cfg,
+            arm,
+            CfgInstData::Alloc {
+                slot: 1,
+                init: moved,
+            },
+            Type::UNIT,
+        );
+        let incoming = push_in(&mut cfg, arm, CfgInstData::Load { slot: 1 }, owning);
+        let phi = cfg.add_block_param(join, owning);
+        cfg.set_goto(arm, join, [incoming]);
+
+        // Before forwarding, the Drop consumes slot 1 through the phi input,
+        // then the function returns the fresh owner written to slot 0. The
+        // proposed incoming Load -> `moved` edge adds slot 0 to the potential
+        // Drop roots, so the analysis must protect that edge and preserve the
+        // later ordinary Return use.
+        let fresh = push_in(&mut cfg, join, CfgInstData::Param { index: 1 }, owning);
+        push_in(
+            &mut cfg,
+            join,
+            CfgInstData::Store {
+                slot: 0,
+                value: fresh,
+            },
+            Type::UNIT,
+        );
+        push_in(&mut cfg, join, CfgInstData::Drop { value: phi }, Type::UNIT);
+        cfg.set_goto(join, exit, []);
+        let result = push_in(&mut cfg, exit, CfgInstData::Load { slot: 0 }, owning);
+        cfg.set_terminator(
+            exit,
+            Terminator::Return {
+                value: Some(result),
+            },
+        );
+
+        cfg.verify_with_type_pool(&pool).unwrap();
+        let stats = super::run(&mut cfg, &pool).unwrap();
+        assert_eq!(stats.loads_declined_reinitializable_root, 1);
+        assert!(matches!(
+            cfg.get_inst(incoming).data,
+            CfgInstData::Load { slot: 1 }
+        ));
+        assert!(matches!(
+            cfg.get_inst(result).data,
+            CfgInstData::Load { slot: 0 }
+        ));
+        cfg.verify_with_type_pool(&pool).unwrap();
+    }
+
+    #[test]
+    fn test_projected_drop_keeps_reinitializable_base_root_guarded() {
+        let interner = lasso::ThreadedRodeo::default();
+        let types = TypeInternPool::new();
+        let field_id = types
+            .register_struct(
+                interner.get_or_intern("FieldOwner"),
+                StructDef {
+                    name: "FieldOwner".into(),
+                    fields: vec![rue_air::StructField {
+                        name: "id".into(),
+                        ty: Type::I64,
+                    }],
+                    is_copy: false,
+                    is_linear: false,
+                    declared_linear: false,
+                    destructor: Some("FieldOwner.__drop".into()),
+                    is_builtin: false,
+                    is_pub: false,
+                    file_id: rue_span::FileId::DEFAULT,
+                },
+            )
+            .0;
+        let field_ty = Type::new_struct(field_id);
+        let holder_id = types
+            .register_struct(
+                interner.get_or_intern("Holder"),
+                StructDef {
+                    name: "Holder".into(),
+                    fields: vec![
+                        rue_air::StructField {
+                            name: "field".into(),
+                            ty: field_ty,
+                        },
+                        rue_air::StructField {
+                            name: "tag".into(),
+                            ty: Type::I64,
+                        },
+                    ],
+                    is_copy: false,
+                    is_linear: false,
+                    declared_linear: false,
+                    destructor: None,
+                    is_builtin: false,
+                    is_pub: false,
+                    file_id: rue_span::FileId::DEFAULT,
+                },
+            )
+            .0;
+        let holder_ty = Type::new_struct(holder_id);
+        let pool = types.freeze();
+        assert!(pool.type_needs_drop(holder_ty));
+        let holder_slots = pool.abi_slot_count(holder_ty);
+        let second_slot = holder_slots;
+        let param1 = holder_slots;
+        let param2 = holder_slots * 2;
+
+        // Isolate projected provenance from the full-value Drop later in this
+        // fixture. This graph contains only a projected-field Drop, yet its
+        // base Local root must make an owned candidate from that slot unsafe
+        // to forward into a different local.
+        let mut projected_only = Cfg::new(
+            Type::UNIT,
+            holder_slots * 2,
+            0,
+            "projected-only".to_string(),
+            vec![],
+        );
+        let projected_entry = projected_only.new_block();
+        projected_only.entry = projected_entry;
+        let projected_candidate = push(
+            &mut projected_only,
+            CfgInstData::Load { slot: 0 },
+            holder_ty,
+        );
+        let projected_only_projections = projected_only
+            .push_projections([Projection::Field {
+                struct_id: holder_id,
+                field_index: 0,
+            }])
+            .unwrap();
+        let projected_operand = push(
+            &mut projected_only,
+            CfgInstData::PlaceRead {
+                place: Place {
+                    base: PlaceBase::Local(0),
+                    base_type: holder_ty,
+                    projections: projected_only_projections,
+                },
+            },
+            field_ty,
+        );
+        push(
+            &mut projected_only,
+            CfgInstData::Drop {
+                value: projected_operand,
+            },
+            Type::UNIT,
+        );
+        projected_only.set_terminator(projected_entry, Terminator::Return { value: None });
+        let projected_reachable = super::super::dce::compute_reachable_blocks(&projected_only);
+        let projected_slot_class = vec![SlotWrites::Disqualified; (holder_slots * 2) as usize];
+        let projected_subst = vec![None; projected_only.value_count()];
+        let mut projected_stats = Stats::default();
+        let mut projected_roots = OwnerRoots::default();
+        let projected_summaries = projected_roots
+            .analyze(
+                &projected_only,
+                &pool,
+                &projected_slot_class,
+                &projected_reachable,
+                &projected_subst,
+                &mut projected_stats,
+            )
+            .expect("the projected Drop must discover its nonzero base root");
+        assert!(matches!(
+            projected_summaries[projected_candidate.as_u32() as usize],
+            OwnerRootSummary::One(OwnerRootLocation::Local(0, ty)) if ty == holder_ty
+        ));
+        assert!(projected_roots.reinitializable_other_root(
+            &projected_only,
+            &pool,
+            second_slot,
+            holder_ty,
+            projected_candidate,
+            &projected_summaries,
+        ));
+
+        let mut cfg = Cfg::new(
+            holder_ty,
+            holder_slots * 2,
+            holder_slots * 3,
+            "test".to_string(),
+            vec![false; (holder_slots * 3) as usize],
+        );
+        let entry = cfg.new_block();
+        let use_block = cfg.new_block();
+        cfg.entry = entry;
+        let initial = push(&mut cfg, CfgInstData::Param { index: 0 }, holder_ty);
+        push(
+            &mut cfg,
+            CfgInstData::Alloc {
+                slot: 0,
+                init: initial,
+            },
+            Type::UNIT,
+        );
+        cfg.set_goto(entry, use_block, []);
+        let moved = push_in(
+            &mut cfg,
+            use_block,
+            CfgInstData::Load { slot: 0 },
+            holder_ty,
+        );
+        push_in(
+            &mut cfg,
+            use_block,
+            CfgInstData::Alloc {
+                slot: second_slot,
+                init: moved,
+            },
+            Type::UNIT,
+        );
+        let fresh = push_in(
+            &mut cfg,
+            use_block,
+            CfgInstData::Param { index: param1 },
+            holder_ty,
+        );
+        push_in(
+            &mut cfg,
+            use_block,
+            CfgInstData::Store {
+                slot: 0,
+                value: fresh,
+            },
+            Type::UNIT,
+        );
+        let projections = cfg
+            .push_projections([Projection::Field {
+                struct_id: holder_id,
+                field_index: 0,
+            }])
+            .unwrap();
+        let projected = push_in(
+            &mut cfg,
+            use_block,
+            CfgInstData::PlaceRead {
+                place: Place {
+                    base: PlaceBase::Local(0),
+                    base_type: holder_ty,
+                    projections,
+                },
+            },
+            field_ty,
+        );
+        push_in(
+            &mut cfg,
+            use_block,
+            CfgInstData::Drop { value: projected },
+            Type::UNIT,
+        );
+        let final_fresh = push_in(
+            &mut cfg,
+            use_block,
+            CfgInstData::Param { index: param2 },
+            holder_ty,
+        );
+        push_in(
+            &mut cfg,
+            use_block,
+            CfgInstData::Store {
+                slot: 0,
+                value: final_fresh,
+            },
+            Type::UNIT,
+        );
+        let final_root = push_in(
+            &mut cfg,
+            use_block,
+            CfgInstData::Load { slot: 0 },
+            holder_ty,
+        );
+        push_in(
+            &mut cfg,
+            use_block,
+            CfgInstData::Drop { value: final_root },
+            Type::UNIT,
+        );
+        let target_load = push_in(
+            &mut cfg,
+            use_block,
+            CfgInstData::Load { slot: second_slot },
+            holder_ty,
+        );
+        cfg.set_terminator(
+            use_block,
+            Terminator::Return {
+                value: Some(target_load),
+            },
+        );
+
+        cfg.verify_with_type_pool(&pool).unwrap();
+        let stats = super::run(&mut cfg, &pool).unwrap();
+        assert_eq!(stats.loads_declined_reinitializable_root, 1);
+        assert!(matches!(
+            cfg.get_inst(target_load).data,
+            CfgInstData::Load { slot } if slot == second_slot
+        ));
+        cfg.verify_with_type_pool(&pool).unwrap();
+
+        super::super::dce::run(&mut cfg);
+        let second_stats = super::run(&mut cfg, &pool).unwrap();
+        assert_eq!(second_stats.loads_declined_reinitializable_root, 1);
+        assert!(matches!(
+            cfg.get_block(use_block).terminator,
+            Terminator::Return { value: Some(value) } if value == target_load
+        ));
+        cfg.verify_after_optimization_with_type_pool(&pool).unwrap();
     }
 
     #[test]
