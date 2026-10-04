@@ -185,7 +185,7 @@ pub use semantic_identity::{
     LocalAtomRecord, Node, NominalInstanceKey, STABLE_DEFINITION_KINDS,
     STABLE_DEFINITION_NAMESPACES, SemanticBodyLocalAtom, StableCallableId, StableDefinitionKind,
     StableDefinitionNamespace, StableProducerId, StableSymbolId, TypeInstanceKey,
-    format_canonical_application,
+    format_canonical_application, format_canonical_application_pair,
 };
 pub use semantic_import::{
     MAX_COMPTIME_VALUE_DEPTH, MAX_COMPTIME_VALUE_NODES, SEMANTIC_IMPORT_CONST_KINDS,

@@ -4,6 +4,72 @@ name = "Friendly anonymous constructor diagnostics"
 description = "Production CLI coverage for durable anonymous-type presentation across query, import, mixed-argument, identity, and JSON paths."
 
 [[case]]
+name = "same_named_declared_types_name_their_modules_in_type_mismatches"
+description = "Distinct named nominals with the same short spelling are disambiguated at a type mismatch."
+files = [
+  { path = "main.rue", source = "const left = @import(\"left.rue\");\nconst right = @import(\"right.rue\");\nfn take(value: left.Token) -> i32 { 0 }\nfn main() -> i32 { take(right.Token { value: 0 }) }\n" },
+  { path = "left.rue", source = "pub struct Token { value: i64 }\n" },
+  { path = "right.rue", source = "pub struct Token { value: i64 }\n" },
+]
+compile_fail = true
+compile_stderr_contains = ["type mismatch: expected Token (in left.rue), found Token (in right.rue)"]
+
+[[case]]
+name = "same_named_declared_types_in_arrays_name_their_modules"
+description = "The paired type display keeps module provenance when same-named nominals are nested in arrays."
+files = [
+  { path = "main.rue", source = "const left = @import(\"left.rue\");\nconst right = @import(\"right.rue\");\nfn take(value: [left.Token; 1]) -> i32 { 0 }\nfn main() -> i32 { take([right.Token { value: 0 }]) }\n" },
+  { path = "left.rue", source = "pub struct Token { value: i64 }\n" },
+  { path = "right.rue", source = "pub struct Token { value: i64 }\n" },
+]
+compile_fail = true
+compile_stderr_contains = ["type mismatch: expected Token (in left.rue), found Token (in right.rue)"]
+
+[[case]]
+name = "same_named_types_in_callback_pointers_name_their_modules"
+description = "The paired type display carries provenance through function and pointer types."
+files = [
+  { path = "main.rue", source = "const left = @import(\"left.rue\");\nconst right = @import(\"right.rue\");\nfn take(callback: fn(ptr const left.Token) -> i32) -> i32 { 0 }\nfn right_callback(value: ptr const right.Token) -> i32 { 0 }\nfn main() -> i32 { take(right_callback) }\n" },
+  { path = "left.rue", source = "pub struct Token { value: i64 }\n" },
+  { path = "right.rue", source = "pub struct Token { value: i64 }\n" },
+]
+compile_fail = true
+compile_stderr_contains = ["fn(ptr const Token (in left.rue)) -> i32", "fn(ptr const Token (in right.rue)) -> i32"]
+
+[[case]]
+name = "same_named_types_in_callback_slices_name_their_modules"
+description = "The paired type display carries provenance through callback slice parameters."
+files = [
+  { path = "main.rue", source = "const left = @import(\"left.rue\");\nconst right = @import(\"right.rue\");\nfn take(callback: fn([left.Token]) -> i32) -> i32 { 0 }\nfn right_callback(value: [right.Token]) -> i32 { 0 }\nfn main() -> i32 { take(right_callback) }\n" },
+  { path = "left.rue", source = "pub struct Token { value: i64 }\n" },
+  { path = "right.rue", source = "pub struct Token { value: i64 }\n" },
+]
+compile_fail = true
+compile_stderr_contains = ["fn([Token (in left.rue)]) -> i32", "fn([Token (in right.rue)]) -> i32"]
+
+[[case]]
+name = "same_module_constructor_arguments_name_their_modules"
+description = "The paired canonical application renderer disambiguates same-named type arguments from different modules."
+files = [
+  { path = "main.rue", source = "const left = @import(\"left.rue\");\nconst right = @import(\"right.rue\");\nfn Wrap(comptime T: type) -> type { struct { value: T } }\nfn take(value: Wrap(left.Token)) -> i32 { 0 }\nfn main() -> i32 { take(Wrap(right.Token) { value: right.Token { value: 0 } }) }\n" },
+  { path = "left.rue", source = "pub struct Token { value: i64 }\n" },
+  { path = "right.rue", source = "pub struct Token { value: i64 }\n" },
+]
+compile_fail = true
+compile_stderr_contains = ["type mismatch: expected Wrap(Token (in left.rue)), found Wrap(Token (in right.rue))"]
+
+[[case]]
+name = "nested_constructor_argument_types_name_their_modules"
+description = "An outer constructor retains the source modules of same-named anonymous types nested in its arguments."
+files = [
+  { path = "main.rue", source = "const left = @import(\"left.rue\");\nconst right = @import(\"right.rue\");\nfn Outer(comptime T: type) -> type { struct { value: T } }\nfn take(value: Outer(left.Inner(i64))) -> i32 { 0 }\nfn main() -> i32 { take(Outer(right.Inner(i64)) { value: right.Inner(i64) { value: 0 } }) }\n" },
+  { path = "left.rue", source = "pub fn Inner(comptime T: type) -> type { struct { value: T } }\n" },
+  { path = "right.rue", source = "pub fn Inner(comptime T: type) -> type { struct { value: T } }\n" },
+]
+compile_fail = true
+compile_stderr_contains = ["Outer(Inner(i64) (in left.rue))", "Outer(Inner(i64) (in right.rue))"]
+
+[[case]]
 name = "body_local_nested_enum_deferred_gate"
 description = "A body-local nested enum reaches the deferred E0499 query with its producer spelling intact."
 files = [{ path = "main.rue", source = """

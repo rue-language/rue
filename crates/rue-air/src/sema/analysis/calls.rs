@@ -1005,22 +1005,21 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         && let AirInstData::FnRef { name: callee } = air.get(air_arg.value).data
                     {
                         let source = self.call_facts().call_source_function_name(callee);
+                        let (expected, found) = self.format_type_pair(expected, found);
                         return Err(CompileError::new(
                             ErrorKind::CallbackSignatureMismatch(Box::new(
                                 rue_error::CallbackSignatureMismatchError {
                                     function: self.body_interner().resolve(&source).to_string(),
-                                    expected: self.format_type_name(expected),
-                                    found: self.format_type_name(found),
+                                    expected,
+                                    found,
                                 },
                             )),
                             arg_span,
                         ));
                     }
+                    let (expected, found) = self.format_type_pair(expected, found);
                     return Err(CompileError::new(
-                        ErrorKind::TypeMismatch {
-                            expected: self.format_type_name(expected),
-                            found: self.format_type_name(found),
-                        },
+                        ErrorKind::TypeMismatch { expected, found },
                         arg_span,
                     ));
                 }

@@ -5408,6 +5408,216 @@ where
         })
     }
 
+    fn friendly_durable_type_display_pair(
+        &self,
+        expected: &TypeInstanceKey<K, M>,
+        found: &TypeInstanceKey<K, M>,
+    ) -> Option<(String, String)> {
+        use crate::NominalInstanceKey as N;
+        use crate::TypeInstanceKey as T;
+        Some(match (expected, found) {
+            (T::Nominal(N::Named(expected)), T::Nominal(N::Named(found))) => {
+                let expected_name = self.source.definition_name(expected)?.to_string();
+                let found_name = self.source.definition_name(found)?.to_string();
+                if expected_name == found_name && expected != found {
+                    let expected_module = self
+                        .source
+                        .definition_module(expected)
+                        .map(|module| self.source.module_path(&module));
+                    let found_module = self
+                        .source
+                        .definition_module(found)
+                        .map(|module| self.source.module_path(&module));
+                    if let (Some(expected_module), Some(found_module)) =
+                        (expected_module, found_module)
+                        && expected_module != found_module
+                    {
+                        (
+                            format!("{expected_name} (in {expected_module})"),
+                            format!("{found_name} (in {found_module})"),
+                        )
+                    } else {
+                        (expected_name, found_name)
+                    }
+                } else {
+                    (expected_name, found_name)
+                }
+            }
+            (T::Nominal(N::Anonymous(expected)), T::Nominal(N::Anonymous(found))) => {
+                let (mut expected_display, mut found_display) =
+                    self.friendly_durable_anonymous_display_pair(expected, found)?;
+                if expected_display == found_display {
+                    let expected_module = self
+                        .source
+                        .anonymous_definition_module(expected)
+                        .map(|module| self.source.module_path(&module));
+                    let found_module = self
+                        .source
+                        .anonymous_definition_module(found)
+                        .map(|module| self.source.module_path(&module));
+                    if let (Some(expected_module), Some(found_module)) =
+                        (expected_module, found_module)
+                        && expected_module != found_module
+                    {
+                        expected_display = format!("{expected_display} (in {expected_module})");
+                        found_display = format!("{found_display} (in {found_module})");
+                    }
+                }
+                (expected_display, found_display)
+            }
+            (
+                T::Array {
+                    element: a,
+                    len: al,
+                },
+                T::Array {
+                    element: b,
+                    len: bl,
+                },
+            ) if al == bl => {
+                let (a, b) = self.friendly_durable_type_display_pair(a, b)?;
+                (
+                    crate::types::array_type_name(&a, *al),
+                    crate::types::array_type_name(&b, *bl),
+                )
+            }
+            (T::PtrConst(a), T::PtrConst(b)) => {
+                let (a, b) = self.friendly_durable_type_display_pair(a, b)?;
+                (format!("ptr const {a}"), format!("ptr const {b}"))
+            }
+            (T::PtrMut(a), T::PtrMut(b)) => {
+                let (a, b) = self.friendly_durable_type_display_pair(a, b)?;
+                (format!("ptr mut {a}"), format!("ptr mut {b}"))
+            }
+            (T::Slice { element: a, .. }, T::Slice { element: b, .. }) => {
+                let (a, b) = self.friendly_durable_type_display_pair(a, b)?;
+                (
+                    crate::types::slice_struct_name(&a),
+                    crate::types::slice_struct_name(&b),
+                )
+            }
+            (
+                T::Function {
+                    params: expected_params,
+                    result: expected_result,
+                },
+                T::Function {
+                    params: found_params,
+                    result: found_result,
+                },
+            ) if expected_params.len() == found_params.len()
+                && expected_params
+                    .iter()
+                    .zip(found_params.iter())
+                    .all(|(a, b)| a.0 == b.0) =>
+            {
+                let mut expected_params_rendered = Vec::with_capacity(expected_params.len());
+                let mut found_params_rendered = Vec::with_capacity(found_params.len());
+                for ((mode, expected), (_, found)) in
+                    expected_params.iter().zip(found_params.iter())
+                {
+                    let (expected, found) =
+                        self.friendly_durable_type_display_pair(expected, found)?;
+                    expected_params_rendered.push((*mode, expected));
+                    found_params_rendered.push((*mode, found));
+                }
+                let (expected_result, found_result) =
+                    self.friendly_durable_type_display_pair(expected_result, found_result)?;
+                (
+                    crate::types::function_type_name(
+                        expected_params_rendered,
+                        (expected_result.as_str() != "()").then_some(expected_result),
+                    ),
+                    crate::types::function_type_name(
+                        found_params_rendered,
+                        (found_result.as_str() != "()").then_some(found_result),
+                    ),
+                )
+            }
+            _ => (
+                self.friendly_durable_type_display(expected)?,
+                self.friendly_durable_type_display(found)?,
+            ),
+        })
+    }
+
+    fn friendly_durable_anonymous_display_pair(
+        &self,
+        expected: &crate::AnonymousNominalKey<K, M>,
+        found: &crate::AnonymousNominalKey<K, M>,
+    ) -> Option<(String, String)> {
+        fn base_definition<K, M>(function: &crate::FunctionInstanceKey<K, M>) -> Option<&K> {
+            match function {
+                crate::FunctionInstanceKey::Definition(definition) => Some(definition),
+                crate::FunctionInstanceKey::Specialization { base, .. } => base_definition(base),
+                _ => None,
+            }
+        }
+        let definition = match (&expected.producer, &found.producer) {
+            (
+                crate::StableProducerId::Function(expected),
+                crate::StableProducerId::Function(found),
+            ) => {
+                let (expected, found) = (base_definition(expected)?, base_definition(found)?);
+                (expected == found).then_some(expected)
+            }
+            (
+                crate::StableProducerId::Definition(expected),
+                crate::StableProducerId::Definition(found),
+            ) => (expected == found).then_some(expected),
+            _ => None,
+        };
+        let Some(definition) = definition else {
+            return Some((
+                self.friendly_durable_anonymous_display(expected)?,
+                self.friendly_durable_anonymous_display(found)?,
+            ));
+        };
+        let Some(signature) = self.source.function(definition) else {
+            return Some((
+                self.friendly_durable_anonymous_display(expected)?,
+                self.friendly_durable_anonymous_display(found)?,
+            ));
+        };
+        let parameters =
+            signature
+                .parameters
+                .iter()
+                .map(|parameter| crate::CanonicalDisplayParameter {
+                    is_comptime: parameter.is_comptime,
+                    is_type: parameter.is_type_parameter(),
+                });
+        let (mut expected_display, mut found_display) = crate::format_canonical_application_pair(
+            &self.source.definition_name(definition)?,
+            parameters,
+            expected.producer_arguments(),
+            found.producer_arguments(),
+            |expected, found| self.friendly_durable_type_display_pair(expected, found),
+        )?;
+        // The durable application is only the producer prefix. Preserve a
+        // constructor-local binding suffix (`Wrap(T).Inner`) from the same
+        // canonical anonymous display authority.
+        if let Some(binding) = self.source.anonymous_binding(expected) {
+            let suffix = format!(".{binding}");
+            if self
+                .anonymous_display(expected, None)
+                .is_some_and(|(display, _)| display.ends_with(&suffix))
+            {
+                expected_display.push_str(&suffix);
+            }
+        }
+        if let Some(binding) = self.source.anonymous_binding(found) {
+            let suffix = format!(".{binding}");
+            if self
+                .anonymous_display(found, None)
+                .is_some_and(|(display, _)| display.ends_with(&suffix))
+            {
+                found_display.push_str(&suffix);
+            }
+        }
+        Some((expected_display, found_display))
+    }
+
     /// The display of an anonymous nominal (RUE-2589). A literal its producer
     /// binds with `let` is called by that name, qualified by the producer's
     /// application when the producer was specialized (`A(i64).B`), so two
@@ -5799,6 +6009,138 @@ where
             }
             _ => ty.safe_name_with_pool(Some(&self.type_pool)),
         }
+    }
+
+    fn diagnostic_nominal_module(&self, ty: Type) -> Option<String> {
+        if let Some(key) = self.endpoint.durable_named_identity(ty) {
+            let module = self.source.definition_module(&key)?;
+            return Some(self.source.module_path(&module));
+        }
+        let identity = self.diagnostic_anonymous_identity(ty)?;
+        let module = self.source.anonymous_definition_module(&identity)?;
+        Some(self.source.module_path(&module))
+    }
+
+    fn diagnostic_anonymous_identity(&self, ty: Type) -> Option<crate::AnonymousNominalKey<K, M>> {
+        self.endpoint.durable_anonymous_identity(ty).or_else(|| {
+            match self.local_durable_type(ty)? {
+                crate::SemanticImportType::AnonymousNominal(identity) => Some(identity),
+                _ => None,
+            }
+        })
+    }
+
+    fn friendly_type_display_pair(&self, expected: Type, found: Type) -> (String, String) {
+        if expected == found {
+            let display = self.friendly_type_display(expected);
+            return (display.clone(), display);
+        }
+        match (expected.kind(), found.kind()) {
+            (TypeKind::Array(expected_id), TypeKind::Array(found_id)) => {
+                let (expected_element, expected_length) = self.type_pool.array_def(expected_id);
+                let (found_element, found_length) = self.type_pool.array_def(found_id);
+                if expected_length == found_length {
+                    let (expected, found) =
+                        self.friendly_type_display_pair(expected_element, found_element);
+                    return (
+                        crate::types::array_type_name(&expected, expected_length),
+                        crate::types::array_type_name(&found, found_length),
+                    );
+                }
+            }
+            (TypeKind::PtrConst(expected_id), TypeKind::PtrConst(found_id)) => {
+                let (expected, found) = self.friendly_type_display_pair(
+                    self.type_pool.ptr_const_def(expected_id),
+                    self.type_pool.ptr_const_def(found_id),
+                );
+                return (
+                    format!("ptr const {expected}"),
+                    format!("ptr const {found}"),
+                );
+            }
+            (TypeKind::PtrMut(expected_id), TypeKind::PtrMut(found_id)) => {
+                let (expected, found) = self.friendly_type_display_pair(
+                    self.type_pool.ptr_mut_def(expected_id),
+                    self.type_pool.ptr_mut_def(found_id),
+                );
+                return (format!("ptr mut {expected}"), format!("ptr mut {found}"));
+            }
+            (TypeKind::Function(expected_id), TypeKind::Function(found_id)) => {
+                let expected = self.type_pool.function_def(expected_id);
+                let found = self.type_pool.function_def(found_id);
+                if expected.params.len() == found.params.len()
+                    && expected
+                        .params
+                        .iter()
+                        .zip(&found.params)
+                        .all(|(left, right)| left.mode == right.mode)
+                {
+                    let mut expected_params = Vec::with_capacity(expected.params.len());
+                    let mut found_params = Vec::with_capacity(found.params.len());
+                    for (left, right) in expected.params.iter().zip(&found.params) {
+                        let expected_mode = left.mode;
+                        let found_mode = right.mode;
+                        let (left, right) = self.friendly_type_display_pair(left.ty, right.ty);
+                        expected_params.push((expected_mode, left));
+                        found_params.push((found_mode, right));
+                    }
+                    let (expected_result, found_result) =
+                        self.friendly_type_display_pair(expected.result, found.result);
+                    return (
+                        crate::types::function_type_name(
+                            expected_params,
+                            (expected.result != Type::UNIT).then_some(expected_result),
+                        ),
+                        crate::types::function_type_name(
+                            found_params,
+                            (found.result != Type::UNIT).then_some(found_result),
+                        ),
+                    );
+                }
+            }
+            (TypeKind::Struct(expected_id), TypeKind::Struct(found_id))
+                if self.type_pool.text_view_kind(expected_id)
+                    == Some(crate::types::TextViewKind::Slice)
+                    && self.type_pool.text_view_kind(found_id)
+                        == Some(crate::types::TextViewKind::Slice) =>
+            {
+                if let (Some(expected), Some(found)) = (
+                    self.type_pool.index_element_type(expected),
+                    self.type_pool.index_element_type(found),
+                ) {
+                    let (expected, found) = self.friendly_type_display_pair(expected, found);
+                    return (
+                        crate::types::slice_struct_name(&expected),
+                        crate::types::slice_struct_name(&found),
+                    );
+                }
+            }
+            _ => {}
+        }
+        let expected_display = self.friendly_type_display(expected);
+        let found_display = self.friendly_type_display(found);
+        if expected_display == found_display {
+            if let (Some(expected), Some(found)) = (
+                self.diagnostic_anonymous_identity(expected),
+                self.diagnostic_anonymous_identity(found),
+            ) && let Some((expected_display, found_display)) =
+                self.friendly_durable_anonymous_display_pair(&expected, &found)
+                && expected_display != found_display
+            {
+                return (expected_display, found_display);
+            }
+            let expected_module = self.diagnostic_nominal_module(expected);
+            let found_module = self.diagnostic_nominal_module(found);
+            if let (Some(expected_module), Some(found_module)) = (expected_module, found_module)
+                && expected_module != found_module
+            {
+                return (
+                    format!("{expected_display} (in {expected_module})"),
+                    format!("{found_display} (in {found_module})"),
+                );
+            }
+        }
+        (expected_display, found_display)
     }
 
     /// Apply the 6.6:3-6.6:5 accessor declaration rules to a free function
@@ -7524,6 +7866,10 @@ where
 
     fn friendly_type_display(&self, ty: Type) -> String {
         Self::friendly_type_display(self, ty)
+    }
+
+    fn friendly_type_display_pair(&self, expected: Type, found: Type) -> (String, String) {
+        Self::friendly_type_display_pair(self, expected, found)
     }
 
     fn anonymous_type_locality(&self, ty: Type) -> super::AnonymousLocality {

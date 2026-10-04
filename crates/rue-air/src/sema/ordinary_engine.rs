@@ -635,6 +635,16 @@ pub(crate) trait DiagnosticPresentation {
 
     fn friendly_type_display(&self, ty: Type) -> String;
 
+    /// Render the two sides of a type comparison together, adding source
+    /// provenance only when distinct nominal types would otherwise look the
+    /// same to the reader.
+    fn friendly_type_display_pair(&self, expected: Type, found: Type) -> (String, String) {
+        (
+            self.friendly_type_display(expected),
+            self.friendly_type_display(found),
+        )
+    }
+
     /// Where `ty`'s literal lives, if it is an anonymous nominal (RUE-2589).
     fn anonymous_type_locality(&self, ty: Type) -> AnonymousLocality;
 
@@ -1172,6 +1182,45 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             InferType::Array { element, length } => {
                 crate::types::array_type_name(&self.format_infer_type_name(element), *length)
             }
+        }
+    }
+
+    pub(crate) fn format_type_pair(&self, expected: Type, found: Type) -> (String, String) {
+        self.storage.friendly_type_display_pair(expected, found)
+    }
+
+    /// Render compared inference types together so equal short names for
+    /// distinct nominal identities can be disambiguated at the point they
+    /// collide, without changing ordinary type spellings.
+    pub(crate) fn format_infer_type_pair(
+        &self,
+        expected: &InferType,
+        found: &InferType,
+    ) -> (String, String) {
+        match (expected, found) {
+            (
+                InferType::Array {
+                    element: expected,
+                    length: expected_length,
+                },
+                InferType::Array {
+                    element: found,
+                    length: found_length,
+                },
+            ) if expected_length == found_length => {
+                let (expected, found) = self.format_infer_type_pair(expected, found);
+                (
+                    crate::types::array_type_name(&expected, *expected_length),
+                    crate::types::array_type_name(&found, *found_length),
+                )
+            }
+            (InferType::Concrete(expected), InferType::Concrete(found)) => {
+                self.storage.friendly_type_display_pair(*expected, *found)
+            }
+            _ => (
+                self.format_infer_type_name(expected),
+                self.format_infer_type_name(found),
+            ),
         }
     }
 
