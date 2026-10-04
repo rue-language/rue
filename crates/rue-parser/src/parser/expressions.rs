@@ -658,7 +658,6 @@ impl Parser {
                 } else {
                     let is_unambiguous_ty = self.primitive_spur(self.kind()).is_some()
                         || (self.at(TokenKind::LBracket) && self.bracket_is_array_type())
-                        || (self.at(TokenKind::LParen) && self.nth(1) == TokenKind::RParen)
                         || (self.at(TokenKind::Bang)
                             && matches!(self.nth(1), TokenKind::Comma | TokenKind::RParen));
                     if is_unambiguous_ty {

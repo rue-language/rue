@@ -1490,7 +1490,8 @@ mod tests {
         // A value-position intrinsic still takes full expressions, with the
         // unambiguous-type-token carve-out unchanged: a bare `!` is the never
         // type while `!x` stays a prefix-not expression.
-        let args = intrinsic_args("fn f() -> i32 { @probe(!, !x, a + 1, (), [1, 2], Point) }");
+        let args =
+            intrinsic_args("fn f() -> i32 { @probe(!, !x, a + 1, (), ((())), [1, 2], Point) }");
         assert!(matches!(&args[0], IntrinsicArg::Type(TypeExpr::Never(_))));
         assert!(matches!(
             &args[1],
@@ -1506,16 +1507,28 @@ mod tests {
                 ..
             })
         ));
-        assert!(matches!(&args[3], IntrinsicArg::Type(TypeExpr::Unit(_))));
+        assert!(matches!(
+            &args[3],
+            IntrinsicArg::Expr(CallArg {
+                expr: Expr::Unit(_),
+                ..
+            })
+        ));
         assert!(matches!(
             &args[4],
+            IntrinsicArg::Expr(CallArg {
+                expr: Expr::Paren(paren), ..
+            }) if matches!(&*paren.inner, Expr::Paren(inner) if matches!(&*inner.inner, Expr::Unit(_)))
+        ));
+        assert!(matches!(
+            &args[5],
             IntrinsicArg::Expr(CallArg {
                 expr: Expr::ArrayLit(_),
                 ..
             })
         ));
         assert!(matches!(
-            &args[5],
+            &args[6],
             IntrinsicArg::Expr(CallArg {
                 expr: Expr::Ident(_),
                 ..

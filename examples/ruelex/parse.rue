@@ -378,8 +378,7 @@ pub struct Parser {
                 else { 0 };
             let type_position = name.aux == 1 || (name.aux == 2 && position == 0);
             let placeholder_type = name.aux == 0 &&
-                ((self.at(token.LPAREN) && self.kind_at(self.pos + 1) == token.RPAREN) ||
-                 (self.at(token.BANG) && (self.kind_at(self.pos + 1) == token.COMMA || self.kind_at(self.pos + 1) == token.RPAREN)) ||
+                ((self.at(token.BANG) && (self.kind_at(self.pos + 1) == token.COMMA || self.kind_at(self.pos + 1) == token.RPAREN)) ||
                  (self.at(token.LBRACKET) && self.bracket_has_semi()));
             let value = if type_position || placeholder_type {
                 self.parse_type()
