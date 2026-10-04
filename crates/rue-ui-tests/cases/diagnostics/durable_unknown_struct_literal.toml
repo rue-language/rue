@@ -1,0 +1,112 @@
+# An absent unqualified name in a struct-literal head is a type lookup at the
+# literal site. This diagnostic adapter must not change general const lookup.
+[section]
+id = "diagnostics.durable_unknown_struct_literal"
+name = "Unknown unqualified struct literal head"
+description = "A missing unqualified struct-literal head reports E0204 at the literal in durable comptime evaluation."
+
+[[case]]
+name = "const_initializer_unknown_struct_head"
+source = """
+const X = Q { a: 1 };
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0204", "unknown type 'Q'", "test.rue:1:11"]
+
+[[case]]
+name = "nested_block_unknown_struct_head"
+source = """
+struct Box { item: i32 }
+const X = Box { item: comptime { Q { a: 1 } } };
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0204", "unknown type 'Q'", "test.rue:2:34"]
+
+[[case]]
+name = "unknown_head_precedes_invalid_field"
+source = """
+const X = Missing { absent: missing_value };
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0204", "unknown type 'Missing'", "test.rue:1:11"]
+
+[[case]]
+name = "unselected_unknown_struct_branch_is_lazy"
+source = """
+@copy
+struct Known { a: i32 }
+const X: Known = comptime { if false { Q { a: 1 } } else { Known { a: 42 } } };
+fn main() -> i32 { if X.a == 42 { 42 } else { 0 } }
+"""
+exit_code = 42
+
+[[case]]
+name = "unselected_unknown_struct_const_initializer_is_lazy"
+source = """
+@copy
+struct Known { a: i32 }
+const X: Known = if false { Q { a: 1 } } else { Known { a: 42 } };
+fn main() -> i32 { if X.a == 42 { 42 } else { 0 } }
+"""
+exit_code = 42
+
+[[case]]
+name = "selected_unknown_struct_branch_reports_unknown_type"
+source = """
+const X = comptime { if true { Q { a: 1 } } else { 0 } };
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0204", "unknown type 'Q'", "test.rue:1:32"]
+
+[[case]]
+name = "ordinary_body_unknown_struct_head_keeps_body_diagnostic"
+source = """
+fn main() -> i32 { let x = Q { a: 1 }; 0 }
+"""
+compile_fail = true
+error_contains = ["E0204", "unknown type 'Q'", "test.rue:1:28"]
+
+[[case]]
+name = "generic_undefined_constant_keeps_comptime_failure"
+source = """
+const X = Missing;
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E1200", "undefined constant `Missing`", "test.rue:1:1"]
+
+[[case]]
+name = "known_nominal_and_alias_heads_still_work"
+source = """
+@copy
+struct Point { x: i32 }
+const Alias: type = Point;
+const DIRECT: Point = Point { x: 39 };
+const INDIRECT: Alias = Alias { x: 3 };
+fn main() -> i32 { if DIRECT.x + INDIRECT.x == 42 { 42 } else { 0 } }
+"""
+exit_code = 42
+
+[[case]]
+name = "enum_head_keeps_non_struct_diagnostic"
+source = """
+enum Choice { One, Two }
+const X = Choice { a: 1 };
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0206", "expected struct type", "found Choice"]
+
+[[case]]
+name = "primitive_alias_head_keeps_non_struct_diagnostic"
+source = """
+const Integer: type = i32;
+const X = Integer { a: 1 };
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E1200", "declaration-time comptime did not reduce to a value"]
