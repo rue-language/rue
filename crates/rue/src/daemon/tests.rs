@@ -353,9 +353,44 @@ fn start_status_and_stop_round_trip() {
         fixture.scope().directory().display().to_string()
     );
 
-    let report = status(fixture.scope(), &fixture.root)
-        .unwrap()
-        .expect("a started service reports");
+    let held = start_connection(
+        fixture.scope(),
+        &fixture.root,
+        &fixture.options(),
+        &launcher,
+    )
+    .unwrap();
+    assert!(
+        !held.launched,
+        "the retained connection uses the started service"
+    );
+    let identity = ServiceIdentity::current(fixture.scope()).unwrap();
+    let endpoint = Endpoint::locate(&fixture.root, &identity).unwrap();
+    let mut control =
+        client::connect(endpoint.socket(), &identity.hello(), Duration::from_secs(5)).unwrap();
+    assert!(
+        wait_until(Duration::from_secs(10), || {
+            let report = control.status().unwrap();
+            report.resource_pressure.connections == 2
+        }),
+        "a retained startup connection overlaps the control connection"
+    );
+    drop(held.connection);
+    let mut settled_report = None;
+    assert!(
+        wait_until(Duration::from_secs(10), || {
+            let report = control.status().unwrap();
+            if report.resource_pressure.connections == 1 {
+                settled_report = Some(report);
+                true
+            } else {
+                false
+            }
+        }),
+        "the released startup connection permits are observed before the status snapshot"
+    );
+    let report = settled_report.expect("a settled status report was captured");
+    drop(control);
     assert_eq!(report.service, started.service);
     assert!(report.connections >= 1, "the status connection counts");
     assert_eq!(report.active_request, None);
