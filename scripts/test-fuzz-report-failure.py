@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -33,12 +34,98 @@ SCRIPT = SCRIPTS / "fuzz-report-failure.py"
 #: Root used for the workflow-contract cases. Buck hands the test a filegroup
 #: directory; a direct run falls back to the repository checkout.
 ROOT = Path(os.environ.get("RUE_FUZZ_REPORT_ROOT", SCRIPTS.parent))
+NIGHTLY_MUTATION_TARGETS = (
+    "lexer",
+    "parser",
+    "sema",
+    "compiler",
+    "warm_session",
+    "compiler_aarch64",
+    "compiler_x86_64_o1",
+    "payload_schemas",
+    "emitter",
+    "emitter_aarch64",
+    "emitter_sequence",
+    "emitter_sequence_aarch64",
+)
 
 sys.path.insert(0, str(SCRIPTS))
 from gatelib import load_script
 
 fr = load_script("fuzz-report-failure.py", __file__)
 fw = load_script("validate-fuzz-workflow.py", __file__)
+
+
+def crash_dir_option(arguments: list[str]) -> str | None:
+    for index, argument in enumerate(arguments):
+        if argument.startswith("--crash-dir="):
+            return argument.split("=", 1)[1]
+        if argument == "--crash-dir" and index + 1 < len(arguments):
+            return arguments[index + 1]
+    return None
+
+
+def workflow_crash_path_errors(workflow: str, targets: tuple[str, ...]) -> list[str]:
+    """Check actual shell commands and artifact paths share one crash directory."""
+    blocks = fw.step_blocks(workflow)
+    errors = []
+    producer_dirs = {}
+    for target in targets:
+        step_id = f"fuzz-{target.replace('_', '-')}"
+        block = fw.matching_block(blocks, f"id: {step_id}")
+        command_lines = (
+            []
+            if block is None
+            else [line[len("        run: ") :] for line in block.splitlines() if line.startswith("        run: ")]
+        )
+        if len(command_lines) != 1:
+            errors.append(f"{target}:mutation-command")
+            continue
+        producer_dirs[target] = crash_dir_option(shlex.split(command_lines[0]))
+        if producer_dirs[target] is None:
+            errors.append(f"{target}:crash-dir")
+
+    differential = fw.matching_block(blocks, "id: fuzz-differential")
+    differential_args = (
+        [] if differential is None else shlex.split("\n".join(fw.scalar_lines(differential, "run")))
+    )
+    differential_dir = crash_dir_option(differential_args)
+    if differential_dir is None:
+        errors.append("differential:crash-dir")
+
+    upload = fw.matching_block(blocks, "- name: Upload crash artifacts", 6)
+    upload_paths = (
+        []
+        if upload is None
+        else [line[len("          path: ") :] for line in upload.splitlines() if line.startswith("          path: ")]
+    )
+    upload_dir = upload_paths[0].rstrip("/") if len(upload_paths) == 1 else None
+    if upload_dir is None:
+        errors.append("upload:path")
+
+    reporting = fw.matching_block(
+        blocks, "- name: Report crashes (Linear, GitHub Issues fallback)", 6
+    )
+    report_args = (
+        [] if reporting is None else shlex.split("\n".join(fw.scalar_lines(reporting, "run")))
+    )
+    report_dir = crash_dir_option(report_args)
+    if report_dir is None:
+        errors.append("report:crash-dir")
+
+    if upload_dir is not None and report_dir is not None and upload_dir != report_dir:
+        errors.append("upload/report:directory-mismatch")
+    for target, crash_dir in producer_dirs.items():
+        if crash_dir is not None and upload_dir is not None and crash_dir != upload_dir:
+            errors.append(f"{target}:upload-directory-mismatch")
+        if crash_dir is not None and report_dir is not None and crash_dir != report_dir:
+            errors.append(f"{target}:report-directory-mismatch")
+    for label, crash_dir in (("differential", differential_dir),):
+        if crash_dir is not None and upload_dir is not None and crash_dir != upload_dir:
+            errors.append(f"{label}:upload-directory-mismatch")
+        if crash_dir is not None and report_dir is not None and crash_dir != report_dir:
+            errors.append(f"{label}:report-directory-mismatch")
+    return errors
 
 
 class MockTransport(fr.Transport):
@@ -537,6 +624,35 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertIn("2 issue(s) filed", completed.stdout)
 
+    def test_timeout_reproducer_in_report_directory_is_reported_from_its_meta(self):
+        """A saved timeout must win over the anonymous failed-step fallback."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "crash-sema-aabbccdd-0011223344556677.txt"
+            path.write_text("fn main() { let x = 1; }\n")
+            path.with_name(path.name + ".meta").write_text(
+                "target: sema\nsignature: timeout: sema analysis exceeded budget\n"
+                "outcome: timeout after 30 seconds\n"
+            )
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--dry-run",
+                    "--crash-dir",
+                    tmp,
+                    "--failed-targets",
+                    "sema",
+                    "--run-url",
+                    "https://ci/run/timeout",
+                ],
+                capture_output=True,
+                text=True,
+            )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("crash-sema-aabbccdd-0011223344556677.txt", completed.stdout)
+        self.assertIn("timeout after 30 seconds", completed.stdout)
+        self.assertNotIn("No reproducer survived", completed.stdout)
+
     def test_missing_credentials_exits_non_zero(self):
         completed = subprocess.run(
             [sys.executable, str(SCRIPT), "--crash-dir", "/nonexistent"],
@@ -589,20 +705,7 @@ class WorkflowContractTests(unittest.TestCase):
     def test_each_registered_mutation_step_has_private_input_and_output(self):
         # Keep this inventory explicit: deriving it only from output paths
         # would let a newly registered target silently skip restore or save.
-        targets = (
-            "lexer",
-            "parser",
-            "sema",
-            "compiler",
-            "warm_session",
-            "compiler_aarch64",
-            "compiler_x86_64_o1",
-            "payload_schemas",
-            "emitter",
-            "emitter_aarch64",
-            "emitter_sequence",
-            "emitter_sequence_aarch64",
-        )
+        targets = NIGHTLY_MUTATION_TARGETS
         for target in targets:
             self.assertEqual(fw.validate_target(self.workflow, target), [])
             self.assertIn(
@@ -613,10 +716,6 @@ class WorkflowContractTests(unittest.TestCase):
             )
             self.assertIn(
                 f"key: rue-fuzz-corpus-v3-{target}-${{{{ github.run_id }}}}-${{{{ github.run_attempt }}}}",
-                self.workflow,
-            )
-            self.assertIn(
-                f"--evolve-corpus=crates/rue-fuzz/nightly-corpus/{target} {target} crates/rue-fuzz/nightly-input/{target}",
                 self.workflow,
             )
             self.assertIn(
@@ -640,6 +739,64 @@ class WorkflowContractTests(unittest.TestCase):
                 "if: always() && steps.publish_clean_corpus.outcome == 'success'"
             ),
             len(targets),
+        )
+
+    def test_all_crash_producers_upload_and_report_share_their_actual_directory(self):
+        self.assertEqual(
+            workflow_crash_path_errors(self.workflow, NIGHTLY_MUTATION_TARGETS), []
+        )
+
+    def test_each_mutation_lane_requires_its_explicit_crash_directory(self):
+        for target in NIGHTLY_MUTATION_TARGETS:
+            with self.subTest(target=target, change="remove"):
+                lane = f"--crash-dir=crates/rue-fuzz/crashes "
+                mutation = f"--evolve-corpus=crates/rue-fuzz/nightly-corpus/{target}"
+                changed = self.workflow.replace(lane + mutation, mutation, 1)
+                self.assertIn(
+                    f"{target}:crash-dir",
+                    workflow_crash_path_errors(changed, NIGHTLY_MUTATION_TARGETS),
+                )
+            with self.subTest(target=target, change="drift"):
+                wrong = f"--crash-dir=crates/rue-fuzz/other-crashes "
+                original = f"--crash-dir=crates/rue-fuzz/crashes "
+                command_prefix = f"--evolve-corpus=crates/rue-fuzz/nightly-corpus/{target}"
+                changed = self.workflow.replace(
+                    original + command_prefix, wrong + command_prefix, 1
+                )
+                self.assertIn(
+                    f"{target}:upload-directory-mismatch",
+                    workflow_crash_path_errors(changed, NIGHTLY_MUTATION_TARGETS),
+                )
+
+    def test_upload_report_and_differential_path_drift_is_rejected(self):
+        changed_upload = self.workflow.replace(
+            "          path: crates/rue-fuzz/crashes/",
+            "          path: crates/rue-fuzz/other-crashes/",
+            1,
+        )
+        self.assertIn(
+            "upload/report:directory-mismatch",
+            workflow_crash_path_errors(changed_upload, NIGHTLY_MUTATION_TARGETS),
+        )
+
+        changed_report = self.workflow.replace(
+            "            --crash-dir crates/rue-fuzz/crashes \\",
+            "            --crash-dir crates/rue-fuzz/other-crashes \\",
+            1,
+        )
+        self.assertIn(
+            "upload/report:directory-mismatch",
+            workflow_crash_path_errors(changed_report, NIGHTLY_MUTATION_TARGETS),
+        )
+
+        changed_differential = self.workflow.replace(
+            "fuzz --seeds 500 --crash-dir crates/rue-fuzz/crashes",
+            "fuzz --seeds 500 --crash-dir crates/rue-fuzz/other-crashes",
+            1,
+        )
+        self.assertIn(
+            "differential:upload-directory-mismatch",
+            workflow_crash_path_errors(changed_differential, NIGHTLY_MUTATION_TARGETS),
         )
 
     def test_prepare_operation_is_the_only_corpus_assembly_path(self):
@@ -707,6 +864,7 @@ class WorkflowContractTests(unittest.TestCase):
         target = "lexer"
         command = (
             "./buck2 run //crates/rue-fuzz:rue-fuzz -- --mutate --max-time=300 "
+            "--crash-dir=crates/rue-fuzz/crashes "
             "--evolve-corpus=crates/rue-fuzz/nightly-corpus/lexer lexer "
             "crates/rue-fuzz/nightly-input/lexer"
         )
