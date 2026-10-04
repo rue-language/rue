@@ -61,8 +61,8 @@ pub struct Lcg {
         }
     }
 
-    // A pseudo-random boolean (the low bit of the next output).
+    // Use bit 31 because the LCG's low bit alternates every step.
     fn next_bool(inout self) -> bool {
-        self.next_u64() % 2 == 1
+        self.next_u64() >= 2147483648
     }
 }

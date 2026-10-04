@@ -767,12 +767,40 @@ fn main() -> i32 {
 
 [[case]]
 name = "std_rand_m3"
-description = "rand Lcg determinism, bounds, and next_bool (5 checks -> exit 64)."
+description = "rand Lcg determinism, bounds, and high-bit next_bool behavior (6 checks -> exit 65)."
 env = { RUE_STD_PATH = "${REAL_STD}" }
 args = ["main.rue", "-o", "prog"]
-exit_code = 64
+exit_code = 65
+stdout = ""
+differential_opt = true
 files = [{ path = "main.rue", source = """
 const std = @import("std");
+
+fn bool_contract(seed: u64) -> bool {
+    let mut stream = std.rand.Lcg.new(seed);
+    let mut stream_replay = std.rand.Lcg.new(seed);
+    let mut trues: u64 = 0;
+    let mut repeated_neighbors: u64 = 0;
+    let mut previous = false;
+    let mut i: u64 = 0;
+    while i < 64 {
+        let value = stream.next_bool();
+        if value != stream_replay.next_bool() { return false; }
+        if value { trues = trues + 1; }
+        if i > 0 && value == previous { repeated_neighbors = repeated_neighbors + 1; }
+        previous = value;
+        i = i + 1;
+    }
+    trues > 0 && trues < 64 && repeated_neighbors > 0
+}
+
+fn bool_advances_once(seed: u64) -> bool {
+    let mut actual = std.rand.Lcg.new(seed);
+    let mut reference = std.rand.Lcg.new(seed);
+    let _ = actual.next_bool();
+    let _ = reference.next_u64();
+    actual.next_u64() == reference.next_u64()
+}
 
 fn main() -> i32 {
     let mut score: i32 = 0;
@@ -798,9 +826,14 @@ fn main() -> i32 {
     // next_u64 stays within the 32-bit state range.
     if r1.next_u64() < 4294967296 { score = score + 1; }
 
-    let _ = r1.next_bool();
+    // The high-bit boolean stream has both values, non-alternating neighbors,
+    // deterministic reseeding, and the same one-step state advance as next_u64.
+    if bool_contract(12345) && bool_contract(777)
+        && bool_advances_once(12345) && bool_advances_once(777) {
+        score = score + 1;
+    }
 
-    if score == 5 { 64 } else { @intCast(score) }
+    if score == 6 { 65 } else { @intCast(score) }
 }
 """ }]
 

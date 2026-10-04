@@ -3,6 +3,34 @@ const hash = std.hash;
 const StrBuf = std.strbuf.StrBuf;
 const Bytes = std.arraybuf.ArrayBuf(u8);
 
+fn assert_next_bool_stream(seed: u64) {
+    let mut stream = std.rand.Lcg.new(seed);
+    let mut stream_replay = std.rand.Lcg.new(seed);
+    let mut trues: u64 = 0;
+    let mut repeated_neighbors: u64 = 0;
+    let mut previous = false;
+    let mut i: u64 = 0;
+    while i < 64 {
+        let value = stream.next_bool();
+        @assert_eq(value, stream_replay.next_bool());
+        if value { trues += 1; }
+        if i > 0 && value == previous { repeated_neighbors += 1; }
+        previous = value;
+        i += 1;
+    }
+    @assert(trues > 0);
+    @assert(trues < 64);
+    @assert(repeated_neighbors > 0);
+}
+
+fn assert_next_bool_advances_once(seed: u64) {
+    let mut actual = std.rand.Lcg.new(seed);
+    let mut reference = std.rand.Lcg.new(seed);
+    let _ = actual.next_bool();
+    let _ = reference.next_u64();
+    @assert_eq(actual.next_u64(), reference.next_u64());
+}
+
 test "fnv1a matches the published 64-bit vectors" {
     @assert_eq(hash.fnv1a_str(borrow ""), 0xcbf29ce484222325);
     @assert_eq(hash.fnv1a_str(borrow "a"), 0xaf63dc4c8601ec8c);
@@ -99,4 +127,18 @@ test "next_bool produces both values over a short run" {
     }
     @assert(trues > 0);
     @assert(trues < 64);
+}
+
+test "next_bool stream is deterministic and not period two across representative seeds" {
+    assert_next_bool_stream(3);
+    assert_next_bool_stream(12345);
+    assert_next_bool_stream(777);
+    assert_next_bool_stream(999999937);
+}
+
+test "next_bool advances the generator exactly once" {
+    assert_next_bool_advances_once(3);
+    assert_next_bool_advances_once(12345);
+    assert_next_bool_advances_once(777);
+    assert_next_bool_advances_once(999999937);
 }
