@@ -2,6 +2,9 @@ load("//crates:defs.bzl", "rue_binary")
 
 rue_binary(
     name = "rue-fuzz",
+    test_deps = [
+        "//third-party:tempfile",
+    ],
     deps = [
         "//crates/rue-codegen:rue-codegen",
         "//crates/rue-air:rue-air",

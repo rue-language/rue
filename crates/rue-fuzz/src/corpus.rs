@@ -631,20 +631,58 @@ pub fn create_seed_corpus(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ops::Deref;
 
-    /// A unique temp directory rooted at the fuzz scratch area. Avoids a
-    /// tempfile dependency while keeping cases isolated by name.
-    fn scratch(name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir()
-            .join("rue-fuzz-corpus-tests")
-            .join(name);
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+    struct ScratchDir(tempfile::TempDir);
+
+    impl Deref for ScratchDir {
+        type Target = Path;
+
+        fn deref(&self) -> &Self::Target {
+            self.0.path()
+        }
+    }
+
+    impl AsRef<Path> for ScratchDir {
+        fn as_ref(&self) -> &Path {
+            self.0.path()
+        }
+    }
+
+    /// Each fixture owns a unique directory that is removed when its guard
+    /// drops. The label aids debugging without being used as a shared path.
+    fn scratch(name: &str) -> ScratchDir {
+        ScratchDir(
+            tempfile::Builder::new()
+                .prefix(&format!("rue-fuzz-corpus-tests-{name}-"))
+                .tempdir()
+                .unwrap(),
+        )
     }
 
     fn write(dir: &Path, name: &str, contents: &str) {
         std::fs::write(dir.join(name), contents).unwrap();
+    }
+
+    #[test]
+    fn scratch_fixtures_with_the_same_name_are_isolated_and_cleaned_up() {
+        let first_path;
+        {
+            let first = scratch("same-name");
+            write(&first, "sentinel", "owned by the first fixture");
+            first_path = first.to_path_buf();
+
+            let second = scratch("same-name");
+            assert_ne!(&*first, &*second);
+            assert_eq!(
+                std::fs::read(first.join("sentinel")).unwrap(),
+                b"owned by the first fixture"
+            );
+        }
+        assert!(
+            !first_path.exists(),
+            "dropping a fixture guard must remove its owned directory"
+        );
     }
 
     fn build(name: &str, toml: &str) -> anyhow::Result<SeedCorpusSummary> {
