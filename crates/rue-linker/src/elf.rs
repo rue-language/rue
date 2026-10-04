@@ -68,6 +68,7 @@ use crate::constants::{
     R_X86_64_PC32,
     R_X86_64_PLT32,
     R_X86_64_REX_GOTPCRELX,
+    SHN_ABS,
     SHN_COMMON,
     SHN_LORESERVE,
     SHN_UNDEF,
@@ -385,6 +386,7 @@ impl StructuredObject {
         let mut symbols = vec![Symbol {
             name: defined_symbol.into(),
             section_index: Some(0),
+            absolute: false,
             value: 0,
             size: text_size,
             binding: SymbolBinding::Global,
@@ -400,6 +402,7 @@ impl StructuredObject {
                 symbols.push(Symbol {
                     name,
                     section_index: Some(1),
+                    absolute: false,
                     value: rodata_offset,
                     size: 0,
                     binding: SymbolBinding::Local,
@@ -433,6 +436,7 @@ impl StructuredObject {
                     symbols.push(Symbol {
                         name: relocation.symbol,
                         section_index: None,
+                        absolute: false,
                         value: 0,
                         size: 0,
                         binding: SymbolBinding::Global,
@@ -496,6 +500,7 @@ impl StructuredObject {
         self.symbols.push(Symbol {
             name: name.into(),
             section_index,
+            absolute: false,
             value: 0,
             size,
             binding: SymbolBinding::Global,
@@ -553,9 +558,16 @@ impl std::ops::BitOrAssign for SectionFlags {
 pub struct Symbol {
     /// Symbol name.
     pub name: String,
-    /// Section index this symbol is defined in (None if undefined).
+    /// Section index for section-anchored symbols; `None` for undefined,
+    /// absolute, and tentative definitions.
     pub section_index: Option<usize>,
-    /// Offset within the section.
+    /// Whether this ELF symbol has `SHN_ABS` placement and its `value` is an
+    /// address independent of every output section. Mach-O symbols are never
+    /// absolute through this field; their existing section and undefined
+    /// handling is unchanged.
+    pub absolute: bool,
+    /// Offset within the section, or the absolute address when `absolute` is
+    /// true. Undefined symbols preserve the object format's raw value.
     pub value: u64,
     /// Symbol size.
     pub size: u64,
@@ -572,6 +584,14 @@ pub struct Symbol {
     /// one in the merged `.bss` (RUE-2257). Mach-O has no equivalent, so this
     /// is always `None` there.
     pub common: Option<u64>,
+}
+
+impl Symbol {
+    /// Whether this symbol is a concrete or tentative definition in its
+    /// object. Binding and name visibility are caller-specific policies.
+    pub(crate) fn is_definition(&self) -> bool {
+        self.section_index.is_some() || self.common.is_some() || self.absolute
+    }
 }
 
 /// Symbol binding type.
@@ -1232,6 +1252,7 @@ impl ObjectFile {
                 symbols.push(Symbol {
                     name,
                     section_index,
+                    absolute: false,
                     value,
                     size: 0, // Mach-O doesn't store symbol size
                     binding,
@@ -1357,6 +1378,7 @@ impl ObjectFile {
                         symbols.push(Symbol {
                             name: sections[target_section].name.clone(),
                             section_index: Some(target_section),
+                            absolute: false,
                             value: 0,
                             size: 0,
                             binding: SymbolBinding::Local,
@@ -1781,19 +1803,20 @@ impl ObjectFile {
                 // rather than an offset and which the linker allocates in .bss
                 // (RUE-2257). `SHN_XINDEX` means the real index lives in a
                 // `SHT_SYMTAB_SHNDX` table this linker does not read, so it is
-                // refused rather than silently read as undefined. Every other
-                // reserved index — `SHN_ABS` above all — carries no placeable
-                // section, so it stays unplaced exactly as before; a reference
-                // to one is reported as an undefined symbol rather than
-                // patched wrong.
-                let (section_index, common, value) = if st_shndx == SHN_COMMON {
-                    (None, Some(st_value.max(1)), 0)
+                // refused rather than silently read as undefined. `SHN_ABS`
+                // is a definition whose value is already an address; the
+                // linker must never add an output section base to it. Other
+                // reserved indices remain unplaced and are not definitions.
+                let (section_index, common, absolute, value) = if st_shndx == SHN_COMMON {
+                    (None, Some(st_value.max(1)), false, 0)
                 } else if st_shndx == SHN_XINDEX {
                     return Err(ParseError::NotImplemented(
                         "extended section indices (SHN_XINDEX / SHT_SYMTAB_SHNDX)",
                     ));
+                } else if st_shndx == SHN_ABS {
+                    (None, None, true, st_value)
                 } else if st_shndx == SHN_UNDEF || st_shndx >= SHN_LORESERVE {
-                    (None, None, st_value)
+                    (None, None, false, st_value)
                 } else {
                     let idx = st_shndx as usize;
                     if idx >= raw_sections.len() {
@@ -1803,12 +1826,13 @@ impl ObjectFile {
                             raw_sections.len()
                         )));
                     }
-                    (Some(idx), None, st_value)
+                    (Some(idx), None, false, st_value)
                 };
 
                 symbols.push(Symbol {
                     name,
                     section_index,
+                    absolute,
                     value,
                     size: st_size,
                     binding,
@@ -1907,7 +1931,7 @@ impl ObjectFile {
     #[must_use]
     pub fn defined_symbols(&self) -> impl Iterator<Item = &Symbol> {
         self.symbols.iter().filter(|s| {
-            s.section_index.is_some()
+            s.is_definition()
                 && (s.binding == SymbolBinding::Global || s.binding == SymbolBinding::Weak)
         })
     }
@@ -3363,9 +3387,8 @@ mod tests {
         );
     }
 
-    /// The other reserved indices keep their existing treatment: `SHN_ABS`
-    /// names an absolute value this linker does not place, so it stays
-    /// unplaced and is not mistaken for a tentative definition.
+    /// `SHN_ABS` is represented distinctly from undefined and common symbols;
+    /// the linker consumes `st_value` as a final address without placement.
     #[test]
     fn absolute_symbol_stays_unplaced_and_is_not_a_common() {
         let mut data = elf_object_bytes();
@@ -3375,6 +3398,26 @@ mod tests {
         let symbol = &object.symbols[1];
         assert_eq!(symbol.section_index, None);
         assert_eq!(symbol.common, None);
+        assert!(symbol.absolute);
         assert_eq!(symbol.value, 0x1000, "an absolute value is preserved");
+        assert_eq!(object.defined_symbols().count(), 1);
+
+        let symbols_only = ObjectFile::parse_symbols_with_cancellation(&data, || false).unwrap();
+        assert_eq!(symbols_only.symbols[1].absolute, symbol.absolute);
+        assert_eq!(symbols_only.symbols[1].value, symbol.value);
+        assert_eq!(symbols_only.symbols[1].section_index, symbol.section_index);
+    }
+
+    #[test]
+    fn unknown_reserved_symbol_index_is_not_an_absolute_definition() {
+        let mut data = elf_object_bytes();
+        set_symbol_shndx(&mut data, crate::constants::SHN_LORESERVE + 1, 0x1000, 0);
+
+        let object = ObjectFile::parse(&data).expect("unknown reserved index remains parseable");
+        let symbol = &object.symbols[1];
+        assert_eq!(symbol.section_index, None);
+        assert_eq!(symbol.common, None);
+        assert!(!symbol.absolute);
+        assert_eq!(symbol.value, 0x1000);
     }
 }
