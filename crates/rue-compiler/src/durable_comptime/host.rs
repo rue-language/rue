@@ -421,6 +421,17 @@ impl<'a, A: DurableComptimeHostAuthority + ?Sized> DurableComptimeHost<'a, A> {
                 found: durable_type_diagnostic_name(ty),
             });
         }
+        // A field-list literal is a struct constructor regardless of which
+        // nominal type its head resolves to. Keep enum heads on the same
+        // E0206 path as the ordinary body checker before looking up members;
+        // enum variants must not leak out as struct fields (or missing ones).
+        if matches!(shape, rue_air::ComptimeLiteralShape::Struct { .. }) && is_durable_enum_type(ty)
+        {
+            return reject(rue_error::ErrorKind::TypeMismatch {
+                expected: "struct type".to_owned(),
+                found: durable_type_diagnostic_name(ty),
+            });
+        }
         let Some(members) = self
             .services
             .resolve_declared_member_names(ty)
