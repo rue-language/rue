@@ -31,7 +31,7 @@
 # files so that `buck2 test //crates/...` (quick-test.sh, test.sh's filtered
 # path) still means "unit tests only".
 
-load("//:test_defs.bzl", "rue_sh_test", "rue_test_suite", "rue_tool_test")
+load("//:test_defs.bzl", "rue_forward_test", "rue_sh_test", "rue_test_suite", "rue_tool_test")
 
 load(":corpus.bzl", "cached_corpus_suite")
 load("@toolchains//lean:defs.bzl", "lean_package")
@@ -1705,15 +1705,15 @@ rue_sh_test(
     ],
 )
 
+rue_forward_test(
+    name = "payload-ownership-compile-fail-tests",
+    test = "//crates/rue-rir:rue-rir[doc]",
+)
+
 rue_tool_test(
     name = "body-analysis-capability-inventory-tool-tests",
     test = "scripts/test-body-analysis-capabilities.py",
     resources = ["scripts/validate-body-analysis-capabilities.py"],
-)
-
-rue_test_suite(
-    name = "payload-ownership-compile-fail-tests",
-    tests = ["//crates/rue-rir:rue-rir[doc]"],
 )
 
 # Maintenance scripts with deletion behavior, plus the ./buck2 wrapper's

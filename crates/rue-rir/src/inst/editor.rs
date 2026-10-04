@@ -28,7 +28,7 @@ fn type_syntax_build_error(error: crate::RirTypeSyntaxBuildError) -> RirPayloadB
 ///
 /// Family identities cannot be interchanged:
 ///
-/// ```compile_fail
+/// ```compile_fail,E0308
 /// use rue_rir::{Rir, RirParamsRange};
 /// fn wrong_family(rir: &Rir, params: &RirParamsRange) {
 ///     let _ = rir.call_args(params);
@@ -37,7 +37,7 @@ fn type_syntax_build_error(error: crate::RirTypeSyntaxBuildError) -> RirPayloadB
 ///
 /// Raw positions cannot be reconstructed:
 ///
-/// ```compile_fail
+/// ```compile_fail,E0624
 /// use rue_rir::RirCallArgsRange;
 /// let _ = RirCallArgsRange::from_parts(0, 0);
 /// ```
@@ -45,10 +45,10 @@ fn type_syntax_build_error(error: crate::RirTypeSyntaxBuildError) -> RirPayloadB
 /// A descriptor cannot be extracted from a published owner for movement to a
 /// different editor:
 ///
-/// ```compile_fail
+/// ```compile_fail,E0507
 /// use rue_rir::{InstData, InstRef, Rir, RirCallArgsRange};
 /// fn extract(rir: &Rir, inst: InstRef) -> RirCallArgsRange {
-///     match &rir.get_inst(inst).data {
+///     match &rir.get(inst).data {
 ///         InstData::Call { args, .. } => *args,
 ///         _ => panic!("not a call"),
 ///     }
@@ -58,12 +58,19 @@ fn type_syntax_build_error(error: crate::RirTypeSyntaxBuildError) -> RirPayloadB
 /// Consequently a payload-bearing node cannot be detached from one owner and
 /// inserted into another:
 ///
-/// ```compile_fail
+/// ```compile_fail,E0507
 /// use rue_rir::{Inst, InstData, InstRef, Rir, RirEditor};
 /// fn detach(source: &Rir, destination: &mut RirEditor, inst: InstRef) {
-///     let borrowed = source.get_inst(inst);
+///     let borrowed = source.get(inst);
 ///     destination.add_inst(Inst { data: borrowed.data, span: borrowed.span });
 /// }
+/// ```
+///
+/// Owner-mediated construction remains available:
+///
+/// ```no_run
+/// use rue_rir::RirEditor;
+/// let _editor = RirEditor::new();
 /// ```
 #[derive(Debug, Default)]
 pub struct RirEditor {
