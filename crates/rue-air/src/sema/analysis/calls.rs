@@ -1339,9 +1339,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         );
                     }
                     return Err(CompileError::new(
-                        ErrorKind::UndefinedAssocFn {
-                            type_name: self.format_type_name(reduced_ty),
-                            function_name: variant_name,
+                        ErrorKind::UnknownVariant {
+                            enum_name: self.format_type_name(reduced_ty),
+                            variant_name,
                         },
                         span,
                     ));
