@@ -1817,6 +1817,23 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         string_literals: &[TypeVarId],
     ) -> (String, String) {
         match (expected, found) {
+            (
+                InferType::Array {
+                    element: expected,
+                    length: expected_length,
+                },
+                InferType::Array {
+                    element: found,
+                    length: found_length,
+                },
+            ) if expected_length == found_length => {
+                let (expected, found) =
+                    self.format_peer_type_pair(expected, found, string_literals);
+                (
+                    crate::types::array_type_name(&expected, *expected_length),
+                    crate::types::array_type_name(&found, *found_length),
+                )
+            }
             (InferType::Var(var), _) if string_literals.contains(var) => (
                 "{string}".to_string(),
                 self.format_peer_type_name(found, string_literals),
@@ -1825,7 +1842,15 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 self.format_peer_type_name(expected, string_literals),
                 "{string}".to_string(),
             ),
-            _ => self.format_infer_type_pair(expected, found),
+            (InferType::Concrete(expected), InferType::Concrete(found)) => self
+                .format_infer_type_pair(
+                    &InferType::Concrete(*expected),
+                    &InferType::Concrete(*found),
+                ),
+            _ => (
+                self.format_peer_type_name(expected, string_literals),
+                self.format_peer_type_name(found, string_literals),
+            ),
         }
     }
 
