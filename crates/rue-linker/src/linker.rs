@@ -360,13 +360,13 @@ fn validate_defined_symbols(
 
 /// Whether `sym` is a definition that satisfies references to its name.
 ///
-/// A definition is section-anchored — or an ELF tentative definition, which
-/// the linker itself places in .bss (RUE-2257) — globally visible (strong or
-/// weak), and named; anonymous and local symbols never participate in
+/// A definition is section-anchored, absolute, or an ELF tentative definition,
+/// which the linker itself places in .bss (RUE-2257) — globally visible (strong
+/// or weak), and named; anonymous and local symbols never participate in
 /// cross-object resolution. Both `add_object` and archive extraction ask this
 /// question, so they ask it in one place.
 fn provides_definition(sym: &Symbol) -> bool {
-    (sym.section_index.is_some() || sym.common.is_some())
+    sym.is_definition()
         && (sym.binding == SymbolBinding::Global || sym.binding == SymbolBinding::Weak)
         && !sym.name.is_empty()
 }
@@ -378,10 +378,7 @@ fn provides_definition(sym: &Symbol) -> bool {
 /// not demand a definition — it resolves to address 0 (RUE-131 item 9) — so it
 /// must not pull an archive member in.
 fn references_undefined(sym: &Symbol) -> bool {
-    sym.section_index.is_none()
-        && sym.common.is_none()
-        && sym.binding == SymbolBinding::Global
-        && !sym.name.is_empty()
+    !sym.is_definition() && sym.binding == SymbolBinding::Global && !sym.name.is_empty()
 }
 
 /// Queue an undefined symbol name for archive resolution, at most once.
@@ -841,7 +838,7 @@ fn collect_section_relocations(
 
         // Skip relocations that reference the null symbol (empty name)
         // These are typically R_*_NONE relocations that slipped through
-        if sym.name.is_empty() {
+        if sym.name.is_empty() && !sym.absolute {
             continue;
         }
 
@@ -1895,19 +1892,23 @@ impl Linker {
                 if sym.name.is_empty() {
                     continue;
                 }
-                let Some(sec_idx) = sym.section_index else {
-                    continue;
+                let addr = if sym.absolute {
+                    sym.value
+                } else {
+                    let Some(sec_idx) = sym.section_index else {
+                        continue;
+                    };
+                    if sec_idx >= obj.sections.len() {
+                        continue;
+                    }
+                    let Some(&section_offset) = section_offsets.get(&(obj_idx, sec_idx)) else {
+                        continue;
+                    };
+                    let Some(base) = bases.of(classify_section(&obj.sections[sec_idx].name)) else {
+                        continue;
+                    };
+                    checked_symbol_address(base, section_offset, sym)?
                 };
-                if sec_idx >= obj.sections.len() {
-                    continue;
-                }
-                let Some(&section_offset) = section_offsets.get(&(obj_idx, sec_idx)) else {
-                    continue;
-                };
-                let Some(base) = bases.of(classify_section(&obj.sections[sec_idx].name)) else {
-                    continue;
-                };
-                let addr = checked_symbol_address(base, section_offset, sym)?;
 
                 match sym.binding {
                     SymbolBinding::Local => {
@@ -2028,48 +2029,54 @@ impl Linker {
                 PatchHome::Data => (data, bases.data),
             };
 
-            let target_vaddr = if let Some(addr) = addresses.resolve(obj_idx, sym_name, sym_binding)
-            {
-                addr
-            } else if let Some(sec_idx) = sym_section {
-                let obj = &self.objects[obj_idx];
-                if sec_idx >= obj.sections.len() {
-                    return Err(LinkError::InvalidSectionIndex {
-                        symbol: sym_name.to_string(),
-                        section_index: sec_idx,
-                        section_count: obj.sections.len(),
-                    });
-                }
-                let section = &obj.sections[sec_idx];
-                let Some(&sec_offset) = section_offsets.get(&(obj_idx, sec_idx)) else {
+            let target_vaddr =
+                if sym.absolute && (sym_binding == SymbolBinding::Local || sym.name.is_empty()) {
+                    // Local symbols resolve by table entry, not by their spelling:
+                    // an object may contain repeated local names with distinct
+                    // absolute values. An unnamed absolute symbol likewise has no
+                    // key in either address map.
+                    sym.value
+                } else if let Some(addr) = addresses.resolve(obj_idx, sym_name, sym_binding) {
+                    addr
+                } else if let Some(sec_idx) = sym_section {
+                    let obj = &self.objects[obj_idx];
+                    if sec_idx >= obj.sections.len() {
+                        return Err(LinkError::InvalidSectionIndex {
+                            symbol: sym_name.to_string(),
+                            section_index: sec_idx,
+                            section_count: obj.sections.len(),
+                        });
+                    }
+                    let section = &obj.sections[sec_idx];
+                    let Some(&sec_offset) = section_offsets.get(&(obj_idx, sec_idx)) else {
+                        return Err(LinkError::UndefinedSymbol(format!(
+                            "{} (section {} not in section_offsets)",
+                            sym_name, sec_idx
+                        )));
+                    };
+                    let Some(base) = bases.of(classify_section(&section.name)) else {
+                        return Err(LinkError::UndefinedSymbol(format!(
+                            "{} (in section '{}')",
+                            sym_name, section.name
+                        )));
+                    };
+                    base + sec_offset
+                } else if sym_binding == SymbolBinding::Weak {
+                    // An undefined WEAK symbol resolves to address 0 rather than
+                    // erroring — standard semantics, and what lets code null-check
+                    // an optional symbol.
+                    0
+                } else {
                     return Err(LinkError::UndefinedSymbol(format!(
-                        "{} (section {} not in section_offsets)",
-                        sym_name, sec_idx
+                        "{} (no section, rel_type={:?})",
+                        if sym_name.is_empty() {
+                            "<empty>"
+                        } else {
+                            sym_name
+                        },
+                        rel_type
                     )));
                 };
-                let Some(base) = bases.of(classify_section(&section.name)) else {
-                    return Err(LinkError::UndefinedSymbol(format!(
-                        "{} (in section '{}')",
-                        sym_name, section.name
-                    )));
-                };
-                base + sec_offset
-            } else if sym_binding == SymbolBinding::Weak {
-                // An undefined WEAK symbol resolves to address 0 rather than
-                // erroring — standard semantics, and what lets code null-check
-                // an optional symbol.
-                0
-            } else {
-                return Err(LinkError::UndefinedSymbol(format!(
-                    "{} (no section, rel_type={:?})",
-                    if sym_name.is_empty() {
-                        "<empty>"
-                    } else {
-                        sym_name
-                    },
-                    rel_type
-                )));
-            };
 
             let patch_vaddr = checked_relocation_offset(base_vaddr, offset, rel_type)?;
 
@@ -2639,6 +2646,7 @@ mod tests {
         Symbol {
             name: name.into(),
             section_index: Some(0),
+            absolute: false,
             value,
             size,
             binding: SymbolBinding::Global,
@@ -3442,6 +3450,7 @@ mod tests {
         let symbols = vec![Symbol {
             name: "main".into(),
             section_index: Some(0),
+            absolute: false,
             value: 0,
             size: 1,
             binding: SymbolBinding::Global,
@@ -3657,6 +3666,7 @@ mod tests {
             Symbol {
                 name: "main".into(),
                 section_index: Some(0),
+                absolute: false,
                 value: 0,
                 size: 1,
                 binding: SymbolBinding::Global,
@@ -3666,6 +3676,7 @@ mod tests {
             Symbol {
                 name: "bss_static".into(),
                 section_index: Some(2),
+                absolute: false,
                 value: 0,
                 size: 8,
                 binding: SymbolBinding::Global,
@@ -3846,6 +3857,7 @@ mod tests {
             symbols: vec![Symbol {
                 name: name.into(),
                 section_index: Some(0),
+                absolute: false,
                 value: 0,
                 size: 1,
                 binding,
@@ -3899,6 +3911,37 @@ mod tests {
             *obj_idx, 0,
             "strong definition must be kept over later weak"
         );
+
+        let mut absolute = archive_member(&[], &[]);
+        absolute.symbols.push(Symbol {
+            name: "absolute_duplicate".into(),
+            section_index: None,
+            absolute: true,
+            value: 0x1000,
+            size: 0,
+            binding: SymbolBinding::Global,
+            sym_type: SymbolType::None,
+            common: None,
+        });
+        let mut linker = Linker::new(ELF_TARGET);
+        linker
+            .add_object(absolute)
+            .expect("the first absolute definition is valid");
+        let mut duplicate = archive_member(&[], &[]);
+        duplicate.symbols.push(Symbol {
+            name: "absolute_duplicate".into(),
+            section_index: None,
+            absolute: true,
+            value: 0x2000,
+            size: 0,
+            binding: SymbolBinding::Global,
+            sym_type: SymbolType::None,
+            common: None,
+        });
+        assert!(matches!(
+            linker.add_object(duplicate),
+            Err(LinkError::DuplicateSymbol(name)) if name == "absolute_duplicate"
+        ));
     }
 
     /// Build an archive member that defines `defs` (each `(name, binding)` as a
@@ -3925,6 +3968,7 @@ mod tests {
             .map(|(name, binding)| Symbol {
                 name: (*name).into(),
                 section_index: Some(0),
+                absolute: false,
                 value: 0,
                 size: 1,
                 binding: *binding,
@@ -3935,6 +3979,7 @@ mod tests {
         symbols.extend(undefs.iter().map(|name| Symbol {
             name: (*name).into(),
             section_index: None,
+            absolute: false,
             value: 0,
             size: 0,
             binding: SymbolBinding::Global,
@@ -4024,6 +4069,125 @@ mod tests {
             assert!(
                 !unrequired.defines_symbol(on_disk),
                 "{target}: an unrequired, unreferenced member must not be pulled"
+            );
+        }
+    }
+
+    #[test]
+    fn archive_resolution_extracts_absolute_definitions() {
+        let mut absolute = archive_member(&[], &[]);
+        absolute.symbols.push(Symbol {
+            name: "absolute_provider".into(),
+            section_index: None,
+            absolute: true,
+            value: 0x1234,
+            size: 0,
+            binding: SymbolBinding::Global,
+            sym_type: crate::elf::SymbolType::Object,
+            common: None,
+        });
+        let mut linker = Linker::new(ELF_TARGET);
+        linker.require_symbol("absolute_provider");
+        linker
+            .add_archive(Archive {
+                objects: vec![
+                    archive_member(&[("unrelated", SymbolBinding::Global)], &[]),
+                    absolute,
+                ],
+            })
+            .expect("archive member with SHN_ABS definition is selectable");
+        assert_eq!(linker.objects.len(), 1);
+        assert!(
+            linker
+                .global_symbols
+                .get("absolute_provider")
+                .is_some_and(|(_, symbol)| symbol.absolute && symbol.value == 0x1234)
+        );
+    }
+
+    #[test]
+    fn absolute_weak_and_strong_definitions_obey_linker_precedence() {
+        let main = || {
+            make_obj(
+                crate::elf::ElfMachine::X86_64,
+                vec![text_section(
+                    ".text",
+                    vec![0; 16],
+                    vec![Relocation {
+                        offset: 8,
+                        symbol_index: 1,
+                        rel_type: RelocationType::Abs64,
+                        addend: 0,
+                    }],
+                )],
+                vec![
+                    sym("main", Some(0), 0, SymbolBinding::Global),
+                    sym("chosen", None, 0, SymbolBinding::Global),
+                ],
+            )
+        };
+        let mut weak_absolute = sym("chosen", None, 0x1111, SymbolBinding::Weak);
+        weak_absolute.absolute = true;
+        let mut strong_absolute = sym("chosen", None, 0x2222, SymbolBinding::Global);
+        strong_absolute.absolute = true;
+        let strong_section = || {
+            make_obj(
+                crate::elf::ElfMachine::X86_64,
+                vec![text_section(".text", vec![0xC3], vec![])],
+                vec![sym("chosen", Some(0), 0, SymbolBinding::Global)],
+            )
+        };
+
+        for absolute_first in [true, false] {
+            let mut linker = Linker::new(ELF_TARGET);
+            linker.add_object(main()).unwrap();
+            let weak_obj = make_obj(
+                crate::elf::ElfMachine::X86_64,
+                vec![text_section(".text", vec![0xC3], vec![])],
+                vec![weak_absolute.clone()],
+            );
+            if absolute_first {
+                linker.add_object(weak_obj).unwrap();
+                linker.add_object(strong_section()).unwrap();
+            } else {
+                linker.add_object(strong_section()).unwrap();
+                linker.add_object(weak_obj).unwrap();
+            }
+            let executable = linker.link("main").unwrap();
+            let (text_offset, text_address) = elf_text_location(&executable);
+            assert_eq!(
+                read_u64_at(&executable, text_offset + 8),
+                text_address + if absolute_first { 32 } else { 16 },
+                "a strong section definition overrides a weak absolute one in either order"
+            );
+        }
+
+        for weak_first in [true, false] {
+            let mut linker = Linker::new(ELF_TARGET);
+            linker.add_object(main()).unwrap();
+            let weak_obj = make_obj(
+                crate::elf::ElfMachine::X86_64,
+                vec![text_section(".text", vec![0xC3], vec![])],
+                vec![weak_absolute.clone()],
+            );
+            let strong_obj = make_obj(
+                crate::elf::ElfMachine::X86_64,
+                vec![text_section(".text", vec![0xC3], vec![])],
+                vec![strong_absolute.clone()],
+            );
+            if weak_first {
+                linker.add_object(weak_obj).unwrap();
+                linker.add_object(strong_obj).unwrap();
+            } else {
+                linker.add_object(strong_obj).unwrap();
+                linker.add_object(weak_obj).unwrap();
+            }
+            let executable = linker.link("main").unwrap();
+            let (text_offset, _) = elf_text_location(&executable);
+            assert_eq!(
+                read_u64_at(&executable, text_offset + 8),
+                0x2222,
+                "a strong absolute definition overrides a weak absolute one in either order"
             );
         }
     }
@@ -4519,6 +4683,7 @@ mod tests {
                 Symbol {
                     name: "main".into(),
                     section_index: Some(0),
+                    absolute: false,
                     value: 0,
                     size: 11,
                     binding: SymbolBinding::Global,
@@ -4528,6 +4693,7 @@ mod tests {
                 Symbol {
                     name: "optional_hook".into(),
                     section_index: None, // undefined
+                    absolute: false,
                     value: 0,
                     size: 0,
                     binding: SymbolBinding::Weak,
@@ -4872,6 +5038,7 @@ mod tests {
         let bad_symbol = Symbol {
             name: "bad_target".into(),
             section_index: Some(999), // Invalid!
+            absolute: false,
             value: 0,
             size: 0,
             binding: SymbolBinding::Global,
@@ -4883,6 +5050,7 @@ mod tests {
         let main_symbol = Symbol {
             name: "main".into(),
             section_index: Some(0), // Valid - references .text section
+            absolute: false,
             value: 0,
             size: 6,
             binding: SymbolBinding::Global,
@@ -4894,6 +5062,7 @@ mod tests {
         let null_symbol = Symbol {
             name: String::new(),
             section_index: None,
+            absolute: false,
             value: 0,
             size: 0,
             binding: SymbolBinding::Local,
@@ -4960,6 +5129,7 @@ mod tests {
         let main_symbol = Symbol {
             name: "main".into(),
             section_index: Some(0), // Valid - references .text section
+            absolute: false,
             value: 0,
             size: 6,
             binding: SymbolBinding::Global,
@@ -4971,6 +5141,7 @@ mod tests {
         let null_symbol = Symbol {
             name: String::new(),
             section_index: None,
+            absolute: false,
             value: 0,
             size: 0,
             binding: SymbolBinding::Local,
@@ -5881,6 +6052,7 @@ mod tests {
         let main_symbol = Symbol {
             name: "_main".to_string(),
             section_index: Some(0),
+            absolute: false,
             value: 0,
             size: 8,
             binding: SymbolBinding::Global,
@@ -5942,6 +6114,7 @@ mod tests {
             let main_symbol = Symbol {
                 name: "main".to_string(),
                 section_index: Some(0),
+                absolute: false,
                 value: 0,
                 size: 4,
                 binding: SymbolBinding::Global,
@@ -5995,6 +6168,7 @@ mod tests {
         let other_symbol = Symbol {
             name: "other_func".to_string(),
             section_index: Some(0),
+            absolute: false,
             value: 0,
             size: 4,
             binding: SymbolBinding::Global,
@@ -6065,6 +6239,7 @@ mod tests {
         Symbol {
             name: name.into(),
             section_index: section,
+            absolute: false,
             value,
             size: 0,
             binding,
@@ -6122,6 +6297,68 @@ mod tests {
         u32::from_le_bytes(bytes[off..off + 4].try_into().unwrap())
     }
 
+    /// Rewrite one ELF symbol to `SHN_ABS`, keeping the object otherwise
+    /// identical so the test exercises the real parser and linker path.
+    fn set_elf_symbol_absolute(bytes: &mut [u8], name: &str, value: u64) {
+        let symbols = ObjectFile::parse(bytes)
+            .expect("original ELF parses")
+            .symbols;
+        let symbol_index = symbols
+            .iter()
+            .position(|symbol| symbol.name == name)
+            .expect("symbol to rewrite");
+        let section_headers = read_u64_at(bytes, E_SHOFF_OFFSET) as usize;
+        let section_header_size = u16::from_le_bytes(
+            bytes[E_SHENTSIZE_OFFSET..E_SHENTSIZE_OFFSET + 2]
+                .try_into()
+                .unwrap(),
+        ) as usize;
+        let section_count = u16::from_le_bytes(
+            bytes[E_SHNUM_OFFSET..E_SHNUM_OFFSET + 2]
+                .try_into()
+                .unwrap(),
+        ) as usize;
+        let symtab_header = (0..section_count)
+            .map(|index| section_headers + index * section_header_size)
+            .find(|&header| read_u32_at(bytes, header + 4) == SHT_SYMTAB)
+            .expect("symbol table section");
+        let symtab = read_u64_at(bytes, symtab_header + 24) as usize;
+        let entry = symtab + symbol_index * ELF64_SYM_SIZE;
+        bytes[entry + 6..entry + 8].copy_from_slice(&crate::constants::SHN_ABS.to_le_bytes());
+        bytes[entry + 8..entry + 16].copy_from_slice(&value.to_le_bytes());
+    }
+
+    #[test]
+    fn parsed_absolute_elf_symbols_patch_their_st_value() {
+        for absolute_value in [0, 0x1234_5678] {
+            let mut object_bytes = ObjectBuilder::new(ELF_TARGET, "main")
+                .code(vec![0xC3; 16])
+                .relocation(CodeRelocation {
+                    offset: 8,
+                    symbol: "absolute_target".into(),
+                    rel_type: RelocationType::Abs64,
+                    addend: 0,
+                })
+                .build();
+            set_elf_symbol_absolute(&mut object_bytes, "absolute_target", absolute_value);
+
+            let object = ObjectFile::parse(&object_bytes).expect("absolute ELF parses");
+            let absolute = object.find_symbol("absolute_target").unwrap();
+            assert_eq!(absolute.section_index, None);
+            assert_eq!(absolute.value, absolute_value);
+
+            let mut linker = Linker::new(ELF_TARGET);
+            linker.add_object(object).unwrap();
+            let executable = linker.link("main").unwrap();
+            let (text_offset, _) = elf_text_location(&executable);
+            assert_eq!(
+                read_u64_at(&executable, text_offset + 8),
+                absolute_value,
+                "SHN_ABS relocations use st_value directly"
+            );
+        }
+    }
+
     /// RUE-131 item 2 (ELF): LOCAL symbols with the same name in different
     /// objects must each resolve within their own object. A single name-keyed
     /// symbol map let one object's "helper" shadow the other's.
@@ -6172,6 +6409,73 @@ mod tests {
             read_u64_at(&elf, code_off + 32 + 8),
             code_vaddr + 32 + 4,
             "obj1's relocation must bind to obj1's local helper, not obj0's"
+        );
+    }
+
+    #[test]
+    fn local_absolute_relocations_use_the_referenced_symbol_entry() {
+        let mut first = sym("same", None, 0x1000, SymbolBinding::Local);
+        first.absolute = true;
+        let mut second = sym("same", None, 0x2000, SymbolBinding::Local);
+        second.absolute = true;
+        let obj = make_obj(
+            crate::elf::ElfMachine::X86_64,
+            vec![text_section(
+                ".text",
+                vec![0; 24],
+                vec![
+                    Relocation {
+                        offset: 8,
+                        symbol_index: 1,
+                        rel_type: RelocationType::Abs64,
+                        addend: 0,
+                    },
+                    Relocation {
+                        offset: 16,
+                        symbol_index: 2,
+                        rel_type: RelocationType::Abs64,
+                        addend: 0,
+                    },
+                ],
+            )],
+            vec![
+                sym("main", Some(0), 0, SymbolBinding::Global),
+                first,
+                second,
+            ],
+        );
+
+        let mut linker = Linker::new(ELF_TARGET);
+        linker.add_object(obj).unwrap();
+        let executable = linker.link("main").unwrap();
+        let (text_offset, _) = elf_text_location(&executable);
+        assert_eq!(read_u64_at(&executable, text_offset + 8), 0x1000);
+        assert_eq!(read_u64_at(&executable, text_offset + 16), 0x2000);
+
+        let mut unnamed = sym("", None, 0x9000, SymbolBinding::Global);
+        unnamed.absolute = true;
+        let obj = make_obj(
+            crate::elf::ElfMachine::X86_64,
+            vec![text_section(
+                ".text",
+                vec![0; 16],
+                vec![Relocation {
+                    offset: 8,
+                    symbol_index: 1,
+                    rel_type: RelocationType::Abs64,
+                    addend: 0,
+                }],
+            )],
+            vec![sym("main", Some(0), 0, SymbolBinding::Global), unnamed],
+        );
+        let mut linker = Linker::new(ELF_TARGET);
+        linker.add_object(obj).unwrap();
+        let executable = linker.link("main").unwrap();
+        let (text_offset, _) = elf_text_location(&executable);
+        assert_eq!(
+            read_u64_at(&executable, text_offset + 8),
+            0x9000,
+            "unnamed absolute symbols have no address-map key but retain st_value"
         );
     }
 
@@ -7616,6 +7920,7 @@ mod tests {
         Symbol {
             name: name.into(),
             section_index: None,
+            absolute: false,
             value: 0,
             size,
             binding: SymbolBinding::Global,
