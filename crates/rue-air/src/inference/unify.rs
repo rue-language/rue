@@ -396,12 +396,15 @@ impl Unifier {
     }
 
     /// Prepare a type for inclusion in an error message: variables that stand
-    /// for integer literals render as `{integer}` rather than a bare `?N`
-    /// (e.g. "expected i32, found [{integer}; 3]"). Recurses into array
-    /// element types. Display only — the substitution is not modified.
+    /// for integer and float literals render as their established literal
+    /// spellings rather than a bare `?N`. Recurses into array element types.
+    /// Display only — the substitution is not modified.
     fn render_for_error(&self, ty: &InferType) -> InferType {
         match ty {
             InferType::Var(v) if self.int_literal_vars.contains(v) => InferType::IntLiteral,
+            InferType::Var(v) if self.float_literal_vars.contains(v) => {
+                InferType::Concrete(Type::COMPTIME_FLOAT)
+            }
             InferType::Array { element, length } => InferType::Array {
                 element: Box::new(self.render_for_error(element)),
                 length: *length,
@@ -1422,6 +1425,118 @@ mod tests {
                 found: InferType::Concrete(Type::I64),
             }
         );
+    }
+
+    #[test]
+    fn array_mismatch_error_snapshot_preserves_literal_classes() {
+        let float = TypeVarId::new(0);
+        let representative = TypeVarId::new(1);
+        let mut unifier = Unifier::new();
+        unifier.mark_float_literal_vars(&[float]);
+
+        // Literal metadata follows a variable chain into the representative.
+        assert_eq!(
+            unifier.unify(&InferType::Var(float), &InferType::Var(representative)),
+            UnifyResult::Ok
+        );
+        let float_array = InferType::Array {
+            element: Box::new(unifier.substitution.apply(&InferType::Var(representative))),
+            length: 1,
+        };
+        let mismatch = unifier.unify(&float_array, &InferType::Concrete(Type::BOOL));
+        assert_eq!(
+            mismatch,
+            UnifyResult::TypeMismatch {
+                expected: InferType::Concrete(Type::BOOL),
+                found: InferType::Array {
+                    element: Box::new(InferType::Concrete(Type::COMPTIME_FLOAT)),
+                    length: 1,
+                },
+            }
+        );
+        assert_eq!(
+            unifier.substitution.apply(&InferType::Var(representative)),
+            InferType::Var(representative),
+            "an array mismatch must leave the float representative unresolved"
+        );
+
+        // Normal defaulting later resolves the actual representative to f64,
+        // while the already-captured diagnostic keeps the literal spelling.
+        unifier.default_unconstrained_vars(&[float], Type::F64);
+        assert_eq!(
+            unifier.substitution.apply(&InferType::Var(representative)),
+            InferType::Concrete(Type::F64)
+        );
+        assert_eq!(
+            mismatch,
+            UnifyResult::TypeMismatch {
+                expected: InferType::Concrete(Type::BOOL),
+                found: InferType::Array {
+                    element: Box::new(InferType::Concrete(Type::COMPTIME_FLOAT)),
+                    length: 1,
+                },
+            },
+            "later defaulting must not rewrite the saved error snapshot"
+        );
+    }
+
+    #[test]
+    fn array_mismatch_keeps_integer_precedence_for_joined_literal_classes() {
+        let int = TypeVarId::new(0);
+        let float = TypeVarId::new(1);
+        let span = Span::new(3, 4);
+        let mut unifier = Unifier::new();
+        unifier.mark_int_literal_vars(&[int]);
+        unifier.mark_float_literal_vars(&[float]);
+        assert!(
+            unifier
+                .solve_constraints(&[Constraint::equal(
+                    InferType::Var(float),
+                    InferType::Var(int),
+                    span,
+                )])
+                .is_empty()
+        );
+
+        let joined_class = unifier.substitution.apply(&InferType::Var(float));
+        let mismatch = unifier.unify(
+            &InferType::Array {
+                element: Box::new(joined_class),
+                length: 1,
+            },
+            &InferType::Concrete(Type::BOOL),
+        );
+        assert_eq!(
+            mismatch,
+            UnifyResult::TypeMismatch {
+                expected: InferType::Concrete(Type::BOOL),
+                found: InferType::Array {
+                    element: Box::new(InferType::IntLiteral),
+                    length: 1,
+                },
+            },
+            "the integer marker takes precedence in a joined literal class"
+        );
+        assert_eq!(
+            unifier.substitution.apply(&InferType::Var(int)),
+            InferType::Var(int),
+            "the mismatch snapshot must not resolve the joined class"
+        );
+        let joins = unifier.unresolved_literal_joins();
+        assert_eq!(joins.len(), 1);
+        assert_eq!(joins[&int].span, span);
+        assert_eq!(
+            joins[&int].kind,
+            UnifyResult::IntLiteralNonInteger {
+                found: InferType::Concrete(Type::COMPTIME_FLOAT),
+            }
+        );
+
+        // The join is judged before defaulting as usual; once the actual
+        // representative defaults, it no longer appears unresolved.
+        unifier.default_int_literal_vars(&[int]);
+        assert_eq!(unifier.resolve(&InferType::Var(float)), Some(Type::I32));
+        assert!(unifier.unresolved_literal_joins().is_empty());
     }
 
     #[test]

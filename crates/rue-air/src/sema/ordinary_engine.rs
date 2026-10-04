@@ -1177,7 +1177,10 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
     pub(crate) fn format_infer_type_name(&self, ty: &InferType) -> String {
         match ty {
             InferType::Concrete(ty) => self.format_type_name(*ty),
-            InferType::Var(id) => id.to_string(),
+            // Unsolved variables can reach diagnostics before defaulting or
+            // recovery. Their allocation IDs are an inference detail, so use
+            // a stable placeholder in user-facing type names.
+            InferType::Var(_) => "_".to_string(),
             InferType::IntLiteral => "{integer}".to_string(),
             InferType::Array { element, length } => {
                 crate::types::array_type_name(&self.format_infer_type_name(element), *length)

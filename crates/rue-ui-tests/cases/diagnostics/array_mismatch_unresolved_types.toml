@@ -1,0 +1,68 @@
+[section]
+id = "diagnostics.array_mismatch_unresolved_types"
+name = "Array mismatch unresolved type presentation"
+description = "Array mismatch diagnostics show literal classes and stable placeholders for unresolved element types without exposing inference variable IDs."
+
+[[case]]
+name = "float_array_mismatch"
+source = """
+struct Q {}
+fn main() -> i32 { let v: Q = [1.5]; 0 }
+"""
+compile_fail = true
+error_contains = ["expected Q, found [comptime_float; 1]"]
+
+[[case]]
+name = "integer_array_mismatch"
+source = """
+struct Q {}
+fn main() -> i32 { let v: Q = [1]; 0 }
+"""
+compile_fail = true
+error_contains = ["expected Q, found [{integer}; 1]"]
+
+[[case]]
+name = "bound_bool_array_mismatch"
+source = """
+struct Q {}
+fn main() -> i32 { let v: Q = [true]; 0 }
+"""
+compile_fail = true
+error_contains = ["expected Q, found [bool; 1]"]
+
+[[case]]
+name = "empty_array_mismatch"
+source = """
+struct Q {}
+fn main() -> i32 { let v: Q = []; 0 }
+"""
+compile_fail = true
+error_contains = ["expected Q, found [_; 0]"]
+
+[[case]]
+name = "nested_float_array_mismatch"
+source = """
+struct Q {}
+fn main() -> i32 { let v: Q = [[1.5]]; 0 }
+"""
+compile_fail = true
+error_contains = ["expected Q, found [[comptime_float; 1]; 1]"]
+
+[[case]]
+name = "nested_integer_array_mismatch"
+source = """
+struct Q {}
+fn main() -> i32 { let v: Q = [[1]]; 0 }
+"""
+compile_fail = true
+error_contains = ["expected Q, found [[{integer}; 1]; 1]"]
+
+[[case]]
+name = "bound_float_array_mismatch"
+source = """
+struct Q {}
+fn float_value() -> f32 { 1.5 }
+fn main() -> i32 { let v: Q = [float_value()]; 0 }
+"""
+compile_fail = true
+error_contains = ["expected Q, found [f32; 1]"]
