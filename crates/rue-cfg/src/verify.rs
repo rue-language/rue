@@ -121,6 +121,21 @@ struct StorageEvent {
 
 type StorageEventIndex = ahash::AHashMap<(u32, Type), ahash::AHashMap<usize, Vec<StorageEvent>>>;
 
+#[derive(Clone, Copy)]
+enum ExactDropEvent {
+    Definition,
+    Drop(CfgValue),
+    Operand {
+        instruction: CfgValue,
+        role: &'static str,
+    },
+    TerminatorOperand {
+        role: &'static str,
+    },
+}
+
+type ExactDropEventIndex = ahash::AHashMap<CfgValue, ahash::AHashMap<usize, Vec<ExactDropEvent>>>;
+
 #[cfg(test)]
 #[derive(Debug, Clone, Copy, Default)]
 struct SemanticWork {
@@ -137,6 +152,7 @@ struct SemanticWork {
     root_updates: usize,
     root_dependency_visits: usize,
     flag_clearing_solves: usize,
+    exact_drop_scan_visits: usize,
 }
 
 #[cfg(test)]
@@ -156,8 +172,14 @@ std::thread_local! {
             root_updates: 0,
             root_dependency_visits: 0,
             flag_clearing_solves: 0,
+            exact_drop_scan_visits: 0,
         })
     };
+}
+
+#[cfg(test)]
+fn record_exact_drop_scan_visit() {
+    SEMANTIC_WORK.with(|work| work.borrow_mut().exact_drop_scan_visits += 1);
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -778,13 +800,20 @@ impl<'a> Verifier<'a> {
         // The drop-flag facts that do not depend on the target, computed once
         // and shared by every consumption fact (RUE-2347).
         let flag_slots = self.drop_flag_slots(raw_slots);
+        let exact_drop_events = self.exact_drop_event_index(&droppable_value_set);
         for &value in &droppable_values {
             // Structural verification has checked that every reachable use,
             // this Drop included, is dominated by its definition, so the
             // definition lies in a reachable block.
             let start = defining_blocks[value.as_u32() as usize]
                 .expect("a dropped value's definition dominates its Drop, so it is reachable");
-            self.verify_exact_drop_fact(value, start, &flag_slots, &entry_edges)?;
+            self.verify_exact_drop_fact(
+                value,
+                start,
+                &exact_drop_events,
+                &flag_slots,
+                &entry_edges,
+            )?;
         }
         for root in owner_roots {
             self.verify_owner_root_fact(
@@ -1315,6 +1344,103 @@ impl<'a> Verifier<'a> {
         Ok(())
     }
 
+    /// Index the definitions, target Drops, and exact operand occurrences for
+    /// values that already have a drop fact. Unrelated values and unreachable
+    /// blocks do not add entries to this sparse per-value, per-block index.
+    fn exact_drop_event_index(&self, targets: &ahash::AHashSet<CfgValue>) -> ExactDropEventIndex {
+        let mut events = ExactDropEventIndex::default();
+        for block in self.cfg.blocks() {
+            if !self.dominators().is_reachable(block.id) {
+                continue;
+            }
+            let block_index = block.id.as_u32() as usize;
+            for &(parameter, _) in &block.params {
+                #[cfg(test)]
+                record_exact_drop_scan_visit();
+                if targets.contains(&parameter) {
+                    events
+                        .entry(parameter)
+                        .or_default()
+                        .entry(block_index)
+                        .or_default()
+                        .push(ExactDropEvent::Definition);
+                }
+            }
+            for &value in &block.insts {
+                #[cfg(test)]
+                record_exact_drop_scan_visit();
+                if targets.contains(&value) {
+                    events
+                        .entry(value)
+                        .or_default()
+                        .entry(block_index)
+                        .or_default()
+                        .push(ExactDropEvent::Definition);
+                }
+                let data = &self.cfg.get_inst(value).data;
+                if let CfgInstData::Drop { value: dropped } = data {
+                    if targets.contains(dropped) {
+                        events
+                            .entry(*dropped)
+                            .or_default()
+                            .entry(block_index)
+                            .or_default()
+                            .push(ExactDropEvent::Drop(value));
+                    }
+                    // The original fact treats a target Drop as its own
+                    // consumption event and does not inspect that operand as
+                    // an ordinary use. Keep using the canonical operand
+                    // visitor; the Drop's sole operand is represented only
+                    // by the Drop event above.
+                    self.for_each_inst_operand(block.id, value, data, |operand, role| {
+                        #[cfg(test)]
+                        record_exact_drop_scan_visit();
+                        if operand != *dropped && targets.contains(&operand) {
+                            events
+                                .entry(operand)
+                                .or_default()
+                                .entry(block_index)
+                                .or_default()
+                                .push(ExactDropEvent::Operand {
+                                    instruction: value,
+                                    role,
+                                });
+                        }
+                    });
+                    continue;
+                }
+                self.for_each_inst_operand(block.id, value, data, |operand, role| {
+                    #[cfg(test)]
+                    record_exact_drop_scan_visit();
+                    if targets.contains(&operand) {
+                        events
+                            .entry(operand)
+                            .or_default()
+                            .entry(block_index)
+                            .or_default()
+                            .push(ExactDropEvent::Operand {
+                                instruction: value,
+                                role,
+                            });
+                    }
+                });
+            }
+            self.for_each_terminator_operand(block.id, |operand, role| {
+                #[cfg(test)]
+                record_exact_drop_scan_visit();
+                if targets.contains(&operand) {
+                    events
+                        .entry(operand)
+                        .or_default()
+                        .entry(block_index)
+                        .or_default()
+                        .push(ExactDropEvent::TerminatorOperand { role });
+                }
+            });
+        }
+        events
+    }
+
     /// The exact-value consumption fact of `target`. It is first checked with
     /// no drop-flag exemption, and only a failure pays for the drop-flag proof
     /// and a second check under it: the exemption only ever turns a block
@@ -1323,10 +1449,11 @@ impl<'a> Verifier<'a> {
         &self,
         target: CfgValue,
         start: BlockId,
+        events: &ExactDropEventIndex,
         flag_slots: &DropFlagSlots,
         entry_edges: &[Vec<EntryEdge>],
     ) -> Result<(), CfgVerificationError> {
-        let Err(error) = self.verify_exact_drop_fact_under(target, start, &[]) else {
+        let Err(error) = self.verify_exact_drop_fact_under(target, start, events, &[]) else {
             return Ok(());
         };
         // Store-to-load forwarding can make both the explicit and the guarded
@@ -1347,7 +1474,7 @@ impl<'a> Verifier<'a> {
         if !guarded.contains(&true) {
             return Err(error);
         }
-        self.verify_exact_drop_fact_under(target, start, &guarded)
+        self.verify_exact_drop_fact_under(target, start, events, &guarded)
     }
 
     /// The exact-value fact with the blocks in `guarded` (indexed by block;
@@ -1370,11 +1497,15 @@ impl<'a> Verifier<'a> {
         &self,
         target: CfgValue,
         start: BlockId,
+        events: &ExactDropEventIndex,
         guarded: &[bool],
     ) -> Result<(), CfgVerificationError> {
         const FRESH: u8 = SEMANTIC_STATE_A;
         const CONSUMED: u8 = SEMANTIC_STATE_B;
         let guarded = |block: BlockId| guarded.get(block.as_u32() as usize) == Some(&true);
+        let target_events = events
+            .get(&target)
+            .expect("every exact drop fact has at least its Drop event");
         let mut reached = Vec::new();
         let inputs = self.solve_semantic_fact_from(
             start,
@@ -1382,23 +1513,16 @@ impl<'a> Verifier<'a> {
                 if guarded(block) {
                     state = FRESH;
                 }
-                if self
-                    .cfg
-                    .get_block(block)
-                    .params
-                    .iter()
-                    .any(|&(parameter, _)| parameter == target)
-                {
-                    state = FRESH;
-                }
-                for &value in &self.cfg.get_block(block).insts {
-                    if value == target {
-                        state = FRESH;
-                    }
-                    if let CfgInstData::Drop { value: dropped } = self.cfg.get_inst(value).data
-                        && dropped == target
-                    {
-                        state = CONSUMED;
+                if let Some(block_events) = target_events.get(&(block.as_u32() as usize)) {
+                    for event in block_events {
+                        #[cfg(test)]
+                        record_exact_drop_scan_visit();
+                        match event {
+                            ExactDropEvent::Definition => state = FRESH,
+                            ExactDropEvent::Drop(_) => state = CONSUMED,
+                            ExactDropEvent::Operand { .. }
+                            | ExactDropEvent::TerminatorOperand { .. } => {}
+                        }
                     }
                 }
                 state
@@ -1417,79 +1541,58 @@ impl<'a> Verifier<'a> {
             if guarded(block.id) {
                 state = FRESH;
             }
-            if block
-                .params
-                .iter()
-                .any(|&(parameter, _)| parameter == target)
-            {
-                state = FRESH;
-            }
-            for &value in &block.insts {
-                #[cfg(test)]
-                SEMANTIC_WORK.with(|work| {
-                    work.borrow_mut().validation_instruction_visits += 1;
-                });
-                if value == target {
-                    state = FRESH;
-                }
-                let inst = self.cfg.get_inst(value);
-                let location = CfgVerificationLocation::Instruction {
-                    block: block.id,
-                    value,
-                };
-                if let CfgInstData::Drop { value: dropped } = inst.data
-                    && dropped == target
-                {
-                    if state & CONSUMED != 0 {
-                        return Err(self.semantic_error(
-                            location,
-                            format_args!(
-                                "Drop instruction {} in block {} consumes {} after it was already dropped on a reaching path",
-                                value, block.id, target
-                            ),
-                        ));
-                    }
-                    state = CONSUMED;
-                } else {
-                    let mut error = None;
-                    self.for_each_inst_operand(block.id, value, &inst.data, |operand, role| {
-                        #[cfg(test)]
-                        SEMANTIC_WORK.with(|work| {
-                            work.borrow_mut().instruction_operand_visits += 1;
-                        });
-                        if error.is_none() && operand == target && state & CONSUMED != 0 {
-                            error = Some(self.semantic_error(
-                                location,
-                                format_args!(
-                                    "{} {} in instruction {} in block {} was already dropped on a reaching path",
-                                    role, operand, value, block.id
-                                ),
-                            ));
+            if let Some(block_events) = target_events.get(&(block.id.as_u32() as usize)) {
+                for event in block_events {
+                    #[cfg(test)]
+                    record_exact_drop_scan_visit();
+                    match *event {
+                        ExactDropEvent::Definition => state = FRESH,
+                        ExactDropEvent::Drop(value) => {
+                            #[cfg(test)]
+                            SEMANTIC_WORK.with(|work| {
+                                work.borrow_mut().validation_instruction_visits += 1;
+                            });
+                            if state & CONSUMED != 0 {
+                                return Err(self.semantic_error(
+                                    CfgVerificationLocation::Instruction {
+                                        block: block.id,
+                                        value,
+                                    },
+                                    format_args!(
+                                        "Drop instruction {} in block {} consumes {} after it was already dropped on a reaching path",
+                                        value, block.id, target
+                                    ),
+                                ));
+                            }
+                            state = CONSUMED;
                         }
-                    });
-                    if let Some(error) = error {
-                        return Err(error);
+                        ExactDropEvent::Operand { instruction, role } => {
+                            if state & CONSUMED != 0 {
+                                return Err(self.semantic_error(
+                                    CfgVerificationLocation::Instruction {
+                                        block: block.id,
+                                        value: instruction,
+                                    },
+                                    format_args!(
+                                        "{} {} in instruction {} in block {} was already dropped on a reaching path",
+                                        role, target, instruction, block.id
+                                    ),
+                                ));
+                            }
+                        }
+                        ExactDropEvent::TerminatorOperand { role } => {
+                            if state & CONSUMED != 0 {
+                                return Err(self.semantic_error(
+                                    CfgVerificationLocation::Terminator { block: block.id },
+                                    format_args!(
+                                        "{} {} in terminator of block {} was already dropped on a reaching path",
+                                        role, target, block.id
+                                    ),
+                                ));
+                            }
+                        }
                     }
                 }
-            }
-            let mut error = None;
-            self.for_each_terminator_operand(block.id, |operand, role| {
-                #[cfg(test)]
-                SEMANTIC_WORK.with(|work| {
-                    work.borrow_mut().terminator_operand_visits += 1;
-                });
-                if error.is_none() && operand == target && state & CONSUMED != 0 {
-                    error = Some(self.semantic_error(
-                        CfgVerificationLocation::Terminator { block: block.id },
-                        format_args!(
-                            "{} {} in terminator of block {} was already dropped on a reaching path",
-                            role, operand, block.id
-                        ),
-                    ));
-                }
-            });
-            if let Some(error) = error {
-                return Err(error);
             }
         }
         Ok(())
@@ -7948,6 +8051,259 @@ mod tests {
             },
             owner,
         )
+    }
+
+    #[test]
+    fn exact_drop_event_index_scales_with_relevant_events() {
+        // Every dropped value lives in the same fixed block, alongside six
+        // instructions per value. The verifier should visit each target's
+        // definition and Drop, not rescan the entire block for every target.
+        for count in [16usize, 32, 64, 128] {
+            let types = TypeInternPool::new();
+            let interner = ThreadedRodeo::default();
+            let owner =
+                register_nonzero_droppable_struct(&types, &interner, "ExactDropEventScaleOwner");
+            let id = match owner.kind() {
+                TypeKind::Struct(id) => id,
+                _ => unreachable!(),
+            };
+            let pool = types.freeze();
+            let mut cfg = Cfg::new(
+                Type::UNIT,
+                count as u32,
+                0,
+                "exact_drop_event_scale".to_string(),
+                vec![],
+            );
+            let entry = cfg.new_block();
+            cfg.entry = entry;
+            for slot in 0..count as u32 {
+                push(
+                    &mut cfg,
+                    entry,
+                    CfgInstData::StorageLive {
+                        slot,
+                        local_ty: owner,
+                    },
+                    Type::UNIT,
+                );
+                let initial = exact_drop_init(&mut cfg, entry, owner, id);
+                push(
+                    &mut cfg,
+                    entry,
+                    CfgInstData::Alloc {
+                        slot,
+                        init: initial,
+                    },
+                    Type::UNIT,
+                );
+                let loaded = push(&mut cfg, entry, CfgInstData::Load { slot }, owner);
+                push(
+                    &mut cfg,
+                    entry,
+                    CfgInstData::Drop { value: loaded },
+                    Type::UNIT,
+                );
+                push(
+                    &mut cfg,
+                    entry,
+                    CfgInstData::StorageDead {
+                        slot,
+                        local_ty: owner,
+                    },
+                    Type::UNIT,
+                );
+            }
+            cfg.set_terminator(entry, Terminator::Return { value: None });
+
+            super::SEMANTIC_WORK.with(|work| *work.borrow_mut() = Default::default());
+            cfg.finish(&pool).unwrap();
+            super::SEMANTIC_WORK.with(|work| {
+                let work = *work.borrow();
+                let instruction_count = count * 6;
+                assert!(
+                    work.exact_drop_scan_visits <= instruction_count * 8,
+                    "count={count}, instructions={instruction_count}, exact visits={}, work={work:?}",
+                    work.exact_drop_scan_visits
+                );
+            });
+        }
+    }
+
+    #[test]
+    fn exact_drop_event_index_keeps_instruction_and_terminator_uses() {
+        let (owner, id, pool) = exact_drop_owner("ExactDropUseOwner");
+
+        let mut instruction_cfg = Cfg::new(Type::UNIT, 2, 0, "drop_then_alloc".into(), vec![]);
+        let entry = instruction_cfg.new_block();
+        instruction_cfg.entry = entry;
+        push(
+            &mut instruction_cfg,
+            entry,
+            CfgInstData::StorageLive {
+                slot: 0,
+                local_ty: owner,
+            },
+            Type::UNIT,
+        );
+        let initial = exact_drop_init(&mut instruction_cfg, entry, owner, id);
+        push(
+            &mut instruction_cfg,
+            entry,
+            CfgInstData::Alloc {
+                slot: 0,
+                init: initial,
+            },
+            Type::UNIT,
+        );
+        let value = push(
+            &mut instruction_cfg,
+            entry,
+            CfgInstData::Load { slot: 0 },
+            owner,
+        );
+        push(
+            &mut instruction_cfg,
+            entry,
+            CfgInstData::StorageLive {
+                slot: 1,
+                local_ty: owner,
+            },
+            Type::UNIT,
+        );
+        push(
+            &mut instruction_cfg,
+            entry,
+            CfgInstData::Drop { value },
+            Type::UNIT,
+        );
+        let use_after_drop = push(
+            &mut instruction_cfg,
+            entry,
+            CfgInstData::Alloc {
+                slot: 1,
+                init: value,
+            },
+            Type::UNIT,
+        );
+        push(
+            &mut instruction_cfg,
+            entry,
+            CfgInstData::Drop { value },
+            Type::UNIT,
+        );
+        push(
+            &mut instruction_cfg,
+            entry,
+            CfgInstData::StorageDead {
+                slot: 1,
+                local_ty: owner,
+            },
+            Type::UNIT,
+        );
+        push(
+            &mut instruction_cfg,
+            entry,
+            CfgInstData::StorageDead {
+                slot: 0,
+                local_ty: owner,
+            },
+            Type::UNIT,
+        );
+        instruction_cfg.set_terminator(entry, Terminator::Return { value: None });
+        let error = instruction_cfg.finish(&pool).unwrap_err();
+        assert_eq!(
+            error.location(),
+            CfgVerificationLocation::Instruction {
+                block: entry,
+                value: use_after_drop,
+            }
+        );
+        assert!(error.to_string().contains("allocation initializer"));
+
+        let mut terminator_cfg = Cfg::new(owner, 1, 0, "drop_then_return".into(), vec![]);
+        let entry = terminator_cfg.new_block();
+        terminator_cfg.entry = entry;
+        push(
+            &mut terminator_cfg,
+            entry,
+            CfgInstData::StorageLive {
+                slot: 0,
+                local_ty: owner,
+            },
+            Type::UNIT,
+        );
+        let initial = exact_drop_init(&mut terminator_cfg, entry, owner, id);
+        push(
+            &mut terminator_cfg,
+            entry,
+            CfgInstData::Alloc {
+                slot: 0,
+                init: initial,
+            },
+            Type::UNIT,
+        );
+        let value = push(
+            &mut terminator_cfg,
+            entry,
+            CfgInstData::Load { slot: 0 },
+            owner,
+        );
+        push(
+            &mut terminator_cfg,
+            entry,
+            CfgInstData::Drop { value },
+            Type::UNIT,
+        );
+        terminator_cfg.set_terminator(entry, Terminator::Return { value: Some(value) });
+        let error = terminator_cfg.finish(&pool).unwrap_err();
+        assert_eq!(
+            error.location(),
+            CfgVerificationLocation::Terminator { block: entry }
+        );
+        assert!(error.to_string().contains("return value"));
+    }
+
+    #[test]
+    fn exact_drop_event_index_keeps_duplicate_drop_errors() {
+        let (owner, id, pool) = exact_drop_owner("ExactDropDuplicateOwner");
+        let mut cfg = Cfg::new(Type::UNIT, 1, 0, "duplicate_drop".into(), vec![]);
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        push(
+            &mut cfg,
+            entry,
+            CfgInstData::StorageLive {
+                slot: 0,
+                local_ty: owner,
+            },
+            Type::UNIT,
+        );
+        let initial = exact_drop_init(&mut cfg, entry, owner, id);
+        push(
+            &mut cfg,
+            entry,
+            CfgInstData::Alloc {
+                slot: 0,
+                init: initial,
+            },
+            Type::UNIT,
+        );
+        let value = push(&mut cfg, entry, CfgInstData::Load { slot: 0 }, owner);
+        push(&mut cfg, entry, CfgInstData::Drop { value }, Type::UNIT);
+        let second_drop = push(&mut cfg, entry, CfgInstData::Drop { value }, Type::UNIT);
+        cfg.set_terminator(entry, Terminator::Return { value: None });
+        let error = cfg.finish(&pool).unwrap_err();
+        assert_eq!(
+            error.location(),
+            CfgVerificationLocation::Instruction {
+                block: entry,
+                value: second_drop,
+            }
+        );
+        assert!(
+            error.to_string().contains("consumes") && error.to_string().contains("already dropped")
+        );
     }
 
     /// Value defined in a loop header, dropped in the body, then dropped again
