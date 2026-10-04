@@ -119,6 +119,44 @@ fn main() -> i32 {
 compile_fail = true
 error_contains = "unknown"
 
+[[case]]
+name = "unknown_enum_tuple_variant_constructor_error"
+spec = ["6.3:5"]
+source = """
+enum E { A(i32), B }
+fn main() -> i32 {
+    let v: E = E.C(1);
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0420", "unknown variant 'C' in enum 'E'"]
+
+[[case]]
+name = "unknown_enum_tuple_variant_constructor_unknown_type"
+spec = ["6.3:4"]
+source = """
+fn main() -> i32 {
+    let v = Unknown.C(1);
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0201", "undefined variable 'Unknown'"]
+
+[[case]]
+name = "unknown_enum_tuple_variant_constructor_shadowed_receiver"
+source = """
+enum E { A(i32), B }
+fn main() -> i32 {
+    let E = 1;
+    let v = E.C(1);
+    0
+}
+"""
+compile_fail = true
+error_contains = ["no method named 'C' on type 'i32'"]
+
 # =============================================================================
 # Match on Enum
 # =============================================================================

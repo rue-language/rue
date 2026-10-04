@@ -282,6 +282,28 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     ctx,
                 );
             }
+
+            // Once the receiver resolved to an enum, this call is a tuple
+            // variant construction attempt. Keep the same visibility ordering
+            // as a valid variant constructor, then report the spec's dedicated
+            // unknown-variant diagnostic rather than falling through to
+            // struct associated-function resolution (which reports E0204).
+            if !via_comptime {
+                self.check_item_visibility(
+                    crate::PrivateItemKind::Enum,
+                    self.body_interner().resolve(&type_name),
+                    def.file_id,
+                    def.is_pub,
+                    span,
+                )?;
+            }
+            return Err(CompileError::new(
+                ErrorKind::UnknownVariant {
+                    enum_name: self.format_type_name(Type::new_enum(enum_id)),
+                    variant_name,
+                },
+                span,
+            ));
         }
 
         self.analyze_assoc_fn_call_impl(air, type_name, function, args_range, span, ctx, None)
