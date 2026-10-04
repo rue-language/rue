@@ -1141,6 +1141,8 @@ pub(crate) enum SemanticNucleusFailure {
         producer: DeclarationCandidateKey,
         start: u32,
         end: u32,
+        help: Option<Arc<str>>,
+        note: Option<Arc<str>>,
     },
     /// A diagnostic anchored at a source range of a module that belongs to
     /// no declaration: a freestanding conformance assertion (spec 6.8:9).
@@ -1397,9 +1399,17 @@ impl RetainedCharge for SemanticNucleusFailure {
             Self::Diagnostic(kind)
             | Self::DiagnosticAtParameter { kind, .. }
             | Self::DiagnosticAtSignatureType { kind, .. } => kind.retained_charge(),
-            Self::DiagnosticAtProducerRange { kind, producer, .. } => kind
+            Self::DiagnosticAtProducerRange {
+                kind,
+                producer,
+                help,
+                note,
+                ..
+            } => kind
                 .retained_charge()
-                .saturating_add(producer.retained_charge()),
+                .saturating_add(producer.retained_charge())
+                .saturating_add(help.as_ref().map_or(0, |value| value.len() as u64))
+                .saturating_add(note.as_ref().map_or(0, |value| value.len() as u64)),
             Self::DiagnosticAtModuleSpans {
                 error,
                 span_modules,

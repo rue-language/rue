@@ -854,6 +854,8 @@ $runtime
                                             producer: query.declaration.clone(),
                                             start: initializer_span.start,
                                             end: initializer_span.end,
+                                            help: None,
+                                            note: None,
                                         }
                                     };
                                     let provider = SemanticNucleusTypeProvider {

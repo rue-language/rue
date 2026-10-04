@@ -3350,6 +3350,8 @@ fn semantic_nucleus_failure_diagnostics_unassisted(
         producer: producer_key,
         start,
         end,
+        help,
+        note,
     } = failure
         && let Some(producer) = modules
             .iter()
@@ -3363,10 +3365,17 @@ fn semantic_nucleus_failure_diagnostics_unassisted(
         && start <= end
         && end <= producer.end
     {
-        return CompileErrors::from(CompileError::new(
+        let mut error = CompileError::new(
             kind.clone(),
             rue_span::Span::with_file(producer.file_id, start, end),
-        ));
+        );
+        if let Some(help) = help {
+            error = error.with_help(help.to_string());
+        }
+        if let Some(note) = note {
+            error = error.with_note(note.to_string());
+        }
+        return CompileErrors::from(error);
     }
     if let F::DiagnosticAtModuleRange {
         kind,
@@ -3522,7 +3531,9 @@ fn semantic_nucleus_failure_diagnostics_unassisted(
         F::ForeignSignatureConflict(_) => {
             unreachable!("foreign-signature conflicts return above")
         }
-        F::DiagnosticAtProducerRange { kind, .. } => (kind.clone(), None, None),
+        F::DiagnosticAtProducerRange {
+            kind, help, note, ..
+        } => (kind.clone(), help.clone(), note.clone()),
         F::DiagnosticAtModuleRange { kind, .. } => (kind.clone(), None, None),
         F::DiagnosticAtModuleSpans { .. } => unreachable!("module-span diagnostics return above"),
         F::DeferredRequirement { kind, .. } => (kind.clone(), None, None),

@@ -2264,6 +2264,7 @@ fn direct_const_named_array_length_live_local_kinds_do_not_fall_through() {
             producer: actual_producer,
             start: 42,
             end: 50,
+            ..
         } if &*actual_producer.name == producer => Some(Failure::Diagnostic(kind.clone())),
         _ => None,
     };

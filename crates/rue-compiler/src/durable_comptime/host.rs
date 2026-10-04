@@ -2977,9 +2977,12 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeRejections
     fn reject_comptime_expression(
         &self,
         rejection: rue_air::ComptimeSemanticRejection<Self::Value>,
-        _site: &rue_air::ComptimeDiagnosticSite<Self::ProgramKey>,
+        site: &rue_air::ComptimeDiagnosticSite<Self::ProgramKey>,
     ) -> rue_air::ComptimeOutcome<Self::Value, Self::Failure> {
-        match durable_host_error(DurableComptimeFailure::comptime_rejection(rejection)) {
+        match durable_host_error(DurableComptimeFailure::comptime_rejection_at(
+            rejection,
+            &self.diagnostic_site(site),
+        )) {
             rue_air::ComptimeHostError::HostFailure(error) => {
                 rue_air::ComptimeOutcome::HostFailure(error)
             }
@@ -3196,10 +3199,15 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeRejections
         ty: &Self::Type,
         site: &rue_air::ComptimeDiagnosticSite<Self::ProgramKey>,
     ) -> Self::Failure {
-        durable_diagnostic_failure(
+        let type_name = DurableComptimeScalarPolicy::type_name(ty.as_ref());
+        let note = DurableComptimeScalarPolicy::type_is_unsigned(ty.as_ref())
+            .then(|| "unsigned values cannot be negated".to_owned());
+        durable_host_failure(DurableComptimeFailure::kind_at_site_with_metadata(
             &self.diagnostic_site(site),
-            rue_error::ErrorKind::CannotNegate(DurableComptimeScalarPolicy::type_name(ty.as_ref())),
-        )
+            rue_error::ErrorKind::CannotNegate(type_name),
+            None,
+            note,
+        ))
     }
 
     fn label_ctor_instantiation_site(

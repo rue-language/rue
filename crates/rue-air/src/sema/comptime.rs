@@ -4918,7 +4918,10 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                             }
                             let Some(n) = value.as_integer() else {
                                 return self.host.reject_comptime_expression(
-                                    ComptimeSemanticRejection::UnaryOperandNotInteger(value),
+                                    ComptimeSemanticRejection::UnaryOperandNotInteger {
+                                        operation: ComptimeUnaryOperation::Neg,
+                                        value,
+                                    },
                                     &self.diagnostic_site(span),
                                 );
                             };
@@ -5593,7 +5596,10 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 let n = outcome_value!(self.eval(*operand, env));
                 let Some(raw) = n.as_integer() else {
                     return self.host.reject_comptime_expression(
-                        ComptimeSemanticRejection::UnaryOperandNotInteger(n),
+                        ComptimeSemanticRejection::UnaryOperandNotInteger {
+                            operation: ComptimeUnaryOperation::BitNot,
+                            value: n,
+                        },
                         &self.diagnostic_site(span),
                     );
                 };

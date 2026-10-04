@@ -743,8 +743,14 @@ fn unary_aggregate_and_unknown_type_intrinsic_use_real_rejection_dispatch() {
     assert_eq!(
         REJECTION_EVENTS.with(|events| events.borrow().clone()),
         vec![
-            ComptimeSemanticRejection::UnaryOperandNotInteger(FakeValue::Unit),
-            ComptimeSemanticRejection::UnaryOperandNotInteger(FakeValue::Unit),
+            ComptimeSemanticRejection::UnaryOperandNotInteger {
+                operation: ComptimeUnaryOperation::Neg,
+                value: FakeValue::Unit,
+            },
+            ComptimeSemanticRejection::UnaryOperandNotInteger {
+                operation: ComptimeUnaryOperation::BitNot,
+                value: FakeValue::Unit,
+            },
             ComptimeSemanticRejection::UnaryTypeNotInteger {
                 operation: ComptimeUnaryOperation::Neg,
                 value: FakeValue::TypedInteger(1, FakeType(99)),

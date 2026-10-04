@@ -261,7 +261,10 @@ pub enum ComptimeSemanticRejection<V> {
         lhs: V,
         rhs: Option<V>,
     },
-    UnaryOperandNotInteger(V),
+    UnaryOperandNotInteger {
+        operation: ComptimeUnaryOperation,
+        value: V,
+    },
     UnaryTypeNotInteger {
         operation: ComptimeUnaryOperation,
         value: V,
