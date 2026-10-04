@@ -629,15 +629,23 @@ mechanized*. The short version:
   function body. Each
   constructor of `Typed` is one inference rule, its arguments are the rule's
   premises, and its doc-comment names the §5 rule and the prose paragraph it
-  encodes. A program is well-typed when a value of `Typed [] e T Ω` exists.
+  encodes. For an expression `e` in program `P` and enclosing function return
+  type `R`, a typing derivation is a value of `Typed P R [] e T Ω` for some
+  result type `T` and output `Ω`.
 - **The dynamics is a function.** `Dynamics.lean` defines `eval`, which runs
-  an expression at a fuel bound and returns `.ok store value trace`,
+  an expression with a float model `M : FloatSig` at a fuel bound and returns
+  `.ok store value trace`,
   `.returned …` (a value an unwinding `return` handed past it, §6.9),
   `.panic kind trace` (a defined trap, §6.12, with the observable output that
   ran before it), `.refused violation`, or `.outOfFuel`;
-  `run P fuel` calls the program's entry point. A `Refusal` is a named
-  refusal.
-  Four of them (`useAfterMove`, `useAfterDrop`, `unbound`, `typeConfusion`)
+  `run M P fuel` calls program `P`'s entry point. A `Refusal` is a named
+  refusal. `M` supplies rounded float arithmetic, square roots, literal
+  conversion, integer-to-float conversion, narrowing casts, and the sign of
+  target-created NaNs. Integer-only runs do not depend on the choice of `M`.
+  The soundness theorems
+  quantify over `M : FloatLaws`, a `FloatSig` equipped with the stated float
+  laws, and evaluate with `M.toFloatSig`. Four refusals
+  (`useAfterMove`, `useAfterDrop`, `unbound`, `typeConfusion`)
   are the states §6 leaves stuck, made explicit; the other four
   (`linearLeak`, `linearOverwrite`, `linearDiscard`, `ownedUnderCopy`) are
   monitors the machine adds for actions §6 would execute and §5 forbids, so
@@ -649,8 +657,10 @@ mechanized*. The short version:
   identity minted at its introduction, so the trace says *which* value each
   drop was of (`no_double_free`, `Trace.lean`).
 - **The theorem says a refusal is unreachable.** `soundness` (`Soundness.lean`)
-  states: if `Typed P R Γ e T Ω` holds and the activation record agrees with `Γ`, then at
-  every fuel `eval` never returns `.refused`. The corollaries name one §7 bullet
+  states: for a float-law model `M` and well-formed program `P`, if
+  `Typed P R Γ e T Ω` holds and the activation record and store agree with
+  `Γ`, then at every fuel `eval M.toFloatSig`
+  never returns `.refused`. The corollaries name one §7 bullet
   each, over a whole program (`run`) — with one carve-out, named in
   `no_refusal`'s doc-comment: a by-value argument destroyed by a sibling
   argument's `return` is dropped by nobody and monitored by nobody, so the
