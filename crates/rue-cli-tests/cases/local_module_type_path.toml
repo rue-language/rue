@@ -635,3 +635,85 @@ pub fn R(comptime T: type) -> type { struct { v: T } }
 pub fn R(comptime T: type) -> type { struct { v: T, w: T, x: T, y: T } }
 """ },
 ]
+
+[[case]]
+name = "runtime_let_shadow_keeps_inline_struct_head_runtime"
+description = "A runtime let shadows the file module while an inline generic struct head is under an expected type; report the runtime receiver's E0413."
+compile_fail = true
+error_contains = ["E0413", "no method named 'R'", "i32"]
+compile_stderr_not_contains = ["E0206"]
+files = [
+    { path = "main.rue", source = """
+const m = @import("lib.rue");
+fn main() -> i32 {
+    let m = 0;
+    let value: i32 = m.R(u64) { value: 1 };
+    0
+}
+""" },
+    { path = "lib.rue", source = """
+pub fn R(comptime T: type) -> type { struct { value: T } }
+""" },
+]
+
+[[case]]
+name = "runtime_parameter_shadow_keeps_inline_struct_head_runtime"
+description = "A runtime parameter shadows the file module in an annotated inline generic struct head."
+compile_fail = true
+error_contains = ["E0413", "no method named 'R'", "i32"]
+compile_stderr_not_contains = ["E0206"]
+files = [
+    { path = "main.rue", source = """
+const m = @import("lib.rue");
+fn make(m: i32) -> i32 {
+    let value: i32 = m.R(u64) { value: 1 };
+    0
+}
+fn main() -> i32 { make(0) }
+""" },
+    { path = "lib.rue", source = """
+pub fn R(comptime T: type) -> type { struct { value: T } }
+""" },
+]
+
+[[case]]
+name = "nested_runtime_let_shadow_keeps_inline_struct_head_runtime"
+description = "A nested runtime let shadows the file module for an annotated inline generic struct head."
+compile_fail = true
+error_contains = ["E0413", "no method named 'R'", "i32"]
+compile_stderr_not_contains = ["E0206"]
+files = [
+    { path = "main.rue", source = """
+const m = @import("lib.rue");
+fn main() -> i32 {
+    {
+        let m = 0;
+        let value: i32 = m.R(u64) { value: 1 };
+    }
+    0
+}
+""" },
+    { path = "lib.rue", source = """
+pub fn R(comptime T: type) -> type { struct { value: T } }
+""" },
+]
+
+[[case]]
+name = "mutable_runtime_let_shadow_keeps_inline_struct_head_runtime"
+description = "A mutable runtime let shadows the file module for an annotated inline generic struct head."
+compile_fail = true
+error_contains = ["E0413", "no method named 'R'", "i32"]
+compile_stderr_not_contains = ["E0206"]
+files = [
+    { path = "main.rue", source = """
+const m = @import("lib.rue");
+fn main() -> i32 {
+    let mut m = 0;
+    let value: i32 = m.R(u64) { value: 1 };
+    0
+}
+""" },
+    { path = "lib.rue", source = """
+pub fn R(comptime T: type) -> type { struct { value: T } }
+""" },
+]

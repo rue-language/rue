@@ -635,8 +635,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         inst_ref: InstRef,
         type_subst: &AHashMap<Spur, Type>,
         value_subst: &AHashMap<Spur, ConstValue>,
+        runtime_bindings: &AHashSet<Spur>,
     ) -> Option<ConstValue> {
         let mut env = ComptimeEnv::with_subst(type_subst, value_subst);
+        env.runtime_local_names = runtime_bindings.clone();
         env.canonical_identity = self.active_anonymous_producer().cloned();
         // A module-qualified comptime call in the evaluated expression resolves
         // its receiver against the expression's own file's imports (RUE-511).
@@ -2475,7 +2477,12 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             if attribution.enabled {
                 attribution.inline_eval_attempts += 1;
             }
-            let result = self.try_evaluate_const_with_subst(inst_ref, &scope.types, &scope.values);
+            let result = self.try_evaluate_const_with_subst(
+                inst_ref,
+                &scope.types,
+                &scope.values,
+                &scope.runtime,
+            );
             if let Some(started) = started {
                 attribution.eval_provider_ns = attribution
                     .eval_provider_ns
