@@ -121,6 +121,89 @@ fn main() -> i32 {
 compile_fail = true
 error_contains = ["E0206", "expected bool, found {integer}"]
 
+# `str` annotations intentionally survive inference so semantic analysis can
+# enforce the first-class string ownership rule. Their compatibility backstop
+# must still know that an untyped integer initializer was a literal before it
+# defaulted to i32, and should point at that initializer expression.
+[[case]]
+name = "untyped_integer_literal_at_str_local"
+source = """
+fn main() -> i32 {
+    let s: str = 5;
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0206", "expected str, found {integer}", "test.rue:2:18"]
+
+[[case]]
+name = "negative_integer_literal_at_str_local"
+source = """
+fn main() -> i32 {
+    let s: str = -5;
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0206", "expected str, found {integer}", "test.rue:2:18"]
+
+[[case]]
+name = "parenthesized_hex_integer_literal_at_str_local"
+source = """
+fn main() -> i32 {
+    let s: str = (0x7fff_ffff);
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0206", "expected str, found {integer}"]
+
+[[case]]
+name = "typed_integer_variable_at_str_local"
+source = """
+fn main() -> i32 {
+    let n: u8 = 5;
+    let s: str = n;
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0206", "expected str, found u8", "test.rue:3:18"]
+
+[[case]]
+name = "cast_integer_at_str_local"
+source = """
+fn main() -> i32 {
+    let n: i32 = @intCast(5);
+    let s: str = n;
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0206", "expected str, found i32", "test.rue:3:18"]
+
+[[case]]
+name = "literal_derived_expression_at_str_local"
+source = """
+fn main() -> i32 {
+    let s: str = 5 + 1;
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0206", "expected str, found i32", "test.rue:2:18"]
+
+[[case]]
+name = "wildcard_untyped_integer_at_str_local"
+source = """
+fn main() -> i32 {
+    let _: str = 5;
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0206", "expected str, found {integer}"]
+
 # The literal's variable once took the array type silently, so the literal
 # itself was typed `[i32; 2]` and failed later as an out-of-range literal.
 [[case]]

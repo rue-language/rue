@@ -9,7 +9,7 @@ use super::super::ordinary_engine::{
 use super::*;
 use crate::inference::{FrontierParamOverlay, LazyInferenceFacts, ParamVarInfo};
 use crate::inference::{TypeVarId, UnificationError};
-use crate::sema::context::{FloatLiteralJoins, InferenceStatementErrors};
+use crate::sema::context::{InferenceDiagnosticFacts, InferenceStatementErrors};
 use crate::sema::{decode_inline_import_spine, decode_module_spine};
 use ahash::{AHashMap, AHashSet};
 use lasso::Key;
@@ -501,9 +501,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// This avoids rebuilding these maps for each function, reducing O(n²) to O(n).
     ///
     /// Returns maps from RIR instruction refs to their resolved concrete types
-    /// and normal-continuation facts, the float literals whose class an
-    /// unresolved integer literal joined, and, under statement recovery, the
-    /// inference failures attributed to the body's top-level statements.
+    /// and normal-continuation facts, literal-class diagnostic metadata, and,
+    /// under statement recovery, the inference failures attributed to the
+    /// body's top-level statements.
     pub(crate) fn run_type_inference(
         &mut self,
         infer_ctx: &InferenceContext,
@@ -517,7 +517,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         AHashMap<InstRef, bool>,
         AHashMap<InstRef, crate::sema::ComptimeSelection>,
         InferenceBreakdown,
-        FloatLiteralJoins,
+        InferenceDiagnosticFacts,
         InferenceStatementErrors,
     )> {
         // Most bodies have no selector or computed comptime argument that can
@@ -987,7 +987,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         AHashMap<InstRef, bool>,
         InferenceBreakdown,
         PrecomputeSnapshot,
-        FloatLiteralJoins,
+        InferenceDiagnosticFacts,
         Option<RecoveredInferenceFailures>,
     )> {
         let precompute_started = Instant::now();
@@ -1423,7 +1423,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // `Unifier::unresolved_literal_joins`). Recorded before defaulting
         // resolves the class.
         let literal_joins = unifier.unresolved_literal_joins();
-        let mut float_literal_joins = FloatLiteralJoins::new();
+        let int_literal_var_set: AHashSet<TypeVarId> = int_literal_vars.iter().copied().collect();
+        let mut inference_diagnostic_facts = InferenceDiagnosticFacts::default();
         if !literal_joins.is_empty() {
             let float_literal_vars: AHashSet<TypeVarId> =
                 float_literal_vars.iter().copied().collect();
@@ -1437,11 +1438,40 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 if let InferType::Var(class) = unifier.substitution.apply(infer_ty)
                     && let Some(join) = literal_joins.get(&class)
                 {
-                    float_literal_joins.insert(
+                    inference_diagnostic_facts.float_literal_joins.insert(
                         *inst_ref,
                         self.unification_compile_error(join, string_literal_default),
                     );
                 }
+            }
+        }
+
+        // Preserve the canonical pre-default fact for integer literal
+        // expressions. Some compatibility checks intentionally run during
+        // semantic materialization, after literals have defaulted to i32; this
+        // lets those checks name an untyped literal without inferring it from
+        // source text or mistaking a typed variable for a literal.
+        for (inst_ref, infer_ty) in &expr_types {
+            let is_literal_form = match self.body_rir_ref().get(*inst_ref).data {
+                rue_rir::InstData::IntConst(_) => true,
+                rue_rir::InstData::Neg { operand } => matches!(
+                    self.body_rir_ref().get(operand).data,
+                    rue_rir::InstData::IntConst(_)
+                ),
+                _ => false,
+            };
+            if !is_literal_form
+                || !matches!(infer_ty, InferType::Var(var) if int_literal_var_set.contains(var))
+            {
+                continue;
+            }
+            if matches!(
+                unifier.substitution.apply(infer_ty),
+                InferType::Var(_) | InferType::IntLiteral
+            ) {
+                inference_diagnostic_facts
+                    .untyped_integer_literals
+                    .insert(*inst_ref);
             }
         }
 
@@ -1533,7 +1563,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 inline_ctor_head_types,
                 local_repeat_counts,
             },
-            float_literal_joins,
+            inference_diagnostic_facts,
             recovered_failures,
         ))
     }

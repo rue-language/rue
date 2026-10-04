@@ -15,6 +15,24 @@ of that — they pass on malformed JSON as long as the bytes appear somewhere.
 """
 
 [[case]]
+name = "untyped_integer_at_str_binding_uses_initializer_span"
+description = "The E0206 fallback preserves an untyped integer literal name and its exact initializer span after inference defaulting."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let s: str = 5;
+    0
+}
+""" }]
+args = ["--error-format", "json", "main.rue", "-o", "prog"]
+compile_fail = true
+json_diagnostics = true
+json_diagnostic_order = ["error E0206 main.rue:2:18"]
+error_contains = [
+  '"message":"type mismatch: expected str, found {integer}"',
+  '"spans":[{"column":18,"end":37,"file":"main.rue","label":null,"line":2,"primary":true,"start":36}]',
+]
+
+[[case]]
 name = "missing_root_source_load_is_json"
 description = "RUE-1323: an ordinary missing-root source-load failure uses the driver code and the same spanless schema as compiler diagnostics."
 files = []
