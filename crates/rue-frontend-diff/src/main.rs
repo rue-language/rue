@@ -51,7 +51,7 @@ const SYNTAX_PROBES: &[(&str, &str)] = &[
     ),
     (
         "intrinsic-placeholders.rue",
-        "fn f(x: bool) { @probe(!, !x, (), [u8]); }",
+        "fn f(x: bool) { @probe(!, !x, (), ((())) , [u8]); @size_of(()); @align_of(()); }",
     ),
     (
         "intrinsic-argument-modes.rue",

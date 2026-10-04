@@ -44,6 +44,26 @@ fn main() -> i32 {
 """ }]
 stdout = "77\n"
 
+# Unit is an expression in value-taking intrinsic positions, including when
+# parenthesized. The type-taking position in @size_of remains a type.
+[[case]]
+name = "ptr_write_unit_value"
+differential_opt = true
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let mut value: () = ();
+    let p: ptr mut () = checked { @raw_mut(value) };
+    checked {
+        @ptr_write(p, ());
+        @ptr_write(p, ((())));
+    };
+    @dbg(@size_of(()));
+    0
+}
+""" }]
+stdout = "0\n"
+exit_code = 0
+
 # Round-trip an address through @ptr_to_int / @int_to_ptr and read it back.
 [[case]]
 name = "ptr_int_roundtrip"
