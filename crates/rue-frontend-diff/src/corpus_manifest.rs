@@ -1433,6 +1433,7 @@ pub(crate) const ROOTS: &[(&str, &[&str])] = &[
             "fixture/source-order/main.rue",
             "fixture/source-order/noise-a.rue",
             "fixture/source-order/noise-b.rue",
+            "nested-payload-patterns.rue",
         ],
     ),
     (

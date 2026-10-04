@@ -8,6 +8,7 @@ const std = @import("std");
 const token = @import("token.rue");
 const ast = @import("ast.rue");
 const StrBuf = std.strbuf.StrBuf;
+const IndexBuf = std.arraybuf.ArrayBuf(u64);
 
 pub struct ParseOutput {
     dump: StrBuf,
@@ -18,19 +19,48 @@ pub struct ParseOutput {
 
 pub struct Parser {
     tokens: token.Tokens,
+    paren_closes: IndexBuf,
     pos: u64,
     arena: ast.Arena,
     errors: StrBuf,
     error_count: u64,
 
     fn new(tokens: token.Tokens) -> Self {
+        let paren_closes = Self.matching_parens(borrow tokens);
         Self {
             tokens: tokens,
+            paren_closes: paren_closes,
             pos: 0,
             arena: ast.Arena.new(),
             errors: StrBuf.new(),
             error_count: 0,
         }
+    }
+
+    // Index every matching parenthesis once. Pattern heads decide whether a
+    // parenthesised group is generic arguments by looking at the token after
+    // its matching close; nested payload patterns would make rescanning from
+    // each opening group quadratic in their nesting depth.
+    fn matching_parens(borrow tokens: token.Tokens) -> IndexBuf {
+        let mut closes = IndexBuf.with_capacity(tokens.len());
+        let mut opens = IndexBuf.new();
+        let mut i: u64 = 0;
+        while i < tokens.len() {
+            closes.push(0);
+            i += 1;
+        }
+        i = 0;
+        while i < tokens.len() {
+            let kind = tokens.get_or(i, Self.fallback()).kind;
+            if kind == token.LPAREN {
+                opens.push(i);
+            } else if kind == token.RPAREN {
+                let open = opens.pop_or(tokens.len());
+                if open < tokens.len() { closes.set(open, i); }
+            }
+            i += 1;
+        }
+        closes
     }
 
     fn fallback() -> token.Token {
@@ -419,12 +449,18 @@ pub struct Parser {
         let mut binds: u64 = 0;
         if self.eat(token.LPAREN) {
             while !self.at(token.RPAREN) && !self.eof() {
-                let b = if self.at(token.UNDERSCORE) {
-                    self.bump()
+                let element = if self.at(token.UNDERSCORE) {
+                    let b = self.bump();
+                    self.add(ast.IDENT, b.value, b.start, b.end, 0, 0, 0)
+                } else if self.at(token.IDENT) &&
+                    (self.kind_at(self.pos + 1) == token.DOT ||
+                     self.kind_at(self.pos + 1) == token.LPAREN) {
+                    self.parse_pattern()
                 } else {
-                    self.expect(token.IDENT)
+                    let b = self.expect(token.IDENT);
+                    self.add(ast.IDENT, b.value, b.start, b.end, 0, 0, 0)
                 };
-                binds = self.append(binds, self.add(ast.IDENT, b.value, b.start, b.end, 0, 0, 0));
+                binds = self.append(binds, element);
                 if !self.eat(token.COMMA) { break; }
             }
             let _ = self.expect(token.RPAREN);
@@ -454,18 +490,8 @@ pub struct Parser {
 
     fn paren_followed_by_dot(borrow self) -> bool {
         if !self.at(token.LPAREN) { return false; }
-        let mut p = self.pos;
-        let mut depth: u64 = 0;
-        loop {
-            let k = self.kind_at(p);
-            if k == token.EOF { return false; }
-            if k == token.LPAREN { depth += 1; }
-            else if k == token.RPAREN {
-                depth -= 1;
-                if depth == 0 { return self.kind_at(p + 1) == token.DOT; }
-            }
-            p += 1;
-        }
+        let close = self.paren_closes.get_or(self.pos, 0);
+        close != 0 && self.kind_at(close + 1) == token.DOT
     }
 
     fn parse_while(inout self) -> u64 {
