@@ -3464,7 +3464,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             resolved_continues,
             comptime_selections,
             inference_breakdown,
-            float_literal_joins,
+            inference_diagnostic_facts,
             inference_statement_errors,
         ) = self.run_type_inference(
             infer_ctx,
@@ -3517,7 +3517,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             checked_const_index_scope_state: super::context::CheckedConstIndexScopeState::new(),
             resolved_types: &resolved_types,
             resolved_continues: &resolved_continues,
-            float_literal_joins: &float_literal_joins,
+            inference_diagnostic_facts: &inference_diagnostic_facts,
             inference_statement_errors: &inference_statement_errors,
             comptime_selections: &comptime_selections,
             divergence_kinds: DivergenceKinds::NONE,

@@ -2119,7 +2119,14 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         if let Some(annotation) = annotation_type
             && !self.operand_fits_slot(annotation, var_type, init_result.continues)
         {
-            return Err(self.type_mismatch_error(annotation, var_type, span));
+            let init_span = self.body_rir_ref().get(init).span;
+            let mut error = self.type_mismatch_error(annotation, var_type, init_span);
+            if ctx.is_untyped_integer_literal(init)
+                && let ErrorKind::TypeMismatch { found, .. } = &mut error.kind
+            {
+                *found = self.format_infer_type_name(&crate::inference::InferType::IntLiteral);
+            }
+            return Err(error);
         }
 
         // If name is None, this is a wildcard pattern `_` that discards the value.

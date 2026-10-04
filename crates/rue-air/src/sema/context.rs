@@ -23,7 +23,16 @@ use crate::types::{StructId, Type};
 
 /// Float literals keyed by RIR instruction, each with the diagnostic for the
 /// unresolved integer-literal join its class carries.
-pub(crate) type FloatLiteralJoins = AHashMap<InstRef, CompileError>;
+#[derive(Debug, Default)]
+pub(crate) struct InferenceDiagnosticFacts {
+    /// Diagnostics for unresolved joins between integer and float literal
+    /// classes, keyed by the float literal that materializes the class.
+    pub float_literal_joins: AHashMap<InstRef, CompileError>,
+    /// Integer literal expressions whose inference class was still untyped
+    /// immediately before the normal i32 default. Consumers can preserve the
+    /// literal name when a later semantic check rejects its value.
+    pub untyped_integer_literals: AHashSet<InstRef>,
+}
 
 /// What inference recovered from in a body analyzed under statement
 /// recovery, keyed by the body block's top-level statements. Semantic
@@ -332,11 +341,10 @@ pub(crate) struct AnalysisContext<'a> {
     /// as `resolved_types`. Semantic consumers use these facts rather than
     /// rediscovering divergence from a construct's surface result type.
     pub resolved_continues: &'a AHashMap<InstRef, bool>,
-    /// The float literals whose class inference joined with an integer
-    /// literal and no float context resolved, each with the diagnostic for
-    /// that join. Materializing such a literal reports the join rather than
-    /// the defaulted type it cannot take (RUE-2573).
-    pub float_literal_joins: &'a FloatLiteralJoins,
+    /// Canonical literal-class facts captured before normal defaulting: float
+    /// diagnostics for unresolved integer/float joins, and integer literals
+    /// that remain untyped so later semantic checks can preserve `{integer}`.
+    pub inference_diagnostic_facts: &'a InferenceDiagnosticFacts,
     /// Inference failures that statement recovery reports at the body's
     /// top-level statements. Empty unless inference failed under recovery.
     pub inference_statement_errors: &'a InferenceStatementErrors,
@@ -830,7 +838,7 @@ impl<'a> AnalysisContext<'a> {
             checked_const_index_scope_state: self.checked_const_index_scope_state.clone(),
             resolved_types: self.resolved_types,
             resolved_continues: self.resolved_continues,
-            float_literal_joins: self.float_literal_joins,
+            inference_diagnostic_facts: self.inference_diagnostic_facts,
             inference_statement_errors: self.inference_statement_errors,
             comptime_selections: self.comptime_selections,
             divergence_kinds: self.divergence_kinds,
@@ -892,7 +900,24 @@ impl<'a> AnalysisContext<'a> {
         {
             return None;
         }
-        self.float_literal_joins.get(&inst_ref)
+        self.inference_diagnostic_facts
+            .float_literal_joins
+            .get(&inst_ref)
+    }
+
+    /// Whether this body-owned instruction is an integer literal that had not
+    /// acquired a type before inference defaulting. Instructions supplied by
+    /// an inline accessor overlay belong to another body's inference and must
+    /// not inherit a same-index fact from this body.
+    pub(crate) fn is_untyped_integer_literal(&self, inst_ref: InstRef) -> bool {
+        !self
+            .inline_resolved_types
+            .iter()
+            .any(|overlay| overlay.contains_key(&inst_ref))
+            && self
+                .inference_diagnostic_facts
+                .untyped_integer_literals
+                .contains(&inst_ref)
     }
 
     /// Return whether inference found a normal outgoing path for an
