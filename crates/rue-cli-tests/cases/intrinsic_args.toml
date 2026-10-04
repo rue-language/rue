@@ -1,10 +1,11 @@
 # Intrinsic argument lowering through the real driver.
 #
 # AstGen used to silently DROP a stray type argument to an expression
-# intrinsic: `@syscall(a, (), b)` lowered to `@syscall(a, b)`, shifting `b`
-# into the wrong syscall register and compiling cleanly — a silent
-# miscompile (RUE-130 item 8). The type argument is now lowered to a
-# placeholder so Sema reports a proper type error instead.
+# intrinsic, shifting later arguments into the wrong syscall registers and
+# compiling cleanly — a silent miscompile (RUE-130 item 8). Named type
+# arguments are lowered to placeholders so Sema reports a type error. Unit
+# syntax is now parsed as a value in expression positions, so @syscall rejects
+# it against its u64 parameter instead of dropping it.
 #
 # The `@syscall` cases sit inside `checked` blocks because `@syscall` is an
 # unchecked operation (spec 9.2:3a, RUE-1369); without the block the shared
@@ -16,8 +17,8 @@ id = "cli.intrinsic_args"
 name = "Intrinsic argument handling"
 description = "Type arguments to expression intrinsics must error, not be dropped."
 
-# A `()` (unit type) argument in the middle of @syscall must be a compile
-# error, not silently deleted.
+# A `()` (unit value) argument in the middle of @syscall must be rejected by
+# its u64 parameter check, not silently deleted or allowed to shift `b`.
 [[case]]
 name = "syscall_stray_unit_type_arg_is_error"
 files = [
@@ -33,7 +34,7 @@ fn main() -> i32 {
 """ },
 ]
 compile_fail = true
-error_contains = ["E0702", "argument 1", "found type"]
+error_contains = ["E0702", "argument 1", "found ()"]
 
 # Same for a named type used as an expression-intrinsic argument.
 [[case]]
