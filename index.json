@@ -46433,6 +46433,14 @@
       "platform": "aarch64-linux",
       "report": "dc454eb3f36be209e1d6fbe98aed07c733216111a85ad892fcdc1e2fd7e16f68",
       "suite_revision": 6
+    },
+    {
+      "commit": "6762e8474bacffd7844848e3a436d6c594d62ed7",
+      "epoch": 6,
+      "finished_at": "2026-10-04T12:48:06Z",
+      "platform": "aarch64-macos",
+      "report": "5da7b689bbe3c580bc17d4aefcd8396bed5cc5715e7754638f7f5777879f139e",
+      "suite_revision": 6
     }
   ],
   "schema_version": 1
