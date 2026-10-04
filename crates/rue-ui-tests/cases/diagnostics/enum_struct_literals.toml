@@ -1,0 +1,86 @@
+[section]
+id = "diagnostics.enum_struct_literals"
+name = "Enum Heads in Struct Literals"
+description = "A field-list literal headed by an enum reports the body checker's struct-type mismatch before enum variants can be mistaken for fields (RUE-2441)."
+
+[[case]]
+name = "anonymous_enum_head_is_not_a_struct_literal"
+description = "A const-bound anonymous enum rejects a field-list literal with the same E0206 used by a body-local enum."
+source = """
+const E = enum { A };
+const C = E{a: 1};
+fn main() {}
+"""
+compile_fail = true
+error_contains = ["E0206", "type mismatch: expected struct type, found E", "test.rue:2:11"]
+
+[[case]]
+name = "empty_literal_does_not_report_enum_variant_as_missing_field"
+description = "An empty field-list literal is still rejected as an enum head before its variants can become missing struct fields."
+source = """
+const E = enum { A };
+const C = E{};
+fn main() {}
+"""
+compile_fail = true
+error_contains = ["E0206", "type mismatch: expected struct type, found E", "test.rue:2:11"]
+
+[[case]]
+name = "enum_variant_name_is_not_a_struct_field"
+description = "A field whose spelling matches an enum variant is still an enum-headed struct-literal mismatch."
+source = """
+const E = enum { A };
+const C = E{A: 1};
+fn main() {}
+"""
+compile_fail = true
+error_contains = ["E0206", "type mismatch: expected struct type, found E", "test.rue:2:11"]
+
+[[case]]
+name = "body_local_enum_head_uses_struct_type_mismatch"
+description = "The body consumer's existing wording is the shared contract for enum-headed field-list literals."
+source = """
+fn main() {
+    let E = enum { A };
+    let x = E{a: 1};
+}
+"""
+compile_fail = true
+error_contains = ["E0206", "type mismatch: expected struct type, found E", "test.rue:3:13"]
+
+[[case]]
+name = "named_enum_head_is_not_a_struct_literal"
+description = "A declared enum used as a constant's struct-literal head reports the same type mismatch."
+source = """
+enum E { A }
+const C = E{a: 1};
+fn main() {}
+"""
+compile_fail = true
+error_contains = ["E0206", "type mismatch: expected struct type, found E", "test.rue:2:11"]
+
+[[case]]
+name = "module_enum_head_is_not_a_struct_literal"
+description = "A module-imported enum aliased in the root module is rejected before its variant list is checked as struct fields."
+source = """
+const lib = @import("lib.rue");
+const E = lib.E;
+const C = E{a: 1};
+fn main() {}
+"""
+compile_fail = true
+error_contains = ["E0206", "type mismatch: expected struct type, found E", "test.rue:3:11"]
+aux_files = { "lib.rue" = """
+pub enum E { A }
+""" }
+
+[[case]]
+name = "struct_unknown_field_remains_unknown_field"
+description = "A genuine struct literal still reports E0401 for an undeclared field."
+source = """
+struct S { value: i32 }
+const C = S{nope: 1};
+fn main() {}
+"""
+compile_fail = true
+error_contains = ["E0401", "unknown field 'nope' in struct 'S'", "test.rue:2:11"]
