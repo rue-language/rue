@@ -1,0 +1,10 @@
+enum E0 { Empty, Leaf(i32) }
+enum E1 { Wrap(E0, i32), Solo(E0) }
+enum E2 { Nest(E1) }
+
+fn nested_payloads(value: E2) -> i32 {
+    match value {
+        E2.Nest(E1.Wrap(E0.Leaf(v), _)) => v,
+        E2.Nest(E1.Solo(E0.Empty)) => 0,
+    }
+}

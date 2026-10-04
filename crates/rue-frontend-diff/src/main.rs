@@ -70,6 +70,14 @@ const SYNTAX_PROBES: &[(&str, &str)] = &[
         "enum Maybe { None, Some(u64) } fn f(value: Maybe) -> u64 { match value { Maybe.Some(_) => 1, Maybe.None => 0 } }",
     ),
     (
+        "nested-payload-patterns.rue",
+        "enum E0 { Empty, Leaf(i32) } enum E1 { Wrap(E0, i32), Solo(E0) } enum E2 { Nest(E1) } fn f(value: E2) -> i32 { match value { E2.Nest(E1.Wrap(E0.Leaf(v), _)) => v, E2.Nest(E1.Solo(E0.Empty)) => 0 } }",
+    ),
+    (
+        "generic-nested-payload-patterns.rue",
+        "fn f(value: Result(i32, Error)) { match value { Result(i32, Error).Ok(maybe.Option(i32).Some(v)) => {}, Result(i32, Error).Ok(maybe.Option(i32).None) => {} } }",
+    ),
+    (
         "enum-directives.rue",
         "@non_exhaustive pub enum Color { Red, Green }",
     ),

@@ -31,8 +31,7 @@ Each family names the decision point it stresses:
 * `nested_constructor_groups`, `nested_payload_patterns`: a parenthesised
   group after a path segment, decided by the token after its matching `)`
   (A.2:2 item 6): type-constructor arguments nested in a pattern head, and
-  variant payload patterns nested in a payload position. The payload form
-  runs on the production frontend only until ruelex parses it (RUE-2184).
+  variant payload patterns nested in a payload position.
 
 Environment: `RUE_BINARY` (the compiler), `RUE_STD_PATH` (the standard
 library, needed to compile ruelex), `RUE_RUELEX_ROOT` (the
@@ -162,7 +161,6 @@ def nested_payload_patterns(depth: int) -> str:
 
 
 BOTH = ("production", "ruelex")
-PRODUCTION_ONLY = ("production",)
 
 # (name, generator, small size, large size, frontends that run it)
 FAMILIES = [
@@ -175,8 +173,7 @@ FAMILIES = [
     ("return_break_operands", return_break_operands, SEQUENCE_SMALL, SEQUENCE_LARGE, BOTH),
     ("array_list_vs_repeat", array_list_vs_repeat, DEPTH_SMALL, DEPTH_LARGE, BOTH),
     ("nested_constructor_groups", nested_constructor_groups, PATTERN_DEPTH_SMALL, PATTERN_DEPTH_LARGE, BOTH),
-    # ruelex does not parse a nested payload pattern yet (RUE-2184).
-    ("nested_payload_patterns", nested_payload_patterns, PATTERN_DEPTH_SMALL, PATTERN_DEPTH_LARGE, PRODUCTION_ONLY),
+    ("nested_payload_patterns", nested_payload_patterns, PATTERN_DEPTH_SMALL, PATTERN_DEPTH_LARGE, BOTH),
 ]
 
 
