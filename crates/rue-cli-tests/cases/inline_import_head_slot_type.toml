@@ -662,3 +662,4 @@ pub fn Sib(comptime T: type) -> type {
 ]
 compile_fail = true
 error_contains = ["E0206"]
+compile_stderr_contains = ["type mismatch: expected Sib(i64) (in lib/sub/sib.rue), found Sib(i64) (in sib.rue)"]

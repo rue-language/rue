@@ -383,39 +383,99 @@ where
     I: IntoIterator<Item = CanonicalDisplayParameter>,
     F: FnMut(&TypeInstanceKey<D, M>) -> Option<String>,
 {
-    let Some(arguments) = arguments else {
-        return Some(name.to_owned());
-    };
+    format_canonical_application_pair(
+        name,
+        parameters,
+        arguments,
+        arguments,
+        |expected, _found| {
+            let rendered = display_type(expected)?;
+            Some((rendered.clone(), rendered))
+        },
+    )
+    .map(|(rendered, _)| rendered)
+}
 
-    let mut types = arguments.types.iter();
-    let mut values = arguments.values.iter();
-    let mut rendered = Vec::new();
+/// Render two applications with the same declaration schema together.
+/// Type-valued arguments are delegated as pairs so a diagnostic can preserve
+/// declaration-order formatting while disambiguating collisions inside a
+/// constructor application.
+pub fn format_canonical_application_pair<D, M, I, F>(
+    name: &str,
+    parameters: I,
+    expected_arguments: Option<&CanonicalArguments<D, M>>,
+    found_arguments: Option<&CanonicalArguments<D, M>>,
+    mut display_type_pair: F,
+) -> Option<(String, String)>
+where
+    I: IntoIterator<Item = CanonicalDisplayParameter>,
+    F: FnMut(&TypeInstanceKey<D, M>, &TypeInstanceKey<D, M>) -> Option<(String, String)>,
+{
+    let (Some(expected_arguments), Some(found_arguments)) = (expected_arguments, found_arguments)
+    else {
+        return (expected_arguments.is_none() && found_arguments.is_none())
+            .then(|| (name.to_owned(), name.to_owned()));
+    };
+    let mut expected_types = expected_arguments.types.iter();
+    let mut found_types = found_arguments.types.iter();
+    let mut expected_values = expected_arguments.values.iter();
+    let mut found_values = found_arguments.values.iter();
+    let mut expected_rendered = Vec::new();
+    let mut found_rendered = Vec::new();
     for parameter in parameters
         .into_iter()
         .filter(|parameter| parameter.is_comptime)
     {
         if parameter.is_type {
-            rendered.push(display_type(types.next()?)?);
+            let (expected, found) = display_type_pair(expected_types.next()?, found_types.next()?)?;
+            expected_rendered.push(expected);
+            found_rendered.push(found);
         } else {
-            rendered.push(match values.next()? {
-                CanonicalArgumentValue::Integer(value) => value.to_string(),
-                CanonicalArgumentValue::Bool(value) => value.to_string(),
-                CanonicalArgumentValue::Type(value) => display_type(value.as_ref())?,
-                CanonicalArgumentValue::Function(_) => "function".to_owned(),
-                CanonicalArgumentValue::Unit => "()".to_owned(),
-                CanonicalArgumentValue::String(value) => format!("\"{value}\""),
-                CanonicalArgumentValue::Float(value) => crate::display_float_value_text(value),
-                CanonicalArgumentValue::Aggregate(_) => "<aggregate>".to_owned(),
-            });
+            let expected = expected_values.next()?;
+            let found = found_values.next()?;
+            match (expected, found) {
+                (CanonicalArgumentValue::Type(expected), CanonicalArgumentValue::Type(found)) => {
+                    let (expected, found) = display_type_pair(expected.as_ref(), found.as_ref())?;
+                    expected_rendered.push(expected);
+                    found_rendered.push(found);
+                }
+                (CanonicalArgumentValue::Type(_), _) | (_, CanonicalArgumentValue::Type(_)) => {
+                    return None;
+                }
+                (expected, found) => {
+                    expected_rendered.push(display_canonical_argument_value(expected));
+                    found_rendered.push(display_canonical_argument_value(found));
+                }
+            }
         }
     }
-    if types.next().is_some() || values.next().is_some() {
+    if expected_types.next().is_some()
+        || found_types.next().is_some()
+        || expected_values.next().is_some()
+        || found_values.next().is_some()
+    {
         return None;
     }
-    if rendered.is_empty() {
-        Some(name.to_owned())
+    if expected_rendered.is_empty() {
+        Some((name.to_owned(), name.to_owned()))
     } else {
-        Some(format!("{name}({})", rendered.join(", ")))
+        Some((
+            format!("{name}({})", expected_rendered.join(", ")),
+            format!("{name}({})", found_rendered.join(", ")),
+        ))
+    }
+}
+
+fn display_canonical_argument_value<D, M>(value: &CanonicalArgumentValue<D, M>) -> String {
+    match value {
+        CanonicalArgumentValue::Integer(value) => value.to_string(),
+        CanonicalArgumentValue::Bool(value) => value.to_string(),
+        CanonicalArgumentValue::Type(_) => unreachable!("type values are paired above"),
+        CanonicalArgumentValue::Function(_) => "function".to_owned(),
+        CanonicalArgumentValue::Unit => "()".to_owned(),
+        CanonicalArgumentValue::String(value) => format!("\"{value}\""),
+        CanonicalArgumentValue::Float(value) => crate::display_float_value_text(value),
+        CanonicalArgumentValue::Aggregate(_) => "<aggregate>".to_owned(),
     }
 }
 

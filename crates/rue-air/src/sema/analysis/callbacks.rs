@@ -539,12 +539,22 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         .expect("callback binding is entered only for a `fn` parameter"),
                 );
                 if !self.callback_signature_matches(&callable.signature, &expected_def) {
+                    let (expected_display, found_display) = self
+                        .body_type_pool()
+                        .try_intern_function(callable.signature.clone())
+                        .map(|found| self.format_type_pair(expected, found))
+                        .unwrap_or_else(|_| {
+                            (
+                                self.format_type_name(expected),
+                                self.render_signature(&callable.signature),
+                            )
+                        });
                     return Err(CompileError::new(
                         ErrorKind::CallbackSignatureMismatch(Box::new(
                             rue_error::CallbackSignatureMismatchError {
                                 function: callable.display,
-                                expected: self.format_type_name(expected),
-                                found: self.render_signature(&callable.signature),
+                                expected: expected_display,
+                                found: found_display,
                             },
                         )),
                         span,

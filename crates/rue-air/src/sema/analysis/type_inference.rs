@@ -1810,6 +1810,50 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         }
     }
 
+    fn format_peer_type_pair(
+        &self,
+        expected: &InferType,
+        found: &InferType,
+        string_literals: &[TypeVarId],
+    ) -> (String, String) {
+        match (expected, found) {
+            (
+                InferType::Array {
+                    element: expected,
+                    length: expected_length,
+                },
+                InferType::Array {
+                    element: found,
+                    length: found_length,
+                },
+            ) if expected_length == found_length => {
+                let (expected, found) =
+                    self.format_peer_type_pair(expected, found, string_literals);
+                (
+                    crate::types::array_type_name(&expected, *expected_length),
+                    crate::types::array_type_name(&found, *found_length),
+                )
+            }
+            (InferType::Var(var), _) if string_literals.contains(var) => (
+                "{string}".to_string(),
+                self.format_peer_type_name(found, string_literals),
+            ),
+            (_, InferType::Var(var)) if string_literals.contains(var) => (
+                self.format_peer_type_name(expected, string_literals),
+                "{string}".to_string(),
+            ),
+            (InferType::Concrete(expected), InferType::Concrete(found)) => self
+                .format_infer_type_pair(
+                    &InferType::Concrete(*expected),
+                    &InferType::Concrete(*found),
+                ),
+            _ => (
+                self.format_peer_type_name(expected, string_literals),
+                self.format_peer_type_name(found, string_literals),
+            ),
+        }
+    }
+
     /// The diagnostic for a unification error.
     fn unification_compile_error(
         &self,
@@ -1819,10 +1863,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // Map each UnifyResult variant to the appropriate ErrorKind
         let error_kind = match &err.kind {
             UnifyResult::Ok => unreachable!("UnificationError should never contain Ok"),
-            UnifyResult::TypeMismatch { expected, found } => ErrorKind::TypeMismatch {
-                expected: self.format_infer_type_name(expected),
-                found: self.format_infer_type_name(found),
-            },
+            UnifyResult::TypeMismatch { expected, found } => {
+                let (expected, found) = self.format_infer_type_pair(expected, found);
+                ErrorKind::TypeMismatch { expected, found }
+            }
             UnifyResult::IntLiteralNonInteger { found } => ErrorKind::TypeMismatch {
                 expected: "integer type".to_string(),
                 found: self.format_infer_type_name(found),
@@ -1871,10 +1915,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 expected,
                 found,
                 string_literals,
-            } => ErrorKind::TypeMismatch {
-                expected: self.format_peer_type_name(expected, string_literals),
-                found: self.format_peer_type_name(found, string_literals),
-            },
+            } => {
+                let (expected, found) =
+                    self.format_peer_type_pair(expected, found, string_literals);
+                ErrorKind::TypeMismatch { expected, found }
+            }
         };
 
         let mut compile_error = CompileError::new(error_kind, err.span);

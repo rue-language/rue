@@ -372,13 +372,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         found: Type,
         span: Span,
     ) -> CompileError {
-        CompileError::new(
-            ErrorKind::TypeMismatch {
-                expected: self.format_type_name(expected),
-                found: self.format_type_name(found),
-            },
-            span,
-        )
+        let (expected, found) = self.format_type_pair(expected, found);
+        CompileError::new(ErrorKind::TypeMismatch { expected, found }, span)
     }
 
     /// Require a value's analyzed AIR type to be the declared type of the

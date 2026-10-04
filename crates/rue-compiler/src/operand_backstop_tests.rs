@@ -281,7 +281,7 @@ fn sum(p: wide.Box(u64)) -> i32 { @intCast((p.v + p.w + p.x + p.y) % 256) }
 fn main() -> i32 { sum(@import("lib.rue").Box(u64) { v: 3 }) }
 "#,
         "E0206",
-        "type mismatch: expected Box(u64), found Box(u64)",
+        "type mismatch: expected Box(u64) (in wide.rue), found Box(u64) (in lib.rue)",
     );
 }
 
