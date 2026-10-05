@@ -3025,6 +3025,10 @@ sequenced, not atomic; `endscope`/`return`/`break`/overwrite all expand to `drop
 applications in the orders fixed above.
 
 <a id="core:6.11:8"></a>**[core:6.11:8]** The surface intrinsic `@drop(p)` is the explicit version of the same relation.
+Its applicability is governed by the elaborated use plan (core:6.3:2, core:6.3:6): for
+`μ = Untrackable(OrdinaryDynamic,T)`, it requires `qual(T) = Copy`. A non-`Copy`
+dynamic place is rejected by §5.3's `(@Drop)` index restriction with E0904 and
+does not reach this drop relation.
 For a non-`Copy` place resolving to `ℓ@π`, it runs `drop(H, H(ℓ)@π)` — whose
 recursive walk skips every already-`⊘` sub-place — writes `⊘` back to `ℓ@π`,
 and returns `⟨⟩`; for a `Copy` place it returns `⟨⟩` without changing the
