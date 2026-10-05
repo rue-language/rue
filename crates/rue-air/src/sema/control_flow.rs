@@ -759,7 +759,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 Some(block) => {
                     ctx.push_scope();
                     let boundary = ctx.ownership.enter_full_expression();
-                    let result = self.analyze_inst(air, block, ctx);
+                    let result = self.analyze_join_arm(air, branch_inst, block, ctx);
                     let loans = ctx.ownership.nested_expression_loans(&boundary);
                     ctx.ownership.exit_full_expression(boundary);
                     let result = result?;
@@ -833,7 +833,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // (ADR-0062 6.6:10, RUE-1678).
             ctx.push_scope();
             let boundary = ctx.ownership.enter_full_expression();
-            let then_result = self.analyze_inst(air, then_block, ctx);
+            let then_result = self.analyze_join_arm(air, branch_inst, then_block, ctx);
             let then_loans = ctx.ownership.nested_expression_loans(&boundary);
             ctx.ownership.exit_full_expression(boundary);
             let then_result = then_result?;
@@ -864,7 +864,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // Analyze else branch with its own scope
             ctx.push_scope();
             let boundary = ctx.ownership.enter_full_expression();
-            let else_result = self.analyze_inst(air, else_b, ctx);
+            let else_result = self.analyze_join_arm(air, branch_inst, else_b, ctx);
             let else_loans = ctx.ownership.nested_expression_loans(&boundary);
             ctx.ownership.exit_full_expression(boundary);
             let else_result = else_result?;
@@ -1826,7 +1826,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             self.warn_unreachable_pruned_arms(arm_views.iter(), scrutinee_type, ctx);
             ctx.push_scope();
             let boundary = ctx.ownership.enter_full_expression();
-            let result = self.analyze_inst(air, selected, ctx);
+            let result = self.analyze_join_arm(air, match_inst, selected, ctx);
             let loans = ctx.ownership.nested_expression_loans(&boundary);
             ctx.ownership.exit_full_expression(boundary);
             let result = result?;
@@ -2298,7 +2298,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
             // Analyze arm body
             let boundary = ctx.ownership.enter_full_expression();
-            let body_result = self.analyze_inst(air, *body, ctx);
+            let body_result = self.analyze_join_arm(air, match_inst, *body, ctx);
             let body_loans = ctx.ownership.nested_expression_loans(&boundary);
             ctx.ownership.exit_full_expression(boundary);
             let body_result = body_result?;
