@@ -2771,6 +2771,69 @@ impl TypeInternPoolInner {
         }
     }
 
+    /// Canonical uninhabitedness decision: whether `ty` has no values.
+    ///
+    /// `!` has none (3.4:9). A composite is uninhabited when every value of
+    /// it would have to hold a value of an uninhabited type: an array
+    /// `[T; n]` with `n > 0` and uninhabited `T`, a struct with an
+    /// uninhabited field, and an enum each of whose variants carries an
+    /// uninhabited payload type, which includes the zero-variant enum
+    /// (6.3:12). `[T; 0]` has exactly one value whatever `T` is.
+    ///
+    /// The answer is conservative: a cycle back-edge, a declaration shell and
+    /// a recovery type all count as inhabited, so a caller that diverges on
+    /// an uninhabited type never does so for a type that might hold a value.
+    fn is_uninhabited(&self, ty: Type) -> bool {
+        self.is_uninhabited_inner(ty, &mut AHashSet::new())
+    }
+
+    fn is_uninhabited_inner(&self, ty: Type, visiting: &mut AHashSet<Type>) -> bool {
+        match ty.try_kind() {
+            Some(TypeKind::Never) => true,
+            Some(TypeKind::Array(id)) => {
+                let Some((element, length)) = self.try_array_def(id) else {
+                    return false;
+                };
+                if length == 0 || !visiting.insert(ty) {
+                    return false;
+                }
+                let uninhabited = self.is_uninhabited_inner(element, visiting);
+                visiting.remove(&ty);
+                uninhabited
+            }
+            Some(TypeKind::Struct(id)) => {
+                let Some(def) = self.try_struct_def(id) else {
+                    return false;
+                };
+                if !visiting.insert(ty) {
+                    return false;
+                }
+                let uninhabited = def
+                    .fields
+                    .iter()
+                    .any(|field| self.is_uninhabited_inner(field.ty, visiting));
+                visiting.remove(&ty);
+                uninhabited
+            }
+            Some(TypeKind::Enum(id)) => {
+                let Some(def) = self.try_enum_def(id) else {
+                    return false;
+                };
+                if !visiting.insert(ty) {
+                    return false;
+                }
+                let uninhabited = (0..def.variant_count()).all(|variant| {
+                    def.variant_payload(variant)
+                        .iter()
+                        .any(|&payload| self.is_uninhabited_inner(payload, visiting))
+                });
+                visiting.remove(&ty);
+                uninhabited
+            }
+            _ => false,
+        }
+    }
+
     fn stats(&self) -> TypeInternPoolStats {
         let mut stats = TypeInternPoolStats {
             struct_count: 0,
@@ -4222,6 +4285,14 @@ impl TypeInternPool {
             .unwrap_or_else(PoisonError::into_inner)
             .is_copy_type(ty)
     }
+
+    /// Whether `ty` has no values; see [`FrozenTypeInternPool::is_uninhabited`].
+    pub fn is_uninhabited(&self, ty: Type) -> bool {
+        self.inner
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .is_uninhabited(ty)
+    }
 }
 
 impl FrozenTypeInternPool {
@@ -4398,6 +4469,15 @@ impl FrozenTypeInternPool {
 
     pub fn try_array_def(&self, id: ArrayTypeId) -> Option<(Type, u64)> {
         self.inner.try_array_def(id)
+    }
+
+    /// Whether `ty` has no values: `!`, `[T; n]` with `n > 0` and `T`
+    /// uninhabited, a struct with an uninhabited field, or an enum every
+    /// variant of which carries an uninhabited payload type (including the
+    /// zero-variant enum). `[T; 0]` is inhabited. Reading a value of such a
+    /// type through a pointer cannot complete (RUE-2548).
+    pub fn is_uninhabited(&self, ty: Type) -> bool {
+        self.inner.is_uninhabited(ty)
     }
 
     pub fn ptr_const_def(&self, id: PtrConstTypeId) -> Type {
@@ -5607,6 +5687,111 @@ mod tests {
         let frozen = pool.freeze();
         assert!(frozen.type_carries_linear(Type::new_struct(wrapper)));
         assert!(frozen.type_needs_drop(Type::new_struct(wrapper)));
+    }
+
+    /// RUE-2548: `!`, a non-empty array of an uninhabited element, a struct
+    /// with an uninhabited field and an enum each of whose variants carries an
+    /// uninhabited payload (the zero-variant enum included) have no values; a
+    /// zero-length array has one whatever its element, and an enum with one
+    /// buildable variant is inhabited.
+    #[test]
+    fn is_uninhabited_follows_values_through_arrays_structs_and_enums() {
+        let declarations = ThreadedRodeo::default();
+        let pool = TypeInternPool::new();
+        let never_pair = pool.try_intern_array(Type::NEVER, 2).unwrap();
+        let never_empty = pool.try_intern_array(Type::NEVER, 0).unwrap();
+        let nested = pool.try_intern_array(never_pair, 3).unwrap();
+        let nested_empty = pool.try_intern_array(never_pair, 0).unwrap();
+        let pointer = pool.try_intern_ptr_mut(Type::NEVER).unwrap();
+        let field = |name: &str, ty: Type| StructField {
+            name: name.into(),
+            ty,
+        };
+        let (holds_never, _) = pool.register_struct(
+            declarations.get_or_intern("HoldsNever"),
+            struct_def(
+                "HoldsNever",
+                vec![field("a", Type::I32), field("b", never_pair)],
+            ),
+        );
+        let (holds_empty, _) = pool.register_struct(
+            declarations.get_or_intern("HoldsEmpty"),
+            struct_def(
+                "HoldsEmpty",
+                vec![
+                    field("a", Type::I32),
+                    field("b", never_empty),
+                    field("c", pointer),
+                ],
+            ),
+        );
+        let enum_def = |name: &str, payloads: Vec<Vec<Type>>| EnumDef {
+            name: name.into(),
+            variants: (0..payloads.len())
+                .map(|index| Arc::from(format!("V{index}")))
+                .collect::<Vec<_>>()
+                .into(),
+            variant_payloads: payloads,
+            is_pub: false,
+            is_non_exhaustive: false,
+            file_id: FileId::DEFAULT,
+        };
+        let (void, _) =
+            pool.register_enum(declarations.get_or_intern("Void"), enum_def("Void", vec![]));
+        let (all_never, _) = pool.register_enum(
+            declarations.get_or_intern("AllNever"),
+            enum_def(
+                "AllNever",
+                vec![
+                    vec![Type::NEVER],
+                    vec![Type::I32, Type::new_struct(holds_never)],
+                ],
+            ),
+        );
+        let (one_unit, _) = pool.register_enum(
+            declarations.get_or_intern("OneUnit"),
+            enum_def("OneUnit", vec![vec![Type::NEVER], vec![]]),
+        );
+
+        let uninhabited = [
+            Type::NEVER,
+            never_pair,
+            nested,
+            Type::new_struct(holds_never),
+            Type::new_enum(void),
+            Type::new_enum(all_never),
+        ];
+        let inhabited = [
+            Type::I32,
+            Type::UNIT,
+            Type::ERROR,
+            never_empty,
+            nested_empty,
+            pointer,
+            Type::new_struct(holds_empty),
+            Type::new_enum(one_unit),
+        ];
+        for ty in uninhabited {
+            assert!(
+                pool.is_uninhabited(ty),
+                "{} has no values",
+                pool.safe_type_name(ty)
+            );
+        }
+        for ty in inhabited {
+            assert!(
+                !pool.is_uninhabited(ty),
+                "{} has a value",
+                pool.safe_type_name(ty)
+            );
+        }
+        let frozen = pool.freeze();
+        for ty in uninhabited {
+            assert!(frozen.is_uninhabited(ty));
+        }
+        for ty in inhabited {
+            assert!(!frozen.is_uninhabited(ty));
+        }
     }
 
     /// RUE-1604: the containment-facts join ORs `carries_linear` into

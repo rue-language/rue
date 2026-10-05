@@ -1369,6 +1369,83 @@ drop fn StrBuf(self) { }
         }
 
         #[test]
+        fn read_of_uninhabited_pointee_diverges_without_a_memory_access() {
+            // RUE-2548 (spec 9.2:6f): a read through a pointer to a type with
+            // no values ends its block in `Unreachable`, which traps, and
+            // emits no read; a read of an inhabited pointee that merely
+            // mentions `!` stays an ordinary read.
+            let declarations = "struct S { a: i32, b: ! } \
+                                struct T { a: i32, b: [!; 0] } \
+                                enum E { A(!), B(i32, [!; 1]) } \
+                                enum V {} \
+                                enum F { A(!), B }";
+            let cases = [
+                ("!", true),
+                ("[!; 2]", true),
+                ("[[!; 1]; 3]", true),
+                ("S", true),
+                ("E", true),
+                ("V", true),
+                ("[!; 0]", false),
+                ("T", false),
+                ("F", false),
+            ];
+            for read in ["ptr_read", "ptr_read_unaligned"] {
+                for (pointee, uninhabited) in cases {
+                    let source = format!(
+                        "{declarations} \
+                         fn probe(p: ptr mut {pointee}) {{ checked {{ @{read}(p) }}; }} \
+                         fn main() -> i32 {{ \
+                             probe(checked {{ @int_to_ptr(@ptr_to_int(@alloc(16, 8))) }}); 0 \
+                         }}"
+                    );
+                    let state = test_cfg(&source).unwrap_or_else(|errors| {
+                        panic!("@{read} of {pointee} must reach a CFG: {errors:?}")
+                    });
+                    let cfg = &state
+                        .functions
+                        .iter()
+                        .find(|function| function.definition_source_name() == Some("probe"))
+                        .unwrap_or_else(|| panic!("missing CFG for @{read} of {pointee}"))
+                        .record
+                        .cfg;
+                    let reads = cfg
+                        .blocks()
+                        .iter()
+                        .flat_map(|block| block.insts.iter())
+                        .filter(|value| {
+                            matches!(
+                                cfg.get_inst(**value).data,
+                                rue_cfg::CfgInstData::Intrinsic { operation, .. }
+                                    if operation.reads_pointee()
+                            )
+                        })
+                        .count();
+                    let returns = cfg.blocks().iter().any(|block| {
+                        matches!(block.terminator, rue_cfg::Terminator::Return { .. })
+                    });
+                    let traps = cfg
+                        .blocks()
+                        .iter()
+                        .any(|block| matches!(block.terminator, rue_cfg::Terminator::Unreachable));
+                    if uninhabited {
+                        assert_eq!(reads, 0, "@{read} of {pointee} must access no memory");
+                        assert!(traps, "@{read} of {pointee} must end in Unreachable");
+                        assert!(!returns, "@{read} of {pointee} must not fall through");
+                    } else {
+                        assert_eq!(reads, 1, "@{read} of {pointee} is an ordinary read");
+                        assert!(returns, "@{read} of {pointee} must complete");
+                    }
+                    for &target in Target::all() {
+                        test_codegen_state(&state, target).unwrap_or_else(|error| {
+                            panic!("@{read} of {pointee} must lower for {target}: {error}")
+                        });
+                    }
+                }
+            }
+        }
+
+        #[test]
         fn assert_uses_the_unit_contract_through_cfg() {
             // `@assert` is unit-typed: it returns on the success path, so the CFG
             // reuses the `UnitConst`-style dummy value for the trailing return.

@@ -339,6 +339,29 @@ const ENTRIES: &[Entry] = &[
         intrinsic(UnsupportedIntrinsicKind::IntToPointer),
         &[],
     ),
+    // RUE-2548 (9.2:6f): a read through a pointer whose pointee is a type with
+    // a zero-length `never` part, or an enum with a buildable variant,
+    // completes. The oracle does not model `@ptr_read`/`@ptr_write`, so it
+    // stops with the typed gap; the spec runner still checks the compiler's
+    // run.
+    Entry::new(
+        "runtime.pointers",
+        "ptr_read_enum_with_a_buildable_variant_completes",
+        intrinsic(UnsupportedIntrinsicKind::PointerWrite),
+        &[],
+    ),
+    Entry::new(
+        "runtime.pointers",
+        "ptr_read_struct_with_zero_length_never_field_completes",
+        intrinsic(UnsupportedIntrinsicKind::PointerWrite),
+        &[],
+    ),
+    Entry::new(
+        "runtime.pointers",
+        "ptr_read_zero_length_never_array_completes",
+        intrinsic(UnsupportedIntrinsicKind::PointerRead),
+        &[],
+    ),
     // ADR-0059 phase 5 (RUE-963): the typed-access width and unaligned round
     // trip cases anchor their pointers via @int_to_ptr, which the oracle does
     // not model.
