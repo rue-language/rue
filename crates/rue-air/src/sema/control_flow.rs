@@ -919,6 +919,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 (false, false) => Type::NEVER,
                 (false, true) => else_type,
                 (true, false) => then_type,
+                // A completing branch whose value has type `!` (a read of a
+                // `!`-typed binding) coerces to its sibling's type
+                // (Sub-Never, 3.4:3-4) (RUE-2610).
+                (true, true) if then_type.is_never() => else_type,
+                (true, true) if else_type.is_never() => then_type,
                 (true, true) => {
                     // Neither diverges - types must match exactly
                     if !self.types_equivalent(then_type, else_type)
@@ -983,9 +988,15 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             ctx.divergence_kinds = DivergenceKinds::NONE;
             ctx.pop_scope();
 
-            // Check that the then branch has unit type (or Never/Error)
+            // Check that the then branch has unit type (or Never/Error). A
+            // continuing branch whose value has type `!` coerces to `()`
+            // (3.4:4), as it does at an `if`/`else` join (RUE-2610).
             let then_type = then_result.ty;
-            if then_type != Type::UNIT && then_result.continues && !then_type.is_error() {
+            if then_type != Type::UNIT
+                && then_result.continues
+                && !then_type.is_error()
+                && !then_type.is_never()
+            {
                 return Err(CompileError::new(
                     ErrorKind::TypeMismatch {
                         expected: "()".to_string(),
@@ -2346,8 +2357,13 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 Some(prev) => {
                     if !result_continues.unwrap_or(true) {
                         body_type
-                    } else if !body_result.continues {
+                    } else if !body_result.continues || body_type.is_never() {
+                        // A completing arm whose value has type `!` (a read
+                        // of a `!`-typed binding) coerces to the other arms'
+                        // type (Sub-Never, 3.4:3-4) (RUE-2610).
                         prev
+                    } else if prev.is_never() {
+                        body_type
                     } else if !self.types_equivalent(prev, body_type)
                         && !prev.is_error()
                         && !body_type.is_error()
