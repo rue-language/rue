@@ -202,6 +202,11 @@ fn main() -> i32 {
 
 Type values cannot exist at runtime. It is a compile-time error to attempt to store a type value in a runtime variable.
 
+A call producing a type or module value is evaluated at compile time only when
+every parameter is declared `comptime` and every argument is comptime-evaluable
+(4.14:28). A call producing such a value that does not reduce at compile time
+is a compile-time error.
+
 ```rue
 fn main() -> i32 {
     let t = comptime { i32 };  // ERROR: type values cannot exist at runtime
