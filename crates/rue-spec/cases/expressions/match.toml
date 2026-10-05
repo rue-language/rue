@@ -2232,6 +2232,79 @@ compile_fail = true
 error_contains = "E0456"
 
 [[case]]
+name = "struct_pattern_arm_consumes_an_empty_linear_struct"
+spec = ["4.7:44", "5.1:21"]
+preview = "struct_patterns"
+preview_should_pass = true
+description = "An arm's struct pattern over a field-less linear scrutinee or payload consumes it (RUE-2540)"
+source = """
+linear struct Done {}
+enum R { Ok(Done), Err(i32) }
+fn main() -> i32 {
+    let d = Done {};
+    let a = match d { Done {} => 40 };
+    let r = R.Ok(Done {});
+    let b = match r { R.Ok(Done {}) => 2, R.Err(e) => e };
+    a + b
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "struct_pattern_arm_takes_a_linear_struct_apart_whole"
+spec = ["4.7:44", "5.1:21"]
+preview = "struct_patterns"
+preview_should_pass = true
+source = """
+linear struct Token { id: i32 }
+linear struct Ticket { t: Token, a: i32, b: i32 }
+fn redeem(t: Token) -> i32 { t.id }
+fn main() -> i32 {
+    let k = Ticket { t: Token { id: 30 }, a: 10, b: 2 };
+    match k { Ticket { t, a, b } => redeem(t) + a + b }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "struct_pattern_arm_leaves_another_linear_value_unconsumed"
+spec = ["4.7:44", "3.8:32"]
+preview = "struct_patterns"
+preview_should_pass = true
+source = """
+linear struct Done {}
+fn main() -> i32 {
+    let d = Done {};
+    let e = Done {};
+    match d { Done {} => 0 }
+}
+"""
+compile_fail = true
+error_contains = ["E0406", "linear value 'e' must be consumed"]
+
+[[case]]
+name = "struct_pattern_arm_drops_an_empty_destructor_struct_once"
+spec = ["4.7:44", "3.9:4"]
+preview = "struct_patterns"
+preview_should_pass = true
+source = """
+struct Guard {}
+drop fn Guard(self) { @dbg(9); }
+fn main() -> i32 {
+    let g = Guard {};
+    let x = match g { Guard {} => { @dbg(1); 3 } };
+    @dbg(2);
+    x
+}
+"""
+expected_stdout = """
+1
+9
+2
+"""
+exit_code = 3
+
+[[case]]
 name = "struct_pattern_arm_cannot_discard_a_linear_field"
 spec = ["4.7:44"]
 preview = "struct_patterns"

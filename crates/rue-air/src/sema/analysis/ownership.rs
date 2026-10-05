@@ -3331,6 +3331,42 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         def.declared_linear
     }
 
+    /// Record a struct pattern's hidden temporary as the complete consuming
+    /// destructure of a declared-`linear` value (RUE-2540).
+    ///
+    /// A one-field projection out of a declared-`linear` struct consumes the
+    /// whole value and destroys the residue (3.8:33), so a pattern lowered
+    /// to one field read per field (5.1:21) would consume the temporary at
+    /// its first field and find it moved at the second, and a pattern with
+    /// no fields would never consume it at all. A struct pattern instead
+    /// names every field (5.1:20, 4.7:44): it takes the value apart whole.
+    /// Its field reads are therefore ordinary partial moves out of the
+    /// temporary, and the temporary's obligation is discharged once its
+    /// linear fields are consumed (see `check_linear_binding_consumed`).
+    ///
+    /// A declared-`linear` struct with its own destructor is not recorded:
+    /// projection out of it is rejected (3.9:34), and a pattern discharging
+    /// its obligation would hand the value to that destructor implicitly.
+    pub(crate) fn record_linear_pattern_temporary(
+        &self,
+        local: Spur,
+        ty: Type,
+        ctx: &mut AnalysisContext,
+    ) {
+        let Some(struct_id) = ty.as_struct() else {
+            return;
+        };
+        if self.struct_declared_linear(struct_id)
+            && self
+                .body_type_pool()
+                .struct_def(struct_id)
+                .destructor
+                .is_none()
+        {
+            ctx.linear_pattern_temporaries.insert(local);
+        }
+    }
+
     /// The projection depth of the value a declared-`linear` field access
     /// destructures: `trace.projections[..depth]` names the consumed place,
     /// and `trace.projections[depth]` is the field access that destructures
@@ -3853,11 +3889,17 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // not receive that exemption and still follow RUE-614.
             let is_destructor_self =
                 ctx.is_destructor && ctx.params.iter().any(|param| param.name == trace.root_var);
+            // A struct pattern's own field read out of its declared-linear
+            // temporary is a partial move, not a destructure: the pattern
+            // as a whole takes the value apart (RUE-2540).
+            let is_pattern_field_read = declared_depth == Some(0)
+                && ctx.linear_pattern_temporaries.contains(&trace.root_var);
             let is_declared_linear = if has_untrackable_index {
                 immediate_parent_declared_linear
             } else {
                 declared_depth.is_some()
-            } && !is_destructor_self;
+            } && !is_destructor_self
+                && !is_pattern_field_read;
 
             // Move checking using the trace. `move_is_partial` selects the
             // MarkMoved marker's place component: absent for a whole-slot
@@ -6010,7 +6052,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 continue;
             };
             let state = ctx.ownership.moved_vars.get(symbol);
-            self.check_linear_binding_consumed(*symbol, local, state)?;
+            self.check_linear_binding_consumed(*symbol, local, state, ctx)?;
         }
 
         Ok(())
@@ -6085,6 +6127,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         symbol: Spur,
         local: &LocalVar,
         state: Option<&VariableMoveState>,
+        ctx: &AnalysisContext,
     ) -> CompileResult<()> {
         if !self.type_requires_consumption(local.ty) {
             return Ok(());
@@ -6101,7 +6144,19 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // element-wise consumption of a root linear array (RUE-186, spec
         // 3.8:71) and of an array field consumed through per-element field
         // moves.
-        let Some(residue) = self.residual_linear_place(local.ty, state, &mut Vec::new())? else {
+        //
+        // A struct pattern's temporary over a declared-`linear` struct was
+        // taken apart whole by the pattern (RUE-2540), so its obligation is
+        // the residue of its fields, exactly as for a declared-linear
+        // `@drop` operand: none for a field-less struct, and otherwise a
+        // linear field the pattern's own reads left unconsumed.
+        let residue = match local.ty.as_struct() {
+            Some(struct_id) if ctx.linear_pattern_temporaries.contains(&symbol) => {
+                self.residual_linear_fields(struct_id, state, &mut Vec::new())?
+            }
+            _ => self.residual_linear_place(local.ty, state, &mut Vec::new())?,
+        };
+        let Some(residue) = residue else {
             return Ok(());
         };
 
@@ -6251,7 +6306,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 // An entry can name a non-local binding (a comptime type
                 // alias hiding a local pushes one); it introduces no value.
                 let Some(local) = local else { continue };
-                self.check_linear_binding_consumed(symbol, local, state)?;
+                self.check_linear_binding_consumed(symbol, local, state, ctx)?;
             }
         }
 
