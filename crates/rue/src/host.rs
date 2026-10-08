@@ -368,6 +368,12 @@ impl FilesystemCompilerHost {
         self.state.session.unstable_query_runtime_weak()
     }
 
+    /// The syntax of the committed closure, for hosts that navigate source
+    /// (an editor server) rather than compile it.
+    pub fn syntax(&self) -> Option<rue_compiler::SyntaxView> {
+        self.state.session.published()
+    }
+
     /// Query RIR through the retained session for the CLI presentation path.
     pub fn rir(&mut self) -> MultiErrorResult<std::sync::Arc<RirView>> {
         self.state.session.rir()
