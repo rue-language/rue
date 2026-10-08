@@ -1333,6 +1333,13 @@ pub struct EndpointWork {
 }
 
 impl CodegenReady {
+    /// Warnings of the analysis behind this endpoint. A host that stops at
+    /// codegen-ready — an editor check, for example — reports the same
+    /// warnings a full compile through this endpoint would.
+    pub fn warnings(&self) -> &[crate::CompileWarning] {
+        self.rooted.warnings()
+    }
+
     pub fn unstable_work(&self) -> EndpointWork {
         EndpointWork {
             semantic: EndpointQueryWork::from_semantic_work(self.rooted.work),
