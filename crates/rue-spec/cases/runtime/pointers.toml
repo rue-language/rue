@@ -235,6 +235,73 @@ fn main() -> i32 {
 compile_fail = true
 error_contains = "E0206"
 
+# 9.1:10 — a `let` annotation constrains an array-pointee binding exactly as it
+# does a scalar one: mutability, element type and length are all part of the
+# pointer type (RUE-2244).
+[[case]]
+name = "let_annotation_rejects_const_to_mut_array_pointee"
+spec = ["9.1:10"]
+source = """
+fn main() -> i32 {
+    let src: [i64; 2] = [1, 2];
+    checked {
+        let q: ptr const [i64; 2] = @raw(src);
+        let p: ptr mut [i64; 2] = q;
+    };
+    0
+}
+"""
+compile_fail = true
+error_contains = "expected ptr mut [i64; 2], found ptr const [i64; 2]"
+
+[[case]]
+name = "let_annotation_rejects_array_pointee_element_mismatch"
+spec = ["9.1:10"]
+source = """
+fn main() -> i32 {
+    let src: [i64; 2] = [1, 2];
+    checked {
+        let q: ptr const [i64; 2] = @raw(src);
+        let p: ptr const [i32; 2] = q;
+    };
+    0
+}
+"""
+compile_fail = true
+error_contains = "expected ptr const [i32; 2], found ptr const [i64; 2]"
+
+[[case]]
+name = "let_annotation_rejects_array_pointee_length_mismatch"
+spec = ["9.1:10"]
+source = """
+fn main() -> i32 {
+    let src: [i64; 2] = [1, 2];
+    checked {
+        let q: ptr const [i64; 2] = @raw(src);
+        let p: ptr const [i64; 3] = q;
+    };
+    0
+}
+"""
+compile_fail = true
+error_contains = "expected ptr const [i64; 3], found ptr const [i64; 2]"
+
+[[case]]
+name = "let_annotation_accepts_identical_array_pointee"
+spec = ["9.1:10"]
+source = """
+fn main() -> i32 {
+    let mut src: [i64; 2] = [1, 2];
+    checked {
+        let q: ptr mut [i64; 2] = @raw_mut(src);
+        let p: ptr mut [i64; 2] = q;
+        @ptr_write(p, [40, 2]);
+    };
+    @intCast(src[0] + src[1])
+}
+"""
+exit_code = 42
+
 # =============================================================================
 # @int_to_ptr converts u64 address to pointer with explicit type annotation
 # =============================================================================
