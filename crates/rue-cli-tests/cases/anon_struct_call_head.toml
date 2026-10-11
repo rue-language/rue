@@ -1,0 +1,55 @@
+# RUE-2224: an anonymous struct declaration used directly as a call head
+# (`struct { .. }.make(5)`) gets an identity like any other declaration
+# expression (4.14:8). Export once found no stable identity for it and failed
+# the whole compile under E1403 "output publication failed" with no span; it
+# now compiles and runs, in a function body and nested inside a `-> type`
+# constructor's method.
+
+[section]
+id = "cli.anon_struct_call_head"
+name = "Anonymous struct declarations as call heads (RUE-2224)"
+description = "`struct { .. }.assoc(..)` compiles and runs without binding the anonymous type first."
+
+[[case]]
+name = "anon_struct_assoc_call_head_runs"
+description = "RUE-2224's repro: an associated constructor called on an inline anonymous struct, then a method on its result."
+differential_opt = true
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let inner = struct {
+        w: i32,
+        fn make(x: i32) -> Self { Self { w: x } }
+        fn get(self) -> i32 { self.w }
+    }.make(5);
+    inner.get()
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+stdout = ""
+exit_code = 5
+
+[[case]]
+name = "anon_struct_call_head_in_type_constructor_method"
+description = "The same head inside a method of a `-> type` constructor's struct, beside a value-returning head in `main`."
+differential_opt = true
+files = [{ path = "main.rue", source = """
+fn Outer() -> type {
+    struct {
+        fn run() -> i32 {
+            let inner = struct {
+                w: i32,
+                fn make(x: i32) -> Self { Self { w: x } }
+                fn get(self) -> i32 { self.w }
+            }.make(5);
+            inner.get()
+        }
+    }
+}
+fn main() -> i32 {
+    let O = Outer();
+    O.run() + struct { fn thirty_seven() -> i32 { 37 } }.thirty_seven()
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+stdout = ""
+exit_code = 42
