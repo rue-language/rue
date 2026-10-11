@@ -304,3 +304,40 @@ fn ignore(comptime T: type, comptime p: T) -> i32 { 42 }
 const ANSWER: i32 = ignore(P, P { x: 1 }); fn main() -> i32 { ANSWER }
 ''' }]
 exit_code = 42
+
+# RUE-2307: a struct literal whose type is spelled through a module
+# (`lib.P { .. }`) is the same Copy aggregate as the unqualified spelling
+# (4.14:5), as a comptime argument and as a constant later passed as one. Both
+# were once refused (E1201, E1200) while the unqualified spelling worked.
+[[case]]
+name = "module_qualified_struct_literal_argument"
+description = "RUE-2307's repro: `lib.sum(lib.P { a: 3, b: 4 })` passes a qualified struct literal as a comptime argument."
+files = [
+    { path = "main.rue", source = '''
+const lib = @import("lib.rue");
+fn main() -> i32 { lib.sum(lib.P { a: 3, b: 4 }) }
+''' },
+    { path = "lib.rue", source = '''
+@copy
+pub struct P { a: i32, b: i32 }
+pub fn sum(comptime p: P) -> i32 { p.a + p.b }
+''' },
+]
+exit_code = 7
+
+[[case]]
+name = "module_qualified_struct_literal_constant_argument"
+description = "A constant initialized from a qualified struct literal is a comptime argument (RUE-2307)."
+files = [
+    { path = "main.rue", source = '''
+const lib = @import("lib.rue");
+const PV: lib.P = lib.P { a: 3, b: 4 };
+fn main() -> i32 { lib.sum(PV) }
+''' },
+    { path = "lib.rue", source = '''
+@copy
+pub struct P { a: i32, b: i32 }
+pub fn sum(comptime p: P) -> i32 { p.a + p.b }
+''' },
+]
+exit_code = 7
