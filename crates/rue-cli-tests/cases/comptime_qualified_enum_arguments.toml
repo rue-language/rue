@@ -1,0 +1,79 @@
+# RUE-2222: an enum value built through a module (`lib.Choice.A(9)`) or an
+# inline type-constructor head (`Result(i32, i32).Ok(42)`) is a Copy aggregate
+# like any other (4.14:26), so it is comptime-evaluable as a comptime argument
+# and inside a `comptime { }` block. The ordinary-body engine resolved a
+# variant constructor's receiver only when it was a bare enum name, so both
+# spellings were E1201 as arguments and E1200 in a comptime block, while the
+# nullary `lib.Choice.B` and a `const`-bound value worked.
+
+[section]
+id = "cli.comptime_qualified_enum_arguments"
+name = "Qualified and inline-head enum values at comptime (RUE-2222)"
+description = "Payload variants spelled through a module or an inline type-constructor head are comptime-evaluable."
+
+[[case]]
+name = "module_qualified_payload_variant_argument"
+description = "RUE-2222's repro: `lib.pick(lib.Choice.A(9))` passes a qualified payload variant as a comptime argument."
+files = [
+    { path = "main.rue", source = '''
+const lib = @import("lib.rue");
+fn main() -> i32 { lib.pick(lib.Choice.A(9)) + lib.pick(lib.Choice.B) }
+''' },
+    { path = "lib.rue", source = '''
+pub enum Choice { A(i32), B }
+pub fn pick(comptime c: Choice) -> i32 { match c { Choice.A(v) => v, Choice.B => 0 } }
+''' },
+]
+exit_code = 9
+
+[[case]]
+name = "module_qualified_payload_variant_in_comptime_block"
+description = "A qualified payload variant built inside a `comptime { }` block and as a comptime-block argument."
+files = [
+    { path = "main.rue", source = '''
+const lib = @import("lib.rue");
+fn main() -> i32 {
+    let v: i32 = comptime { let c = lib.Choice.A(9); lib.pick(c) };
+    v + lib.pick(comptime { lib.Choice.A(33) })
+}
+''' },
+    { path = "lib.rue", source = '''
+pub enum Choice { A(i32), B }
+pub fn pick(comptime c: Choice) -> i32 { match c { Choice.A(v) => v, Choice.B => 0 } }
+''' },
+]
+exit_code = 42
+
+[[case]]
+name = "inline_head_payload_variant_argument"
+description = "An inline type-constructor head's payload variant, local and module-qualified, as a comptime argument."
+files = [
+    { path = "main.rue", source = '''
+const lib = @import("lib.rue");
+fn Result(comptime T: type, comptime E: type) -> type { enum { Ok(T), Err(E) } }
+fn get(comptime r: Result(i32, i32)) -> i32 { match r { Result(i32, i32).Ok(v) => v, Result(i32, i32).Err(e) => e } }
+fn main() -> i32 { get(Result(i32, i32).Ok(40)) + lib.get(lib.Result(i32, i32).Err(2)) }
+''' },
+    { path = "lib.rue", source = '''
+pub fn Result(comptime T: type, comptime E: type) -> type { enum { Ok(T), Err(E) } }
+pub fn get(comptime r: Result(i32, i32)) -> i32 { match r { Result(i32, i32).Ok(v) => v, Result(i32, i32).Err(e) => e } }
+''' },
+]
+exit_code = 42
+
+[[case]]
+name = "module_qualified_unknown_variant_argument"
+description = "An unknown variant on a qualified enum in a comptime argument is rejected as the bare-name spelling is."
+compile_fail = true
+error_contains = ["E1201"]
+compile_stderr_not_contains = ["E9000"]
+files = [
+    { path = "main.rue", source = '''
+const lib = @import("lib.rue");
+fn main() -> i32 { lib.pick(lib.Choice.Q(9)) }
+''' },
+    { path = "lib.rue", source = '''
+pub enum Choice { A(i32), B }
+pub fn pick(comptime c: Choice) -> i32 { match c { Choice.A(v) => v, Choice.B => 0 } }
+''' },
+]

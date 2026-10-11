@@ -2838,6 +2838,50 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 }
                 _ => None,
             };
+            // An enum receiver spelled through a module (`lib.Choice.A(9)`)
+            // or as an inline type-constructor head (`Result(i32, i32).Ok(1)`,
+            // `lib.Result(i32, i32).Ok(1)`) constructs a variant exactly as a
+            // bare enum name does (RUE-2222). A qualified path resolves
+            // through the walker the `FieldGet` type-path arm uses; a head is
+            // evaluated. Only variant constructors are taken here: any other
+            // receiver (`lib.nums.max(..)`, a runtime call) keeps the reading
+            // below.
+            let receiver_enum = match self.program_rir().get(receiver).data {
+                _ if type_value.is_some() => None,
+                InstData::FieldGet { .. } => match self.decode_module_path(receiver, env) {
+                    Some(path) => host_value!(self.host.resolve_comptime_type_path(
+                        path.file,
+                        path.root_module.as_ref(),
+                        &path.segments,
+                        span
+                    ))
+                    .and_then(|value| value.as_type()),
+                    None => None,
+                },
+                InstData::Call { .. } | InstData::MethodCall { .. } => {
+                    match self.eval(receiver, env) {
+                        ComptimeOutcome::Known(value) => value.as_type(),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            };
+            if let Some(enum_type) = receiver_enum
+                && self.host.type_is_enum(&enum_type)
+            {
+                let payload = outcome_value!(self.eval_enum_payload(
+                    &enum_type,
+                    &method,
+                    &args,
+                    declared.as_ref(),
+                    env,
+                    span
+                ));
+                let site = self.semantic_site(inst_ref, ComptimeSiteKind::Member, span);
+                return self.host.resolve_comptime_enum_variant_with_payload(
+                    enum_type, method, payload, &site, span,
+                );
+            }
             if let Some(type_value) = type_value {
                 if self.host.type_is_enum(&type_value) {
                     let payload = outcome_value!(self.eval_enum_payload(
