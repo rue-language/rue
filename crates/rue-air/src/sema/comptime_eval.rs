@@ -2412,11 +2412,12 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         if self.body_inline_ctor_head_candidates() == 0 {
             return Ok(AHashSet::new());
         }
-        // A head is the receiver of a `.NAME(..)` path whose receiver is
-        // itself a call (`F(args).Ok(x)`, or module-qualified
-        // `m.F(args).Ok(x)`, which RIR spells as a nested MethodCall), or a
-        // struct literal's explicit `ctor_head`. Runtime shapes like
-        // `foo(x).bar()` are collected too but fail the reduction cheaply
+        // A head is the receiver of a `.NAME(..)` or `.NAME` path whose
+        // receiver is itself a call (`F(args).Ok(x)`, `F(args).None`, or
+        // module-qualified `m.F(args).Ok(x)`, which RIR spells as a nested
+        // MethodCall), or a struct literal's explicit `ctor_head`. Runtime
+        // shapes like `foo(x).bar()` and `foo(x).field` are collected too but
+        // fail the reduction cheaply
         // (the comptime engine rejects callees with runtime parameters).
         let (candidates, scan) = inline_ctor_head_candidates_with_work_checked(
             self.body_rir_ref(),
@@ -3270,6 +3271,19 @@ where
                     InstData::Call { .. } | InstData::MethodCall { .. }
                 ) {
                     candidates.push(receiver);
+                    if attribution_enabled {
+                        work.raw_candidates += 1;
+                    }
+                }
+            }
+            // A nullary variant on an inline head (`Opt(u8).None`, RUE-2306)
+            // reduces the head exactly as the payload form above does.
+            InstData::FieldGet { base, .. } => {
+                if matches!(
+                    rir.get(base).data,
+                    InstData::Call { .. } | InstData::MethodCall { .. }
+                ) {
+                    candidates.push(base);
                     if attribution_enabled {
                         work.raw_candidates += 1;
                     }

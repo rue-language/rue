@@ -3354,6 +3354,26 @@ impl<'a> ConstraintGenerator<'a> {
                     };
                 }
 
+                // Inline type-constructor head `F(args).Variant` (RUE-2306):
+                // sema pre-reduced the head in `inline_ctor_head_types`,
+                // whether `F` is local or module-qualified, so a nullary
+                // variant on it is the reduced enum, exactly as the payload
+                // form `F(args).Variant(..)` is.
+                if let Some(enum_ty) = self
+                    .inline_ctor_head_types
+                    .and_then(|heads| heads.get(base).copied())
+                    && let Some(enum_id) = enum_ty.as_enum()
+                    && self
+                        .type_pool
+                        .enum_def(enum_id)
+                        .find_variant(self.interner.resolve(field))
+                        .is_some()
+                {
+                    let ty = InferType::Concrete(enum_ty);
+                    self.record_type(inst_ref, ty.clone());
+                    return ExprInfo::new(ty, span);
+                }
+
                 let base_info = self.generate(*base, ctx);
                 continues &= base_info.continues;
                 if self.was_canceled() {

@@ -164,9 +164,10 @@ impl RirDeclarationIndex {
             // reachability scan outright: the scan's candidates are a subset of
             // these arena occurrences, so zero here proves zero there.
             match &inst.data {
-                InstData::MethodCall { receiver, .. } => {
+                InstData::MethodCall { receiver: head, .. }
+                | InstData::FieldGet { base: head, .. } => {
                     if matches!(
-                        rir.get(*receiver).data,
+                        rir.get(*head).data,
                         InstData::Call { .. } | InstData::MethodCall { .. }
                     ) {
                         inline_ctor_head_candidates += 1;

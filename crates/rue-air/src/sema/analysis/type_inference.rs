@@ -3159,6 +3159,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
             let base_result = self.analyze_inst_for_projection(air, base, ctx)?;
             let base_type = base_result.ty;
+            if let Some(result) =
+                self.try_analyze_reduced_head_enum_variant(air, &base_result, field, field_span)?
+            {
+                return Ok(result);
+            }
 
             // Module member access in a projection position: equality
             // operands are read through a shared borrow (4.3:3f), so a

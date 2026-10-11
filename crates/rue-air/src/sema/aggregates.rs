@@ -2122,6 +2122,55 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         Ok(Some(AnalysisResult::new(air_ref, ty)))
     }
 
+    /// Resolve `F(args).Variant` when the already-analyzed base is an inline
+    /// type-constructor head (RUE-596, spec 4.14:23) that reduced to an enum:
+    /// the nullary twin of the `F(args).Variant(..)` arm in method-call
+    /// analysis, for local and module-qualified `F` alike (RUE-2306). The
+    /// base's `TypeConst` is a comptime-only no-op that CFG build drops.
+    /// Any other base falls through to ordinary field access.
+    pub(crate) fn try_analyze_reduced_head_enum_variant(
+        &mut self,
+        air: &mut Air,
+        base: &AnalysisResult,
+        variant: Spur,
+        span: Span,
+    ) -> CompileResult<Option<AnalysisResult>> {
+        if base.ty != Type::COMPTIME_TYPE {
+            return Ok(None);
+        }
+        let AirInstData::TypeConst(reduced_ty) = air.get(base.air_ref).data else {
+            return Ok(None);
+        };
+        let Some(enum_id) = reduced_ty.as_enum() else {
+            return Ok(None);
+        };
+
+        let enum_def = self.body_type_pool().enum_def(enum_id);
+        let variant_name = self.body_interner().resolve(&variant);
+        let variant_index = enum_def.find_variant(variant_name).ok_or_compile_error(
+            ErrorKind::UnknownVariant {
+                enum_name: self.format_type_name(reduced_ty),
+                variant_name: variant_name.to_string(),
+            },
+            span,
+        )?;
+
+        let expected = enum_def.variant_payload(variant_index).len();
+        if expected > 0 {
+            return Err(CompileError::new(
+                ErrorKind::WrongArgumentCount { expected, found: 0 },
+                span,
+            ));
+        }
+
+        let air_ref = air.add_enum_variant(enum_id, variant_index as u32, &[], reduced_ty, span)?;
+        Ok(Some(AnalysisResult::with_continues(
+            air_ref,
+            reduced_ty,
+            base.continues,
+        )))
+    }
+
     /// Analyze an array initialization.
     fn analyze_array_init(
         &mut self,

@@ -4178,6 +4178,12 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             ));
         }
 
+        if let Some(result) =
+            self.try_analyze_reduced_head_enum_variant(air, &base_result, field, span)?
+        {
+            return Ok(result);
+        }
+
         // Handle module member access that wasn't caught above
         if let Some(module_id) = base_type.as_module() {
             return self.analyze_module_type_member_access(
