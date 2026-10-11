@@ -1134,3 +1134,54 @@ fn main() -> i32 {
 stdout = "2\n"
 exit_code = 0
 differential_opt = true
+
+# RUE-2221: an accessor on a local initialized from a comptime-specialized
+# call failed the mandatory splice batch's verification ("loads unannotated
+# local storage before it is initialized"), at every optimization level.
+[[case]]
+name = "accessor_on_generic_call_result"
+description = "RUE-2221's repro: `get_ref` on a local bound from a `comptime T` callee's ArrayBuf result splices and runs."
+differential_opt = true
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+fn build_generic(comptime T: type, x: T) -> std.arraybuf.ArrayBuf(T) {
+    let AB = std.arraybuf.ArrayBuf(T);
+    let mut v = AB.new();
+    v.push(x);
+    v
+}
+fn main() -> i32 {
+    let doubled = build_generic(i64, 7);
+    @intCast(doubled.get_ref(0))
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+stdout = ""
+exit_code = 7
+
+[[case]]
+name = "accessor_on_std_iter_map_result"
+description = "RUE-2221's realistic form: field reads through `get_ref` on the result of `std.iter.map`."
+differential_opt = true
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+struct NoCtx {}
+@copy
+struct Boxed { v: i64 }
+fn box_it(borrow c: NoCtx, x: i64) -> Boxed { Boxed { v: x * 2 } }
+fn main() -> i32 {
+    let B = std.arraybuf.ArrayBuf(i64);
+    let mut xs = B.new();
+    xs.push(5);
+    xs.push(7);
+    xs.push(9);
+    let ctx = NoCtx {};
+    let boxed = std.iter.map(i64, Boxed, NoCtx, borrow ctx, borrow xs, box_it);
+    @intCast(boxed.get_ref(0).v + boxed.get_ref(1).v + boxed.get_ref(2).v)
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+stdout = ""
+exit_code = 42
