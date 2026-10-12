@@ -1,0 +1,54 @@
+# RUE-2409: a return type computed from a float comptime parameter,
+# `fn make(comptime v: f32) -> Mk(v)`, was E1200 "unsupported declared type
+# f32". It resolves now, as an integer-valued constructor's does. A float
+# literal written directly in a type annotation (`let a: Mk(3.0)`) is not yet
+# type grammar; that is RUE-2642.
+
+[section]
+id = "cli.float_type_constructor_return"
+name = "Float-valued type constructors in return types (RUE-2409)"
+description = "A return type applies a type constructor to a float comptime parameter."
+
+[[case]]
+name = "return_type_from_float_comptime_parameter"
+description = "RUE-2409's first repro: `-> Mk(v)` with `comptime v: f32`."
+differential_opt = true
+files = [{ path = "main.rue", source = """
+fn Mk(comptime v: f32) -> type { struct { x: i32 } }
+fn make(comptime v: f32) -> Mk(v) { Mk(v) { x: 4 } }
+fn main() -> i32 {
+    let a = make(2.5);
+    let b = make(-1.0);
+    a.x + b.x
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+stdout = ""
+exit_code = 8
+
+[[case]]
+name = "float_parameterized_parameter_types_match_by_value"
+description = "A parameter typed `Mk(v)` from a float comptime parameter accepts the same value's type."
+differential_opt = true
+files = [{ path = "main.rue", source = """
+fn Mk(comptime v: f32) -> type { struct { x: i32 } }
+fn make(comptime v: f32) -> Mk(v) { Mk(v) { x: 4 } }
+fn take(comptime v: f32, m: Mk(v)) -> i32 { m.x }
+fn main() -> i32 { take(2.5, make(2.5)) + take(1.0, make(1.0)) }
+""" }]
+args = ["main.rue", "-o", "prog"]
+stdout = ""
+exit_code = 8
+
+[[case]]
+name = "float_parameterized_types_are_distinct_by_value"
+description = "`Mk(1.5)` and `Mk(2.5)` are distinct types."
+files = [{ path = "main.rue", source = """
+fn Mk(comptime v: f32) -> type { struct { x: i32 } }
+fn make(comptime v: f32) -> Mk(v) { Mk(v) { x: 4 } }
+fn take(comptime v: f32, m: Mk(v)) -> i32 { m.x }
+fn main() -> i32 { take(1.5, make(2.5)) }
+""" }]
+args = ["main.rue"]
+compile_fail = true
+error_contains = ["E0206", "expected Mk(1.5), found Mk(2.5)"]
