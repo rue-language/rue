@@ -32,6 +32,9 @@ The index cannot rot silently because the gate fails when:
   ``core:7``, ``core:6.4:3–``), or writes a paragraph id with a ``§`` (the
   spelling before RUE-2524); a citation split across two lines is not read,
   and so not checked;
+* any of those texts cites a rule label with a section that is not the one
+  the calculus labels it in (``(D-EndScope) §6.6`` for a §6.7 rule), unless
+  the pair is a listed deliberate grouping (RUE-2516);
 * the calculus's own paragraph markers are malformed, duplicated, or declared
   under a section other than their own (a marker inside a code fence is not a
   declaration);
@@ -141,6 +144,22 @@ SPEC_RULE_ID = re.compile(r'\{\{\s*rule\(id="([^"]+)"')
 # (`(D-Foo)`, `(Use-Bar)`) but is not one is an error.
 PAREN_LABEL = re.compile(r"\((@?[A-Z][A-Za-z0-9]*(?:-[A-Za-z0-9@]+)*)\)")
 RULE_SHAPED = re.compile(r"^(?:D-)?@?[A-Z][a-z]*(?:-[A-Z@][A-Za-z]*)+$|^@[A-Z][A-Za-z]*$")
+# A rule label directly followed by the section it is cited from:
+# `(D-EndScope) §6.7`, or a `/`-list of sections, `(@Drop) §5.1/§5.3` (RUE-2516).
+LABEL_SECTION_PAIR = re.compile(
+    r"\((?P<label>@?[A-Za-z][A-Za-z0-9@-]*)\)\s*(?P<sections>§\d+(?:\.\d+)*(?:/§\d+(?:\.\d+)*)*)"
+)
+# `(Label) §X.Y` pairs that cite a section other than the rule's own on
+# purpose, each with why. The gate accepts exactly these.
+LABEL_SECTION_EXCEPTIONS: Dict[Tuple[str, str], str] = {
+    # (Fn) is stated in §5's preamble, before the subsections, and types a
+    # function body; it is cited with §5.8, the section of the call forms
+    # that check against the signature it establishes.
+    ("Fn", "5.8"): "filed with the call forms it gives a signature to",
+    # 03-metatheory.md is held for review; its one drifted pair is fixed
+    # there and this entry removed in the same change (RUE-2516).
+    ("Strict-Bottom", "5.7"): "03-metatheory.md, pending review",
+}
 
 CALCULUS_HEADING = re.compile(r"^(?P<hashes>#{2,4})\s+(?P<number>\d+(?:\.\d+)*)\.?\s+(?P<title>.+?)\s*$")
 CALCULUS_RULE = re.compile(r"─+\s*\((?P<label>[^)\s]+)\)")
@@ -851,6 +870,28 @@ def _text_files(directory: Path) -> Iterable[Path]:
         yield path
 
 
+def _formal_texts(formal_dir: Path, lean_dir: Path) -> Iterable[Tuple[Path, str, str]]:
+    """Every text file the citation checks read, as ``(resolved, relative, text)``.
+
+    That is every text file under ``formal_dir``, plus the ``.lean`` files
+    under ``lean_dir/RueCore`` wherever that is, in order of their relative
+    path. A file that is not UTF-8 is not text and is skipped.
+    """
+    paths: Dict[Path, str] = {}
+    for path in _text_files(formal_dir):
+        paths[path.resolve()] = path.relative_to(formal_dir).as_posix()
+    source_root = lean_dir / "RueCore"
+    if source_root.is_dir():
+        for path in sorted(source_root.rglob("*.lean")):
+            paths.setdefault(path.resolve(), path.relative_to(lean_dir).as_posix())
+    for resolved, relative in sorted(paths.items(), key=lambda item: item[1]):
+        try:
+            text = resolved.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            continue
+        yield resolved, relative, text
+
+
 def calculus_citations_in_files(
     formal_dir: Path, calculus_path: Path, lean_dir: Path, calculus_ids: set
 ) -> List[str]:
@@ -871,18 +912,7 @@ def calculus_citations_in_files(
     so it is not checked. None is written that way.
     """
     errors: List[str] = []
-    paths: Dict[Path, str] = {}
-    for path in _text_files(formal_dir):
-        paths[path.resolve()] = path.relative_to(formal_dir).as_posix()
-    source_root = lean_dir / "RueCore"
-    if source_root.is_dir():
-        for path in sorted(source_root.rglob("*.lean")):
-            paths.setdefault(path.resolve(), path.relative_to(lean_dir).as_posix())
-    for resolved, relative in sorted(paths.items(), key=lambda item: item[1]):
-        try:
-            text = resolved.read_text(encoding="utf-8")
-        except (UnicodeDecodeError, OSError):
-            continue
+    for resolved, relative, text in _formal_texts(formal_dir, lean_dir):
         if "core:" not in text and "§" not in text:
             continue
         is_calculus = resolved == calculus_path.resolve()
@@ -909,6 +939,41 @@ def calculus_citations_in_files(
                             f"{relative}:{number}: cites `core:{ref}`, which is not a paragraph "
                             f"`{calculus_path.name}` declares"
                         )
+    return errors
+
+
+def label_sections_in_files(formal_dir: Path, lean_dir: Path, calculus: Calculus) -> List[str]:
+    """Check every ``(Label) §X.Y`` pair against the section that labels the rule.
+
+    The files are those ``calculus_citations_in_files`` reads. A pair is a
+    rule label the calculus defines followed by a section, or a ``/``-list of
+    sections (``(@Drop) §5.1/§5.3``); it is right when one of the sections is
+    the rule's own or encloses it (``(D-Let) §6`` for a §6.7 rule). A label
+    the calculus does not define, or one not directly followed by ``§``, is
+    not a pair. Deliberate groupings are listed in ``LABEL_SECTION_EXCEPTIONS``.
+    """
+    errors: List[str] = []
+    for _, relative, text in _formal_texts(formal_dir, lean_dir):
+        if "§" not in text:
+            continue
+        for number, line in enumerate(text.splitlines(), start=1):
+            for match in LABEL_SECTION_PAIR.finditer(line):
+                label = match.group("label")
+                home = calculus.rules.get(label)
+                if home is None:
+                    continue
+                cited = [section.lstrip("§") for section in match.group("sections").split("/")]
+                if any(section == home or home.startswith(section + ".") for section in cited):
+                    continue
+                if any((label, section) in LABEL_SECTION_EXCEPTIONS for section in cited):
+                    continue
+                # A static rule cited from §6 is usually its dynamic `D-` twin.
+                twin = calculus.rules.get(f"D-{label}")
+                hint = f"; did you mean (D-{label}), which it labels in §{twin}?" if twin in cited else ""
+                errors.append(
+                    f"{relative}:{number}: cites `({label}) {match.group('sections')}`, but the calculus "
+                    f"labels ({label}) in §{home}{hint}"
+                )
     return errors
 
 
@@ -1285,6 +1350,7 @@ def collect(
     errors.extend(check_syntax_forms(calculus, modules))
     errors.extend(check_corpus_citations(lean_dir, spec_paragraph_ids))
     errors.extend(calculus_citations_in_files(calculus_path.parent, calculus_path, lean_dir, calculus_ids))
+    errors.extend(label_sections_in_files(calculus_path.parent, lean_dir, calculus))
     return modules, calculus, errors
 
 

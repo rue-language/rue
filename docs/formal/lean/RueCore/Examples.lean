@@ -693,7 +693,7 @@ def arrayBoundsTrap : Program :=
                 (indexRead (.var 0) [use (.var 1)] [[]]) }] }
 
 /-- Probe `a10`: a **dynamic**-index write, then the same write at `-1`.
-(Assign) §6.8 at a dynamic index overwrite-drops the old element — nothing,
+(D-Assign) §6.8 at a dynamic index overwrite-drops the old element — nothing,
 at a `Copy` element type — and writes the slot back; a negative index is out
 of range exactly as an oversized one is (`7.1:11`, `4.11:9`), so the second
 call traps. The run is `10` and then the trap. -/

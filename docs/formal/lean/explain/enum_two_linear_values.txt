@@ -242,7 +242,7 @@ cell is a tombstoned binding or an identity's reserved slot (`introVal`).
          store   [ℓ0 = †, ℓ1 = †, ℓ2 = ⊘, ℓ3 = †, ℓ4 = E1.K1⟨⟩#3, ℓ5 = S3 { 1 }#0]
            →     [ℓ0 = †, ℓ1 = †, ℓ2 = ⊘, ℓ3 = †, ℓ4 = E1.K1⟨⟩#3, ℓ5 = ⊘]
          result  value 5
-  [13]  d5            (D-EndScope) §6.6 (end the arm)
+  [13]  d5            (D-EndScope) §6.7 (end the arm)
          expr    endscope([ℓ5])
          store   [ℓ0 = †, ℓ1 = †, ℓ2 = ⊘, ℓ3 = †, ℓ4 = E1.K1⟨⟩#3, ℓ5 = ⊘]
            →     [ℓ0 = †, ℓ1 = †, ℓ2 = ⊘, ℓ3 = †, ℓ4 = E1.K1⟨⟩#3, ℓ5 = †]
@@ -268,7 +268,7 @@ cell is a tombstoned binding or an identity's reserved slot (`introVal`).
          store   [ℓ0 = †, ℓ1 = †, ℓ2 = ⊘, ℓ3 = †, ℓ4 = ⊘, ℓ5 = †, ℓ6 = 5]
            →     [ℓ0 = †, ℓ1 = †, ℓ2 = ⊘, ℓ3 = †, ℓ4 = ⊘, ℓ5 = †, ℓ6 = 5]
          result  value 6
-  [18]  d6              (D-EndScope) §6.6 (end the arm)
+  [18]  d6              (D-EndScope) §6.7 (end the arm)
          expr    endscope([])
          store   [ℓ0 = †, ℓ1 = †, ℓ2 = ⊘, ℓ3 = †, ℓ4 = ⊘, ℓ5 = †, ℓ6 = 5]
            →     [ℓ0 = †, ℓ1 = †, ℓ2 = ⊘, ℓ3 = †, ℓ4 = ⊘, ℓ5 = †, ℓ6 = 5]

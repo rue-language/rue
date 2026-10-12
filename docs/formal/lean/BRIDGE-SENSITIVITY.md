@@ -266,8 +266,8 @@ parentheses, and the `(mint #n)` identities are merged into one row.
 | (D-Break) §6.10 (unwind to the loop), *where a destructor prints* | 2 (2) | 0 (0) | 0 (0) |
 | (D-Call) §6.9 (push the activation record) | 174 (140) | 200 (115) | 1000 (569) |
 | (D-Div) §6.4 | 4 (4) | 2 (2) | 21 (15) |
-| (D-EndScope) §6.6 (end the arm) | 9 (6) | 45 (25) | 240 (113) |
-| (D-EndScope) §6.6 (end the arm), *where a destructor prints* | 8 (7) | 5 (4) | 14 (8) |
+| (D-EndScope) §6.7 (end the arm) | 9 (6) | 45 (25) | 240 (113) |
+| (D-EndScope) §6.7 (end the arm), *where a destructor prints* | 8 (7) | 5 (4) | 14 (8) |
 | (D-EndScope) §6.7 | 28 (14) | 73 (28) | 329 (101) |
 | (D-EndScope) §6.7 (tombstone the binding) | 87 (71) | 125 (74) | 611 (362) |
 | (D-EndScope) §6.7 (tombstone the binding), *where a destructor prints* | 40 (36) | 10 (8) | 44 (32) |

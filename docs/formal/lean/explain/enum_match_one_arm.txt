@@ -188,7 +188,7 @@ cell is a tombstoned binding or an identity's reserved slot (`introVal`).
            →     [ℓ0 = †, ℓ1 = †, ℓ2 = ⊘, ℓ3 = ⊘]
          events  >> drop ℓ3 = S3 { 1 }#0; run drop fn S3(S3 { 1 }#0)
          result  value ()
-  [10]  d5            (D-EndScope) §6.6 (end the arm)
+  [10]  d5            (D-EndScope) §6.7 (end the arm)
          expr    endscope([ℓ3])
          store   [ℓ0 = †, ℓ1 = †, ℓ2 = ⊘, ℓ3 = ⊘]
            →     [ℓ0 = †, ℓ1 = †, ℓ2 = ⊘, ℓ3 = †]

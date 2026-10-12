@@ -376,7 +376,7 @@ One case, abbreviated:
 {
   "name": "affine_scope_drop",
   "description": "An affine resource silently dropped at scope exit; ...",
-  "rules": ["(Let) §5.6", "endscope §6.7"],
+  "rules": ["(Let) §5.3", "§5.6 scope exit", "(D-EndScope) §6.7"],
   "source": "// Case: affine_scope_drop\n// ...\nfn main() -> i32 { ... }\n",
   "verdict": {"accept": {"type": "i64"}},
   "expected": {"kind": "ok", "stdout": ["7", "1"], "exit": 0}
@@ -707,7 +707,13 @@ a slice author writes:
     have no rename protection, and a one-word rule name written in prose,
     `(Not)` or `(Panic)`, counts as a citation;
   - a calculus section: `§5.5`, `§6.7`. Write each section; a range such as
-    `§5.1–§5.3` is read as its two endpoints only;
+    `§5.1–§5.3` is read as its two endpoints only. A label written directly
+    before a section, `(D-EndScope) §6.7`, is a claim about where the rule
+    lives: anywhere under `docs/formal`, the gate fails unless the section (or
+    one of a `/`-list, `(@Drop) §5.1/§5.3`) is the rule's own or encloses it.
+    A static label cited from §6 is usually its `D-` twin. The deliberate
+    exceptions, such as `(Fn) §5.8`, are listed with their reasons in the
+    script's `LABEL_SECTION_EXCEPTIONS` (RUE-2516);
   - a paragraph of the calculus's §5–§7: `core:5.3:4`, `core:6.13.3:5`,
     `core:7:3`, the id the calculus prints at the paragraph's start
     (RUE-2511), written with a leading `core:` so that it never reads as a

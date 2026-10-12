@@ -239,7 +239,7 @@ cell is a tombstoned binding or an identity's reserved slot (`introVal`).
          store   [ℓ0 = †, ℓ1 = †, ℓ2 = ⊘, ℓ3 = ⊘, ℓ4 = ⊘]
            →     [ℓ0 = †, ℓ1 = †, ℓ2 = ⊘, ℓ3 = ⊘, ℓ4 = †]
          result  value 5
-  [15]  d5            (D-EndScope) §6.6 (end the arm)
+  [15]  d5            (D-EndScope) §6.7 (end the arm)
          expr    endscope([ℓ3])
          store   [ℓ0 = †, ℓ1 = †, ℓ2 = ⊘, ℓ3 = ⊘, ℓ4 = †]
            →     [ℓ0 = †, ℓ1 = †, ℓ2 = ⊘, ℓ3 = †, ℓ4 = †]

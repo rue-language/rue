@@ -171,7 +171,7 @@ cell is a tombstoned binding or an identity's reserved slot (`introVal`).
          store   [ℓ0 = †, ℓ1 = E4.K0⟨4⟩#0, ℓ2 = 4]
            →     [ℓ0 = †, ℓ1 = E4.K0⟨4⟩#0, ℓ2 = 5]
          result  value 5
-  [11]  d3        (D-EndScope) §6.6 (end the arm)
+  [11]  d3        (D-EndScope) §6.7 (end the arm)
          expr    endscope([ℓ2])
          store   [ℓ0 = †, ℓ1 = E4.K0⟨4⟩#0, ℓ2 = 5]
            →     [ℓ0 = †, ℓ1 = E4.K0⟨4⟩#0, ℓ2 = †]

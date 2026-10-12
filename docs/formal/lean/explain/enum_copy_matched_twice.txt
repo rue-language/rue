@@ -291,7 +291,7 @@ cell is a tombstoned binding or an identity's reserved slot (`introVal`).
          store   [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = E4.K0⟨4⟩#2]
            →     [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = E4.K0⟨4⟩#2]
          result  value 2
-  [10]  d5            (D-EndScope) §6.6 (end the arm)
+  [10]  d5            (D-EndScope) §6.7 (end the arm)
          expr    endscope([])
          store   [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = E4.K0⟨4⟩#2]
            →     [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = E4.K0⟨4⟩#2]
@@ -316,7 +316,7 @@ cell is a tombstoned binding or an identity's reserved slot (`introVal`).
          store   [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = E4.K0⟨4⟩#2, ℓ4 = 2]
            →     [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = E4.K0⟨4⟩#2, ℓ4 = 2]
          result  value 20
-  [15]  d6              (D-EndScope) §6.6 (end the arm)
+  [15]  d6              (D-EndScope) §6.7 (end the arm)
          expr    endscope([])
          store   [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = E4.K0⟨4⟩#2, ℓ4 = 2]
            →     [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = E4.K0⟨4⟩#2, ℓ4 = 2]
@@ -341,7 +341,7 @@ cell is a tombstoned binding or an identity's reserved slot (`introVal`).
          store   [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = E4.K0⟨4⟩#2, ℓ4 = 2, ℓ5 = 20, ℓ6 =…
            →     [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = E4.K0⟨4⟩#2, ℓ4 = 2, ℓ5 = 20, ℓ6 =…
          result  value 4
-  [20]  d7                (D-EndScope) §6.6 (end the arm)
+  [20]  d7                (D-EndScope) §6.7 (end the arm)
          expr    endscope([ℓ6])
          store   [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = E4.K0⟨4⟩#2, ℓ4 = 2, ℓ5 = 20, ℓ6 =…
            →     [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = E4.K0⟨4⟩#2, ℓ4 = 2, ℓ5 = 20, ℓ6 =…
@@ -376,7 +376,7 @@ cell is a tombstoned binding or an identity's reserved slot (`introVal`).
          store   [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = E4.K0⟨4⟩#2, ℓ4 = 2, ℓ5 = 20, ℓ6 =…
            →     [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = E4.K0⟨4⟩#2, ℓ4 = 2, ℓ5 = 20, ℓ6 =…
          result  value 104
-  [27]  d8                  (D-EndScope) §6.6 (end the arm)
+  [27]  d8                  (D-EndScope) §6.7 (end the arm)
          expr    endscope([ℓ8])
          store   [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = E4.K0⟨4⟩#2, ℓ4 = 2, ℓ5 = 20, ℓ6 =…
            →     [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = E4.K0⟨4⟩#2, ℓ4 = 2, ℓ5 = 20, ℓ6 =…

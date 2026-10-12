@@ -156,7 +156,7 @@ cell is a tombstoned binding or an identity's reserved slot (`introVal`).
          store   [ℓ0 = †, ℓ1 = †, ℓ2 = ⊘, ℓ3 = S3 { 1 }#0]
            →     [ℓ0 = †, ℓ1 = †, ℓ2 = ⊘, ℓ3 = S3 { 1 }#0]
          result  value 5
-  [9]   d3        (D-EndScope) §6.6 (end the arm)
+  [9]   d3        (D-EndScope) §6.7 (end the arm)
          expr    match v0 { E1.K0(v1) => 5, E1.K1 => 6 }
          store   [ℓ0 = †, ℓ1 = †, ℓ2 = ⊘, ℓ3 = S3 { 1 }#0]
            →     [ℓ0 = †, ℓ1 = †, ℓ2 = ⊘, ℓ3 = S3 { 1 }#0]

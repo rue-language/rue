@@ -383,6 +383,41 @@ class GateTests(unittest.TestCase):
             errors, ["03-metatheory.md:3: cites `core:5.1:7`, which is not a paragraph `calculus.md` declares"]
         )
 
+    def test_label_cited_from_another_section_is_an_error(self) -> None:
+        # Its own section, an enclosing one, or a `/`-list naming either
+        # passes; a label the calculus does not define is not a pair.
+        (self.root / "03-metatheory.md").write_text(
+            "By (Use-Move) §5.1, (Use-Move) §5 and (Use-Copy)/(Use-Move) §5.2/§5.1.\n"
+            "By (Use-Move) §5.2.\n"
+            "By (Not-A-Rule) §9.9.\n"
+        )
+        _, _, errors = self.collect()
+        self.assertEqual(
+            errors,
+            ["03-metatheory.md:2: cites `(Use-Move) §5.2`, but the calculus labels (Use-Move) in §5.1"],
+        )
+
+    def test_static_label_cited_from_its_dynamic_twins_section_names_the_twin(self) -> None:
+        (self.lean / "explain").mkdir()
+        (self.lean / "explain" / "call.txt").write_text("step (Use-Copy) §6.3\n")
+        _, _, errors = self.collect()
+        self.assertEqual(
+            errors,
+            [
+                "lean/explain/call.txt:1: cites `(Use-Copy) §6.3`, but the calculus labels (Use-Copy) in "
+                "§5.1; did you mean (D-Use-Copy), which it labels in §6.3?"
+            ],
+        )
+
+    def test_listed_label_section_exception_passes(self) -> None:
+        self.gate.LABEL_SECTION_EXCEPTIONS = {("Use-Copy", "5.2"): "a deliberate grouping"}
+        (self.root / "03-metatheory.md").write_text("By (Use-Copy) §5.2, and (Use-Move) §5.2.\n")
+        _, _, errors = self.collect()
+        self.assertEqual(
+            errors,
+            ["03-metatheory.md:1: cites `(Use-Move) §5.2`, but the calculus labels (Use-Move) in §5.1"],
+        )
+
     def corpus(self, *cases: str) -> None:
         body = "".join(
             f'  {{ name := "c{i}",\n    description := {desc},\n    rules := [{rules}],\n    x := 1 }},\n'

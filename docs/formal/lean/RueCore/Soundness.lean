@@ -1408,7 +1408,7 @@ theorem ContentsOwnTyping.getAt {D : Decls} : ∀ (π : List Nat) {c : Contents}
               exact ContentsOwnTyping.getAt π hmf hg hty
 
 /-- **Writing a sub-position and its Σ state together keeps the cell
-matched.** (Use-Move) §6.3's `H[ℓ@π ↦ ⊘]`, `@drop`'s write-back (§6.11) and
+matched.** (D-Use-Move) §6.3's `H[ℓ@π ↦ ⊘]`, `@drop`'s write-back (§6.11) and
 (D-Assign)'s store (§6.8) are all this lemma, with a different pair written in
 at the path. -/
 theorem ContentsOwnTyping.setAt {D : Decls} : ∀ (π : List Nat) {c sub' : Contents}

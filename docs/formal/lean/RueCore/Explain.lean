@@ -2666,10 +2666,10 @@ def traceEval (M : FloatSig) (P : Program) :
                   (match unwindLocs P.decls H₂ minted.2.reverse with
                    | .error w =>
                        refused (t₀.steps ++ [bind] ++ t₁.steps) d Θ R (.«match» scrut arms)
-                         "(D-EndScope) §6.6 (end the arm)" H₂ w
+                         "(D-EndScope) §6.7 (end the arm)" H₂ w
                    | .ok (H₃, evs) =>
                        tracedAs (t₀.steps ++ [bind] ++ t₁.steps) d Θ R (.«match» scrut arms)
-                         "(D-EndScope) §6.6 (end the arm)"
+                         "(D-EndScope) §6.7 (end the arm)"
                          ("endscope(" ++ locsLine minted.2.reverse ++ ")")
                          H₂ H₃ evs (.value v₂) (.ok H₃ v₂ (tr₀ ++ (mc ++ (tr₂ ++ evs)))))
                 | r =>

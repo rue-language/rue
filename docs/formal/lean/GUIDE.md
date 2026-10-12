@@ -1688,7 +1688,7 @@ Change one thing and each premise answers in turn:
                            store  [ℓ0 = †, ℓ1 = †, ℓ2 = ⊘, ℓ3 = S1 { 1 }#0]
                            events >> consume E0.K0⟨⊘⟩#1
   [9]  (Dbg)               @dbg prints 10
-  [12] (D-EndScope) §6.6   endscope([ℓ3])
+  [12] (D-EndScope) §6.7   endscope([ℓ3])
                            events >> drop ℓ3 = S1 { 1 }#0; run drop fn S1(S1 { 1 }#0)
   [15] (Dbg)               @dbg prints 20
   [19] (D-EndScope) §6.7   endscope([ℓ2])                          ← ℓ2 is ⊘: nothing drops
@@ -1818,7 +1818,7 @@ float literal would otherwise default to `f64` (`3.12:8`).
 
 | Row | Rule | Effect |
 | --- | --- | --- |
-| 2–3 | (Lit) §6.3 | each literal becomes `M.ofLit`'s datum: `3.12:9`'s rounding, which is the **model's**, not this module's |
+| 2–3 | `core:6.3:1` | each literal becomes `M.ofLit`'s datum: `3.12:9`'s rounding, which is the **model's**, not this module's |
 | 4 | **(D-Float-Arith) §6.4** | `1.0 / 0.0 → +inf`. Not a trap: none of (D-Arith-Trap), (D-Div-Zero) or (D-Div-Overflow) is stated over a float redex, and `3.12:22` fixes the answer: a finite non-zero over a zero is the infinity of the xor sign |
 | 5 | **(D-Float-To-Int-Trap) §6.4** | `+inf` is neither truncatable nor in range, so the conversion traps. The category is `↯overflow`, the one §6.12 already lists (`8.1:7`), which is why the compiler reports `integer overflow` here and not a float-specific message |
 
