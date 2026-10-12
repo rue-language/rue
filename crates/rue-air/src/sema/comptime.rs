@@ -2936,6 +2936,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             // evaluated. Only variant constructors are taken here: any other
             // receiver (`lib.nums.max(..)`, a runtime call) keeps the reading
             // below.
+            let mut computed_receiver = None;
             let receiver_enum = match self.program_rir().get(receiver).data {
                 _ if type_value.is_some() => None,
                 InstData::FieldGet { .. } => match self.decode_module_path(receiver, env) {
@@ -2950,7 +2951,10 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 },
                 InstData::Call { .. } | InstData::MethodCall { .. } => {
                     match self.eval(receiver, env) {
-                        ComptimeOutcome::Known(value) => value.as_type(),
+                        ComptimeOutcome::Known(value) => {
+                            computed_receiver = value.as_module_root().or_else(|| value.as_type());
+                            value.as_type()
+                        }
                         _ => None,
                     }
                 }
@@ -2971,6 +2975,53 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 return self.host.resolve_comptime_enum_variant_with_payload(
                     enum_type, method, payload, &site, span,
                 );
+            }
+            // A call heading a member call (`f().add(30)`, `S.md().add(30)`)
+            // names the member of the type value it reduced to, exactly as
+            // the same value bound to a `let` does (RUE-2613): a module's
+            // function, or a struct's associated function.
+            if let Some(receiver_type) = computed_receiver {
+                if self.host.type_is_module(&receiver_type) {
+                    let Some(file) = env.defining_file.clone() else {
+                        return ComptimeOutcome::RuntimeDependent;
+                    };
+                    // A computed root has no spelling; with a root module
+                    // the walker reads only the segments after the first.
+                    let name = host_value!(self.host.resolve_module_comptime_callable(
+                        file,
+                        Some(&receiver_type),
+                        std::slice::from_ref(&method),
+                        method.clone(),
+                        span
+                    ));
+                    let Some(name) = name else {
+                        return ComptimeOutcome::RuntimeDependent;
+                    };
+                    let arg_modes: Vec<ComptimeArgMode> = args
+                        .iter()
+                        .map(|arg| (arg.mode, self.program_rir().get(arg.value).span))
+                        .collect();
+                    let admission = host_value!(self.host.admit_comptime_call(
+                        name,
+                        args.len(),
+                        &arg_modes,
+                        env,
+                        true
+                    ));
+                    let Some(admission) = admission else {
+                        return ComptimeOutcome::RuntimeDependent;
+                    };
+                    return self.evaluate_admitted_call(admission, &args, env, span);
+                }
+                let admission = host_value!(self.host.admit_associated_comptime_call(
+                    receiver_type,
+                    method.clone(),
+                    args.len()
+                ));
+                if let Some(admission) = admission {
+                    return self.evaluate_admitted_call(admission, &args, env, span);
+                }
+                return ComptimeOutcome::RuntimeDependent;
             }
             if let Some(type_value) = type_value {
                 if self.host.type_is_enum(&type_value) {

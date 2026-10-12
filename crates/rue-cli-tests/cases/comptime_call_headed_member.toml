@@ -1,0 +1,53 @@
+# RUE-2613 (item 4): a call heading a member call inside a `comptime { }`
+# block — `f().add(30)` or `R.md().add(30)`, where the head is a `-> type`
+# function returning a module — names the module's function exactly as the
+# same value bound by a `let` does (`let m = f(); m.add(30)`). The engine
+# evaluated the head, but kept the result only when it was an enum type, so
+# the call was E1200 "values that cannot be known at compile time".
+
+[section]
+id = "cli.comptime_call_headed_member"
+name = "Call-headed member calls in comptime blocks (RUE-2613)"
+description = "A module-returning call heading a member call reduces inside a comptime block."
+
+[[case]]
+name = "free_function_head_in_comptime_block"
+description = "`comptime { f().add(30) }` with `fn f() -> type { @import(\"lib.rue\") }`."
+files = [
+    { path = "main.rue", source = '''
+fn f() -> type { @import("lib.rue") }
+fn main() -> i32 { comptime { f().add(30) } }
+''' },
+    { path = "lib.rue", source = '''
+pub fn add(comptime x: i32) -> i32 { x + 12 }
+''' },
+]
+exit_code = 42
+
+[[case]]
+name = "associated_function_head_in_comptime_block"
+description = "`comptime { R.md().add(30) }` with a zero-parameter associated `-> type` function returning a module."
+files = [
+    { path = "main.rue", source = '''
+struct R { fn md() -> type { @import("lib.rue") } }
+fn main() -> i32 { comptime { R.md().add(30) } }
+''' },
+    { path = "lib.rue", source = '''
+pub fn add(comptime x: i32) -> i32 { x + 12 }
+''' },
+]
+exit_code = 42
+
+[[case]]
+name = "call_head_result_feeds_another_call_head"
+description = "A call-headed member call as the argument of another, in one comptime block."
+files = [
+    { path = "main.rue", source = '''
+fn f() -> type { @import("lib.rue") }
+fn main() -> i32 { comptime { f().add(f().add(6)) } }
+''' },
+    { path = "lib.rue", source = '''
+pub fn add(comptime x: i32) -> i32 { x + 12 }
+''' },
+]
+exit_code = 30
