@@ -1693,11 +1693,23 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         if accessor_continues {
             // Mutable accessors carry an exclusive loan; shared and exclusive
             // accessor results conflict on the same root. The root loan list
-            // is intentionally expression-scoped and root-granular.
+            // is intentionally expression-scoped and root-granular. A
+            // receiver reached through an accessor result reborrows that
+            // result, so the loan that produced it is not a competing access
+            // (`h.get().get().v = 99`, spec 6.6:15, RUE-2218); every other
+            // loan on the root was already checked against it.
             let key = Self::ledger_root(root, span, ctx)?;
-            if ctx.ownership.expression_loans.iter().any(|(r, _, kind)| {
-                *r == key && (*kind == CallLoanKind::Inout || loan_kind == CallLoanKind::Inout)
-            }) {
+            let enabling_loan = receiver_trace.via_accessor.then_some(receiver_span);
+            if ctx
+                .ownership
+                .expression_loans
+                .iter()
+                .any(|(r, loan_span, kind)| {
+                    *r == key
+                        && Some(*loan_span) != enabling_loan
+                        && (*kind == CallLoanKind::Inout || loan_kind == CallLoanKind::Inout)
+                })
+            {
                 return Err(CompileError::new(
                     ErrorKind::AccessorLoanConflict {
                         variable: self.body_interner().resolve(&root).to_string(),

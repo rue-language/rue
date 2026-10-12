@@ -1185,3 +1185,68 @@ args = ["main.rue", "-o", "prog"]
 env = { RUE_STD_PATH = "${REAL_STD}" }
 stdout = ""
 exit_code = 42
+
+# RUE-2218: a receiver reached through an exclusive accessor result
+# reborrows that result, so the loan that produced it is not a competing
+# access for the next accessor in the chain (spec 6.6:15). Every other loan
+# on the root still conflicts.
+
+[[case]]
+name = "chained_exclusive_accessors_projected_assignment"
+description = "RUE-2218 repro 2: `h.get().get().v = 99` assigns through two exclusive accessors."
+differential_opt = true
+files = [{ path = "main.rue", source = """
+struct Inner { v: i64 }
+struct Outer { inner: Inner, fn get(inout self) -> inout Inner { yield self.inner; } }
+struct Holder { outer: Outer, fn get(inout self) -> inout Outer { yield self.outer; } }
+fn main() -> i32 {
+    let mut h = Holder { outer: Outer { inner: Inner { v: 1 } } };
+    h.get().get().v = 99;
+    @intCast(h.outer.inner.v)
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+stdout = ""
+exit_code = 99
+
+[[case]]
+name = "chained_exclusive_accessors_inout_self_receiver"
+description = "An `inout self` method on a chained exclusive accessor result, and RUE-2218 repro 1's single accessor."
+differential_opt = true
+files = [{ path = "main.rue", source = """
+struct Inner { v: i64, fn bump(inout self) { self.v = self.v + 1; } }
+struct Outer {
+    inner: Inner,
+    fn get(inout self) -> inout Inner { yield self.inner; }
+    fn peek(borrow self) -> borrow Inner { yield self.inner; }
+}
+struct Holder { outer: Outer, fn get(inout self) -> inout Outer { yield self.outer; } }
+fn main() -> i32 {
+    let mut o = Outer { inner: Inner { v: 10 } };
+    o.get().bump();
+    let mut h = Holder { outer: Outer { inner: Inner { v: 20 } } };
+    h.get().get().bump();
+    let shared = h.get().peek().v;
+    @intCast(o.inner.v + shared)
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+stdout = ""
+exit_code = 32
+
+[[case]]
+name = "chained_exclusive_accessors_reject_sibling_loans"
+description = "A chained accessor result still conflicts with another accessor loan on the same root in the full expression."
+files = [{ path = "main.rue", source = """
+struct Inner { v: i64 }
+struct Outer { inner: Inner, fn get(inout self) -> inout Inner { yield self.inner; } }
+struct Holder { outer: Outer, fn get(inout self) -> inout Outer { yield self.outer; } }
+fn main() -> i32 {
+    let mut h = Holder { outer: Outer { inner: Inner { v: 1 } } };
+    h.get().get().v = h.get().get().v + 1;
+    0
+}
+""" }]
+args = ["main.rue"]
+compile_fail = true
+error_contains = ["E0259", "accessor result borrows it"]
