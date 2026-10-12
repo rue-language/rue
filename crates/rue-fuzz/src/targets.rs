@@ -1543,21 +1543,31 @@ mod tests {
     use super::*;
 
     /// RUE-2635's fuzz reproducer never terminates: `i >= i + 1` compares
-    /// rather than assigns. The sema target must reach the oracle's step
-    /// budget, an accepted resource limit, well inside the harness's
-    /// per-input timeout instead of hanging.
+    /// rather than assigns. Under the target's step budget the CFG-boundary
+    /// oracle must stop each such input at an accepted resource limit, which
+    /// the target skips, instead of running until the harness's per-input
+    /// timeout reports a hang. The check is on the outcome, not wall-clock
+    /// time, so a loaded machine cannot fail it.
     #[test]
     fn sema_target_bounds_a_non_terminating_input() {
         let source = "struct S { v: i64 }\n\ndrop fn S(self) {\n    @dbg(self.v);\n}\n\nfn make(v: i64) -> S { S { v: v } }\n\nfn main() -> i32 {\n    let mut i: i64 = 0;\n    while i < 2 { i>= i + 1; make(i) }\n    @dbg(0);\n    0\n}\n";
         let quiet = "fn main() -> i32 {\n    let mut i: i64 = 0;\n    while i < 2 { i >= i + 1; }\n    0\n}\n";
         for input in [source, quiet] {
-            let started = std::time::Instant::now();
+            let session = query_semantics(input).expect("the reproducer compiles");
+            match rue_oracle::run_session_with_cfg_differential_and_step_budget(
+                session,
+                &rue_error::PreviewFeatures::new(),
+                CFG_ORACLE_STEP_BUDGET,
+            ) {
+                Err(rue_oracle::RunSourceError::Unsupported(unsupported)) => assert_eq!(
+                    unsupported.class(),
+                    rue_oracle::UnsupportedClass::ResourceLimit,
+                    "expected a resource limit, got {unsupported:?}"
+                ),
+                other => panic!("a non-terminating input was not bounded: {other:?}"),
+            }
+            // The target itself accepts that limit.
             SemaTarget.fuzz(input.as_bytes());
-            assert!(
-                started.elapsed() < crate::harness::DEFAULT_PER_INPUT_TIMEOUT,
-                "a non-terminating input took {:?}",
-                started.elapsed()
-            );
         }
     }
 
