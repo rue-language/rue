@@ -540,3 +540,36 @@ fn main() -> i32 {
 """
 compile_fail = true
 error_contains = ["E0906", "268435455 ABI slots"]
+
+# Right nesting recurses through the comptime engine once per level, so the
+# per-level frame must stay small enough for every depth the guard admits.
+# The instruction dispatcher's arms live in out-of-line helpers so it spends
+# under a kilobyte per level; before that, a dev build overflowed its stack
+# at about 119 levels of `(1 + (1 + …))` in a `comptime { }` block (RUE-2387).
+[[case]]
+name = "right_nested_chain_at_limit_in_comptime_block"
+spec = ["C.6:3", "4.14:2"]
+description = "127 levels of right-nested `(1 + …)`, the deepest the guard admits, evaluate in a body `comptime { }` block, not a compiler stack overflow (RUE-2387)"
+source = """
+fn main() -> i32 { let v: i32 = comptime { (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + 1))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))) }; v - 127 }
+"""
+exit_code = 1
+
+[[case]]
+name = "right_nested_chain_at_limit_in_const_initializer"
+spec = ["C.6:3", "6.5:2"]
+description = "The same 127-level right-nested chain in a constant initializer is evaluated at declaration time (RUE-2387)"
+source = """
+const C: i32 = (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + (1 + 1)))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))));
+fn main() -> i32 { C - 127 }
+"""
+exit_code = 1
+
+[[case]]
+name = "nested_match_near_limit_in_comptime_block"
+spec = ["C.6:3", "4.14:19"]
+description = "125 nested comptime `match` expressions select their arms without exhausting the compiler stack (RUE-2387)"
+source = """
+fn main() -> i32 { let v: i32 = comptime { match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => match 1 { 1 => 3, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 }, _ => 0 } }; v }
+"""
+exit_code = 3

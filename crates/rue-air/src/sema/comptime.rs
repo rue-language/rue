@@ -4931,46 +4931,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             // Integer literals. The literal itself must fit its resolved type
             // (the inner expression of a comptime block never goes through
             // `analyze_literal`, so this is where `300` at type u8 is caught).
-            InstData::IntConst(value) => {
-                let v = *value as i128;
-                let ty = self
-                    .host
-                    .const_expr_type(&self.program_key(), env, inst_ref);
-                if let Some(ty) = &ty {
-                    // An integer literal is admitted where a float is
-                    // expected (spec 3.12:11, ADR-0065 §3): it becomes the
-                    // float nearest to it, as `let x: f32 = 3;` does at run
-                    // time. The value keeps the literal's exact decimal in
-                    // the canonical float text, so `3` is `3e0` as `3.0` is
-                    // and both name one value (RUE-2403); every float
-                    // consumer reads it at its own width.
-                    if self.host.type_float_width(ty).is_some() {
-                        return match host_value!(self.host.float_value_from_text(
-                            &crate::integer_float_value_text(v),
-                            Some(ty.clone())
-                        )) {
-                            Some(value) => ComptimeOutcome::Known(value),
-                            // A domain without float values. Only the ordinary
-                            // body host resolves types, and it always builds
-                            // one, so this is not reached today.
-                            None => ComptimeOutcome::RuntimeDependent,
-                        };
-                    }
-                    if !self
-                        .host
-                        .type_integer_semantics(ty)
-                        .is_some_and(|integer| integer.fits_i128(v))
-                    {
-                        return ComptimeOutcome::HostFailure(self.host.literal_out_of_range(
-                            v,
-                            ty,
-                            &self.diagnostic_site(span),
-                        ));
-                    }
-                }
-                ComptimeOutcome::Known(H::Value::integer_typed(v, ty))
-            }
-
+            InstData::IntConst(value) => self.dispatch_int_const(inst_ref, value, span, env),
             InstData::FloatConst { text } => self
                 .host
                 .resolve_float_const(self.name_from_rir((*text).into()), span),
@@ -4991,772 +4952,51 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             InstData::UnitConst => ComptimeOutcome::Known(H::Value::unit()),
 
             // Unary negation: -expr
-            InstData::Neg { operand } => {
-                if let InstData::IntConst(magnitude) = self.program_rir().get(*operand).data {
-                    // A host that retains expression types gives the
-                    // literal its float type here; a declared result type
-                    // reaches it through `eval` instead.
-                    if let Some(ty) = self
-                        .host
-                        .const_expr_type(&self.program_key(), env, inst_ref)
-                        && self.host.type_float_width(&ty).is_some()
-                    {
-                        return self.integer_literal_as_float(magnitude, true, ty);
-                    }
-                    let literal = H::Value::integer(magnitude as i128);
-                    let ty =
-                        outcome_value!(self.unary_integer_type_for(env, inst_ref, &literal, span,));
-                    if let Some(ref ty) = ty {
-                        if self.host.type_is_unsigned(ty) {
-                            if let Some(failure) = self
-                                .host
-                                .reject_unsigned_negation(ty, &self.diagnostic_site(span))
-                            {
-                                return ComptimeOutcome::HostFailure(failure);
-                            }
-                        }
-                    }
-                    // The literal path uses mathematical magnitude semantics:
-                    // unlike an ordinary runtime value, `128` must not first
-                    // canonicalize to -128 before becoming `-128`.
-                    let integer = ty
-                        .as_ref()
-                        .and_then(|ty| self.host.type_integer_semantics(ty));
-                    // A negated integer literal is one literal, not an
-                    // operation on one. When the value it denotes does not
-                    // fit its signed type, that is the literal out-of-range
-                    // fact (E0800, spec 6.5:5) the body path reports for the
-                    // same source text, not a trapping operation (6.5:12).
-                    if let (Some(integer), Some(literal_ty)) = (integer, ty.as_ref())
-                        && integer.is_signed()
-                        && integer
-                            .checked_neg_literal_i128(magnitude as i128)
-                            .is_none()
-                    {
-                        return ComptimeOutcome::HostFailure(self.host.literal_out_of_range(
-                            -(magnitude as i128),
-                            literal_ty,
-                            &self.diagnostic_site(span),
-                        ));
-                    }
-                    let result = integer.map_or_else(
-                        || CheckedIntegerResult::from_raw((magnitude as i128).checked_neg()),
-                        |integer| integer.checked_neg_literal_report_i128(magnitude as i128),
-                    );
-                    self.finish_arith_value(result, ty, "negation", span)
-                } else {
-                    match self.eval(*operand, env) {
-                        ComptimeOutcome::Known(value) => {
-                            if let Some(text) = self.host.float_value_text(&value) {
-                                return self.float_negate(&text, &value);
-                            }
-                            let Some(n) = value.as_integer() else {
-                                return self.host.reject_comptime_expression(
-                                    ComptimeSemanticRejection::UnaryOperandNotInteger {
-                                        operation: ComptimeUnaryOperation::Neg,
-                                        value,
-                                    },
-                                    &self.diagnostic_site(span),
-                                );
-                            };
-                            let ty = outcome_value!(
-                                self.unary_integer_type_for(env, inst_ref, &value, span,)
-                            );
-                            if let Some(ref ty) = ty {
-                                if self.host.type_is_unsigned(ty) {
-                                    if let Some(failure) = self
-                                        .host
-                                        .reject_unsigned_negation(ty, &self.diagnostic_site(span))
-                                    {
-                                        return ComptimeOutcome::HostFailure(failure);
-                                    }
-                                }
-                            }
-                            let result = match ty
-                                .as_ref()
-                                .and_then(|ty| self.host.type_integer_semantics(ty))
-                            {
-                                Some(integer) => integer.checked_neg_report_i128(n),
-                                None if ty.is_some() => {
-                                    return self.host.reject_comptime_expression(
-                                        ComptimeSemanticRejection::UnaryTypeNotInteger {
-                                            operation: ComptimeUnaryOperation::Neg,
-                                            value,
-                                        },
-                                        &self.diagnostic_site(span),
-                                    );
-                                }
-                                None => CheckedIntegerResult::from_raw(n.checked_neg()),
-                            };
-                            let (result, ty) = self.declared_integer_result(
-                                inst_ref,
-                                env,
-                                result,
-                                ty,
-                                |integer| integer.checked_neg_report_i128(n),
-                            );
-                            self.finish_arith_value(result, ty, "negation", span)
-                        }
-                        other => other,
-                    }
-                }
-            }
-
+            InstData::Neg { operand } => self.dispatch_neg(inst_ref, operand, span, env),
             // Logical NOT: !expr
-            InstData::Not { operand } => {
-                match self.eval(*operand, env) {
-                    ComptimeOutcome::Known(value) => match value.as_boolean() {
-                        Some(b) => ComptimeOutcome::Known(H::Value::boolean(!b)),
-                        None => self.host.reject_comptime_expression(
-                            ComptimeSemanticRejection::ConditionNotBoolean(value),
-                            &self.diagnostic_site(span),
-                        ),
-                    },
-                    // Can't logical-NOT an integer, type, or unit
-                    other => other,
-                }
-            }
-
+            InstData::Not { operand } => self.dispatch_not(operand, span, env),
             // Binary arithmetic operations, checked at the operand type
-            InstData::Add { lhs, rhs } => {
-                let operands = match outcome_value!(self.eval_arith_operands(
-                    ComptimeIntegerOperation::Add,
-                    *lhs,
-                    *rhs,
-                    env,
-                    span
-                )) {
-                    ArithOperands::Float(l, r) => {
-                        return self.float_binary(
-                            ComptimeIntegerOperation::Add,
-                            l,
-                            r,
-                            env,
-                            inst_ref,
-                            (*lhs, *rhs),
-                            span,
-                        );
-                    }
-                    ArithOperands::Integer(l, r) => (l, r),
-                };
-                let (l, r) = Self::integer_pair(&operands).expect("integer operands");
-                let ty = outcome_value!(self.integer_type_for(
-                    env,
-                    inst_ref,
-                    &operands.0,
-                    &operands.1,
-                    span,
-                ));
-                let result = ty
-                    .as_ref()
-                    .and_then(|ty| self.host.type_integer_semantics(ty))
-                    .map_or_else(
-                        || CheckedIntegerResult::from_raw(l.checked_add(r)),
-                        |integer| integer.checked_add_report_i128(l, r),
-                    );
-                let (result, ty) =
-                    self.declared_integer_result(inst_ref, env, result, ty, |integer| {
-                        integer.checked_add_report_i128(l, r)
-                    });
-                self.finish_arith_value(result, ty, "+", span)
-            }
-            InstData::Sub { lhs, rhs } => {
-                let operands = match outcome_value!(self.eval_arith_operands(
-                    ComptimeIntegerOperation::Sub,
-                    *lhs,
-                    *rhs,
-                    env,
-                    span
-                )) {
-                    ArithOperands::Float(l, r) => {
-                        return self.float_binary(
-                            ComptimeIntegerOperation::Sub,
-                            l,
-                            r,
-                            env,
-                            inst_ref,
-                            (*lhs, *rhs),
-                            span,
-                        );
-                    }
-                    ArithOperands::Integer(l, r) => (l, r),
-                };
-                let (l, r) = Self::integer_pair(&operands).expect("integer operands");
-                let ty = outcome_value!(self.integer_type_for(
-                    env,
-                    inst_ref,
-                    &operands.0,
-                    &operands.1,
-                    span,
-                ));
-                let result = ty
-                    .as_ref()
-                    .and_then(|ty| self.host.type_integer_semantics(ty))
-                    .map_or_else(
-                        || CheckedIntegerResult::from_raw(l.checked_sub(r)),
-                        |integer| integer.checked_sub_report_i128(l, r),
-                    );
-                let (result, ty) =
-                    self.declared_integer_result(inst_ref, env, result, ty, |integer| {
-                        integer.checked_sub_report_i128(l, r)
-                    });
-                self.finish_arith_value(result, ty, "-", span)
-            }
-            InstData::Mul { lhs, rhs } => {
-                let operands = match outcome_value!(self.eval_arith_operands(
-                    ComptimeIntegerOperation::Mul,
-                    *lhs,
-                    *rhs,
-                    env,
-                    span
-                )) {
-                    ArithOperands::Float(l, r) => {
-                        return self.float_binary(
-                            ComptimeIntegerOperation::Mul,
-                            l,
-                            r,
-                            env,
-                            inst_ref,
-                            (*lhs, *rhs),
-                            span,
-                        );
-                    }
-                    ArithOperands::Integer(l, r) => (l, r),
-                };
-                let (l, r) = Self::integer_pair(&operands).expect("integer operands");
-                let ty = outcome_value!(self.integer_type_for(
-                    env,
-                    inst_ref,
-                    &operands.0,
-                    &operands.1,
-                    span,
-                ));
-                let result = ty
-                    .as_ref()
-                    .and_then(|ty| self.host.type_integer_semantics(ty))
-                    .map_or_else(
-                        || CheckedIntegerResult::from_raw(l.checked_mul(r)),
-                        |integer| integer.checked_mul_report_i128(l, r),
-                    );
-                let (result, ty) =
-                    self.declared_integer_result(inst_ref, env, result, ty, |integer| {
-                        integer.checked_mul_report_i128(l, r)
-                    });
-                self.finish_arith_value(result, ty, "*", span)
-            }
-            InstData::Div { lhs, rhs } | InstData::Mod { lhs, rhs } => {
-                let is_div = matches!(&inst.data, InstData::Div { .. });
-                let op = if is_div { "/" } else { "%" };
-                let operation = if is_div {
-                    ComptimeIntegerOperation::Div
-                } else {
-                    ComptimeIntegerOperation::Mod
-                };
-                let operands = match outcome_value!(
-                    self.eval_arith_operands(operation, *lhs, *rhs, env, span)
-                ) {
-                    ArithOperands::Float(l, r) => {
-                        return self.float_binary(
-                            operation,
-                            l,
-                            r,
-                            env,
-                            inst_ref,
-                            (*lhs, *rhs),
-                            span,
-                        );
-                    }
-                    ArithOperands::Integer(l, r) => (l, r),
-                };
-                let (l, r) = Self::integer_pair(&operands).expect("integer operands");
-                let ty = outcome_value!(self.integer_type_for(
-                    env,
-                    inst_ref,
-                    &operands.0,
-                    &operands.1,
-                    span,
-                ));
-                if r == 0 {
-                    return match ty {
-                        Some(_) => ComptimeOutcome::Trap(ComptimeTrap {
-                            operation: if is_div {
-                                "division by zero"
-                            } else {
-                                "remainder by zero"
-                            },
-                            span,
-                        }),
-                        // Untyped fallback: defer to the runtime check.
-                        None => ComptimeOutcome::RuntimeDependent,
-                    };
-                }
-                // Untyped evaluation retains its historical i64 fallback;
-                // typed MIN / -1 trapping is owned by the kernel report.
-                if r == -1 && ty.is_none() && l == i128::from(i64::MIN) {
-                    return ComptimeOutcome::RuntimeDependent;
-                }
-                let result = ty
-                    .as_ref()
-                    .and_then(|ty| self.host.type_integer_semantics(ty))
-                    .map_or_else(
-                        || {
-                            CheckedIntegerResult::from_raw(if is_div {
-                                l.checked_div(r)
-                            } else {
-                                l.checked_rem(r)
-                            })
-                        },
-                        |integer| {
-                            if is_div {
-                                integer.checked_div_report_i128(l, r)
-                            } else {
-                                integer.checked_rem_report_i128(l, r)
-                            }
-                        },
-                    );
-                let (result, ty) =
-                    self.declared_integer_result(inst_ref, env, result, ty, |integer| {
-                        if is_div {
-                            integer.checked_div_report_i128(l, r)
-                        } else {
-                            integer.checked_rem_report_i128(l, r)
-                        }
-                    });
-                self.finish_arith_value(result, ty, op, span)
-            }
-
+            InstData::Add { lhs, rhs } => self.dispatch_add(inst_ref, lhs, rhs, span, env),
+            InstData::Sub { lhs, rhs } => self.dispatch_sub(inst_ref, lhs, rhs, span, env),
+            InstData::Mul { lhs, rhs } => self.dispatch_mul(inst_ref, lhs, rhs, span, env),
+            InstData::Div { lhs, rhs } | InstData::Mod { lhs, rhs } => self.dispatch_div(
+                inst_ref,
+                lhs,
+                rhs,
+                matches!(&inst.data, InstData::Div { .. }),
+                span,
+                env,
+            ),
             // Comparison operations
-            InstData::Eq { lhs, rhs } => {
-                let (lhs_ref, rhs_ref) = (*lhs, *rhs);
-                let lhs = match self.eval(*lhs, env) {
-                    ComptimeOutcome::Known(value) => value,
-                    ComptimeOutcome::RuntimeDependent => {
-                        return match self.eval(*rhs, env) {
-                            ComptimeOutcome::Known(_) | ComptimeOutcome::RuntimeDependent => {
-                                ComptimeOutcome::RuntimeDependent
-                            }
-                            other => other,
-                        };
-                    }
-                    other => return other,
-                };
-                match self.eval(*rhs, env) {
-                    ComptimeOutcome::Known(rhs) => {
-                        if lhs.as_integer().is_some() && rhs.as_integer().is_some() {
-                            let _ = outcome_value!(
-                                self.integer_type_for(env, inst_ref, &lhs, &rhs, span,)
-                            );
-                        }
-                        match (
-                            lhs.as_integer(),
-                            rhs.as_integer(),
-                            lhs.as_boolean(),
-                            rhs.as_boolean(),
-                        ) {
-                            (Some(lhs), Some(rhs), _, _) => {
-                                ComptimeOutcome::Known(H::Value::boolean(lhs == rhs))
-                            }
-                            (_, _, Some(lhs), Some(rhs)) => {
-                                ComptimeOutcome::Known(H::Value::boolean(lhs == rhs))
-                            }
-                            _ => {
-                                if let (Some(lhs), Some(rhs)) = (
-                                    self.host.string_value_text(&lhs),
-                                    self.host.string_value_text(&rhs),
-                                ) {
-                                    return ComptimeOutcome::Known(H::Value::boolean(lhs == rhs));
-                                }
-                                if self.host.float_value_text(&lhs).is_some()
-                                    || self.host.float_value_text(&rhs).is_some()
-                                {
-                                    return self.float_equality(
-                                        &lhs,
-                                        &rhs,
-                                        true,
-                                        env,
-                                        inst_ref,
-                                        (lhs_ref, rhs_ref),
-                                    );
-                                }
-                                let site = self.diagnostic_site(span);
-                                self.host.compare_comptime_values(&lhs, &rhs, true, &site)
-                            }
-                        }
-                    }
-                    other => other,
-                }
-            }
-            InstData::Ne { lhs, rhs } => {
-                let (lhs_ref, rhs_ref) = (*lhs, *rhs);
-                let lhs = match self.eval(*lhs, env) {
-                    ComptimeOutcome::Known(value) => value,
-                    ComptimeOutcome::RuntimeDependent => {
-                        return match self.eval(*rhs, env) {
-                            ComptimeOutcome::Known(_) | ComptimeOutcome::RuntimeDependent => {
-                                ComptimeOutcome::RuntimeDependent
-                            }
-                            other => other,
-                        };
-                    }
-                    other => return other,
-                };
-                match self.eval(*rhs, env) {
-                    ComptimeOutcome::Known(rhs) => {
-                        if lhs.as_integer().is_some() && rhs.as_integer().is_some() {
-                            let _ = outcome_value!(
-                                self.integer_type_for(env, inst_ref, &lhs, &rhs, span,)
-                            );
-                        }
-                        match (
-                            lhs.as_integer(),
-                            rhs.as_integer(),
-                            lhs.as_boolean(),
-                            rhs.as_boolean(),
-                        ) {
-                            (Some(lhs), Some(rhs), _, _) => {
-                                ComptimeOutcome::Known(H::Value::boolean(lhs != rhs))
-                            }
-                            (_, _, Some(lhs), Some(rhs)) => {
-                                ComptimeOutcome::Known(H::Value::boolean(lhs != rhs))
-                            }
-                            _ => {
-                                if let (Some(lhs), Some(rhs)) = (
-                                    self.host.string_value_text(&lhs),
-                                    self.host.string_value_text(&rhs),
-                                ) {
-                                    return ComptimeOutcome::Known(H::Value::boolean(lhs != rhs));
-                                }
-                                if self.host.float_value_text(&lhs).is_some()
-                                    || self.host.float_value_text(&rhs).is_some()
-                                {
-                                    return self.float_equality(
-                                        &lhs,
-                                        &rhs,
-                                        false,
-                                        env,
-                                        inst_ref,
-                                        (lhs_ref, rhs_ref),
-                                    );
-                                }
-                                let site = self.diagnostic_site(span);
-                                self.host.compare_comptime_values(&lhs, &rhs, false, &site)
-                            }
-                        }
-                    }
-                    other => other,
-                }
-            }
-            InstData::Lt { lhs, rhs } => {
-                let operands = match outcome_value!(self.eval_arith_operands(
-                    ComptimeIntegerOperation::Lt,
-                    *lhs,
-                    *rhs,
-                    env,
-                    span
-                )) {
-                    ArithOperands::Float(l, r) => {
-                        return self.float_binary(
-                            ComptimeIntegerOperation::Lt,
-                            l,
-                            r,
-                            env,
-                            inst_ref,
-                            (*lhs, *rhs),
-                            span,
-                        );
-                    }
-                    ArithOperands::Integer(l, r) => (l, r),
-                };
-                let (l, r) = Self::integer_pair(&operands).expect("integer operands");
-                let _ = outcome_value!(self.integer_type_for(
-                    env,
-                    inst_ref,
-                    &operands.0,
-                    &operands.1,
-                    span,
-                ));
-                ComptimeOutcome::Known(H::Value::boolean(l < r))
-            }
-            InstData::Gt { lhs, rhs } => {
-                let operands = match outcome_value!(self.eval_arith_operands(
-                    ComptimeIntegerOperation::Gt,
-                    *lhs,
-                    *rhs,
-                    env,
-                    span
-                )) {
-                    ArithOperands::Float(l, r) => {
-                        return self.float_binary(
-                            ComptimeIntegerOperation::Gt,
-                            l,
-                            r,
-                            env,
-                            inst_ref,
-                            (*lhs, *rhs),
-                            span,
-                        );
-                    }
-                    ArithOperands::Integer(l, r) => (l, r),
-                };
-                let (l, r) = Self::integer_pair(&operands).expect("integer operands");
-                let _ = outcome_value!(self.integer_type_for(
-                    env,
-                    inst_ref,
-                    &operands.0,
-                    &operands.1,
-                    span,
-                ));
-                ComptimeOutcome::Known(H::Value::boolean(l > r))
-            }
-            InstData::Le { lhs, rhs } => {
-                let operands = match outcome_value!(self.eval_arith_operands(
-                    ComptimeIntegerOperation::Le,
-                    *lhs,
-                    *rhs,
-                    env,
-                    span
-                )) {
-                    ArithOperands::Float(l, r) => {
-                        return self.float_binary(
-                            ComptimeIntegerOperation::Le,
-                            l,
-                            r,
-                            env,
-                            inst_ref,
-                            (*lhs, *rhs),
-                            span,
-                        );
-                    }
-                    ArithOperands::Integer(l, r) => (l, r),
-                };
-                let (l, r) = Self::integer_pair(&operands).expect("integer operands");
-                let _ = outcome_value!(self.integer_type_for(
-                    env,
-                    inst_ref,
-                    &operands.0,
-                    &operands.1,
-                    span,
-                ));
-                ComptimeOutcome::Known(H::Value::boolean(l <= r))
-            }
-            InstData::Ge { lhs, rhs } => {
-                let operands = match outcome_value!(self.eval_arith_operands(
-                    ComptimeIntegerOperation::Ge,
-                    *lhs,
-                    *rhs,
-                    env,
-                    span
-                )) {
-                    ArithOperands::Float(l, r) => {
-                        return self.float_binary(
-                            ComptimeIntegerOperation::Ge,
-                            l,
-                            r,
-                            env,
-                            inst_ref,
-                            (*lhs, *rhs),
-                            span,
-                        );
-                    }
-                    ArithOperands::Integer(l, r) => (l, r),
-                };
-                let (l, r) = Self::integer_pair(&operands).expect("integer operands");
-                let _ = outcome_value!(self.integer_type_for(
-                    env,
-                    inst_ref,
-                    &operands.0,
-                    &operands.1,
-                    span,
-                ));
-                ComptimeOutcome::Known(H::Value::boolean(l >= r))
-            }
-
+            InstData::Eq { lhs, rhs } => self.dispatch_eq(inst_ref, lhs, rhs, span, env),
+            InstData::Ne { lhs, rhs } => self.dispatch_ne(inst_ref, lhs, rhs, span, env),
+            InstData::Lt { lhs, rhs } => self.dispatch_lt(inst_ref, lhs, rhs, span, env),
+            InstData::Gt { lhs, rhs } => self.dispatch_gt(inst_ref, lhs, rhs, span, env),
+            InstData::Le { lhs, rhs } => self.dispatch_le(inst_ref, lhs, rhs, span, env),
+            InstData::Ge { lhs, rhs } => self.dispatch_ge(inst_ref, lhs, rhs, span, env),
             // Logical operations: short-circuit like the runtime, so a
             // non-constant (or would-panic) RHS is irrelevant when the LHS
             // already decides the result.
-            InstData::And { lhs, rhs } => match self.eval(*lhs, env) {
-                ComptimeOutcome::Known(value) if value.as_boolean() == Some(false) => {
-                    ComptimeOutcome::Known(H::Value::boolean(false))
-                }
-                ComptimeOutcome::Known(value) if value.as_boolean() == Some(true) => {
-                    match self.eval(*rhs, env) {
-                        ComptimeOutcome::Known(value) if value.as_boolean().is_some() => {
-                            ComptimeOutcome::Known(value)
-                        }
-                        ComptimeOutcome::Known(value) => self.host.reject_comptime_expression(
-                            ComptimeSemanticRejection::ConditionNotBoolean(value),
-                            &self.diagnostic_site(span),
-                        ),
-                        other => other,
-                    }
-                }
-                ComptimeOutcome::Known(value) => self.host.reject_comptime_expression(
-                    ComptimeSemanticRejection::ConditionNotBoolean(value),
-                    &self.diagnostic_site(span),
-                ),
-                other => other,
-            },
-            InstData::Or { lhs, rhs } => match self.eval(*lhs, env) {
-                ComptimeOutcome::Known(value) if value.as_boolean() == Some(true) => {
-                    ComptimeOutcome::Known(H::Value::boolean(true))
-                }
-                ComptimeOutcome::Known(value) if value.as_boolean() == Some(false) => {
-                    match self.eval(*rhs, env) {
-                        ComptimeOutcome::Known(value) if value.as_boolean().is_some() => {
-                            ComptimeOutcome::Known(value)
-                        }
-                        ComptimeOutcome::Known(value) => self.host.reject_comptime_expression(
-                            ComptimeSemanticRejection::ConditionNotBoolean(value),
-                            &self.diagnostic_site(span),
-                        ),
-                        other => other,
-                    }
-                }
-                ComptimeOutcome::Known(value) => self.host.reject_comptime_expression(
-                    ComptimeSemanticRejection::ConditionNotBoolean(value),
-                    &self.diagnostic_site(span),
-                ),
-                other => other,
-            },
-
+            InstData::And { lhs, rhs } => self.dispatch_and(lhs, rhs, span, env),
+            InstData::Or { lhs, rhs } => self.dispatch_or(lhs, rhs, span, env),
             // Bitwise operations. For values in range of their type these are
             // closed (no overflow possible), so no range check is needed.
-            InstData::BitAnd { lhs, rhs } => {
-                let operands = outcome_value!(self.eval_int_operands(
-                    ComptimeIntegerOperation::BitAnd,
-                    *lhs,
-                    *rhs,
-                    env,
-                    span
-                ));
-                let (l, r) = Self::integer_pair(&operands).expect("integer operands");
-                let ty = outcome_value!(self.integer_type_for(
-                    env,
-                    inst_ref,
-                    &operands.0,
-                    &operands.1,
-                    span,
-                ));
-                ComptimeOutcome::Known(H::Value::integer_typed(l & r, ty))
-            }
-            InstData::BitOr { lhs, rhs } => {
-                let operands = outcome_value!(self.eval_int_operands(
-                    ComptimeIntegerOperation::BitOr,
-                    *lhs,
-                    *rhs,
-                    env,
-                    span
-                ));
-                let (l, r) = Self::integer_pair(&operands).expect("integer operands");
-                let ty = outcome_value!(self.integer_type_for(
-                    env,
-                    inst_ref,
-                    &operands.0,
-                    &operands.1,
-                    span,
-                ));
-                ComptimeOutcome::Known(H::Value::integer_typed(l | r, ty))
-            }
-            InstData::BitXor { lhs, rhs } => {
-                let operands = outcome_value!(self.eval_int_operands(
-                    ComptimeIntegerOperation::BitXor,
-                    *lhs,
-                    *rhs,
-                    env,
-                    span
-                ));
-                let (l, r) = Self::integer_pair(&operands).expect("integer operands");
-                let ty = outcome_value!(self.integer_type_for(
-                    env,
-                    inst_ref,
-                    &operands.0,
-                    &operands.1,
-                    span,
-                ));
-                ComptimeOutcome::Known(H::Value::integer_typed(l ^ r, ty))
-            }
-
+            InstData::BitAnd { lhs, rhs } => self.dispatch_bit_and(inst_ref, lhs, rhs, span, env),
+            InstData::BitOr { lhs, rhs } => self.dispatch_bit_or(inst_ref, lhs, rhs, span, env),
+            InstData::BitXor { lhs, rhs } => self.dispatch_bit_xor(inst_ref, lhs, rhs, span, env),
             // Shifts: the amount is masked modulo the bit width and the
             // result truncated to the operand width (spec 4.3a:10), exactly
             // matching the runtime semantics (RUE-29).
-            InstData::Shl { lhs, rhs } | InstData::Shr { lhs, rhs } => {
-                let is_shl = matches!(&inst.data, InstData::Shl { .. });
-                let operands = outcome_value!(self.eval_int_operands(
-                    if is_shl {
-                        ComptimeIntegerOperation::Shl
-                    } else {
-                        ComptimeIntegerOperation::Shr
-                    },
-                    *lhs,
-                    *rhs,
-                    env,
-                    span
-                ));
-                let (l, r) = Self::integer_pair(&operands).expect("integer operands");
-                let ty = outcome_value!(self.integer_type_for(
-                    env,
-                    inst_ref,
-                    &operands.0,
-                    &operands.1,
-                    span,
-                ));
-                match ty.as_ref() {
-                    Some(ty) => {
-                        let Some(integer) = self.host.type_integer_semantics(ty) else {
-                            return ComptimeOutcome::RuntimeDependent;
-                        };
-                        // Two's-complement AND masks negative amounts the same
-                        // way the hardware masks the count register.
-                        let v = integer.shift_i128(l, r, is_shl);
-                        ComptimeOutcome::Known(H::Value::integer_typed(v, Some(ty.clone())))
-                    }
-                    None => {
-                        // Without the operand type the width is unknown, so
-                        // only fold amounts < 8 (safe for every width) and
-                        // defer the rest to runtime.
-                        if !(0..8).contains(&r) {
-                            return ComptimeOutcome::RuntimeDependent;
-                        }
-                        ComptimeOutcome::Known(H::Value::integer_typed(
-                            if is_shl { l << r } else { l >> r },
-                            None,
-                        ))
-                    }
-                }
-            }
-
+            InstData::Shl { lhs, rhs } | InstData::Shr { lhs, rhs } => self.dispatch_shl(
+                inst_ref,
+                lhs,
+                rhs,
+                matches!(&inst.data, InstData::Shl { .. }),
+                span,
+                env,
+            ),
             // Bitwise NOT: truncated to the operand width (`~0` as u8 = 255).
-            InstData::BitNot { operand } => {
-                let n = outcome_value!(self.eval(*operand, env));
-                let Some(raw) = n.as_integer() else {
-                    return self.host.reject_comptime_expression(
-                        ComptimeSemanticRejection::UnaryOperandNotInteger {
-                            operation: ComptimeUnaryOperation::BitNot,
-                            value: n,
-                        },
-                        &self.diagnostic_site(span),
-                    );
-                };
-                let ty = outcome_value!(self.unary_integer_type_for(env, inst_ref, &n, span,));
-                let v = match ty
-                    .as_ref()
-                    .and_then(|ty| self.host.type_integer_semantics(ty))
-                {
-                    Some(integer) => integer.bitnot_i128(raw),
-                    None if ty.is_some() => {
-                        return self.host.reject_comptime_expression(
-                            ComptimeSemanticRejection::UnaryTypeNotInteger {
-                                operation: ComptimeUnaryOperation::BitNot,
-                                value: n,
-                            },
-                            &self.diagnostic_site(span),
-                        );
-                    }
-                    None => !raw,
-                };
-                ComptimeOutcome::Known(H::Value::integer_typed(v, ty))
-            }
-
+            InstData::BitNot { operand } => self.dispatch_bit_not(inst_ref, operand, span, env),
             // These control-flow and call forms are handled by `eval`'s small
             // trampoline so recursive calls do not retain this large frame.
             InstData::Comptime { .. }
@@ -5764,21 +5004,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             | InstData::Branch { .. }
             | InstData::Call { .. } => unreachable!("routed by comptime eval trampoline"),
 
-            InstData::IndexGet { base, index } => {
-                let base = outcome_value!(self.eval(*base, env));
-                let index = outcome_value!(self.eval(*index, env));
-                let Some(index) = index
-                    .as_integer()
-                    .and_then(|value| usize::try_from(value).ok())
-                else {
-                    return ComptimeOutcome::RuntimeDependent;
-                };
-                match base.aggregate_array_element(index) {
-                    Some(value) => ComptimeOutcome::Known(value),
-                    None => ComptimeOutcome::RuntimeDependent,
-                }
-            }
-
+            InstData::IndexGet { base, index } => self.dispatch_index_get(base, index, env),
             // Comptime-known `match`: evaluate the scrutinee, select the first
             // arm whose pattern matches, and reduce to that arm's body value
             // (spec 4.14:19, RUE-262). Scalar patterns are decided here for
@@ -5787,130 +5013,8 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             // all, and a non-constant scrutinee is not decidable either —
             // both make the `match` non-evaluable.
             InstData::Match { scrutinee, arms } => {
-                let literal_type = env.literal_type.take();
-                let scrutinee = *scrutinee;
-                let reads = self.local_reads;
-                let scrut = outcome_value!(self.eval(scrutinee, env));
-                let at_compile_time = self.selects_at_compile_time(reads, env);
-                let arms = self
-                    .program_rir()
-                    .match_arms(arms)
-                    .iter()
-                    .map(|(pattern, body)| {
-                        (
-                            self.decode_match_pattern(&self.program_key(), &pattern),
-                            comptime_match_pattern_head(&pattern),
-                            body,
-                        )
-                    })
-                    .collect::<Vec<_>>();
-                for (semantic_pattern, head, body) in arms.iter() {
-                    let head = match head {
-                        Some(head) => {
-                            outcome_value!(self.resolve_match_pattern_head(head, env, span))
-                        }
-                        None => None,
-                    };
-                    match self.match_arm_pattern(
-                        semantic_pattern,
-                        head.as_ref(),
-                        &scrut,
-                        &self.diagnostic_site(span),
-                    ) {
-                        Ok(Some(true)) => {
-                            // Payload bindings belong to the selected arm's
-                            // lexical environment. The engine extracts only
-                            // the already-reduced payload through the value
-                            // algebra; hosts do not receive RIR or evaluate
-                            // pattern children themselves.
-                            let bindings = match &semantic_pattern {
-                                ComptimeMatchPattern::Path { binding_names, .. } => {
-                                    if binding_names.iter().all(Option::is_none) {
-                                        Vec::new()
-                                    } else {
-                                        let Some((variant, payload)) =
-                                            scrut.aggregate_enum_payload()
-                                        else {
-                                            return ComptimeOutcome::RuntimeDependent;
-                                        };
-                                        let payload = match self
-                                            .host
-                                            .project_comptime_enum_payload(&scrut, variant, payload)
-                                        {
-                                            Ok(payload) => payload,
-                                            Err(ComptimeHostError::HostFailure(error)) => {
-                                                return ComptimeOutcome::HostFailure(error);
-                                            }
-                                            Err(ComptimeHostError::Abort(error)) => {
-                                                return ComptimeOutcome::Abort(error);
-                                            }
-                                        };
-                                        let mut bindings = Vec::new();
-                                        for (index, name) in binding_names.iter().enumerate() {
-                                            let Some(name) = name else { continue };
-                                            let Some(value) = payload.get(index).cloned() else {
-                                                return ComptimeOutcome::RuntimeDependent;
-                                            };
-                                            if self.host.display_name(name) != "_" {
-                                                bindings.push((name.clone(), value));
-                                            }
-                                        }
-                                        bindings
-                                    }
-                                }
-                                _ => Vec::new(),
-                            };
-                            let mut previous = Vec::with_capacity(bindings.len());
-                            // A pattern binding carries no declared integer
-                            // type, so it hides one it shadows.
-                            let saved_declared = (!env.declared_integer_locals.is_empty())
-                                .then(|| env.declared_integer_locals.clone());
-                            let binds = !bindings.is_empty();
-                            let saved_bound = binds.then(|| env.bound_locals.clone());
-                            for (name, value) in bindings {
-                                env.declared_integer_locals.remove(&name);
-                                env.bound_locals.insert(name.clone());
-                                previous.push((name.clone(), env.locals.insert(name, value)));
-                            }
-                            let result = self.eval_typed(*body, literal_type.clone(), env);
-                            if binds {
-                                env.selected_arms.remove(&inst_ref);
-                            } else {
-                                env.selected_arms.insert(inst_ref, (*body, at_compile_time));
-                            }
-                            if let Some(saved_declared) = saved_declared {
-                                env.declared_integer_locals = saved_declared;
-                            }
-                            if let Some(saved_bound) = saved_bound {
-                                env.bound_locals = saved_bound;
-                            }
-                            for (name, value) in previous {
-                                match value {
-                                    Some(value) => {
-                                        env.locals.insert(name, value);
-                                    }
-                                    None => {
-                                        env.locals.remove(&name);
-                                    }
-                                }
-                            }
-                            return result;
-                        }
-                        Ok(Some(false)) => continue,
-                        // Undecidable pattern (e.g. an enum-variant `Path`
-                        // against a non-representable scrutinee): bail out.
-                        Ok(None) => return ComptimeOutcome::RuntimeDependent,
-                        Err(ComptimeHostError::HostFailure(error)) => {
-                            return ComptimeOutcome::HostFailure(error);
-                        }
-                        Err(ComptimeHostError::Abort(error)) => {
-                            return ComptimeOutcome::Abort(error);
-                        }
-                    }
-                }
-                self.host.match_no_selected_arm(&self.diagnostic_site(span))
+                self.dispatch_match(inst_ref, scrutinee, arms, span, env)
             }
-
             // Anonymous struct type: evaluate to a comptime type value,
             // resolving field types through the type substitution.
             InstData::AnonStructType {
@@ -5920,128 +5024,16 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 thread_bound,
                 unchecked_transfer_reason,
                 binding,
-            } => {
-                if *thread_bound || unchecked_transfer_reason.is_some() {
-                    host_value!(
-                        self.host
-                            .require_transfer_marker_preview(&self.diagnostic_site(span))
-                    );
-                }
-                let field_decls = self.program_rir().anon_struct_fields(fields).to_vec();
-
-                // Comptime `let` locals in scope participate in field-type
-                // resolution (`let Inner = Mk(T); struct { x: Inner }`,
-                // RUE-575), alongside the enclosing parameters.
-                let (local_type_subst, local_value_subst) = env.substs_with_locals();
-
-                // `Self` denotes the enclosing struct type wherever a type is
-                // expected (spec 6.4:18). The anonymous nominal's identity is
-                // its producer and structural anchor, both settled before any
-                // field type resolves, so the binding is issued up front and
-                // `next: ptr mut Self` resolves through the same substitution
-                // that carries `comptime T: type` (RUE-2223), as do composite
-                // method signature types such as `borrow s: [Self]`
-                // (RUE-2579). A named struct binds `Self` in its declaration
-                // signature instead.
-                let self_identity = env.canonical_identity.as_ref().map(|producer| {
-                    self.host.issue_anonymous_identity(
-                        &self.program_key(),
-                        ComptimeAnonymousKind::Struct,
-                        producer,
-                        anchor,
-                    )
-                });
-                if let (Some(identity), Some(binding)) = (&self_identity, binding) {
-                    let binding = self.name_from_rir((*binding).into());
-                    self.host.record_anonymous_binding(identity, &binding, span);
-                }
-                let self_name = self_identity.as_ref().and_then(|_| {
-                    let program = self.program_key();
-                    let roots = self.anon_struct_type_syntax_roots(
-                        &program,
-                        field_decls.iter().map(|(_, type_sym)| *type_sym),
-                        methods,
-                    );
-                    self.self_type_name(&program, roots)
-                });
-                let mut declared_type_subst = Cow::Borrowed(&local_type_subst);
-                let mut self_ty = None;
-                if let Some(name) = self_name {
-                    let identity = self_identity
-                        .as_ref()
-                        .expect("a `Self` name is only sought once an identity is issued");
-                    if let Some(ty) = host_value!(self.host.anonymous_nominal_self_type(identity)) {
-                        declared_type_subst.to_mut().insert(name, ty.clone());
-                        self_ty = Some(ty);
-                    }
-                }
-
-                let mut struct_fields = Vec::with_capacity(field_decls.len());
-                for (name_sym, type_sym) in field_decls {
-                    let field_name = self.name_from_rir(name_sym.into());
-                    // Field types resolve through both the type substitution
-                    // (`comptime T: type`) and the value substitution
-                    // (`comptime N: i32`, so an `[i32; N]` field gets a concrete
-                    // length at each specialization; RUE-16).
-                    let field_ty = outcome_value!(self.evaluate_comptime_type_syntax(
-                        &self.program_key(),
-                        type_sym,
-                        env,
-                        declared_type_subst.as_ref(),
-                        &local_value_subst,
-                        span,
-                    ));
-                    struct_fields.push(ComptimeField {
-                        name: field_name,
-                        ty: field_ty,
-                    });
-                }
-
-                // Decode method signatures in the canonical engine. The host
-                // receives only resolved semantic descriptors below.
-                let method_sigs = outcome_value!(self.decode_anon_method_descriptors_with_env(
-                    &self.program_key(),
-                    methods,
-                    env,
-                    declared_type_subst.as_ref(),
-                    &local_value_subst,
-                ));
-
-                let Some(identity) = self_identity else {
-                    return ComptimeOutcome::RuntimeDependent;
-                };
-                for field in &struct_fields {
-                    host_value!(self.host.reject_unstorable_member(
-                        &field.ty,
-                        "a struct field",
-                        &self.diagnostic_site(span),
-                    ));
-                }
-                // Only `Self` can name the struct before its fields resolve,
-                // so only a struct that binds it can contain itself.
-                if let Some(self_ty) = &self_ty {
-                    host_value!(self.host.reject_recursive_anonymous_struct(
-                        self_ty,
-                        &struct_fields,
-                        &self.diagnostic_site(span),
-                    ));
-                }
-                let (struct_ty, _is_new) = host_value!(self.host.find_or_create_anon_struct(
-                    identity,
-                    &struct_fields,
-                    &method_sigs,
-                    *thread_bound,
-                    unchecked_transfer_reason.map(|reason| self.name_from_rir(reason.into())),
-                    &local_type_subst,
-                    &local_value_subst,
-                ));
-
-                // Method body registration is an ordinary analysis concern.
-                // The generic comptime host receives only structural method
-                // descriptors and never a child-RIR token.
-                ComptimeOutcome::Known(H::Value::type_value(struct_ty))
-            }
-
+            } => self.dispatch_anon_struct_type(
+                fields,
+                methods,
+                anchor,
+                thread_bound,
+                &unchecked_transfer_reason.map(SymbolHandle::from),
+                &binding.map(SymbolHandle::from),
+                span,
+                env,
+            ),
             // Anonymous enum type: evaluate to a comptime type value, resolving
             // each variant's payload types through the type/value substitution.
             // The enum analog of the AnonStructType arm above — this is what
@@ -6052,141 +5044,16 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 payloads,
                 anchor,
                 binding,
-            } => {
-                let variant_syms = self.program_rir().anon_enum_variants(variants).to_vec();
-                let payload_symbols: Vec<Vec<rue_rir::RirTypeSyntaxRef>> = self
-                    .program_rir()
-                    .anon_enum_payloads(payloads, variants)
-                    .map(|payload| payload.to_vec())
-                    .collect();
-
-                // Decode the self-describing payload region into per-variant
-                // type-symbol lists (parallel to `variant_syms`), then resolve
-                // each payload type through the substitutions.
-                // Comptime `let` locals participate in payload-type
-                // resolution, matching the struct arm (RUE-575).
-                let (enum_type_subst, enum_value_subst) = env.substs_with_locals();
-
-                let mut variant_names: Vec<String> = Vec::with_capacity(variant_syms.len());
-                let mut variant_payloads: Vec<Vec<H::Type>> =
-                    Vec::with_capacity(variant_syms.len());
-                for (&vsym, symbols) in variant_syms.iter().zip(payload_symbols) {
-                    variant_names.push(self.host.display_name(&self.name_from_rir(vsym.into())));
-                    let mut tys: Vec<H::Type> = Vec::with_capacity(symbols.len());
-                    for ty_sym in symbols {
-                        let ty = outcome_value!(self.evaluate_comptime_type_syntax(
-                            &self.program_key(),
-                            ty_sym,
-                            env,
-                            &enum_type_subst,
-                            &enum_value_subst,
-                            span,
-                        ));
-                        tys.push(ty);
-                    }
-                    variant_payloads.push(tys);
-                }
-
-                let Some(producer) = env.canonical_identity.clone() else {
-                    return ComptimeOutcome::RuntimeDependent;
-                };
-                let identity = self.host.issue_anonymous_identity(
-                    &self.program_key(),
-                    ComptimeAnonymousKind::Enum,
-                    &producer,
-                    anchor,
-                );
-                if let Some(binding) = binding {
-                    let binding = self.name_from_rir((*binding).into());
-                    self.host
-                        .record_anonymous_binding(&identity, &binding, span);
-                }
-                for ty in variant_payloads.iter().flatten() {
-                    host_value!(self.host.reject_unstorable_member(
-                        ty,
-                        "an enum payload",
-                        &self.diagnostic_site(span),
-                    ));
-                }
-                let enum_ty = host_value!(self.host.find_or_create_anon_enum(
-                    identity,
-                    &variant_names,
-                    &variant_payloads,
-                    &enum_type_subst,
-                    &enum_value_subst,
-                ));
-                ComptimeOutcome::Known(H::Value::type_value(enum_ty))
-            }
-
+            } => self.dispatch_anon_enum_type(
+                variants,
+                payloads,
+                anchor,
+                &binding.map(SymbolHandle::from),
+                span,
+                env,
+            ),
             // TypeConst: a type used as a value (e.g., `i32` in `identity(i32, 42)`)
-            InstData::TypeConst { type_name } => {
-                let type_name = *type_name;
-                // Type parameters in scope substitute first.
-                if let Some(type_symbol) = self
-                    .host
-                    .rir_type_named_symbol(&self.program_key(), type_name)
-                {
-                    // A runtime local shadows every outer type substitution
-                    // and global type name. Only a local carrying a type value
-                    // is eligible for comptime use here.
-                    if let Some(local) = env.locals.get(&type_symbol) {
-                        if let Some(ty) = local.as_type() {
-                            return ComptimeOutcome::Known(H::Value::type_value(ty));
-                        }
-                        return ComptimeOutcome::RuntimeDependent;
-                    }
-                    // A block-local module is a path root, never a type.
-                    if env.local_modules.contains_key(&type_symbol) {
-                        return ComptimeOutcome::RuntimeDependent;
-                    }
-                    if let Some(binding) = env
-                        .local_binding_membership
-                        .as_ref()
-                        .and_then(|membership| membership(&type_symbol))
-                    {
-                        return match binding {
-                            ComptimeLocalBinding::Type(ty) => {
-                                ComptimeOutcome::Known(H::Value::type_value(ty))
-                            }
-                            ComptimeLocalBinding::Runtime => ComptimeOutcome::RuntimeDependent,
-                        };
-                    }
-                    if let Some(ty) = env.type_subst.get(&type_symbol) {
-                        // A module-typed substitution is a `let`-bound module:
-                        // a path root, never a type value (RUE-2426).
-                        if self.host.type_is_module(ty) {
-                            return ComptimeOutcome::RuntimeDependent;
-                        }
-                        return ComptimeOutcome::Known(H::Value::type_value(ty.clone()));
-                    }
-                    // A named type (primitive / struct / enum) resolves directly.
-                    if let Some(ty) = host_value!(self.host.resolve_named_type_value(
-                        &self.program_key(),
-                        type_symbol,
-                        span,
-                    )) {
-                        return ComptimeOutcome::Known(H::Value::type_value(ty));
-                    }
-                }
-                // A *composite* or *unit* type value — `[i32; 2]`, `()`,
-                // `ptr const T` — is an equally-valid type argument (Appendix A
-                // treats them as unambiguous type spellings; RUE-565). Its
-                // TypeConst carries the composite spelling as the interned
-                // `type_name`, so decode it through the full comptime type
-                // resolver under the current substitutions (an inner element /
-                // pointee naming an enclosing `comptime T` still resolves). An
-                // unresolvable spelling stays non-evaluable (`None`).
-                let ty = outcome_value!(self.evaluate_comptime_type_syntax(
-                    &self.program_key(),
-                    type_name,
-                    env,
-                    &env.type_subst,
-                    &env.value_subst,
-                    span,
-                ));
-                ComptimeOutcome::Known(H::Value::type_value(ty))
-            }
-
+            InstData::TypeConst { type_name } => self.dispatch_type_const(type_name, span, env),
             // An array-repeat expression `[T; N]` used as a comptime *type* value
             // (RUE-565). The surface form `[i32; 2]` in expression position parses
             // as an array-repeat literal whose element is a type value; when that
@@ -6195,89 +5062,13 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             // (`Option([i32; 2])`). A repeat over a *runtime* element is a genuine
             // array value literal and is not comptime-foldable here (`None`).
             InstData::ArrayRepeat { value, count } => {
-                // Declared or hinted exactly as an array literal is.
-                let declared = self.literal_context(inst_ref, declared, env);
-                let enclosing = env.expected_result.clone();
-                if declared.is_some() {
-                    env.expected_result = declared.clone();
-                }
-                let hinted = declared.is_none() && enclosing.is_some();
-                let outcome =
-                    self.eval_array_repeat(inst_ref, *value, count.clone(), hinted, span, env);
-                env.expected_result = enclosing;
-                outcome
+                self.dispatch_array_repeat(inst_ref, value, count, span, declared, env)
             }
-
             // VarRef: comptime let-bindings, comptime parameters, file-level
             // constants, then type names.
             InstData::VarRef { name, .. } => {
-                let name = self.name_from_rir((*name).into());
-                // 1. `let` bindings inside the comptime expression
-                if let Some(v) = env.locals.get(&name) {
-                    // A host may bind a comptime parameter as a local too;
-                    // reading one is still reading the parameter. A `let`
-                    // or pattern binding of the same name is a local.
-                    if !env.value_subst.contains_key(&name) || env.bound_locals.contains(&name) {
-                        self.local_reads += 1;
-                    }
-                    return ComptimeOutcome::Known(v.clone());
-                }
-                // A `let`-bound module is a path root, not a compile-time
-                // value (10.4:6): it cannot escape as one (RUE-2445).
-                if env.local_modules.contains_key(&name) {
-                    return ComptimeOutcome::RuntimeDependent;
-                }
-                if let Some(binding) = env
-                    .local_binding_membership
-                    .as_ref()
-                    .and_then(|membership| membership(&name))
-                {
-                    return match binding {
-                        ComptimeLocalBinding::Type(ty) => {
-                            ComptimeOutcome::Known(H::Value::type_value(ty))
-                        }
-                        ComptimeLocalBinding::Runtime => ComptimeOutcome::RuntimeDependent,
-                    };
-                }
-                // 2. Runtime locals shadow comptime parameters and file-level
-                //    constants: a reference that resolves to one is not
-                //    compile-time evaluable (spec 4.14:6).
-                if env.is_runtime_local_name(&name) {
-                    return ComptimeOutcome::RuntimeDependent;
-                }
-                // 3. Comptime type parameters in scope. A module-typed
-                //    substitution is a `let`-bound module, which is a path
-                //    root and not a compile-time value (RUE-2426; a module is
-                //    not a runtime value either, 10.4:6).
-                if let Some(ty) = env.type_subst.get(&name) {
-                    if self.host.type_is_module(ty) {
-                        return ComptimeOutcome::RuntimeDependent;
-                    }
-                    return ComptimeOutcome::Known(H::Value::type_value(ty.clone()));
-                }
-                // 4. Comptime value parameters in scope
-                if let Some(v) = env.value_subst.get(&name) {
-                    return ComptimeOutcome::Known(v.clone());
-                }
-                // 5. Runtime parameters shadow file-level constants and type
-                //    names. A comptime parameter with a concrete value was
-                //    already handled by the substitution maps above.
-                if env.runtime_binding_names.contains(&name) {
-                    return ComptimeOutcome::RuntimeDependent;
-                }
-                // 6. File-level constants and named types are one atomic
-                //    semantic lookup. The host owns direct dependency
-                //    observation and visibility so durable adapters cannot
-                //    split those effects across side channels.
-                let program = self.program_key();
-                let file = self.host.file_for_program_span(&program, &span);
-                match host_value!(self.host.resolve_comptime_named_value(file, name, span)) {
-                    ComptimeNamedValueResolution::Known(value) => ComptimeOutcome::Known(value),
-                    ComptimeNamedValueResolution::RuntimeDependent
-                    | ComptimeNamedValueResolution::Missing => ComptimeOutcome::RuntimeDependent,
-                }
+                self.dispatch_var_ref(&SymbolHandle::from(*name), span, env)
             }
-
             // Module-member access (`m.CONST`) as an operand of a larger const
             // initializer. The value was pre-resolved from the module's file
             // (with privacy checks) before evaluation — see the
@@ -6292,62 +5083,20 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             // value's field) stays non-evaluable, so the caller reports it
             // (RUE-267).
             InstData::FieldGet { base, field } => {
-                if let Some(value) = env.const_module_members.get(&inst_ref) {
-                    return ComptimeOutcome::Known(value.clone());
-                }
-                if let Some(path) = self.decode_module_path(inst_ref, env) {
-                    if let Some(value) = host_value!(self.host.resolve_comptime_type_path(
-                        path.file,
-                        path.root_module.as_ref(),
-                        &path.segments,
-                        span
-                    )) {
-                        return ComptimeOutcome::Known(value);
-                    }
-                }
-                let field = self.name_from_rir((*field).into());
-                let site = self.semantic_site(inst_ref, ComptimeSiteKind::Member, span);
-                if !host_value!(self.host.admit_comptime_member(field.clone(), &site)) {
-                    return ComptimeOutcome::RuntimeDependent;
-                }
-                let base = outcome_value!(self.eval(*base, env));
-                self.host.resolve_comptime_member(base, field, &site, span)
+                self.dispatch_field_get(inst_ref, base, &SymbolHandle::from(*field), span, env)
             }
-
             // `checked { expr }` does not change the value produced by a
             // comptime expression. Keep the child traversal in this engine,
             // then let a semantic host observe or refine the completed value.
-            InstData::Checked { expr, .. } => {
-                if !self.host.allow_checked_comptime() {
-                    return ComptimeOutcome::RuntimeDependent;
-                }
-                match self.eval(*expr, env) {
-                    ComptimeOutcome::Known(value) => self.host.finish_checked(value, span),
-                    other => other,
-                }
-            }
-
+            InstData::Checked { expr, .. } => self.dispatch_checked(expr, span, env),
             // Expression intrinsics are classified and structurally decoded
             // before child evaluation. This finite family has no comptime
             // child arguments: a durable host receives the import literal or
             // target arity as semantic facts, while malformed controls retain
             // their intrinsic-site diagnostics.
             InstData::Intrinsic { name, args } => {
-                let name = self.name_from_rir((*name).into());
-                let decoded = match self.decode_expression_intrinsic(name, args) {
-                    Ok(decoded) => decoded,
-                    Err(display_name) => {
-                        return self.host.reject_comptime_expression(
-                            ComptimeSemanticRejection::UnsupportedIntrinsic(display_name),
-                            &self.diagnostic_site(span),
-                        );
-                    }
-                };
-                let site = self.semantic_site(inst_ref, decoded.site_kind, span);
-                self.host
-                    .resolve_comptime_expression_intrinsic(decoded.request, &site)
+                self.dispatch_intrinsic(inst_ref, &SymbolHandle::from(*name), args, span)
             }
-
             // Enum variants are runtime values in the ordinary body domain.
             // Reduce a qualified module expression first, then hand only the
             // resulting semantic value and names to the host.
@@ -6355,26 +5104,14 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 module,
                 type_name,
                 variant,
-            } => {
-                let site = self.semantic_site(inst_ref, ComptimeSiteKind::EnumVariant, span);
-                let type_name = self.name_from_rir((*type_name).into());
-                let variant = self.name_from_rir((*variant).into());
-                if !host_value!(self.host.admit_comptime_enum_variant(
-                    type_name.clone(),
-                    variant.clone(),
-                    module.is_some(),
-                    &site,
-                )) {
-                    return ComptimeOutcome::RuntimeDependent;
-                }
-                let module = match module {
-                    Some(module) => Some(outcome_value!(self.eval(*module, env))),
-                    None => None,
-                };
-                self.host
-                    .resolve_comptime_enum_variant(module, type_name, variant, &site, span)
-            }
-
+            } => self.dispatch_enum_variant(
+                inst_ref,
+                module,
+                &SymbolHandle::from(*type_name),
+                &SymbolHandle::from(*variant),
+                span,
+                env,
+            ),
             // Type intrinsic in comptime position. `@require_droppable(T)` is the
             // owning-container well-formedness gate (RUE-388/RUE-646): std's
             // `ArrayBuf(T)` calls it in its `-> type` constructor body so that
@@ -6388,42 +5125,8 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             // 4.14:29); `@int_max`/`@int_min` depend only on the type identity,
             // not layout, so they evaluate to their integer bound (RUE-694).
             InstData::TypeIntrinsic { name, type_arg } => {
-                let (name, type_arg) = (*name, *type_arg);
-                let gate_name = self.name_from_rir(name.into());
-                let gate = self.host.display_name(&gate_name);
-                let Some(intrinsic) = ComptimeTypeIntrinsic::from_name(&gate) else {
-                    return self.host.reject_comptime_expression(
-                        ComptimeSemanticRejection::UnsupportedIntrinsic(gate),
-                        &self.diagnostic_site(span),
-                    );
-                };
-                // Both well-formedness gates reduce to unit at comptime:
-                // `@require_droppable` (instantiation-time, rejects `linear`) and
-                // `@require_trivially_droppable` (read-time, rejects drop glue —
-                // RUE-651). Any other type intrinsic (`@size_of`/`@align_of`) is
-                // not comptime-foldable here.
-                // Resolve the element type through the enclosing comptime
-                // substitutions (`T -> Inner` for `ArrayBuf(Inner)`); a
-                // still-unresolved type parameter makes the gate non-evaluable
-                // (it will be re-checked at a concrete instantiation).
-                let intrinsic_ty = outcome_value!(self.evaluate_comptime_type_syntax(
-                    &self.program_key(),
-                    type_arg,
-                    env,
-                    &env.type_subst,
-                    &env.value_subst,
-                    span,
-                ));
-                match host_value!(self.host.resolve_comptime_type_intrinsic(
-                    intrinsic,
-                    intrinsic_ty,
-                    &self.diagnostic_site(span),
-                )) {
-                    Some(value) => ComptimeOutcome::Known(value),
-                    None => ComptimeOutcome::RuntimeDependent,
-                }
+                self.dispatch_type_intrinsic(&SymbolHandle::from(*name), type_arg, span, env)
             }
-
             // Module-qualified comptime type-constructor call in value position,
             // e.g. `let O = b.Mk(T)` inside a `-> type` constructor body that is
             // being reduced (RUE-511). The receiver must be an unshadowed
@@ -6436,143 +5139,33 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 receiver,
                 method,
                 args,
-            } => {
-                let receiver = *receiver;
-                let method = self.name_from_rir((*method).into());
-                let declared = self.literal_context(inst_ref, declared, env);
-                self.evaluate_method_call(inst_ref, receiver, method, args, declared, env, span)
-            }
-
+            } => self.dispatch_method_call(
+                inst_ref,
+                receiver,
+                &SymbolHandle::from(*method),
+                args,
+                span,
+                declared,
+                env,
+            ),
             InstData::StructInit {
                 fields,
                 module,
                 ctor_head,
                 type_name,
                 ..
-            } => {
-                let (ctor_head, module) = (*ctor_head, *module);
-                let site = self.diagnostic_site(span);
-                let field_inits: Vec<_> = self
-                    .program_rir()
-                    .field_inits(fields)
-                    .iter()
-                    .map(|field| (field.0, field.1))
-                    .collect();
-                // The struct's type names each field's slot, so it resolves
-                // before the fields reduce against those slots.
-                // An inline type-constructor head, `Wrap(u8) { ... }`, names
-                // the struct by its reduction rather than by `type_name`,
-                // which is only the constructor's name (spec 4.14:23).
-                // A module-qualified constructor head (`lib.Wrap(u8) { .. }`)
-                // carries its module in the head call (RUE-2434). A qualified
-                // name (`lib.S { .. }`) reduces its module base first, and the
-                // host resolves the member as a body's literal does (RUE-2440).
-                let ty = if let Some(head) = ctor_head {
-                    let head = outcome_value!(self.eval(head, env));
-                    let Some(ty) = head.as_type() else {
-                        return ComptimeOutcome::RuntimeDependent;
-                    };
-                    Some(ty)
-                } else if let Some(module) = module {
-                    // The module base is reached as a method call's receiver
-                    // is: evaluated to a module value by a durable host, or
-                    // decoded as a module path by the ordinary body host.
-                    let type_name = self.name_from_rir((*type_name).into());
-                    match self.host.comptime_method_receiver_policy() {
-                        ComptimeMethodReceiverPolicy::EvaluateReceiver => {
-                            let module = outcome_value!(self.eval(module, env));
-                            host_value!(
-                                self.host
-                                    .resolve_comptime_module_struct_type(module, type_name, &site)
-                            )
-                        }
-                        ComptimeMethodReceiverPolicy::SyntacticModulePath => {
-                            let Some(path) = self.decode_module_path(module, env) else {
-                                return ComptimeOutcome::RuntimeDependent;
-                            };
-                            host_value!(self.host.resolve_comptime_module_path_struct_type(
-                                path.file,
-                                path.root_module.as_ref(),
-                                &path.segments,
-                                type_name,
-                                &site,
-                            ))
-                        }
-                    }
-                } else {
-                    let type_name = self.name_from_rir((*type_name).into());
-                    host_value!(self.host.resolve_comptime_struct_type(
-                        &self.program_key(),
-                        type_name,
-                        span,
-                    ))
-                };
-                let field_inits: Vec<_> = field_inits
-                    .into_iter()
-                    .map(|(name, field)| (self.name_from_rir(name.into()), field))
-                    .collect();
-                let mut order = ComptimeChildOrder::default();
-                if let Some(ty) = ty.as_ref() {
-                    let names: Vec<_> = field_inits.iter().map(|(name, _)| name.clone()).collect();
-                    let declared = self.literal_context(inst_ref, declared, env);
-                    outcome_value!(self.admit_literal_shape(
-                        ty,
-                        ComptimeLiteralShape::Struct { fields: &names },
-                        declared.as_ref(),
-                        span,
-                        &mut order,
-                    ));
-                }
-                let mut values = Vec::with_capacity(field_inits.len());
-                for (name, field) in field_inits {
-                    let slot = host_value!(
-                        self.child_slot_type(ty.as_ref(), ComptimeChildSlot::Field(&name))
-                    );
-                    let outcome = self.eval_in_slot(field, slot, env);
-                    if let Some(value) = outcome_value!(self.order_child(outcome, &mut order)) {
-                        values.push((name, value));
-                    }
-                }
-                let values = outcome_value!(order.finish(values));
-                let Some(ty) = ty else {
-                    return ComptimeOutcome::RuntimeDependent;
-                };
-                self.host.resolve_comptime_struct(ty, values, &site)
-            }
+            } => self.dispatch_struct_init(
+                inst_ref,
+                fields,
+                module,
+                ctor_head,
+                &SymbolHandle::from(*type_name),
+                span,
+                declared,
+                env,
+            ),
             InstData::ArrayInit { elements } => {
-                let site = self.diagnostic_site(span);
-                let array_elements = self.program_rir().array_elements(elements).to_vec();
-                // An array literal is checked against a type only where its
-                // position declares one (RUE-2407). Elsewhere, as an index
-                // base, a method receiver, an operand or an unannotated `let`
-                // initializer, an enclosing expected result is only a hint:
-                // the literal reduces at it when it fits, and is
-                // runtime-dependent rather than in error when it does not.
-                // With neither, its type comes from its elements.
-                let declared = self.literal_context(inst_ref, declared, env);
-                let enclosing = env.expected_result.clone();
-                let hinted = declared.is_none() && enclosing.is_some();
-                if declared.is_some() {
-                    env.expected_result = declared.clone();
-                }
-                let reduced = self.eval_array_literal(
-                    inst_ref,
-                    &array_elements,
-                    declared.as_ref(),
-                    hinted,
-                    span,
-                    env,
-                );
-                env.expected_result = enclosing;
-                let (ty, values) = outcome_value!(reduced);
-                let Some(ty) = ty else {
-                    return ComptimeOutcome::RuntimeDependent;
-                };
-                let outcome = self.host.resolve_comptime_array(ty, values, &site);
-                if hinted && let ComptimeOutcome::HostFailure(_) = outcome {
-                    return ComptimeOutcome::RuntimeDependent;
-                }
-                outcome
+                self.dispatch_array_init(inst_ref, elements, span, declared, env)
             }
             // Everything else requires runtime evaluation. The semantic
             // rejection hook lets durable hosts preserve the exact
@@ -6583,5 +5176,1827 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 &self.diagnostic_site(span),
             ),
         }
+    }
+
+    /// One arm of [`Self::eval_dispatch`], given the instruction's decoded
+    /// operands. Kept out of line so the dispatcher's frame stays small at
+    /// every level of nesting (RUE-2387).
+    #[inline(never)]
+    fn dispatch_int_const(
+        &mut self,
+        inst_ref: InstRef,
+        value: &u64,
+        span: Span,
+        env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
+    ) -> ComptimeOutcome<H::Value, H::Failure> {
+        let v = *value as i128;
+        let ty = self
+            .host
+            .const_expr_type(&self.program_key(), env, inst_ref);
+        if let Some(ty) = &ty {
+            // An integer literal is admitted where a float is
+            // expected (spec 3.12:11, ADR-0065 §3): it becomes the
+            // float nearest to it, as `let x: f32 = 3;` does at run
+            // time. The value keeps the literal's exact decimal in
+            // the canonical float text, so `3` is `3e0` as `3.0` is
+            // and both name one value (RUE-2403); every float
+            // consumer reads it at its own width.
+            if self.host.type_float_width(ty).is_some() {
+                return match host_value!(
+                    self.host.float_value_from_text(
+                        &crate::integer_float_value_text(v),
+                        Some(ty.clone())
+                    )
+                ) {
+                    Some(value) => ComptimeOutcome::Known(value),
+                    // A domain without float values. Only the ordinary
+                    // body host resolves types, and it always builds
+                    // one, so this is not reached today.
+                    None => ComptimeOutcome::RuntimeDependent,
+                };
+            }
+            if !self
+                .host
+                .type_integer_semantics(ty)
+                .is_some_and(|integer| integer.fits_i128(v))
+            {
+                return ComptimeOutcome::HostFailure(self.host.literal_out_of_range(
+                    v,
+                    ty,
+                    &self.diagnostic_site(span),
+                ));
+            }
+        }
+        ComptimeOutcome::Known(H::Value::integer_typed(v, ty))
+    }
+
+    /// One arm of [`Self::eval_dispatch`], given the instruction's decoded
+    /// operands. Kept out of line so the dispatcher's frame stays small at
+    /// every level of nesting (RUE-2387).
+    #[inline(never)]
+    fn dispatch_neg(
+        &mut self,
+        inst_ref: InstRef,
+        operand: &InstRef,
+        span: Span,
+        env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
+    ) -> ComptimeOutcome<H::Value, H::Failure> {
+        if let InstData::IntConst(magnitude) = self.program_rir().get(*operand).data {
+            // A host that retains expression types gives the
+            // literal its float type here; a declared result type
+            // reaches it through `eval` instead.
+            if let Some(ty) = self
+                .host
+                .const_expr_type(&self.program_key(), env, inst_ref)
+                && self.host.type_float_width(&ty).is_some()
+            {
+                return self.integer_literal_as_float(magnitude, true, ty);
+            }
+            let literal = H::Value::integer(magnitude as i128);
+            let ty = outcome_value!(self.unary_integer_type_for(env, inst_ref, &literal, span,));
+            if let Some(ref ty) = ty {
+                if self.host.type_is_unsigned(ty) {
+                    if let Some(failure) = self
+                        .host
+                        .reject_unsigned_negation(ty, &self.diagnostic_site(span))
+                    {
+                        return ComptimeOutcome::HostFailure(failure);
+                    }
+                }
+            }
+            // The literal path uses mathematical magnitude semantics:
+            // unlike an ordinary runtime value, `128` must not first
+            // canonicalize to -128 before becoming `-128`.
+            let integer = ty
+                .as_ref()
+                .and_then(|ty| self.host.type_integer_semantics(ty));
+            // A negated integer literal is one literal, not an
+            // operation on one. When the value it denotes does not
+            // fit its signed type, that is the literal out-of-range
+            // fact (E0800, spec 6.5:5) the body path reports for the
+            // same source text, not a trapping operation (6.5:12).
+            if let (Some(integer), Some(literal_ty)) = (integer, ty.as_ref())
+                && integer.is_signed()
+                && integer
+                    .checked_neg_literal_i128(magnitude as i128)
+                    .is_none()
+            {
+                return ComptimeOutcome::HostFailure(self.host.literal_out_of_range(
+                    -(magnitude as i128),
+                    literal_ty,
+                    &self.diagnostic_site(span),
+                ));
+            }
+            let result = integer.map_or_else(
+                || CheckedIntegerResult::from_raw((magnitude as i128).checked_neg()),
+                |integer| integer.checked_neg_literal_report_i128(magnitude as i128),
+            );
+            self.finish_arith_value(result, ty, "negation", span)
+        } else {
+            match self.eval(*operand, env) {
+                ComptimeOutcome::Known(value) => {
+                    if let Some(text) = self.host.float_value_text(&value) {
+                        return self.float_negate(&text, &value);
+                    }
+                    let Some(n) = value.as_integer() else {
+                        return self.host.reject_comptime_expression(
+                            ComptimeSemanticRejection::UnaryOperandNotInteger {
+                                operation: ComptimeUnaryOperation::Neg,
+                                value,
+                            },
+                            &self.diagnostic_site(span),
+                        );
+                    };
+                    let ty =
+                        outcome_value!(self.unary_integer_type_for(env, inst_ref, &value, span,));
+                    if let Some(ref ty) = ty {
+                        if self.host.type_is_unsigned(ty) {
+                            if let Some(failure) = self
+                                .host
+                                .reject_unsigned_negation(ty, &self.diagnostic_site(span))
+                            {
+                                return ComptimeOutcome::HostFailure(failure);
+                            }
+                        }
+                    }
+                    let result = match ty
+                        .as_ref()
+                        .and_then(|ty| self.host.type_integer_semantics(ty))
+                    {
+                        Some(integer) => integer.checked_neg_report_i128(n),
+                        None if ty.is_some() => {
+                            return self.host.reject_comptime_expression(
+                                ComptimeSemanticRejection::UnaryTypeNotInteger {
+                                    operation: ComptimeUnaryOperation::Neg,
+                                    value,
+                                },
+                                &self.diagnostic_site(span),
+                            );
+                        }
+                        None => CheckedIntegerResult::from_raw(n.checked_neg()),
+                    };
+                    let (result, ty) =
+                        self.declared_integer_result(inst_ref, env, result, ty, |integer| {
+                            integer.checked_neg_report_i128(n)
+                        });
+                    self.finish_arith_value(result, ty, "negation", span)
+                }
+                other => other,
+            }
+        }
+    }
+
+    /// One arm of [`Self::eval_dispatch`], given the instruction's decoded
+    /// operands. Kept out of line so the dispatcher's frame stays small at
+    /// every level of nesting (RUE-2387).
+    #[inline(never)]
+    fn dispatch_not(
+        &mut self,
+        operand: &InstRef,
+        span: Span,
+        env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
+    ) -> ComptimeOutcome<H::Value, H::Failure> {
+        match self.eval(*operand, env) {
+            ComptimeOutcome::Known(value) => match value.as_boolean() {
+                Some(b) => ComptimeOutcome::Known(H::Value::boolean(!b)),
+                None => self.host.reject_comptime_expression(
+                    ComptimeSemanticRejection::ConditionNotBoolean(value),
+                    &self.diagnostic_site(span),
+                ),
+            },
+            // Can't logical-NOT an integer, type, or unit
+            other => other,
+        }
+    }
+
+    /// One arm of [`Self::eval_dispatch`], given the instruction's decoded
+    /// operands. Kept out of line so the dispatcher's frame stays small at
+    /// every level of nesting (RUE-2387).
+    #[inline(never)]
+    fn dispatch_add(
+        &mut self,
+        inst_ref: InstRef,
+        lhs: &InstRef,
+        rhs: &InstRef,
+        span: Span,
+        env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
+    ) -> ComptimeOutcome<H::Value, H::Failure> {
+        let operands = match outcome_value!(self.eval_arith_operands(
+            ComptimeIntegerOperation::Add,
+            *lhs,
+            *rhs,
+            env,
+            span
+        )) {
+            ArithOperands::Float(l, r) => {
+                return self.float_binary(
+                    ComptimeIntegerOperation::Add,
+                    l,
+                    r,
+                    env,
+                    inst_ref,
+                    (*lhs, *rhs),
+                    span,
+                );
+            }
+            ArithOperands::Integer(l, r) => (l, r),
+        };
+        let (l, r) = Self::integer_pair(&operands).expect("integer operands");
+        let ty =
+            outcome_value!(self.integer_type_for(env, inst_ref, &operands.0, &operands.1, span,));
+        let result = ty
+            .as_ref()
+            .and_then(|ty| self.host.type_integer_semantics(ty))
+            .map_or_else(
+                || CheckedIntegerResult::from_raw(l.checked_add(r)),
+                |integer| integer.checked_add_report_i128(l, r),
+            );
+        let (result, ty) = self.declared_integer_result(inst_ref, env, result, ty, |integer| {
+            integer.checked_add_report_i128(l, r)
+        });
+        self.finish_arith_value(result, ty, "+", span)
+    }
+
+    /// One arm of [`Self::eval_dispatch`], given the instruction's decoded
+    /// operands. Kept out of line so the dispatcher's frame stays small at
+    /// every level of nesting (RUE-2387).
+    #[inline(never)]
+    fn dispatch_sub(
+        &mut self,
+        inst_ref: InstRef,
+        lhs: &InstRef,
+        rhs: &InstRef,
+        span: Span,
+        env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
+    ) -> ComptimeOutcome<H::Value, H::Failure> {
+        let operands = match outcome_value!(self.eval_arith_operands(
+            ComptimeIntegerOperation::Sub,
+            *lhs,
+            *rhs,
+            env,
+            span
+        )) {
+            ArithOperands::Float(l, r) => {
+                return self.float_binary(
+                    ComptimeIntegerOperation::Sub,
+                    l,
+                    r,
+                    env,
+                    inst_ref,
+                    (*lhs, *rhs),
+                    span,
+                );
+            }
+            ArithOperands::Integer(l, r) => (l, r),
+        };
+        let (l, r) = Self::integer_pair(&operands).expect("integer operands");
+        let ty =
+            outcome_value!(self.integer_type_for(env, inst_ref, &operands.0, &operands.1, span,));
+        let result = ty
+            .as_ref()
+            .and_then(|ty| self.host.type_integer_semantics(ty))
+            .map_or_else(
+                || CheckedIntegerResult::from_raw(l.checked_sub(r)),
+                |integer| integer.checked_sub_report_i128(l, r),
+            );
+        let (result, ty) = self.declared_integer_result(inst_ref, env, result, ty, |integer| {
+            integer.checked_sub_report_i128(l, r)
+        });
+        self.finish_arith_value(result, ty, "-", span)
+    }
+
+    /// One arm of [`Self::eval_dispatch`], given the instruction's decoded
+    /// operands. Kept out of line so the dispatcher's frame stays small at
+    /// every level of nesting (RUE-2387).
+    #[inline(never)]
+    fn dispatch_mul(
+        &mut self,
+        inst_ref: InstRef,
+        lhs: &InstRef,
+        rhs: &InstRef,
+        span: Span,
+        env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
+    ) -> ComptimeOutcome<H::Value, H::Failure> {
+        let operands = match outcome_value!(self.eval_arith_operands(
+            ComptimeIntegerOperation::Mul,
+            *lhs,
+            *rhs,
+            env,
+            span
+        )) {
+            ArithOperands::Float(l, r) => {
+                return self.float_binary(
+                    ComptimeIntegerOperation::Mul,
+                    l,
+                    r,
+                    env,
+                    inst_ref,
+                    (*lhs, *rhs),
+                    span,
+                );
+            }
+            ArithOperands::Integer(l, r) => (l, r),
+        };
+        let (l, r) = Self::integer_pair(&operands).expect("integer operands");
+        let ty =
+            outcome_value!(self.integer_type_for(env, inst_ref, &operands.0, &operands.1, span,));
+        let result = ty
+            .as_ref()
+            .and_then(|ty| self.host.type_integer_semantics(ty))
+            .map_or_else(
+                || CheckedIntegerResult::from_raw(l.checked_mul(r)),
+                |integer| integer.checked_mul_report_i128(l, r),
+            );
+        let (result, ty) = self.declared_integer_result(inst_ref, env, result, ty, |integer| {
+            integer.checked_mul_report_i128(l, r)
+        });
+        self.finish_arith_value(result, ty, "*", span)
+    }
+
+    /// One arm of [`Self::eval_dispatch`], given the instruction's decoded
+    /// operands. Kept out of line so the dispatcher's frame stays small at
+    /// every level of nesting (RUE-2387).
+    #[inline(never)]
+    fn dispatch_div(
+        &mut self,
+        inst_ref: InstRef,
+        lhs: &InstRef,
+        rhs: &InstRef,
+        is_div: bool,
+        span: Span,
+        env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
+    ) -> ComptimeOutcome<H::Value, H::Failure> {
+        let op = if is_div { "/" } else { "%" };
+        let operation = if is_div {
+            ComptimeIntegerOperation::Div
+        } else {
+            ComptimeIntegerOperation::Mod
+        };
+        let operands =
+            match outcome_value!(self.eval_arith_operands(operation, *lhs, *rhs, env, span)) {
+                ArithOperands::Float(l, r) => {
+                    return self.float_binary(operation, l, r, env, inst_ref, (*lhs, *rhs), span);
+                }
+                ArithOperands::Integer(l, r) => (l, r),
+            };
+        let (l, r) = Self::integer_pair(&operands).expect("integer operands");
+        let ty =
+            outcome_value!(self.integer_type_for(env, inst_ref, &operands.0, &operands.1, span,));
+        if r == 0 {
+            return match ty {
+                Some(_) => ComptimeOutcome::Trap(ComptimeTrap {
+                    operation: if is_div {
+                        "division by zero"
+                    } else {
+                        "remainder by zero"
+                    },
+                    span,
+                }),
+                // Untyped fallback: defer to the runtime check.
+                None => ComptimeOutcome::RuntimeDependent,
+            };
+        }
+        // Untyped evaluation retains its historical i64 fallback;
+        // typed MIN / -1 trapping is owned by the kernel report.
+        if r == -1 && ty.is_none() && l == i128::from(i64::MIN) {
+            return ComptimeOutcome::RuntimeDependent;
+        }
+        let result = ty
+            .as_ref()
+            .and_then(|ty| self.host.type_integer_semantics(ty))
+            .map_or_else(
+                || {
+                    CheckedIntegerResult::from_raw(if is_div {
+                        l.checked_div(r)
+                    } else {
+                        l.checked_rem(r)
+                    })
+                },
+                |integer| {
+                    if is_div {
+                        integer.checked_div_report_i128(l, r)
+                    } else {
+                        integer.checked_rem_report_i128(l, r)
+                    }
+                },
+            );
+        let (result, ty) = self.declared_integer_result(inst_ref, env, result, ty, |integer| {
+            if is_div {
+                integer.checked_div_report_i128(l, r)
+            } else {
+                integer.checked_rem_report_i128(l, r)
+            }
+        });
+        self.finish_arith_value(result, ty, op, span)
+    }
+
+    /// One arm of [`Self::eval_dispatch`], given the instruction's decoded
+    /// operands. Kept out of line so the dispatcher's frame stays small at
+    /// every level of nesting (RUE-2387).
+    #[inline(never)]
+    fn dispatch_eq(
+        &mut self,
+        inst_ref: InstRef,
+        lhs: &InstRef,
+        rhs: &InstRef,
+        span: Span,
+        env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
+    ) -> ComptimeOutcome<H::Value, H::Failure> {
+        let (lhs_ref, rhs_ref) = (*lhs, *rhs);
+        let lhs = match self.eval(*lhs, env) {
+            ComptimeOutcome::Known(value) => value,
+            ComptimeOutcome::RuntimeDependent => {
+                return match self.eval(*rhs, env) {
+                    ComptimeOutcome::Known(_) | ComptimeOutcome::RuntimeDependent => {
+                        ComptimeOutcome::RuntimeDependent
+                    }
+                    other => other,
+                };
+            }
+            other => return other,
+        };
+        match self.eval(*rhs, env) {
+            ComptimeOutcome::Known(rhs) => {
+                if lhs.as_integer().is_some() && rhs.as_integer().is_some() {
+                    let _ = outcome_value!(self.integer_type_for(env, inst_ref, &lhs, &rhs, span,));
+                }
+                match (
+                    lhs.as_integer(),
+                    rhs.as_integer(),
+                    lhs.as_boolean(),
+                    rhs.as_boolean(),
+                ) {
+                    (Some(lhs), Some(rhs), _, _) => {
+                        ComptimeOutcome::Known(H::Value::boolean(lhs == rhs))
+                    }
+                    (_, _, Some(lhs), Some(rhs)) => {
+                        ComptimeOutcome::Known(H::Value::boolean(lhs == rhs))
+                    }
+                    _ => {
+                        if let (Some(lhs), Some(rhs)) = (
+                            self.host.string_value_text(&lhs),
+                            self.host.string_value_text(&rhs),
+                        ) {
+                            return ComptimeOutcome::Known(H::Value::boolean(lhs == rhs));
+                        }
+                        if self.host.float_value_text(&lhs).is_some()
+                            || self.host.float_value_text(&rhs).is_some()
+                        {
+                            return self.float_equality(
+                                &lhs,
+                                &rhs,
+                                true,
+                                env,
+                                inst_ref,
+                                (lhs_ref, rhs_ref),
+                            );
+                        }
+                        let site = self.diagnostic_site(span);
+                        self.host.compare_comptime_values(&lhs, &rhs, true, &site)
+                    }
+                }
+            }
+            other => other,
+        }
+    }
+
+    /// One arm of [`Self::eval_dispatch`], given the instruction's decoded
+    /// operands. Kept out of line so the dispatcher's frame stays small at
+    /// every level of nesting (RUE-2387).
+    #[inline(never)]
+    fn dispatch_ne(
+        &mut self,
+        inst_ref: InstRef,
+        lhs: &InstRef,
+        rhs: &InstRef,
+        span: Span,
+        env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
+    ) -> ComptimeOutcome<H::Value, H::Failure> {
+        let (lhs_ref, rhs_ref) = (*lhs, *rhs);
+        let lhs = match self.eval(*lhs, env) {
+            ComptimeOutcome::Known(value) => value,
+            ComptimeOutcome::RuntimeDependent => {
+                return match self.eval(*rhs, env) {
+                    ComptimeOutcome::Known(_) | ComptimeOutcome::RuntimeDependent => {
+                        ComptimeOutcome::RuntimeDependent
+                    }
+                    other => other,
+                };
+            }
+            other => return other,
+        };
+        match self.eval(*rhs, env) {
+            ComptimeOutcome::Known(rhs) => {
+                if lhs.as_integer().is_some() && rhs.as_integer().is_some() {
+                    let _ = outcome_value!(self.integer_type_for(env, inst_ref, &lhs, &rhs, span,));
+                }
+                match (
+                    lhs.as_integer(),
+                    rhs.as_integer(),
+                    lhs.as_boolean(),
+                    rhs.as_boolean(),
+                ) {
+                    (Some(lhs), Some(rhs), _, _) => {
+                        ComptimeOutcome::Known(H::Value::boolean(lhs != rhs))
+                    }
+                    (_, _, Some(lhs), Some(rhs)) => {
+                        ComptimeOutcome::Known(H::Value::boolean(lhs != rhs))
+                    }
+                    _ => {
+                        if let (Some(lhs), Some(rhs)) = (
+                            self.host.string_value_text(&lhs),
+                            self.host.string_value_text(&rhs),
+                        ) {
+                            return ComptimeOutcome::Known(H::Value::boolean(lhs != rhs));
+                        }
+                        if self.host.float_value_text(&lhs).is_some()
+                            || self.host.float_value_text(&rhs).is_some()
+                        {
+                            return self.float_equality(
+                                &lhs,
+                                &rhs,
+                                false,
+                                env,
+                                inst_ref,
+                                (lhs_ref, rhs_ref),
+                            );
+                        }
+                        let site = self.diagnostic_site(span);
+                        self.host.compare_comptime_values(&lhs, &rhs, false, &site)
+                    }
+                }
+            }
+            other => other,
+        }
+    }
+
+    /// One arm of [`Self::eval_dispatch`], given the instruction's decoded
+    /// operands. Kept out of line so the dispatcher's frame stays small at
+    /// every level of nesting (RUE-2387).
+    #[inline(never)]
+    fn dispatch_lt(
+        &mut self,
+        inst_ref: InstRef,
+        lhs: &InstRef,
+        rhs: &InstRef,
+        span: Span,
+        env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
+    ) -> ComptimeOutcome<H::Value, H::Failure> {
+        let operands = match outcome_value!(self.eval_arith_operands(
+            ComptimeIntegerOperation::Lt,
+            *lhs,
+            *rhs,
+            env,
+            span
+        )) {
+            ArithOperands::Float(l, r) => {
+                return self.float_binary(
+                    ComptimeIntegerOperation::Lt,
+                    l,
+                    r,
+                    env,
+                    inst_ref,
+                    (*lhs, *rhs),
+                    span,
+                );
+            }
+            ArithOperands::Integer(l, r) => (l, r),
+        };
+        let (l, r) = Self::integer_pair(&operands).expect("integer operands");
+        let _ =
+            outcome_value!(self.integer_type_for(env, inst_ref, &operands.0, &operands.1, span,));
+        ComptimeOutcome::Known(H::Value::boolean(l < r))
+    }
+
+    /// One arm of [`Self::eval_dispatch`], given the instruction's decoded
+    /// operands. Kept out of line so the dispatcher's frame stays small at
+    /// every level of nesting (RUE-2387).
+    #[inline(never)]
+    fn dispatch_gt(
+        &mut self,
+        inst_ref: InstRef,
+        lhs: &InstRef,
+        rhs: &InstRef,
+        span: Span,
+        env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
+    ) -> ComptimeOutcome<H::Value, H::Failure> {
+        let operands = match outcome_value!(self.eval_arith_operands(
+            ComptimeIntegerOperation::Gt,
+            *lhs,
+            *rhs,
+            env,
+            span
+        )) {
+            ArithOperands::Float(l, r) => {
+                return self.float_binary(
+                    ComptimeIntegerOperation::Gt,
+                    l,
+                    r,
+                    env,
+                    inst_ref,
+                    (*lhs, *rhs),
+                    span,
+                );
+            }
+            ArithOperands::Integer(l, r) => (l, r),
+        };
+        let (l, r) = Self::integer_pair(&operands).expect("integer operands");
+        let _ =
+            outcome_value!(self.integer_type_for(env, inst_ref, &operands.0, &operands.1, span,));
+        ComptimeOutcome::Known(H::Value::boolean(l > r))
+    }
+
+    /// One arm of [`Self::eval_dispatch`], given the instruction's decoded
+    /// operands. Kept out of line so the dispatcher's frame stays small at
+    /// every level of nesting (RUE-2387).
+    #[inline(never)]
+    fn dispatch_le(
+        &mut self,
+        inst_ref: InstRef,
+        lhs: &InstRef,
+        rhs: &InstRef,
+        span: Span,
+        env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
+    ) -> ComptimeOutcome<H::Value, H::Failure> {
+        let operands = match outcome_value!(self.eval_arith_operands(
+            ComptimeIntegerOperation::Le,
+            *lhs,
+            *rhs,
+            env,
+            span
+        )) {
+            ArithOperands::Float(l, r) => {
+                return self.float_binary(
+                    ComptimeIntegerOperation::Le,
+                    l,
+                    r,
+                    env,
+                    inst_ref,
+                    (*lhs, *rhs),
+                    span,
+                );
+            }
+            ArithOperands::Integer(l, r) => (l, r),
+        };
+        let (l, r) = Self::integer_pair(&operands).expect("integer operands");
+        let _ =
+            outcome_value!(self.integer_type_for(env, inst_ref, &operands.0, &operands.1, span,));
+        ComptimeOutcome::Known(H::Value::boolean(l <= r))
+    }
+
+    /// One arm of [`Self::eval_dispatch`], given the instruction's decoded
+    /// operands. Kept out of line so the dispatcher's frame stays small at
+    /// every level of nesting (RUE-2387).
+    #[inline(never)]
+    fn dispatch_ge(
+        &mut self,
+        inst_ref: InstRef,
+        lhs: &InstRef,
+        rhs: &InstRef,
+        span: Span,
+        env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
+    ) -> ComptimeOutcome<H::Value, H::Failure> {
+        let operands = match outcome_value!(self.eval_arith_operands(
+            ComptimeIntegerOperation::Ge,
+            *lhs,
+            *rhs,
+            env,
+            span
+        )) {
+            ArithOperands::Float(l, r) => {
+                return self.float_binary(
+                    ComptimeIntegerOperation::Ge,
+                    l,
+                    r,
+                    env,
+                    inst_ref,
+                    (*lhs, *rhs),
+                    span,
+                );
+            }
+            ArithOperands::Integer(l, r) => (l, r),
+        };
+        let (l, r) = Self::integer_pair(&operands).expect("integer operands");
+        let _ =
+            outcome_value!(self.integer_type_for(env, inst_ref, &operands.0, &operands.1, span,));
+        ComptimeOutcome::Known(H::Value::boolean(l >= r))
+    }
+
+    /// One arm of [`Self::eval_dispatch`], given the instruction's decoded
+    /// operands. Kept out of line so the dispatcher's frame stays small at
+    /// every level of nesting (RUE-2387).
+    #[inline(never)]
+    fn dispatch_and(
+        &mut self,
+        lhs: &InstRef,
+        rhs: &InstRef,
+        span: Span,
+        env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
+    ) -> ComptimeOutcome<H::Value, H::Failure> {
+        match self.eval(*lhs, env) {
+            ComptimeOutcome::Known(value) if value.as_boolean() == Some(false) => {
+                ComptimeOutcome::Known(H::Value::boolean(false))
+            }
+            ComptimeOutcome::Known(value) if value.as_boolean() == Some(true) => {
+                match self.eval(*rhs, env) {
+                    ComptimeOutcome::Known(value) if value.as_boolean().is_some() => {
+                        ComptimeOutcome::Known(value)
+                    }
+                    ComptimeOutcome::Known(value) => self.host.reject_comptime_expression(
+                        ComptimeSemanticRejection::ConditionNotBoolean(value),
+                        &self.diagnostic_site(span),
+                    ),
+                    other => other,
+                }
+            }
+            ComptimeOutcome::Known(value) => self.host.reject_comptime_expression(
+                ComptimeSemanticRejection::ConditionNotBoolean(value),
+                &self.diagnostic_site(span),
+            ),
+            other => other,
+        }
+    }
+
+    /// One arm of [`Self::eval_dispatch`], given the instruction's decoded
+    /// operands. Kept out of line so the dispatcher's frame stays small at
+    /// every level of nesting (RUE-2387).
+    #[inline(never)]
+    fn dispatch_or(
+        &mut self,
+        lhs: &InstRef,
+        rhs: &InstRef,
+        span: Span,
+        env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
+    ) -> ComptimeOutcome<H::Value, H::Failure> {
+        match self.eval(*lhs, env) {
+            ComptimeOutcome::Known(value) if value.as_boolean() == Some(true) => {
+                ComptimeOutcome::Known(H::Value::boolean(true))
+            }
+            ComptimeOutcome::Known(value) if value.as_boolean() == Some(false) => {
+                match self.eval(*rhs, env) {
+                    ComptimeOutcome::Known(value) if value.as_boolean().is_some() => {
+                        ComptimeOutcome::Known(value)
+                    }
+                    ComptimeOutcome::Known(value) => self.host.reject_comptime_expression(
+                        ComptimeSemanticRejection::ConditionNotBoolean(value),
+                        &self.diagnostic_site(span),
+                    ),
+                    other => other,
+                }
+            }
+            ComptimeOutcome::Known(value) => self.host.reject_comptime_expression(
+                ComptimeSemanticRejection::ConditionNotBoolean(value),
+                &self.diagnostic_site(span),
+            ),
+            other => other,
+        }
+    }
+
+    /// One arm of [`Self::eval_dispatch`], given the instruction's decoded
+    /// operands. Kept out of line so the dispatcher's frame stays small at
+    /// every level of nesting (RUE-2387).
+    #[inline(never)]
+    fn dispatch_bit_and(
+        &mut self,
+        inst_ref: InstRef,
+        lhs: &InstRef,
+        rhs: &InstRef,
+        span: Span,
+        env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
+    ) -> ComptimeOutcome<H::Value, H::Failure> {
+        let operands = outcome_value!(self.eval_int_operands(
+            ComptimeIntegerOperation::BitAnd,
+            *lhs,
+            *rhs,
+            env,
+            span
+        ));
+        let (l, r) = Self::integer_pair(&operands).expect("integer operands");
+        let ty =
+            outcome_value!(self.integer_type_for(env, inst_ref, &operands.0, &operands.1, span,));
+        ComptimeOutcome::Known(H::Value::integer_typed(l & r, ty))
+    }
+
+    /// One arm of [`Self::eval_dispatch`], given the instruction's decoded
+    /// operands. Kept out of line so the dispatcher's frame stays small at
+    /// every level of nesting (RUE-2387).
+    #[inline(never)]
+    fn dispatch_bit_or(
+        &mut self,
+        inst_ref: InstRef,
+        lhs: &InstRef,
+        rhs: &InstRef,
+        span: Span,
+        env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
+    ) -> ComptimeOutcome<H::Value, H::Failure> {
+        let operands = outcome_value!(self.eval_int_operands(
+            ComptimeIntegerOperation::BitOr,
+            *lhs,
+            *rhs,
+            env,
+            span
+        ));
+        let (l, r) = Self::integer_pair(&operands).expect("integer operands");
+        let ty =
+            outcome_value!(self.integer_type_for(env, inst_ref, &operands.0, &operands.1, span,));
+        ComptimeOutcome::Known(H::Value::integer_typed(l | r, ty))
+    }
+
+    /// One arm of [`Self::eval_dispatch`], given the instruction's decoded
+    /// operands. Kept out of line so the dispatcher's frame stays small at
+    /// every level of nesting (RUE-2387).
+    #[inline(never)]
+    fn dispatch_bit_xor(
+        &mut self,
+        inst_ref: InstRef,
+        lhs: &InstRef,
+        rhs: &InstRef,
+        span: Span,
+        env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
+    ) -> ComptimeOutcome<H::Value, H::Failure> {
+        let operands = outcome_value!(self.eval_int_operands(
+            ComptimeIntegerOperation::BitXor,
+            *lhs,
+            *rhs,
+            env,
+            span
+        ));
+        let (l, r) = Self::integer_pair(&operands).expect("integer operands");
+        let ty =
+            outcome_value!(self.integer_type_for(env, inst_ref, &operands.0, &operands.1, span,));
+        ComptimeOutcome::Known(H::Value::integer_typed(l ^ r, ty))
+    }
+
+    /// One arm of [`Self::eval_dispatch`], given the instruction's decoded
+    /// operands. Kept out of line so the dispatcher's frame stays small at
+    /// every level of nesting (RUE-2387).
+    #[inline(never)]
+    fn dispatch_shl(
+        &mut self,
+        inst_ref: InstRef,
+        lhs: &InstRef,
+        rhs: &InstRef,
+        is_shl: bool,
+        span: Span,
+        env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
+    ) -> ComptimeOutcome<H::Value, H::Failure> {
+        let operands = outcome_value!(self.eval_int_operands(
+            if is_shl {
+                ComptimeIntegerOperation::Shl
+            } else {
+                ComptimeIntegerOperation::Shr
+            },
+            *lhs,
+            *rhs,
+            env,
+            span
+        ));
+        let (l, r) = Self::integer_pair(&operands).expect("integer operands");
+        let ty =
+            outcome_value!(self.integer_type_for(env, inst_ref, &operands.0, &operands.1, span,));
+        match ty.as_ref() {
+            Some(ty) => {
+                let Some(integer) = self.host.type_integer_semantics(ty) else {
+                    return ComptimeOutcome::RuntimeDependent;
+                };
+                // Two's-complement AND masks negative amounts the same
+                // way the hardware masks the count register.
+                let v = integer.shift_i128(l, r, is_shl);
+                ComptimeOutcome::Known(H::Value::integer_typed(v, Some(ty.clone())))
+            }
+            None => {
+                // Without the operand type the width is unknown, so
+                // only fold amounts < 8 (safe for every width) and
+                // defer the rest to runtime.
+                if !(0..8).contains(&r) {
+                    return ComptimeOutcome::RuntimeDependent;
+                }
+                ComptimeOutcome::Known(H::Value::integer_typed(
+                    if is_shl { l << r } else { l >> r },
+                    None,
+                ))
+            }
+        }
+    }
+
+    /// One arm of [`Self::eval_dispatch`], given the instruction's decoded
+    /// operands. Kept out of line so the dispatcher's frame stays small at
+    /// every level of nesting (RUE-2387).
+    #[inline(never)]
+    fn dispatch_bit_not(
+        &mut self,
+        inst_ref: InstRef,
+        operand: &InstRef,
+        span: Span,
+        env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
+    ) -> ComptimeOutcome<H::Value, H::Failure> {
+        let n = outcome_value!(self.eval(*operand, env));
+        let Some(raw) = n.as_integer() else {
+            return self.host.reject_comptime_expression(
+                ComptimeSemanticRejection::UnaryOperandNotInteger {
+                    operation: ComptimeUnaryOperation::BitNot,
+                    value: n,
+                },
+                &self.diagnostic_site(span),
+            );
+        };
+        let ty = outcome_value!(self.unary_integer_type_for(env, inst_ref, &n, span,));
+        let v = match ty
+            .as_ref()
+            .and_then(|ty| self.host.type_integer_semantics(ty))
+        {
+            Some(integer) => integer.bitnot_i128(raw),
+            None if ty.is_some() => {
+                return self.host.reject_comptime_expression(
+                    ComptimeSemanticRejection::UnaryTypeNotInteger {
+                        operation: ComptimeUnaryOperation::BitNot,
+                        value: n,
+                    },
+                    &self.diagnostic_site(span),
+                );
+            }
+            None => !raw,
+        };
+        ComptimeOutcome::Known(H::Value::integer_typed(v, ty))
+    }
+
+    /// One arm of [`Self::eval_dispatch`], given the instruction's decoded
+    /// operands. Kept out of line so the dispatcher's frame stays small at
+    /// every level of nesting (RUE-2387).
+    #[inline(never)]
+    fn dispatch_index_get(
+        &mut self,
+        base: &InstRef,
+        index: &InstRef,
+        env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
+    ) -> ComptimeOutcome<H::Value, H::Failure> {
+        let base = outcome_value!(self.eval(*base, env));
+        let index = outcome_value!(self.eval(*index, env));
+        let Some(index) = index
+            .as_integer()
+            .and_then(|value| usize::try_from(value).ok())
+        else {
+            return ComptimeOutcome::RuntimeDependent;
+        };
+        match base.aggregate_array_element(index) {
+            Some(value) => ComptimeOutcome::Known(value),
+            None => ComptimeOutcome::RuntimeDependent,
+        }
+    }
+
+    /// One arm of [`Self::eval_dispatch`], given the instruction's decoded
+    /// operands. Kept out of line so the dispatcher's frame stays small at
+    /// every level of nesting (RUE-2387).
+    #[inline(never)]
+    fn dispatch_match(
+        &mut self,
+        inst_ref: InstRef,
+        scrutinee: &InstRef,
+        arms: &rue_rir::RirMatchArmsRange,
+        span: Span,
+        env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
+    ) -> ComptimeOutcome<H::Value, H::Failure> {
+        let literal_type = env.literal_type.take();
+        let scrutinee = *scrutinee;
+        let reads = self.local_reads;
+        let scrut = outcome_value!(self.eval(scrutinee, env));
+        let at_compile_time = self.selects_at_compile_time(reads, env);
+        let arms = self
+            .program_rir()
+            .match_arms(arms)
+            .iter()
+            .map(|(pattern, body)| {
+                (
+                    self.decode_match_pattern(&self.program_key(), &pattern),
+                    comptime_match_pattern_head(&pattern),
+                    body,
+                )
+            })
+            .collect::<Vec<_>>();
+        for (semantic_pattern, head, body) in arms.iter() {
+            let head = match head {
+                Some(head) => {
+                    outcome_value!(self.resolve_match_pattern_head(head, env, span))
+                }
+                None => None,
+            };
+            match self.match_arm_pattern(
+                semantic_pattern,
+                head.as_ref(),
+                &scrut,
+                &self.diagnostic_site(span),
+            ) {
+                Ok(Some(true)) => {
+                    // Payload bindings belong to the selected arm's
+                    // lexical environment. The engine extracts only
+                    // the already-reduced payload through the value
+                    // algebra; hosts do not receive RIR or evaluate
+                    // pattern children themselves.
+                    let bindings = match &semantic_pattern {
+                        ComptimeMatchPattern::Path { binding_names, .. } => {
+                            if binding_names.iter().all(Option::is_none) {
+                                Vec::new()
+                            } else {
+                                let Some((variant, payload)) = scrut.aggregate_enum_payload()
+                                else {
+                                    return ComptimeOutcome::RuntimeDependent;
+                                };
+                                let payload = match self
+                                    .host
+                                    .project_comptime_enum_payload(&scrut, variant, payload)
+                                {
+                                    Ok(payload) => payload,
+                                    Err(ComptimeHostError::HostFailure(error)) => {
+                                        return ComptimeOutcome::HostFailure(error);
+                                    }
+                                    Err(ComptimeHostError::Abort(error)) => {
+                                        return ComptimeOutcome::Abort(error);
+                                    }
+                                };
+                                let mut bindings = Vec::new();
+                                for (index, name) in binding_names.iter().enumerate() {
+                                    let Some(name) = name else { continue };
+                                    let Some(value) = payload.get(index).cloned() else {
+                                        return ComptimeOutcome::RuntimeDependent;
+                                    };
+                                    if self.host.display_name(name) != "_" {
+                                        bindings.push((name.clone(), value));
+                                    }
+                                }
+                                bindings
+                            }
+                        }
+                        _ => Vec::new(),
+                    };
+                    let mut previous = Vec::with_capacity(bindings.len());
+                    // A pattern binding carries no declared integer
+                    // type, so it hides one it shadows.
+                    let saved_declared = (!env.declared_integer_locals.is_empty())
+                        .then(|| env.declared_integer_locals.clone());
+                    let binds = !bindings.is_empty();
+                    let saved_bound = binds.then(|| env.bound_locals.clone());
+                    for (name, value) in bindings {
+                        env.declared_integer_locals.remove(&name);
+                        env.bound_locals.insert(name.clone());
+                        previous.push((name.clone(), env.locals.insert(name, value)));
+                    }
+                    let result = self.eval_typed(*body, literal_type.clone(), env);
+                    if binds {
+                        env.selected_arms.remove(&inst_ref);
+                    } else {
+                        env.selected_arms.insert(inst_ref, (*body, at_compile_time));
+                    }
+                    if let Some(saved_declared) = saved_declared {
+                        env.declared_integer_locals = saved_declared;
+                    }
+                    if let Some(saved_bound) = saved_bound {
+                        env.bound_locals = saved_bound;
+                    }
+                    for (name, value) in previous {
+                        match value {
+                            Some(value) => {
+                                env.locals.insert(name, value);
+                            }
+                            None => {
+                                env.locals.remove(&name);
+                            }
+                        }
+                    }
+                    return result;
+                }
+                Ok(Some(false)) => continue,
+                // Undecidable pattern (e.g. an enum-variant `Path`
+                // against a non-representable scrutinee): bail out.
+                Ok(None) => return ComptimeOutcome::RuntimeDependent,
+                Err(ComptimeHostError::HostFailure(error)) => {
+                    return ComptimeOutcome::HostFailure(error);
+                }
+                Err(ComptimeHostError::Abort(error)) => {
+                    return ComptimeOutcome::Abort(error);
+                }
+            }
+        }
+        self.host.match_no_selected_arm(&self.diagnostic_site(span))
+    }
+
+    /// One arm of [`Self::eval_dispatch`], given the instruction's decoded
+    /// operands. Kept out of line so the dispatcher's frame stays small at
+    /// every level of nesting (RUE-2387).
+    #[inline(never)]
+    #[allow(clippy::too_many_arguments)]
+    fn dispatch_anon_struct_type(
+        &mut self,
+        fields: &rue_rir::RirAnonStructFieldsRange,
+        methods: &rue_rir::RirAnonStructMethodsRange,
+        anchor: &rue_rir::RirStructuralAnchor,
+        thread_bound: &bool,
+        unchecked_transfer_reason: &Option<SymbolHandle>,
+        binding: &Option<SymbolHandle>,
+        span: Span,
+        env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
+    ) -> ComptimeOutcome<H::Value, H::Failure> {
+        if *thread_bound || unchecked_transfer_reason.is_some() {
+            host_value!(
+                self.host
+                    .require_transfer_marker_preview(&self.diagnostic_site(span))
+            );
+        }
+        let field_decls = self.program_rir().anon_struct_fields(fields).to_vec();
+
+        // Comptime `let` locals in scope participate in field-type
+        // resolution (`let Inner = Mk(T); struct { x: Inner }`,
+        // RUE-575), alongside the enclosing parameters.
+        let (local_type_subst, local_value_subst) = env.substs_with_locals();
+
+        // `Self` denotes the enclosing struct type wherever a type is
+        // expected (spec 6.4:18). The anonymous nominal's identity is
+        // its producer and structural anchor, both settled before any
+        // field type resolves, so the binding is issued up front and
+        // `next: ptr mut Self` resolves through the same substitution
+        // that carries `comptime T: type` (RUE-2223), as do composite
+        // method signature types such as `borrow s: [Self]`
+        // (RUE-2579). A named struct binds `Self` in its declaration
+        // signature instead.
+        let self_identity = env.canonical_identity.as_ref().map(|producer| {
+            self.host.issue_anonymous_identity(
+                &self.program_key(),
+                ComptimeAnonymousKind::Struct,
+                producer,
+                anchor,
+            )
+        });
+        if let (Some(identity), Some(binding)) = (&self_identity, binding) {
+            let binding = self.name_from_rir((*binding).into());
+            self.host.record_anonymous_binding(identity, &binding, span);
+        }
+        let self_name = self_identity.as_ref().and_then(|_| {
+            let program = self.program_key();
+            let roots = self.anon_struct_type_syntax_roots(
+                &program,
+                field_decls.iter().map(|(_, type_sym)| *type_sym),
+                methods,
+            );
+            self.self_type_name(&program, roots)
+        });
+        let mut declared_type_subst = Cow::Borrowed(&local_type_subst);
+        let mut self_ty = None;
+        if let Some(name) = self_name {
+            let identity = self_identity
+                .as_ref()
+                .expect("a `Self` name is only sought once an identity is issued");
+            if let Some(ty) = host_value!(self.host.anonymous_nominal_self_type(identity)) {
+                declared_type_subst.to_mut().insert(name, ty.clone());
+                self_ty = Some(ty);
+            }
+        }
+
+        let mut struct_fields = Vec::with_capacity(field_decls.len());
+        for (name_sym, type_sym) in field_decls {
+            let field_name = self.name_from_rir(name_sym.into());
+            // Field types resolve through both the type substitution
+            // (`comptime T: type`) and the value substitution
+            // (`comptime N: i32`, so an `[i32; N]` field gets a concrete
+            // length at each specialization; RUE-16).
+            let field_ty = outcome_value!(self.evaluate_comptime_type_syntax(
+                &self.program_key(),
+                type_sym,
+                env,
+                declared_type_subst.as_ref(),
+                &local_value_subst,
+                span,
+            ));
+            struct_fields.push(ComptimeField {
+                name: field_name,
+                ty: field_ty,
+            });
+        }
+
+        // Decode method signatures in the canonical engine. The host
+        // receives only resolved semantic descriptors below.
+        let method_sigs = outcome_value!(self.decode_anon_method_descriptors_with_env(
+            &self.program_key(),
+            methods,
+            env,
+            declared_type_subst.as_ref(),
+            &local_value_subst,
+        ));
+
+        let Some(identity) = self_identity else {
+            return ComptimeOutcome::RuntimeDependent;
+        };
+        for field in &struct_fields {
+            host_value!(self.host.reject_unstorable_member(
+                &field.ty,
+                "a struct field",
+                &self.diagnostic_site(span),
+            ));
+        }
+        // Only `Self` can name the struct before its fields resolve,
+        // so only a struct that binds it can contain itself.
+        if let Some(self_ty) = &self_ty {
+            host_value!(self.host.reject_recursive_anonymous_struct(
+                self_ty,
+                &struct_fields,
+                &self.diagnostic_site(span),
+            ));
+        }
+        let (struct_ty, _is_new) = host_value!(self.host.find_or_create_anon_struct(
+            identity,
+            &struct_fields,
+            &method_sigs,
+            *thread_bound,
+            unchecked_transfer_reason.map(|reason| self.name_from_rir(reason.into())),
+            &local_type_subst,
+            &local_value_subst,
+        ));
+
+        // Method body registration is an ordinary analysis concern.
+        // The generic comptime host receives only structural method
+        // descriptors and never a child-RIR token.
+        ComptimeOutcome::Known(H::Value::type_value(struct_ty))
+    }
+
+    /// One arm of [`Self::eval_dispatch`], given the instruction's decoded
+    /// operands. Kept out of line so the dispatcher's frame stays small at
+    /// every level of nesting (RUE-2387).
+    #[inline(never)]
+    fn dispatch_anon_enum_type(
+        &mut self,
+        variants: &rue_rir::RirAnonEnumVariantsRange,
+        payloads: &rue_rir::RirAnonEnumPayloadsRange,
+        anchor: &rue_rir::RirStructuralAnchor,
+        binding: &Option<SymbolHandle>,
+        span: Span,
+        env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
+    ) -> ComptimeOutcome<H::Value, H::Failure> {
+        let variant_syms = self.program_rir().anon_enum_variants(variants).to_vec();
+        let payload_symbols: Vec<Vec<rue_rir::RirTypeSyntaxRef>> = self
+            .program_rir()
+            .anon_enum_payloads(payloads, variants)
+            .map(|payload| payload.to_vec())
+            .collect();
+
+        // Decode the self-describing payload region into per-variant
+        // type-symbol lists (parallel to `variant_syms`), then resolve
+        // each payload type through the substitutions.
+        // Comptime `let` locals participate in payload-type
+        // resolution, matching the struct arm (RUE-575).
+        let (enum_type_subst, enum_value_subst) = env.substs_with_locals();
+
+        let mut variant_names: Vec<String> = Vec::with_capacity(variant_syms.len());
+        let mut variant_payloads: Vec<Vec<H::Type>> = Vec::with_capacity(variant_syms.len());
+        for (&vsym, symbols) in variant_syms.iter().zip(payload_symbols) {
+            variant_names.push(self.host.display_name(&self.name_from_rir(vsym.into())));
+            let mut tys: Vec<H::Type> = Vec::with_capacity(symbols.len());
+            for ty_sym in symbols {
+                let ty = outcome_value!(self.evaluate_comptime_type_syntax(
+                    &self.program_key(),
+                    ty_sym,
+                    env,
+                    &enum_type_subst,
+                    &enum_value_subst,
+                    span,
+                ));
+                tys.push(ty);
+            }
+            variant_payloads.push(tys);
+        }
+
+        let Some(producer) = env.canonical_identity.clone() else {
+            return ComptimeOutcome::RuntimeDependent;
+        };
+        let identity = self.host.issue_anonymous_identity(
+            &self.program_key(),
+            ComptimeAnonymousKind::Enum,
+            &producer,
+            anchor,
+        );
+        if let Some(binding) = binding {
+            let binding = self.name_from_rir((*binding).into());
+            self.host
+                .record_anonymous_binding(&identity, &binding, span);
+        }
+        for ty in variant_payloads.iter().flatten() {
+            host_value!(self.host.reject_unstorable_member(
+                ty,
+                "an enum payload",
+                &self.diagnostic_site(span),
+            ));
+        }
+        let enum_ty = host_value!(self.host.find_or_create_anon_enum(
+            identity,
+            &variant_names,
+            &variant_payloads,
+            &enum_type_subst,
+            &enum_value_subst,
+        ));
+        ComptimeOutcome::Known(H::Value::type_value(enum_ty))
+    }
+
+    /// One arm of [`Self::eval_dispatch`], given the instruction's decoded
+    /// operands. Kept out of line so the dispatcher's frame stays small at
+    /// every level of nesting (RUE-2387).
+    #[inline(never)]
+    fn dispatch_type_const(
+        &mut self,
+        type_name: &rue_rir::RirTypeSyntaxRef,
+        span: Span,
+        env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
+    ) -> ComptimeOutcome<H::Value, H::Failure> {
+        let type_name = *type_name;
+        // Type parameters in scope substitute first.
+        if let Some(type_symbol) = self
+            .host
+            .rir_type_named_symbol(&self.program_key(), type_name)
+        {
+            // A runtime local shadows every outer type substitution
+            // and global type name. Only a local carrying a type value
+            // is eligible for comptime use here.
+            if let Some(local) = env.locals.get(&type_symbol) {
+                if let Some(ty) = local.as_type() {
+                    return ComptimeOutcome::Known(H::Value::type_value(ty));
+                }
+                return ComptimeOutcome::RuntimeDependent;
+            }
+            // A block-local module is a path root, never a type.
+            if env.local_modules.contains_key(&type_symbol) {
+                return ComptimeOutcome::RuntimeDependent;
+            }
+            if let Some(binding) = env
+                .local_binding_membership
+                .as_ref()
+                .and_then(|membership| membership(&type_symbol))
+            {
+                return match binding {
+                    ComptimeLocalBinding::Type(ty) => {
+                        ComptimeOutcome::Known(H::Value::type_value(ty))
+                    }
+                    ComptimeLocalBinding::Runtime => ComptimeOutcome::RuntimeDependent,
+                };
+            }
+            if let Some(ty) = env.type_subst.get(&type_symbol) {
+                // A module-typed substitution is a `let`-bound module:
+                // a path root, never a type value (RUE-2426).
+                if self.host.type_is_module(ty) {
+                    return ComptimeOutcome::RuntimeDependent;
+                }
+                return ComptimeOutcome::Known(H::Value::type_value(ty.clone()));
+            }
+            // A named type (primitive / struct / enum) resolves directly.
+            if let Some(ty) = host_value!(self.host.resolve_named_type_value(
+                &self.program_key(),
+                type_symbol,
+                span,
+            )) {
+                return ComptimeOutcome::Known(H::Value::type_value(ty));
+            }
+        }
+        // A *composite* or *unit* type value — `[i32; 2]`, `()`,
+        // `ptr const T` — is an equally-valid type argument (Appendix A
+        // treats them as unambiguous type spellings; RUE-565). Its
+        // TypeConst carries the composite spelling as the interned
+        // `type_name`, so decode it through the full comptime type
+        // resolver under the current substitutions (an inner element /
+        // pointee naming an enclosing `comptime T` still resolves). An
+        // unresolvable spelling stays non-evaluable (`None`).
+        let ty = outcome_value!(self.evaluate_comptime_type_syntax(
+            &self.program_key(),
+            type_name,
+            env,
+            &env.type_subst,
+            &env.value_subst,
+            span,
+        ));
+        ComptimeOutcome::Known(H::Value::type_value(ty))
+    }
+
+    /// One arm of [`Self::eval_dispatch`], given the instruction's decoded
+    /// operands. Kept out of line so the dispatcher's frame stays small at
+    /// every level of nesting (RUE-2387).
+    #[inline(never)]
+    fn dispatch_array_repeat(
+        &mut self,
+        inst_ref: InstRef,
+        value: &InstRef,
+        count: &rue_rir::RepeatCount,
+        span: Span,
+        declared: Option<H::Type>,
+        env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
+    ) -> ComptimeOutcome<H::Value, H::Failure> {
+        // Declared or hinted exactly as an array literal is.
+        let declared = self.literal_context(inst_ref, declared, env);
+        let enclosing = env.expected_result.clone();
+        if declared.is_some() {
+            env.expected_result = declared.clone();
+        }
+        let hinted = declared.is_none() && enclosing.is_some();
+        let outcome = self.eval_array_repeat(inst_ref, *value, count.clone(), hinted, span, env);
+        env.expected_result = enclosing;
+        outcome
+    }
+
+    /// One arm of [`Self::eval_dispatch`], given the instruction's decoded
+    /// operands. Kept out of line so the dispatcher's frame stays small at
+    /// every level of nesting (RUE-2387).
+    #[inline(never)]
+    fn dispatch_var_ref(
+        &mut self,
+        name: &SymbolHandle,
+        span: Span,
+        env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
+    ) -> ComptimeOutcome<H::Value, H::Failure> {
+        let name = self.name_from_rir((*name).into());
+        // 1. `let` bindings inside the comptime expression
+        if let Some(v) = env.locals.get(&name) {
+            // A host may bind a comptime parameter as a local too;
+            // reading one is still reading the parameter. A `let`
+            // or pattern binding of the same name is a local.
+            if !env.value_subst.contains_key(&name) || env.bound_locals.contains(&name) {
+                self.local_reads += 1;
+            }
+            return ComptimeOutcome::Known(v.clone());
+        }
+        // A `let`-bound module is a path root, not a compile-time
+        // value (10.4:6): it cannot escape as one (RUE-2445).
+        if env.local_modules.contains_key(&name) {
+            return ComptimeOutcome::RuntimeDependent;
+        }
+        if let Some(binding) = env
+            .local_binding_membership
+            .as_ref()
+            .and_then(|membership| membership(&name))
+        {
+            return match binding {
+                ComptimeLocalBinding::Type(ty) => ComptimeOutcome::Known(H::Value::type_value(ty)),
+                ComptimeLocalBinding::Runtime => ComptimeOutcome::RuntimeDependent,
+            };
+        }
+        // 2. Runtime locals shadow comptime parameters and file-level
+        //    constants: a reference that resolves to one is not
+        //    compile-time evaluable (spec 4.14:6).
+        if env.is_runtime_local_name(&name) {
+            return ComptimeOutcome::RuntimeDependent;
+        }
+        // 3. Comptime type parameters in scope. A module-typed
+        //    substitution is a `let`-bound module, which is a path
+        //    root and not a compile-time value (RUE-2426; a module is
+        //    not a runtime value either, 10.4:6).
+        if let Some(ty) = env.type_subst.get(&name) {
+            if self.host.type_is_module(ty) {
+                return ComptimeOutcome::RuntimeDependent;
+            }
+            return ComptimeOutcome::Known(H::Value::type_value(ty.clone()));
+        }
+        // 4. Comptime value parameters in scope
+        if let Some(v) = env.value_subst.get(&name) {
+            return ComptimeOutcome::Known(v.clone());
+        }
+        // 5. Runtime parameters shadow file-level constants and type
+        //    names. A comptime parameter with a concrete value was
+        //    already handled by the substitution maps above.
+        if env.runtime_binding_names.contains(&name) {
+            return ComptimeOutcome::RuntimeDependent;
+        }
+        // 6. File-level constants and named types are one atomic
+        //    semantic lookup. The host owns direct dependency
+        //    observation and visibility so durable adapters cannot
+        //    split those effects across side channels.
+        let program = self.program_key();
+        let file = self.host.file_for_program_span(&program, &span);
+        match host_value!(self.host.resolve_comptime_named_value(file, name, span)) {
+            ComptimeNamedValueResolution::Known(value) => ComptimeOutcome::Known(value),
+            ComptimeNamedValueResolution::RuntimeDependent
+            | ComptimeNamedValueResolution::Missing => ComptimeOutcome::RuntimeDependent,
+        }
+    }
+
+    /// One arm of [`Self::eval_dispatch`], given the instruction's decoded
+    /// operands. Kept out of line so the dispatcher's frame stays small at
+    /// every level of nesting (RUE-2387).
+    #[inline(never)]
+    fn dispatch_field_get(
+        &mut self,
+        inst_ref: InstRef,
+        base: &InstRef,
+        field: &SymbolHandle,
+        span: Span,
+        env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
+    ) -> ComptimeOutcome<H::Value, H::Failure> {
+        if let Some(value) = env.const_module_members.get(&inst_ref) {
+            return ComptimeOutcome::Known(value.clone());
+        }
+        if let Some(path) = self.decode_module_path(inst_ref, env) {
+            if let Some(value) = host_value!(self.host.resolve_comptime_type_path(
+                path.file,
+                path.root_module.as_ref(),
+                &path.segments,
+                span
+            )) {
+                return ComptimeOutcome::Known(value);
+            }
+        }
+        let field = self.name_from_rir((*field).into());
+        let site = self.semantic_site(inst_ref, ComptimeSiteKind::Member, span);
+        if !host_value!(self.host.admit_comptime_member(field.clone(), &site)) {
+            return ComptimeOutcome::RuntimeDependent;
+        }
+        let base = outcome_value!(self.eval(*base, env));
+        self.host.resolve_comptime_member(base, field, &site, span)
+    }
+
+    /// One arm of [`Self::eval_dispatch`], given the instruction's decoded
+    /// operands. Kept out of line so the dispatcher's frame stays small at
+    /// every level of nesting (RUE-2387).
+    #[inline(never)]
+    fn dispatch_checked(
+        &mut self,
+        expr: &InstRef,
+        span: Span,
+        env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
+    ) -> ComptimeOutcome<H::Value, H::Failure> {
+        if !self.host.allow_checked_comptime() {
+            return ComptimeOutcome::RuntimeDependent;
+        }
+        match self.eval(*expr, env) {
+            ComptimeOutcome::Known(value) => self.host.finish_checked(value, span),
+            other => other,
+        }
+    }
+
+    /// One arm of [`Self::eval_dispatch`], given the instruction's decoded
+    /// operands. Kept out of line so the dispatcher's frame stays small at
+    /// every level of nesting (RUE-2387).
+    #[inline(never)]
+    fn dispatch_intrinsic(
+        &mut self,
+        inst_ref: InstRef,
+        name: &SymbolHandle,
+        args: &rue_rir::RirCallArgsRange,
+        span: Span,
+    ) -> ComptimeOutcome<H::Value, H::Failure> {
+        let name = self.name_from_rir((*name).into());
+        let decoded = match self.decode_expression_intrinsic(name, args) {
+            Ok(decoded) => decoded,
+            Err(display_name) => {
+                return self.host.reject_comptime_expression(
+                    ComptimeSemanticRejection::UnsupportedIntrinsic(display_name),
+                    &self.diagnostic_site(span),
+                );
+            }
+        };
+        let site = self.semantic_site(inst_ref, decoded.site_kind, span);
+        self.host
+            .resolve_comptime_expression_intrinsic(decoded.request, &site)
+    }
+
+    /// One arm of [`Self::eval_dispatch`], given the instruction's decoded
+    /// operands. Kept out of line so the dispatcher's frame stays small at
+    /// every level of nesting (RUE-2387).
+    #[inline(never)]
+    fn dispatch_enum_variant(
+        &mut self,
+        inst_ref: InstRef,
+        module: &Option<InstRef>,
+        type_name: &SymbolHandle,
+        variant: &SymbolHandle,
+        span: Span,
+        env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
+    ) -> ComptimeOutcome<H::Value, H::Failure> {
+        let site = self.semantic_site(inst_ref, ComptimeSiteKind::EnumVariant, span);
+        let type_name = self.name_from_rir((*type_name).into());
+        let variant = self.name_from_rir((*variant).into());
+        if !host_value!(self.host.admit_comptime_enum_variant(
+            type_name.clone(),
+            variant.clone(),
+            module.is_some(),
+            &site,
+        )) {
+            return ComptimeOutcome::RuntimeDependent;
+        }
+        let module = match module {
+            Some(module) => Some(outcome_value!(self.eval(*module, env))),
+            None => None,
+        };
+        self.host
+            .resolve_comptime_enum_variant(module, type_name, variant, &site, span)
+    }
+
+    /// One arm of [`Self::eval_dispatch`], given the instruction's decoded
+    /// operands. Kept out of line so the dispatcher's frame stays small at
+    /// every level of nesting (RUE-2387).
+    #[inline(never)]
+    fn dispatch_type_intrinsic(
+        &mut self,
+        name: &SymbolHandle,
+        type_arg: &rue_rir::RirTypeSyntaxRef,
+        span: Span,
+        env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
+    ) -> ComptimeOutcome<H::Value, H::Failure> {
+        let (name, type_arg) = (*name, *type_arg);
+        let gate_name = self.name_from_rir(name.into());
+        let gate = self.host.display_name(&gate_name);
+        let Some(intrinsic) = ComptimeTypeIntrinsic::from_name(&gate) else {
+            return self.host.reject_comptime_expression(
+                ComptimeSemanticRejection::UnsupportedIntrinsic(gate),
+                &self.diagnostic_site(span),
+            );
+        };
+        // Both well-formedness gates reduce to unit at comptime:
+        // `@require_droppable` (instantiation-time, rejects `linear`) and
+        // `@require_trivially_droppable` (read-time, rejects drop glue —
+        // RUE-651). Any other type intrinsic (`@size_of`/`@align_of`) is
+        // not comptime-foldable here.
+        // Resolve the element type through the enclosing comptime
+        // substitutions (`T -> Inner` for `ArrayBuf(Inner)`); a
+        // still-unresolved type parameter makes the gate non-evaluable
+        // (it will be re-checked at a concrete instantiation).
+        let intrinsic_ty = outcome_value!(self.evaluate_comptime_type_syntax(
+            &self.program_key(),
+            type_arg,
+            env,
+            &env.type_subst,
+            &env.value_subst,
+            span,
+        ));
+        match host_value!(self.host.resolve_comptime_type_intrinsic(
+            intrinsic,
+            intrinsic_ty,
+            &self.diagnostic_site(span),
+        )) {
+            Some(value) => ComptimeOutcome::Known(value),
+            None => ComptimeOutcome::RuntimeDependent,
+        }
+    }
+
+    /// One arm of [`Self::eval_dispatch`], given the instruction's decoded
+    /// operands. Kept out of line so the dispatcher's frame stays small at
+    /// every level of nesting (RUE-2387).
+    #[inline(never)]
+    fn dispatch_method_call(
+        &mut self,
+        inst_ref: InstRef,
+        receiver: &InstRef,
+        method: &SymbolHandle,
+        args: &rue_rir::RirCallArgsRange,
+        span: Span,
+        declared: Option<H::Type>,
+        env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
+    ) -> ComptimeOutcome<H::Value, H::Failure> {
+        let receiver = *receiver;
+        let method = self.name_from_rir((*method).into());
+        let declared = self.literal_context(inst_ref, declared, env);
+        self.evaluate_method_call(inst_ref, receiver, method, args, declared, env, span)
+    }
+
+    /// One arm of [`Self::eval_dispatch`], given the instruction's decoded
+    /// operands. Kept out of line so the dispatcher's frame stays small at
+    /// every level of nesting (RUE-2387).
+    #[inline(never)]
+    #[allow(clippy::too_many_arguments)]
+    fn dispatch_struct_init(
+        &mut self,
+        inst_ref: InstRef,
+        fields: &rue_rir::RirFieldInitsRange,
+        module: &Option<InstRef>,
+        ctor_head: &Option<InstRef>,
+        type_name: &SymbolHandle,
+        span: Span,
+        declared: Option<H::Type>,
+        env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
+    ) -> ComptimeOutcome<H::Value, H::Failure> {
+        let (ctor_head, module) = (*ctor_head, *module);
+        let site = self.diagnostic_site(span);
+        let field_inits: Vec<_> = self
+            .program_rir()
+            .field_inits(fields)
+            .iter()
+            .map(|field| (field.0, field.1))
+            .collect();
+        // The struct's type names each field's slot, so it resolves
+        // before the fields reduce against those slots.
+        // An inline type-constructor head, `Wrap(u8) { ... }`, names
+        // the struct by its reduction rather than by `type_name`,
+        // which is only the constructor's name (spec 4.14:23).
+        // A module-qualified constructor head (`lib.Wrap(u8) { .. }`)
+        // carries its module in the head call (RUE-2434). A qualified
+        // name (`lib.S { .. }`) reduces its module base first, and the
+        // host resolves the member as a body's literal does (RUE-2440).
+        let ty = if let Some(head) = ctor_head {
+            let head = outcome_value!(self.eval(head, env));
+            let Some(ty) = head.as_type() else {
+                return ComptimeOutcome::RuntimeDependent;
+            };
+            Some(ty)
+        } else if let Some(module) = module {
+            // The module base is reached as a method call's receiver
+            // is: evaluated to a module value by a durable host, or
+            // decoded as a module path by the ordinary body host.
+            let type_name = self.name_from_rir((*type_name).into());
+            match self.host.comptime_method_receiver_policy() {
+                ComptimeMethodReceiverPolicy::EvaluateReceiver => {
+                    let module = outcome_value!(self.eval(module, env));
+                    host_value!(
+                        self.host
+                            .resolve_comptime_module_struct_type(module, type_name, &site)
+                    )
+                }
+                ComptimeMethodReceiverPolicy::SyntacticModulePath => {
+                    let Some(path) = self.decode_module_path(module, env) else {
+                        return ComptimeOutcome::RuntimeDependent;
+                    };
+                    host_value!(self.host.resolve_comptime_module_path_struct_type(
+                        path.file,
+                        path.root_module.as_ref(),
+                        &path.segments,
+                        type_name,
+                        &site,
+                    ))
+                }
+            }
+        } else {
+            let type_name = self.name_from_rir((*type_name).into());
+            host_value!(self.host.resolve_comptime_struct_type(
+                &self.program_key(),
+                type_name,
+                span,
+            ))
+        };
+        let field_inits: Vec<_> = field_inits
+            .into_iter()
+            .map(|(name, field)| (self.name_from_rir(name.into()), field))
+            .collect();
+        let mut order = ComptimeChildOrder::default();
+        if let Some(ty) = ty.as_ref() {
+            let names: Vec<_> = field_inits.iter().map(|(name, _)| name.clone()).collect();
+            let declared = self.literal_context(inst_ref, declared, env);
+            outcome_value!(self.admit_literal_shape(
+                ty,
+                ComptimeLiteralShape::Struct { fields: &names },
+                declared.as_ref(),
+                span,
+                &mut order,
+            ));
+        }
+        let mut values = Vec::with_capacity(field_inits.len());
+        for (name, field) in field_inits {
+            let slot =
+                host_value!(self.child_slot_type(ty.as_ref(), ComptimeChildSlot::Field(&name)));
+            let outcome = self.eval_in_slot(field, slot, env);
+            if let Some(value) = outcome_value!(self.order_child(outcome, &mut order)) {
+                values.push((name, value));
+            }
+        }
+        let values = outcome_value!(order.finish(values));
+        let Some(ty) = ty else {
+            return ComptimeOutcome::RuntimeDependent;
+        };
+        self.host.resolve_comptime_struct(ty, values, &site)
+    }
+
+    /// One arm of [`Self::eval_dispatch`], given the instruction's decoded
+    /// operands. Kept out of line so the dispatcher's frame stays small at
+    /// every level of nesting (RUE-2387).
+    #[inline(never)]
+    fn dispatch_array_init(
+        &mut self,
+        inst_ref: InstRef,
+        elements: &rue_rir::RirArrayElemsRange,
+        span: Span,
+        declared: Option<H::Type>,
+        env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
+    ) -> ComptimeOutcome<H::Value, H::Failure> {
+        let site = self.diagnostic_site(span);
+        let array_elements = self.program_rir().array_elements(elements).to_vec();
+        // An array literal is checked against a type only where its
+        // position declares one (RUE-2407). Elsewhere, as an index
+        // base, a method receiver, an operand or an unannotated `let`
+        // initializer, an enclosing expected result is only a hint:
+        // the literal reduces at it when it fits, and is
+        // runtime-dependent rather than in error when it does not.
+        // With neither, its type comes from its elements.
+        let declared = self.literal_context(inst_ref, declared, env);
+        let enclosing = env.expected_result.clone();
+        let hinted = declared.is_none() && enclosing.is_some();
+        if declared.is_some() {
+            env.expected_result = declared.clone();
+        }
+        let reduced = self.eval_array_literal(
+            inst_ref,
+            &array_elements,
+            declared.as_ref(),
+            hinted,
+            span,
+            env,
+        );
+        env.expected_result = enclosing;
+        let (ty, values) = outcome_value!(reduced);
+        let Some(ty) = ty else {
+            return ComptimeOutcome::RuntimeDependent;
+        };
+        let outcome = self.host.resolve_comptime_array(ty, values, &site);
+        if hinted && let ComptimeOutcome::HostFailure(_) = outcome {
+            return ComptimeOutcome::RuntimeDependent;
+        }
+        outcome
     }
 }

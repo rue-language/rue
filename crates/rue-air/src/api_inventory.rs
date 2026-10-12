@@ -2308,10 +2308,11 @@ fn comptime_match_patterns_have_one_decoder_and_a_semantic_host_boundary() {
         assert!(policy.contains(scalar), "shared policy misses {scalar}");
     }
 
+    // The dispatcher hands a `match` to its out-of-line arm (RUE-2387).
     let engine_match = comptime
-        .rsplit("InstData::Match { scrutinee, arms } => {")
-        .next()
-        .and_then(|source| source.split("InstData::AnonStructType {").next())
+        .split("fn dispatch_match(")
+        .nth(1)
+        .and_then(|source| source.split("\n    fn ").next())
         .expect("bounded canonical match dispatch");
     let decode = engine_match
         .find("self.decode_match_pattern")
@@ -2591,9 +2592,9 @@ fn comptime_generic_contract_has_no_local_lexical_or_call_payloads() {
     assert!(!semantic_site.contains("display_name(&self.host.name_from_symbol"));
     assert!(!semantic_site.contains("== \"import\""));
     let intrinsic_dispatch = comptime
-        .split("InstData::Intrinsic { name, args } => {")
+        .split("fn dispatch_intrinsic(")
         .nth(1)
-        .and_then(|source| source.split("\n            // Enum variants").next())
+        .and_then(|source| source.split("\n    fn ").next())
         .expect("expression intrinsic dispatch");
     let decode_position = intrinsic_dispatch
         .find("decode_expression_intrinsic(")
@@ -2650,9 +2651,20 @@ fn comptime_generic_contract_has_no_local_lexical_or_call_payloads() {
         "current_program",
         "call_depth",
     ];
+    // A bare identifier is matched as a whole token, so a RIR payload type
+    // whose name merely contains one (`RirAnonStructFieldsRange` and
+    // `StructField`) is not a leak; a path is matched as written.
+    let production_tokens = production
+        .split(|character: char| !character.is_ascii_alphanumeric() && character != '_')
+        .collect::<std::collections::HashSet<_>>();
     for forbidden in production_forbidden {
+        let leaked = if forbidden.contains("::") {
+            production.contains(forbidden)
+        } else {
+            production_tokens.contains(forbidden)
+        };
         assert!(
-            !production.contains(forbidden),
+            !leaked,
             "canonical comptime production leaked local symbol: {forbidden}"
         );
     }
@@ -2717,83 +2729,40 @@ fn comptime_generic_contract_has_no_local_lexical_or_call_payloads() {
             "missing integer operation: {operation}"
         );
     }
-    for (start, end, operation) in [
-        (
-            "InstData::Add { lhs, rhs } => {",
-            "InstData::Sub { lhs, rhs } => {",
-            "Add",
-        ),
-        (
-            "InstData::Sub { lhs, rhs } => {",
-            "InstData::Mul { lhs, rhs } => {",
-            "Sub",
-        ),
-        (
-            "InstData::Mul { lhs, rhs } => {",
-            "InstData::Div { lhs, rhs } | InstData::Mod { lhs, rhs } => {",
-            "Mul",
-        ),
-        (
-            "InstData::Lt { lhs, rhs } => {",
-            "InstData::Gt { lhs, rhs } => {",
-            "Lt",
-        ),
-        (
-            "InstData::Gt { lhs, rhs } => {",
-            "InstData::Le { lhs, rhs } => {",
-            "Gt",
-        ),
-        (
-            "InstData::Le { lhs, rhs } => {",
-            "InstData::Ge { lhs, rhs } => {",
-            "Le",
-        ),
-        (
-            "InstData::Ge { lhs, rhs } => {",
-            "// Logical operations",
-            "Ge",
-        ),
-        (
-            "InstData::BitAnd { lhs, rhs } => {",
-            "InstData::BitOr { lhs, rhs } => {",
-            "BitAnd",
-        ),
-        (
-            "InstData::BitOr { lhs, rhs } => {",
-            "InstData::BitXor { lhs, rhs } => {",
-            "BitOr",
-        ),
-        (
-            "InstData::BitXor { lhs, rhs } => {",
-            "InstData::Shl { lhs, rhs } | InstData::Shr { lhs, rhs } => {",
-            "BitXor",
-        ),
-    ] {
-        let arm = production
-            .split(start)
+    // Each operator's dispatch arm lives in its own out-of-line helper, so
+    // the dispatcher's frame stays small at every nesting level (RUE-2387).
+    let dispatch_arm = |helper: &str| -> String {
+        production
+            .split(&format!("fn {helper}("))
             .nth(1)
-            .and_then(|source| source.split(end).next())
-            .unwrap_or_else(|| panic!("missing bounded {operation} dispatch arm"));
+            .and_then(|source| source.split("\n    fn ").next())
+            .unwrap_or_else(|| panic!("missing {helper} dispatch arm"))
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    for (helper, operation) in [
+        ("dispatch_add", "Add"),
+        ("dispatch_sub", "Sub"),
+        ("dispatch_mul", "Mul"),
+        ("dispatch_lt", "Lt"),
+        ("dispatch_gt", "Gt"),
+        ("dispatch_le", "Le"),
+        ("dispatch_ge", "Ge"),
+        ("dispatch_bit_and", "BitAnd"),
+        ("dispatch_bit_or", "BitOr"),
+        ("dispatch_bit_xor", "BitXor"),
+    ] {
         assert!(
-            arm.contains(&format!("ComptimeIntegerOperation::{operation},")),
-            "{start} is not routed through {operation} rejection policy"
+            dispatch_arm(helper).contains(&format!("ComptimeIntegerOperation::{operation},")),
+            "{helper} is not routed through {operation} rejection policy"
         );
     }
-    let div_mod_arm = production
-        .split("InstData::Div { lhs, rhs } | InstData::Mod { lhs, rhs } => {")
-        .nth(1)
-        .and_then(|source| source.split("// Comparison operations").next())
-        .expect("bounded division/remainder dispatch arm");
-    assert!(div_mod_arm.contains(
-        "if is_div {\n                    ComptimeIntegerOperation::Div\n                } else {\n                    ComptimeIntegerOperation::Mod\n                }"
+    assert!(dispatch_arm("dispatch_div").contains(
+        "if is_div { ComptimeIntegerOperation::Div } else { ComptimeIntegerOperation::Mod }"
     ));
-    let shift_arm = production
-        .split("InstData::Shl { lhs, rhs } | InstData::Shr { lhs, rhs } => {")
-        .nth(1)
-        .and_then(|source| source.split("InstData::BitNot { operand } => {").next())
-        .expect("bounded shift dispatch arm");
-    assert!(shift_arm.contains(
-        "if is_shl {\n                        ComptimeIntegerOperation::Shl\n                    } else {\n                        ComptimeIntegerOperation::Shr\n                    }"
+    assert!(dispatch_arm("dispatch_shl").contains(
+        "if is_shl { ComptimeIntegerOperation::Shl } else { ComptimeIntegerOperation::Shr }"
     ));
     for rejection in [
         "ConditionNotBoolean",
@@ -2815,9 +2784,9 @@ fn comptime_generic_contract_has_no_local_lexical_or_call_payloads() {
     }
     assert!(production.contains("decode_anon_method_descriptors"));
     let neg_dispatch = production
-        .split("InstData::Neg { operand } => {")
+        .split("fn dispatch_neg(")
         .nth(1)
-        .and_then(|source| source.split("// These control-flow").next())
+        .and_then(|source| source.split("\n    fn ").next())
         .expect("negation dispatch");
     let evaluated_neg = neg_dispatch
         .split("match self.eval(*operand, env)")
@@ -2829,29 +2798,18 @@ fn comptime_generic_contract_has_no_local_lexical_or_call_payloads() {
         "nonliteral negation must extract the scalar before unary type policy"
     );
     assert!(evaluated_neg.contains("operation: ComptimeUnaryOperation::Neg"));
-    let bitnot_dispatch = production
-        .split("InstData::BitNot { operand } => {")
-        .nth(2)
-        .and_then(|source| source.split("// These control-flow").next())
-        .expect("bitwise NOT dispatch");
+    let bitnot_dispatch = dispatch_arm("dispatch_bit_not");
     assert!(bitnot_dispatch.contains("operation: ComptimeUnaryOperation::BitNot"));
     assert!(production.contains("Root expression frames are intentionally ticket-free"));
     assert!(production.contains("if frame.name.is_none()"));
     assert!(!production.contains("eval_const_expr"));
     assert!(!production.contains("ComptimeEngine::new"));
     assert!(!production.contains("reduce_external_comptime_call"));
-    let match_dispatch = production
-        .split("InstData::Match { scrutinee, arms } => {")
-        .nth(1)
-        .and_then(|source| source.split("InstData::AnonStructType {").next())
-        .expect("match dispatch");
-    assert!(match_dispatch.contains(
-        "}\n                self.host.match_no_selected_arm(&self.diagnostic_site(span))"
-    ));
+    let match_dispatch = dispatch_arm("dispatch_match");
     assert!(
-        !match_dispatch
-            .contains("}\n                ComptimeOutcome::RuntimeDependent\n            }")
+        match_dispatch.contains("} self.host.match_no_selected_arm(&self.diagnostic_site(span))")
     );
+    assert!(!match_dispatch.contains("} ComptimeOutcome::RuntimeDependent }"));
     let ordinary_match = ordinary
         .split("fn match_no_selected_arm(")
         .nth(1)
@@ -2941,9 +2899,9 @@ fn comptime_generic_contract_has_no_local_lexical_or_call_payloads() {
     }
     assert!(production.contains("enum ComptimeArrayLengthBinding"));
     let array_arm = production
-        .split("InstData::ArrayRepeat { value, count } => {")
+        .split("fn dispatch_array_repeat(")
         .nth(1)
-        .and_then(|source| source.split("InstData::VarRef { name, .. } => {").next())
+        .and_then(|source| source.split("\n    fn ").next())
         .expect("array repeat dispatch");
     assert!(array_arm.contains("self.eval_array_repeat("));
     let array_dispatch = production
@@ -2961,16 +2919,16 @@ fn comptime_generic_contract_has_no_local_lexical_or_call_payloads() {
     assert!(array_hook.contains("ComptimeOutcome<u64, Self::Failure>"));
     assert!(array_dispatch.contains("outcome_value!(self.host.resolve_named_array_length"));
     let struct_dispatch = production
-        .split("InstData::AnonStructType {")
+        .split("fn dispatch_anon_struct_type(")
         .nth(1)
-        .and_then(|source| source.split("InstData::AnonEnumType {").next())
+        .and_then(|source| source.split("\n    fn ").next())
         .expect("anonymous struct dispatch");
     assert!(struct_dispatch.contains("local_type_subst"));
     assert!(struct_dispatch.contains("local_value_subst"));
     let enum_dispatch = production
-        .split("InstData::AnonEnumType {")
+        .split("fn dispatch_anon_enum_type(")
         .nth(1)
-        .and_then(|source| source.split("InstData::TypeConst {").next())
+        .and_then(|source| source.split("\n    fn ").next())
         .expect("anonymous enum dispatch");
     assert!(enum_dispatch.contains("enum_type_subst"));
     assert!(enum_dispatch.contains("enum_value_subst"));
@@ -3222,12 +3180,7 @@ fn comptime_generic_contract_has_no_local_lexical_or_call_payloads() {
     assert!(type_return < value_dependency);
     assert!(ordinary.contains("type CallBinding = OrdinaryComptimeCallBinding"));
     assert!(ordinary.contains("type BoundCall = OrdinaryComptimeBoundCall"));
-    let var_ref_start = production
-        .find("InstData::VarRef { name, .. } => {")
-        .expect("canonical VarRef dispatch arm");
-    let var_ref = &production[var_ref_start..][..production[var_ref_start..]
-        .find("InstData::FieldGet { base, field }")
-        .expect("VarRef dispatch boundary")];
+    let var_ref = dispatch_arm("dispatch_var_ref");
     assert_eq!(var_ref.matches("resolve_comptime_named_value(").count(), 1);
     assert!(var_ref.contains("file_for_program_span(&program, &span)"));
     assert!(!var_ref.contains("value_const("));
