@@ -432,18 +432,19 @@ fn main() -> i32 {
 
 {{ rule(id="7.1:45", cat="legality-rule") }}
 
-While one or more elements of an array have been moved out, it is a compile-time
-error to use the array as a whole value, to use a moved-out element (including
-reading a field through it), or to index the array with a non-constant index. The
-non-constant-index restriction is required for soundness: with a runtime index the
-compiler cannot know at compile time which element was moved. The sibling elements
+While one or more elements of an array, or places below them, have been moved
+out, it is a compile-time error to use the array as a whole value, to use a
+moved-out element or place (including reading a field through it), or to index the
+array with a non-constant index. The non-constant-index restriction is required for
+soundness: with a runtime index the compiler cannot know at compile time which
+element holds the moved-out part. The sibling elements
 that were not moved remain usable through constant-index projection (3.8:70).
 
 {{ rule(id="7.1:46", cat="legality-rule") }}
 
-While one or more elements of an array have been moved out, it is a compile-time
-error to assign into the array — to an element (`arr[k] = …`) or through an element
-(`arr[k].f = …`). An element write does not reinstate per-element ownership; the
+While one or more elements of an array, or places below them, have been moved
+out, it is a compile-time error to assign into the array — to an element
+(`arr[k] = …`) or through an element (`arr[k].f = …`), at any index. An element write does not reinstate per-element ownership; the
 whole array **MUST** be reinitialized (`arr = [ … ]`) instead, which makes every
 element owned — and therefore droppable — again (3.8:72).
 

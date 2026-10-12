@@ -7332,7 +7332,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             },
             span,
         )
-        .with_label("element moved out here", moved_span)
+        .with_label("moved out of the array here", moved_span)
         .with_help(format!(
             "reinitialize the whole array instead (`{name} = [...]`)"
         )))

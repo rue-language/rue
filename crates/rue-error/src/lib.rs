@@ -4192,7 +4192,9 @@ pub enum ErrorKind {
     /// while one or more of its elements are moved out (RUE-186). Reinstating
     /// per-element ownership through writes is not supported; the whole array
     /// must be reinitialized instead.
-    #[error("cannot assign into '{array}': one of its elements has been moved out")]
+    #[error(
+        "cannot assign into '{array}': one of its elements, or a place below one, has been moved out"
+    )]
     AssignToPartiallyMovedArray { array: String },
 
     // Linker errors

@@ -511,7 +511,7 @@ fn main() -> i32 {
 
 {{ rule(id="3.8:77", cat="legality-rule") }}
 
-Assigning to a place whose type carries a linear value (3.8:57) is a compile-time error when the place currently holds a live value. A linear value **MUST** be consumed explicitly (3.8:32); an assignment that overwrote it would drop it implicitly (3.9:18), which linearity forbids. The assignment is legal only when the destination place has provably been moved out on every path reaching it — the reinitialization idiom (3.8:55): a moved-out place holds nothing to destroy. For an array whose element type carries a linear value, whole-array reassignment is legal only when every element has been consumed (as a whole or element-wise, 3.8:71); whole-array reinitialization is the only recovery path, because once any element has been moved out, assigning into the array — to an element or through an element — is itself an error (E0480, 3.8:72 and 7.1:46), including at the exact constant index that was moved out. An element reached through a non-constant (runtime) index can never be proven moved out and its assignment is always rejected. This restriction applies regardless of the run-time move state: the diagnostic is determined by the destination's type together with the statically tracked move paths, never by a run-time drop flag.
+Assigning to a place whose type carries a linear value (3.8:57) is a compile-time error when the place currently holds a live value. A linear value **MUST** be consumed explicitly (3.8:32); an assignment that overwrote it would drop it implicitly (3.9:18), which linearity forbids. The assignment is legal only when the destination place has provably been moved out on every path reaching it — the reinitialization idiom (3.8:55): a moved-out place holds nothing to destroy. For an array whose element type carries a linear value, whole-array reassignment is legal only when every element has been consumed (as a whole or element-wise, 3.8:71); whole-array reinitialization is the only recovery path, because once any element, or a place below one, has been moved out, assigning into the array — to an element or through an element — is itself an error (E0480, 3.8:72 and 7.1:46), including at the exact constant index that was moved out. An element reached through a non-constant (runtime) index can never be proven moved out and its assignment is always rejected. This restriction applies regardless of the run-time move state: the diagnostic is determined by the destination's type together with the statically tracked move paths, never by a run-time drop flag.
 
 {{ rule(id="3.8:78", cat="example") }}
 
@@ -552,7 +552,7 @@ fn main() -> i32 {
 
 {{ rule(id="3.8:70", cat="legality-rule") }}
 
-While one or more elements of an array are moved out, it is a compile-time error to use the moved element (including reading a field through it), to use the array as a whole value, or to index the array with a non-constant index. The non-constant-index restriction is required for soundness: the compiler cannot know at compile time whether a runtime index denotes a moved-out element.
+While one or more elements of an array, or places below them (for example a field of an element), are moved out, it is a compile-time error to use a moved element or moved place (including reading a field through it), to use the array as a whole value, or to index the array with a non-constant index. The array is then not wholly owned. The non-constant-index restriction is required for soundness: the compiler cannot know at compile time whether a runtime index denotes an element with a moved-out part.
 
 {{ rule(id="3.8:71", cat="normative") }}
 
@@ -560,7 +560,31 @@ An array whose elements carry linear values may be consumed element-wise: its mu
 
 {{ rule(id="3.8:72", cat="legality-rule") }}
 
-While one or more elements of an array are moved out, it is a compile-time error to assign into the array — to an element, or through an element (e.g. to a field of an element). Element writes do not reinstate per-element ownership; the whole array must be reinitialized instead, which makes every element owned (and droppable) again.
+While one or more elements of an array, or places below them, are moved out, it is a compile-time error to assign into the array — to an element, or through an element (e.g. to a field of an element) — including an element other than the one with the moved-out part: after only `h.a[0].s` has moved, `h.a[1].c = 5` is an error. Element writes do not reinstate per-element ownership; the whole array must be reinitialized instead, which makes every element owned (and droppable) again.
+
+{{ rule(id="3.8:81", cat="example") }}
+
+```rue
+struct Name { len: i32 }
+struct Entry { count: i32, name: Name }
+struct Table { rows: [Entry; 2] }
+
+fn take(n: Name) -> i32 { n.len }
+
+fn main() -> i32 {
+    let mut t = Table { rows: [
+        Entry { count: 1, name: Name { len: 3 } },
+        Entry { count: 2, name: Name { len: 4 } },
+    ] };
+    let n = take(t.rows[0].name);  // moves only a field of element 0
+    // t.rows[1].count = 5;        // error: t.rows is not wholly owned (3.8:72)
+    t.rows = [
+        Entry { count: 5, name: Name { len: 1 } },
+        Entry { count: 6, name: Name { len: 1 } },
+    ];                             // OK: whole-array reinitialization
+    n + t.rows[1].count            // 9
+}
+```
 
 {{ rule(id="3.8:73", cat="dynamic-semantics") }}
 

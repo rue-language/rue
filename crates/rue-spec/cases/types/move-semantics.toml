@@ -6471,3 +6471,57 @@ fn main() -> i32 {
 """
 expected_stdout = "1\n11\n12\n7\n"
 exit_code = 7
+
+# RUE-2351: 3.8:70/72 and 7.1:45/46 apply when a place *below* an element has
+# moved, not only a whole element: the array is not wholly owned. These pin
+# the 3.8:81 example and its rejected line.
+[[case]]
+name = "field_hole_in_element_whole_array_reinit_accepted"
+spec = ["3.8:81", "3.8:72", "7.1:46"]
+description = "After t.rows[0].name moves, whole-array reinitialization of t.rows is accepted (RUE-2351)"
+source = """
+struct Name { len: i32 }
+struct Entry { count: i32, name: Name }
+struct Table { rows: [Entry; 2] }
+
+fn take(n: Name) -> i32 { n.len }
+
+fn main() -> i32 {
+    let mut t = Table { rows: [
+        Entry { count: 1, name: Name { len: 3 } },
+        Entry { count: 2, name: Name { len: 4 } },
+    ] };
+    let n = take(t.rows[0].name);
+    t.rows = [
+        Entry { count: 5, name: Name { len: 1 } },
+        Entry { count: 6, name: Name { len: 1 } },
+    ];
+    n + t.rows[1].count
+}
+"""
+exit_code = 9
+
+[[case]]
+name = "field_hole_in_element_sibling_element_write_rejected"
+spec = ["3.8:81", "3.8:72", "7.1:46"]
+description = "After only t.rows[0].name moves, writing the sibling element's field t.rows[1].count is E0480 (RUE-2351)"
+source = """
+struct Name { len: i32 }
+struct Entry { count: i32, name: Name }
+struct Table { rows: [Entry; 2] }
+
+fn take(n: Name) -> i32 { n.len }
+
+fn main() -> i32 {
+    let mut t = Table { rows: [
+        Entry { count: 1, name: Name { len: 3 } },
+        Entry { count: 2, name: Name { len: 4 } },
+    ] };
+    let n = take(t.rows[0].name);
+    t.rows[1].count = 5;
+    n
+}
+"""
+compile_fail = true
+expected_error_code = "E0480"
+error_contains = "one of its elements, or a place below one, has been moved out"
