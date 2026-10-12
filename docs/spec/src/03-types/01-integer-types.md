@@ -109,7 +109,8 @@ use is written first.
 {{ rule(id="3.1:15", cat="normative") }}
 
 The inference variable is resolved at the **defaulting point**, which is the end
-of the enclosing function body. If any use fixes the value to a concrete integer
+of the enclosing function body (for a constant initializer, the end of the
+initializer, 6.5:18). If any use fixes the value to a concrete integer
 type — for example, assignment to a typed variable, or passing the value to a
 function parameter of known integer type — the literal takes that type. If the
 variable is still unconstrained at the defaulting point, it defaults to `i32`.

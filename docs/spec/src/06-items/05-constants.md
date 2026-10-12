@@ -82,6 +82,27 @@ type; a value out of range is a compile-time error reported at the
 declaration. A non-integer annotation **MUST** match the type of the
 initializer's value exactly.
 
+{{ rule(id="6.5:18", cat="normative") }}
+
+A constant initializer, including an initializer block (`const K: T = { … }`),
+is typed exactly as the same expression would be as the body of a function
+whose return type is the constant's annotated type. In particular, integer
+literal inference and defaulting (3.1:14, 3.1:15) apply with the initializer as
+the enclosing body: an untyped literal unifies with every use of its value
+within the initializer, the annotation fixes the type of the initializer's
+value, and a literal still unconstrained at the end of the initializer defaults
+to `i32`. The value and the diagnostics are those the expression would produce
+at run time in that function body.
+
+{{ rule(id="6.5:19", cat="example") }}
+
+```rue
+const A: i64 = { let a = 3000000000; a - 2999999990 }; // a: i64, from the tail
+const B: u8 = { let b = 200; b + 50 };                  // b: u8; 250 fits
+// const C: i64 = { let x = 3000000000; 1 };            // error: x defaults to
+//                                                      // i32, out of range (E0800)
+```
+
 {{ rule(id="6.5:6", cat="example") }}
 
 ```rue

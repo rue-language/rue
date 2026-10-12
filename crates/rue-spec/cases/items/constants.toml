@@ -2017,3 +2017,25 @@ fn main() -> i32 {
 }
 """
 exit_code = 42
+
+# RUE-2361: a constant initializer is typed as a function body would be
+# (6.5:18): an untyped literal unifies with its uses inside the initializer.
+[[case]]
+name = "const_block_literal_takes_type_from_tail"
+spec = ["6.5:18", "6.5:19", "3.1:14", "3.1:15"]
+description = "A let-bound untyped literal in a const block takes the annotated type through the tail"
+source = """
+const A: i64 = { let a = 3000000000; a - 2999999990 };
+fn main() -> i32 { @intCast(A) }
+"""
+exit_code = 10
+
+[[case]]
+name = "const_block_literal_typed_u8_by_annotation"
+spec = ["6.5:18", "6.5:19", "3.1:14"]
+description = "An untyped literal combined with the tail takes the u8 annotation; 250 fits"
+source = """
+const B: u8 = { let b = 200; b + 50 };
+fn main() -> i32 { @intCast(B) }
+"""
+exit_code = 250
