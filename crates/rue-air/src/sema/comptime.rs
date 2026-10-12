@@ -783,6 +783,19 @@ pub trait ComptimeValueAlgebra: ComptimeDomain {
     ) -> ComptimeHostResult<Option<bool>, Self::Failure> {
         Ok(None)
     }
+    /// Decide an enum-variant path pattern whose head the engine already
+    /// resolved to a type: a module-qualified head (`lib.Choice.A(x)`) or an
+    /// inline type-constructor head (`Result(i32, i32).Ok(v)`), neither of
+    /// which a bare name in the caller's namespace can answer (RUE-2637).
+    fn match_typed_path_pattern(
+        &mut self,
+        _ty: &Self::Type,
+        _variant: &Self::Name,
+        _value: &Self::Value,
+        _site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> ComptimeHostResult<Option<bool>, Self::Failure> {
+        Ok(None)
+    }
     /// Report a comptime-known `match` whose reached arms all declined.
     /// Selection happens over an exhaustive pattern set (4.14:19, 4.7:9), so
     /// arriving here means the set was not exhaustive: an error in `const`
@@ -1384,6 +1397,60 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         decode_comptime_match_pattern(pattern, |symbol| {
             self.host.name_from_symbol(program, symbol)
         })
+    }
+
+    /// Resolve a qualified path pattern's head to the type it names: an
+    /// inline constructor head (`Result(i32, i32).Ok`, `lib.Result(i32,
+    /// i32).Ok`) is evaluated as the same call a constructor expression's
+    /// head is, and a module-qualified head (`lib.Choice.A`) walks the module
+    /// path the `FieldGet` type-path arm walks (RUE-2637). `None` leaves the
+    /// arm to the host's name-based reading.
+    fn resolve_match_pattern_head(
+        &mut self,
+        head: &ComptimePatternHead,
+        env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
+        span: Span,
+    ) -> ComptimeOutcome<Option<H::Type>, H::Failure> {
+        if let Some(ctor_head) = head.ctor_head {
+            return match self.eval(ctor_head, env) {
+                ComptimeOutcome::Known(value) => ComptimeOutcome::Known(value.as_type()),
+                ComptimeOutcome::Trap(trap) => ComptimeOutcome::Trap(trap),
+                ComptimeOutcome::HostFailure(error) => ComptimeOutcome::HostFailure(error),
+                ComptimeOutcome::Abort(error) => ComptimeOutcome::Abort(error),
+                _ => ComptimeOutcome::Known(None),
+            };
+        }
+        let Some(module) = head.module else {
+            return ComptimeOutcome::Known(None);
+        };
+        let Some(mut path) = self.decode_module_path(module, env) else {
+            return ComptimeOutcome::Known(None);
+        };
+        path.segments.push(self.name_from_rir(head.type_name));
+        let value = host_value!(self.host.resolve_comptime_type_path(
+            path.file,
+            path.root_module.as_ref(),
+            &path.segments,
+            span
+        ));
+        ComptimeOutcome::Known(value.and_then(|value| value.as_type()))
+    }
+
+    /// Decide one arm pattern, routing a path pattern whose qualified head
+    /// resolved to a type through the host's typed reading.
+    fn match_arm_pattern(
+        &mut self,
+        pattern: &ComptimeMatchPattern<H::Name>,
+        head: Option<&H::Type>,
+        value: &H::Value,
+        site: &ComptimeDiagnosticSite<H::ProgramKey>,
+    ) -> ComptimeHostResult<Option<bool>, H::Failure> {
+        match (pattern, head) {
+            (ComptimeMatchPattern::Path { variant, .. }, Some(ty)) => {
+                self.host.match_typed_path_pattern(ty, variant, value, site)
+            }
+            _ => self.match_pattern(pattern, value, site),
+        }
     }
 
     /// Decide one decoded arm pattern against a reduced scrutinee. The scalar
@@ -2149,15 +2216,38 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                     .map(|(pattern, body)| {
                         (
                             self.decode_match_pattern(&self.program_key(), &pattern),
+                            comptime_match_pattern_head(&pattern),
                             body,
                         )
                     })
                     .collect::<Vec<_>>();
                 {
                     let mut selected = ComptimeOutcome::RuntimeDependent;
-                    for (index, (pattern, _)) in patterns.into_iter().enumerate() {
-                        match self.match_pattern(
+                    for (index, (pattern, head, _)) in patterns.into_iter().enumerate() {
+                        let head = match head {
+                            Some(head) => {
+                                match self.resolve_match_pattern_head(&head, env, Span::new(0, 0)) {
+                                    ComptimeOutcome::Known(head) => head,
+                                    ComptimeOutcome::HostFailure(error) => {
+                                        selected = ComptimeOutcome::HostFailure(error);
+                                        break;
+                                    }
+                                    ComptimeOutcome::Abort(error) => {
+                                        selected = ComptimeOutcome::Abort(error);
+                                        break;
+                                    }
+                                    ComptimeOutcome::Trap(trap) => {
+                                        selected = ComptimeOutcome::Trap(trap);
+                                        break;
+                                    }
+                                    _ => None,
+                                }
+                            }
+                            None => None,
+                        };
+                        match self.match_arm_pattern(
                             &pattern,
+                            head.as_ref(),
                             &value,
                             &self.diagnostic_site(Span::new(0, 0)),
                         ) {
@@ -5709,13 +5799,24 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                     .map(|(pattern, body)| {
                         (
                             self.decode_match_pattern(&self.program_key(), &pattern),
+                            comptime_match_pattern_head(&pattern),
                             body,
                         )
                     })
                     .collect::<Vec<_>>();
-                for (semantic_pattern, body) in arms.iter() {
-                    match self.match_pattern(semantic_pattern, &scrut, &self.diagnostic_site(span))
-                    {
+                for (semantic_pattern, head, body) in arms.iter() {
+                    let head = match head {
+                        Some(head) => {
+                            outcome_value!(self.resolve_match_pattern_head(head, env, span))
+                        }
+                        None => None,
+                    };
+                    match self.match_arm_pattern(
+                        semantic_pattern,
+                        head.as_ref(),
+                        &scrut,
+                        &self.diagnostic_site(span),
+                    ) {
                         Ok(Some(true)) => {
                             // Payload bindings belong to the selected arm's
                             // lexical environment. The engine extracts only

@@ -1,0 +1,91 @@
+# RUE-2637: a comptime `match` selects an arm whose path pattern is spelled
+# through a module (`lib.Choice.A(x)`) or an inline type-constructor head
+# (`Res(i32).Ok(v)`) exactly as it selects an unqualified one. The engine
+# handed the host only the pattern's bare type name, which the host resolved
+# in the caller's namespace, so every qualified arm declined and the `match`
+# failed E1200 "comptime match has no selected arm".
+
+[section]
+id = "cli.comptime_qualified_match_patterns"
+name = "Qualified and inline-head patterns in comptime matches (RUE-2637)"
+description = "Comptime `match` arms with module-qualified or inline type-constructor heads are selected."
+
+[[case]]
+name = "module_qualified_nullary_arm_in_comptime_block"
+description = "RUE-2637's repro: `lib.Choice.B` selects the qualified nullary arm."
+files = [
+    { path = "main.rue", source = '''
+const lib = @import("lib.rue");
+fn main() -> i32 {
+    let v: i32 = comptime { match lib.Choice.B { lib.Choice.A(x) => x, lib.Choice.B => 7 } };
+    v
+}
+''' },
+    { path = "lib.rue", source = '''
+pub enum Choice { A(i32), B }
+''' },
+]
+exit_code = 7
+
+[[case]]
+name = "module_qualified_payload_arm_binds_in_comptime_block"
+description = "A qualified payload arm is selected and binds its payload."
+files = [
+    { path = "main.rue", source = '''
+const lib = @import("lib.rue");
+fn main() -> i32 {
+    let v: i32 = comptime { match lib.Choice.A(5) { lib.Choice.A(x) => x * 2, lib.Choice.B => 7 } };
+    v
+}
+''' },
+    { path = "lib.rue", source = '''
+pub enum Choice { A(i32), B }
+''' },
+]
+exit_code = 10
+
+[[case]]
+name = "module_qualified_constructor_head_arm_in_comptime_block"
+description = "A module-qualified inline constructor head (`lib.Pair(i32).One(x)`) is selected."
+files = [
+    { path = "main.rue", source = '''
+const lib = @import("lib.rue");
+fn main() -> i32 {
+    let v: i32 = comptime {
+        match lib.Pair(i32).One(9) { lib.Pair(i32).One(x) => x, lib.Pair(i32).Two => 1 }
+    };
+    v
+}
+''' },
+    { path = "lib.rue", source = '''
+pub fn Pair(comptime T: type) -> type { enum { One(T), Two } }
+''' },
+]
+exit_code = 9
+
+[[case]]
+name = "inline_constructor_head_arms_in_comptime_block"
+description = "Inline constructor head arms (`Res(i32).Ok(v)`, `Res(i32).Err`) are selected in a comptime block."
+files = [
+    { path = "main.rue", source = '''
+fn Res(comptime T: type) -> type { enum { Ok(T), Err } }
+fn main() -> i32 {
+    let a: i32 = comptime { match Res(i32).Err { Res(i32).Ok(v) => v, Res(i32).Err => 30 } };
+    let b: i32 = comptime { match Res(i32).Ok(4) { Res(i32).Ok(v) => v, Res(i32).Err => 0 } };
+    a + b
+}
+''' },
+]
+exit_code = 34
+
+[[case]]
+name = "inline_constructor_head_arms_in_const_initializer"
+description = "A `const` initializer's `match` selects an inline constructor head arm."
+files = [
+    { path = "main.rue", source = '''
+fn Res(comptime T: type) -> type { enum { Ok(T), Err } }
+const K: i32 = match Res(i32).Ok(4) { Res(i32).Ok(v) => v, Res(i32).Err => 0 };
+fn main() -> i32 { K }
+''' },
+]
+exit_code = 4

@@ -4028,6 +4028,30 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeValueAlgebra for OrdinaryBodyEngin
             |name| name.as_ref() == self.body_interner().resolve(variant),
         )))
     }
+    fn match_typed_path_pattern(
+        &mut self,
+        ty: &Type,
+        variant: &Spur,
+        value: &ConstValue,
+        _site: &super::comptime::ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> ComptimeHostResult<Option<bool>, Self::Failure> {
+        let Some(aggregate) = comptime_aggregate(value.clone()) else {
+            return Ok(None);
+        };
+        let ConstAggregateKind::Enum { variant: index, .. } = &aggregate.kind else {
+            return Ok(Some(false));
+        };
+        let TypeKind::Enum(enum_id) = aggregate.ty.kind() else {
+            return Ok(Some(false));
+        };
+        if *ty != aggregate.ty {
+            return Ok(Some(false));
+        }
+        let enum_def = self.body_type_pool().enum_def(enum_id);
+        Ok(Some(enum_def.variants.get(*index as usize).is_some_and(
+            |name| name.as_ref() == self.body_interner().resolve(variant),
+        )))
+    }
     fn resolve_comptime_enum_variant(
         &mut self,
         _module: Option<ConstValue>,

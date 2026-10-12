@@ -334,6 +334,36 @@ pub fn decode_comptime_match_pattern<N>(
     }
 }
 
+/// The qualified head of a path pattern (`lib.Choice.A`, `Result(i32,
+/// i32).Ok`), copied out of its RIR view so the engine can resolve it to a
+/// type once the view's borrow has ended (RUE-2637).
+#[derive(Clone, Copy)]
+pub(super) struct ComptimePatternHead {
+    pub(super) module: Option<InstRef>,
+    pub(super) ctor_head: Option<InstRef>,
+    pub(super) type_name: SymbolHandle,
+}
+
+/// The qualified head of one compact RIR path pattern, if it has one. An
+/// unqualified head stays a bare name the host resolves.
+pub(super) fn comptime_match_pattern_head(
+    pattern: &rue_rir::RirPatternView<'_>,
+) -> Option<ComptimePatternHead> {
+    match pattern {
+        rue_rir::RirPatternView::Path {
+            module,
+            ctor_head,
+            type_name,
+            ..
+        } if module.is_some() || ctor_head.is_some() => Some(ComptimePatternHead {
+            module: *module,
+            ctor_head: *ctor_head,
+            type_name: (*type_name).into(),
+        }),
+        _ => None,
+    }
+}
+
 /// An already-evaluated call argument together with the engine-derived fact
 /// that its source node was an immediate `UnitConst`. The source instruction
 /// and owning program remain engine-private; hosts receive only this semantic

@@ -2316,15 +2316,18 @@ fn comptime_match_patterns_have_one_decoder_and_a_semantic_host_boundary() {
     let decode = engine_match
         .find("self.decode_match_pattern")
         .expect("engine decodes reached patterns");
+    // A qualified head is resolved by the engine and decided through the
+    // typed host hook; every other pattern still reaches `match_pattern`
+    // (RUE-2637).
     let decide = engine_match
-        .find("self.match_pattern")
+        .find("self.match_arm_pattern")
         .expect("engine decides reached patterns");
     assert!(decode < decide, "decode must precede the decision");
     assert!(
         !engine_match.contains("self.host.match_pattern"),
         "the engine must not hand a scalar pattern back to the host"
     );
-    assert!(engine_match.contains("for (semantic_pattern, body) in arms.iter()"));
+    assert!(engine_match.contains("for (semantic_pattern, head, body) in arms.iter()"));
     assert!(!engine_match.contains("RirPatternView::"));
 }
 
@@ -2380,7 +2383,7 @@ fn comptime_host_is_an_empty_umbrella_over_its_capabilities() {
     }
     assert_eq!(
         owner.len(),
-        101,
+        102,
         "the host contract lost or gained a method"
     );
     for (method, trait_name) in &owner {

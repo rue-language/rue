@@ -1867,6 +1867,33 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeValueAlgebra
         Ok(Some(expected.is_some_and(|expected| expected == *index)))
     }
 
+    fn match_typed_path_pattern(
+        &mut self,
+        ty: &Self::Type,
+        variant: &Self::Name,
+        value: &Self::Value,
+        _site: &rue_air::ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> rue_air::ComptimeHostResult<Option<bool>, Self::Failure> {
+        let EvaluatedSemanticConst::Value(value) = value else {
+            return Ok(Some(false));
+        };
+        let rue_air::SemanticImportConstValue::Aggregate(aggregate) = &value.value else {
+            return Ok(Some(false));
+        };
+        let rue_air::SemanticImportAggregateKind::Enum { variant: index, .. } = &aggregate.kind
+        else {
+            return Ok(Some(false));
+        };
+        if ty.0 != aggregate.ty {
+            return Ok(Some(false));
+        }
+        let expected = self
+            .services
+            .resolve_enum_variant_index(&aggregate.ty, variant.as_str())
+            .map_err(durable_provider_error)?;
+        Ok(Some(expected.is_some_and(|expected| expected == *index)))
+    }
+
     fn match_no_selected_arm(
         &self,
         _site: &rue_air::ComptimeDiagnosticSite<Self::ProgramKey>,
