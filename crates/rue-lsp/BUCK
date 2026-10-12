@@ -1,0 +1,28 @@
+load("//crates:defs.bzl", "rue_binary")
+
+# Editors launch the language server directly. Point `RUE_STD_PATH` (or the
+# `stdPath` initialization option) at the standard library, as for the CLI.
+rue_binary(
+    name = "rue-lsp",
+    deps = [
+        "//crates/rue:rue-driver",
+        "//crates/rue-compiler:rue-compiler",
+        "//crates/rue-error:rue-error",
+        "//third-party:ahash",
+        "//third-party:serde_json",
+    ],
+    test_deps = [
+        "//third-party:tempfile",
+    ],
+)
+
+# The runnable surface supplies the repository's standard library, like the
+# MCP server's.
+command_alias(
+    name = "server",
+    exe = ":rue-lsp",
+    env = {
+        "RUE_STD_PATH": "$(location //std:std)",
+    },
+    visibility = ["PUBLIC"],
+)

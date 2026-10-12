@@ -278,6 +278,14 @@ pub(crate) struct RootedCodegenReadyOutput {
     pub(super) codegen_batch_key: crate::revisioned_query_database::CodegenUnitBatchKey,
 }
 
+impl RootedCodegenReadyOutput {
+    /// Warnings from the rooted analysis this endpoint completed, in the
+    /// order a full compile would publish them.
+    pub(crate) fn warnings(&self) -> &[CompileWarning] {
+        &self.warnings
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(super) struct RootedBodyGraph {
     pub(super) revision: rue_query::Revision,
