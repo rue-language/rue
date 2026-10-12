@@ -1,0 +1,84 @@
+# RUE-2636: a constant whose declared type names the constant itself
+# (`const K: [K; 1]`, `const K: K`, `const K: [i32; K]`) re-entered its own
+# resolution query while resolving the annotation, and the query engine's
+# cycle abort escaped to the driver as an internal compiler error. It is the
+# same E0461 cycle an initializer that reads itself reports.
+
+[section]
+id = "cli.const_annotation_cycles"
+name = "Constant annotation cycles (RUE-2636)"
+description = "A constant annotation that refers back to the constant is E0461, not an internal compiler error."
+
+[[case]]
+name = "fuzz_reproducer_array_of_self"
+description = "The fuzz reproducer: `const K: [K; 1] = [1];` is E0461."
+files = [{ path = "main.rue", source = """
+@copy struct S { a: i32 }
+const K: [K; 1] = [1];
+fn main() -> i32 { 0 }
+""" }]
+args = ["main.rue"]
+compile_fail = true
+error_contains = ["E0461", "cycle detected in constant initializers: K -> K"]
+compile_stderr_not_contains = ["panicked", "internal compiler error"]
+
+[[case]]
+name = "annotation_is_the_constant"
+description = "`const K: K = 1;` is E0461."
+files = [{ path = "main.rue", source = """
+const K: K = 1;
+fn main() -> i32 { 0 }
+""" }]
+args = ["main.rue"]
+compile_fail = true
+error_contains = ["E0461", "K -> K"]
+compile_stderr_not_contains = ["panicked", "internal compiler error"]
+
+[[case]]
+name = "array_length_is_the_constant"
+description = "`const K: [i32; K] = [1];` is E0461."
+files = [{ path = "main.rue", source = """
+const K: [i32; K] = [1];
+fn main() -> i32 { 0 }
+""" }]
+args = ["main.rue"]
+compile_fail = true
+error_contains = ["E0461", "K -> K"]
+compile_stderr_not_contains = ["panicked", "internal compiler error"]
+
+[[case]]
+name = "two_constant_annotations_cycle"
+description = "Annotations that name each other's constant are an E0461 cycle through both."
+files = [{ path = "main.rue", source = """
+const A: [i32; B] = [1];
+const B: [i32; A] = [1];
+fn main() -> i32 { 0 }
+""" }]
+args = ["main.rue"]
+compile_fail = true
+error_contains = ["E0461", "A -> B -> A"]
+compile_stderr_not_contains = ["panicked", "internal compiler error"]
+
+[[case]]
+name = "struct_field_length_through_constant_annotation"
+description = "A struct field length naming a constant whose type is the struct is an E0461 cycle."
+files = [{ path = "main.rue", source = """
+struct S { a: [i32; N] }
+const N: [S; 1] = [S { a: [] }];
+fn main() -> i32 { 0 }
+""" }]
+args = ["main.rue"]
+compile_fail = true
+error_contains = ["E0461", "N -> S -> N"]
+compile_stderr_not_contains = ["panicked", "internal compiler error"]
+
+[[case]]
+name = "annotation_naming_another_constant_compiles"
+description = "Control: an array length naming a different constant still compiles."
+files = [{ path = "main.rue", source = """
+const A: i32 = 1;
+const K: [i32; A] = [7];
+fn main() -> i32 { K[0] }
+""" }]
+args = ["main.rue", "-o", "prog"]
+exit_code = 7

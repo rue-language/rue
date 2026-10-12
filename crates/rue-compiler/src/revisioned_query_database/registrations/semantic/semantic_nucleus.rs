@@ -1064,8 +1064,22 @@ $runtime
                                                         }
                                                     };
                                                     match resolved_type {
+                                                        // A declared type that names the constant itself
+                                                        // (`const K: [K; 1]`, `const K: K`) re-enters this
+                                                        // query: the same E0461 cycle an initializer that
+                                                        // reads itself reports (RUE-2636).
+                                                        Err(rue_air::SemanticResolutionError::ProviderAbort(
+                                                            QueryAbort::Cycle(nodes),
+                                                        )) => Value::Failure(Failure::Cycle(
+                                                            semantic_nucleus_cycle_names(&nodes),
+                                                        )),
                                                         Err(rue_air::SemanticResolutionError::ProviderAbort(abort)) => return Err(abort),
                                                         Err(error) => match semantic_type_query_failure(error) {
+                                                            ResolveSemanticSignatureError::Abort(QueryAbort::Cycle(nodes)) => {
+                                                                Value::Failure(Failure::Cycle(
+                                                                    semantic_nucleus_cycle_names(&nodes),
+                                                                ))
+                                                            }
                                                             ResolveSemanticSignatureError::Abort(abort) => return Err(abort),
                                                             ResolveSemanticSignatureError::Failure(failure) => Value::Failure(*failure),
                                                         },
