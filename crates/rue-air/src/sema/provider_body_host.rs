@@ -8943,6 +8943,14 @@ where
                 ty,
             );
         }
+        // A constructor applied to a bound parameter during that function's
+        // skolem check (`Wrap(T)` inside `fn f(comptime T: Show, ..)`)
+        // captures the skolem, and a member body may call its requirements
+        // (`self.a.show()`). Their members exist only once synthesized,
+        // exactly as for a specialization's own type arguments (6.8:20,
+        // RUE-2210).
+        let captured_types = type_subst.values().copied().collect::<Vec<_>>();
+        OrdinaryBodyEngine::new(&mut host).prepare_skolems(&captured_types)?;
         if !type_subst.is_empty() {
             host.anon_struct_type_subst.insert(struct_id, type_subst);
         }
