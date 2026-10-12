@@ -272,3 +272,59 @@ pub struct Holder {
 args = ["--preview", "interfaces", "main.rue", "-o", "prog"]
 stdout = "7\n7\n"
 exit_code = 0
+
+# RUE-2217: a requirement that applies another module's type constructor to
+# `Self` (`-> std.option.Option(Self)`) is resolved in the interface's own file
+# when the skolem's members are synthesized (6.8:20). Reducing that
+# constructor for the skolem builds the skolem's members again in the
+# constructor's own specialization, which had never registered the
+# interface's module, so the path's root was E0204 "unknown type 'std'"
+# pointed into std/option.rue, even for a bound nothing calls.
+[[case]]
+name = "requirement_applying_std_constructor_to_self"
+description = "RUE-2217's repro: a bound whose interface returns `std.option.Option(Self)` compiles, and a call through it runs."
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+interface Cloneable {
+    fn maybe_self(borrow self) -> std.option.Option(Self);
+}
+@copy
+struct S is Cloneable {
+    n: i64,
+    fn maybe_self(borrow self) -> std.option.Option(S) { std.option.Option(S).Some(S { n: self.n }) }
+}
+fn invoke(comptime T: Cloneable, borrow x: T) -> std.option.Option(T) { x.maybe_self() }
+fn main() -> i32 {
+    let s = S { n: 4 };
+    match invoke(S, borrow s) {
+        std.option.Option(S).Some(v) => { @dbg(v.n); 0 },
+        std.option.Option(S).None => 1,
+    }
+}
+""" }]
+args = ["--preview", "interfaces", "main.rue", "-o", "prog"]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+stdout = "4\n"
+exit_code = 0
+
+[[case]]
+name = "requirement_applying_user_module_constructor_to_self"
+description = "The same through a user module: `helper.Box(Self)` in a requirement signature (RUE-2217)."
+files = [
+    { path = "main.rue", source = """
+const helper = @import("helper.rue");
+interface Boxy { fn boxed(borrow self) -> helper.Box(Self); }
+@copy
+struct P is Boxy {
+    n: i64,
+    fn boxed(borrow self) -> helper.Box(P) { helper.Box(P) { v: P { n: self.n } } }
+}
+fn unbox(comptime T: Boxy, borrow x: T) -> T { x.boxed().v }
+fn main() -> i32 { let p = P { n: 42 }; let q = unbox(P, borrow p); @intCast(q.n) }
+""" },
+    { path = "helper.rue", source = """
+pub fn Box(comptime T: type) -> type { struct { v: T } }
+""" },
+]
+args = ["--preview", "interfaces", "main.rue", "-o", "prog"]
+exit_code = 42

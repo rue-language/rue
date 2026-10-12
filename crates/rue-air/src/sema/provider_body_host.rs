@@ -7181,6 +7181,17 @@ where
             .as_ref()
             .and_then(|syntax| self.remap_callable_type_syntax(syntax));
         let root_file = self.source.nominal_file_id(&key).unwrap_or(self.owner_file);
+        // The requirement's syntax is resolved in the interface's own file,
+        // so a module path in it (`std.option.Option(Self)`) names that
+        // file's bindings. A host specializing some other body (a type
+        // constructor applied to the skolem) has not registered that file's
+        // module yet; without it the path's root is unknown (RUE-2217).
+        if root_file != self.owner_file
+            && !self.modules_by_file.borrow().contains_key(&root_file)
+            && let Some(module) = self.source.foreign_definition_module(&self.key, &key)
+        {
+            self.register_module_target(module);
+        }
         let mut substitutions = AHashMap::new();
         if let Some(symbol) = self.intern_name("Self") {
             substitutions.insert(symbol, self_type);
