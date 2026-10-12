@@ -1,0 +1,75 @@
+# RUE-2210: a type constructor applied to a bound parameter during that
+# function's skolem check (`Wrap(T)` inside `fn f(comptime T: Show, ..)`)
+# captures the skolem, and a member body of the constructed struct may call a
+# requirement of the bound (`self.a.show()`). The member body was analyzed
+# without the skolem's members (6.8:20), so the call was E0411 "no method named
+# 'show' found for type 'T'" while the same call in `f` itself was accepted.
+
+[section]
+id = "cli.interfaces_skolem_constructors"
+name = "Constructors applied to skolems (RUE-2210)"
+description = "A member body of a struct built from a bounded parameter calls the bound's requirements during the skolem check."
+
+[[case]]
+name = "bounded_constructor_member_calls_requirement"
+description = "RUE-2210's repro: `Wrap(comptime T: Show)` whose member calls `self.a.show()`, reached from a bounded `f`."
+files = [{ path = "main.rue", source = """
+interface Show { fn show(borrow self) -> i64; }
+struct Val is Show { n: i64, fn show(borrow self) -> i64 { self.n } }
+fn Wrap(comptime T: Show) -> type {
+    struct { a: T, fn get(borrow self) -> i64 { self.a.show() } }
+}
+fn f(comptime T: Show, x: T) -> i64 { let W = Wrap(T); let w = W { a: x }; w.get() }
+fn main() -> i32 { @dbg(f(Val, Val { n: 4 })); 0 }
+""" }]
+args = ["--preview", "interfaces", "main.rue", "-o", "prog"]
+stdout = "4\n"
+exit_code = 0
+
+[[case]]
+name = "unbounded_constructor_member_calls_requirement"
+description = "The same with an unbounded `Wrap(comptime T: type)`: the member call is checked against the skolem `f` passes."
+files = [{ path = "main.rue", source = """
+interface Show { fn show(borrow self) -> i64; }
+struct Val is Show { n: i64, fn show(borrow self) -> i64 { self.n } }
+fn Wrap(comptime T: type) -> type {
+    struct { a: T, fn get(borrow self) -> i64 { self.a.show() } }
+}
+fn f(comptime T: Show, x: T) -> i64 { let W = Wrap(T); let w = W { a: x }; w.get() }
+fn main() -> i32 { @dbg(f(Val, Val { n: 5 })); 0 }
+""" }]
+args = ["--preview", "interfaces", "main.rue", "-o", "prog"]
+stdout = "5\n"
+exit_code = 0
+
+[[case]]
+name = "constructor_member_passes_skolem_to_bounded_helper"
+description = "A member forwarding the field to a bounded helper sees the skolem conform to the bound (was E0302)."
+files = [{ path = "main.rue", source = """
+interface Show { fn show(borrow self) -> i64; }
+struct Val is Show { n: i64, fn show(borrow self) -> i64 { self.n } }
+fn Wrap(comptime T: Show) -> type {
+    struct { a: T, fn get(borrow self) -> i64 { helper(T, borrow self.a) } }
+}
+fn helper(comptime T: Show, borrow v: T) -> i64 { v.show() }
+fn f(comptime T: Show, x: T) -> i64 { let W = Wrap(T); let w = W { a: x }; w.get() }
+fn main() -> i32 { @dbg(f(Val, Val { n: 6 })); 0 }
+""" }]
+args = ["--preview", "interfaces", "main.rue", "-o", "prog"]
+stdout = "6\n"
+exit_code = 0
+
+[[case]]
+name = "constructor_member_outside_the_bound_is_rejected"
+description = "A member calling a method the bound does not require is still E0411 during the skolem check."
+compile_fail = true
+error_contains = ["E0411", "no method named 'nope' found for type 'T'"]
+files = [{ path = "main.rue", source = """
+interface Show { fn show(borrow self) -> i64; }
+fn Wrap(comptime T: Show) -> type {
+    struct { a: T, fn get(borrow self) -> i64 { self.a.nope() } }
+}
+fn f(comptime T: Show, x: T) -> i64 { let W = Wrap(T); let w = W { a: x }; w.get() }
+fn main() -> i32 { 0 }
+""" }]
+args = ["--preview", "interfaces", "main.rue", "-o", "prog"]
