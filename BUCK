@@ -465,8 +465,11 @@ _CLI_TEST_ABSOLUTIZE = _CLI_TEST_BASE_ABSOLUTIZE + ["RUE_CLI_STAGED_PROGRAMS"]
 # above the derived deadline the validator reports, and when it fails, raise
 # the bound to the next round number 25% above the new deadline rather than
 # restoring a fixed 100s. At 5015s and 1201s derived, that is 6300 and 1600.
+#
+# Raised the shared shard bound 1600 -> 2100 when RUE-2221's differential std
+# accessor cases pushed the linux-arm64 shard deadline to 1601s.
 _CLI_TESTS_TIMEOUT_SECONDS = 6300
-_CLI_SHARD_TIMEOUT_SECONDS = 1600
+_CLI_SHARD_TIMEOUT_SECONDS = 2100
 
 # The bounded premerge CLI corpus in one invocation: the canonical target that a
 # local `./test.sh` full run executes and that the RUE-924 corpus-omission audit
