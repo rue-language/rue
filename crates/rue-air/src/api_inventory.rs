@@ -2383,7 +2383,7 @@ fn comptime_host_is_an_empty_umbrella_over_its_capabilities() {
     }
     assert_eq!(
         owner.len(),
-        102,
+        103,
         "the host contract lost or gained a method"
     );
     for (method, trait_name) in &owner {

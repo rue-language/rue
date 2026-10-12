@@ -1894,6 +1894,22 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeValueAlgebra
         Ok(Some(expected.is_some_and(|expected| expected == *index)))
     }
 
+    fn resolve_comptime_module_type_member(
+        &mut self,
+        module: Self::Value,
+        member: Self::Name,
+        site: &rue_air::ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> rue_air::ComptimeHostResult<Option<Self::Type>, Self::Failure> {
+        let EvaluatedSemanticConst::Module(module) = module else {
+            return Ok(None);
+        };
+        let projection = self
+            .services
+            .resolve_module_member(&site.program().declaration, &module, member.as_str())
+            .map_err(durable_provider_error)?;
+        Ok(self.observe_named_value(projection).as_type())
+    }
+
     fn match_no_selected_arm(
         &self,
         _site: &rue_air::ComptimeDiagnosticSite<Self::ProgramKey>,

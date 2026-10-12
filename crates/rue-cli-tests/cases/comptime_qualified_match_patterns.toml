@@ -89,3 +89,38 @@ fn main() -> i32 { K }
 ''' },
 ]
 exit_code = 4
+
+# RUE-2640: a constant initializer is evaluated by the declaration-time host,
+# which reads `lib.Choice` as a member of the evaluated module rather than
+# walking a module path, so a module-qualified arm resolved to nothing there
+# and declined.
+
+[[case]]
+name = "module_qualified_payload_arm_in_const_initializer"
+description = "A `const` initializer's `match` selects a module-qualified payload arm and binds it (RUE-2640)."
+files = [
+    { path = "main.rue", source = '''
+const lib = @import("lib.rue");
+const C: i32 = match lib.Choice.A(3) { lib.Choice.A(x) => x * 2, lib.Choice.B => 7 };
+fn main() -> i32 { C }
+''' },
+    { path = "lib.rue", source = '''
+pub enum Choice { A(i32), B }
+''' },
+]
+exit_code = 6
+
+[[case]]
+name = "module_qualified_nullary_arm_in_const_initializer"
+description = "A `const` initializer's `match` selects a module-qualified nullary arm (RUE-2640)."
+files = [
+    { path = "main.rue", source = '''
+const lib = @import("lib.rue");
+const C: i32 = match lib.Choice.B { lib.Choice.A(x) => x, lib.Choice.B => 7 };
+fn main() -> i32 { C }
+''' },
+    { path = "lib.rue", source = '''
+pub enum Choice { A(i32), B }
+''' },
+]
+exit_code = 7

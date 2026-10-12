@@ -796,6 +796,19 @@ pub trait ComptimeValueAlgebra: ComptimeDomain {
     ) -> ComptimeHostResult<Option<bool>, Self::Failure> {
         Ok(None)
     }
+    /// The type a member of an evaluated module value names, for a
+    /// module-qualified path pattern head (`lib.Choice.A`) in a host that
+    /// evaluates module receivers rather than walking a module path
+    /// (RUE-2640). `None` when the value is not a module or the member is
+    /// not a type.
+    fn resolve_comptime_module_type_member(
+        &mut self,
+        _module: Self::Value,
+        _member: Self::Name,
+        _site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> ComptimeHostResult<Option<Self::Type>, Self::Failure> {
+        Ok(None)
+    }
     /// Report a comptime-known `match` whose reached arms all declined.
     /// Selection happens over an exhaustive pattern set (4.14:19, 4.7:9), so
     /// arriving here means the set was not exhaustive: an error in `const`
@@ -1423,10 +1436,26 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         let Some(module) = head.module else {
             return ComptimeOutcome::Known(None);
         };
+        let type_name = self.name_from_rir(head.type_name);
+        if matches!(
+            self.host.comptime_method_receiver_policy(),
+            ComptimeMethodReceiverPolicy::EvaluateReceiver
+        ) {
+            // A host that evaluates module receivers reads the head as a
+            // member of the evaluated module, as it reads `lib.Choice` in an
+            // expression (RUE-2640).
+            let module = outcome_value!(self.eval(module, env));
+            let ty = host_value!(self.host.resolve_comptime_module_type_member(
+                module,
+                type_name,
+                &self.diagnostic_site(span)
+            ));
+            return ComptimeOutcome::Known(ty);
+        }
         let Some(mut path) = self.decode_module_path(module, env) else {
             return ComptimeOutcome::Known(None);
         };
-        path.segments.push(self.name_from_rir(head.type_name));
+        path.segments.push(type_name);
         let value = host_value!(self.host.resolve_comptime_type_path(
             path.file,
             path.root_module.as_ref(),
