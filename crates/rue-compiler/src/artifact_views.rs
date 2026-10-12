@@ -1189,6 +1189,20 @@ fn type_record(
             Some(value.to_string().into()),
             Vec::new(),
         ),
+        TypeExpr::FloatArg { negative, text, .. } => syntax_record(
+            "float_type_argument",
+            span,
+            None,
+            Some(
+                format!(
+                    "{}{}",
+                    if *negative { "-" } else { "" },
+                    owner.resolve_raw_symbol(*text)
+                )
+                .into(),
+            ),
+            Vec::new(),
+        ),
     }
 }
 

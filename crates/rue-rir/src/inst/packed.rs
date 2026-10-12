@@ -1069,6 +1069,11 @@ impl<E, C: FnMut() -> Result<(), E>, P: FnMut(RirSpanSlot, Span) -> Result<(u32,
                         .map_err(|_| PackedRirEncodeError::CapacityFailure)?;
                     self.types.extend_from_slice(&value.to_le_bytes());
                 }
+                RirTypeSyntaxNode::Float { negative, text } => {
+                    self.type_byte(14)?;
+                    self.type_byte(u8::from(*negative))?;
+                    self.type_symbol(Self::arena_symbol(arena, *text)?)?;
+                }
                 RirTypeSyntaxNode::Function { params, result } => {
                     self.type_byte(13)?;
                     let words = arena
@@ -2658,7 +2663,7 @@ impl<
             .map_err(|_| Self::capacity("type syntax nodes"))?;
         for _ in 0..self.types {
             self.check()?;
-            let node = match Self::byte_tag(reader, "type syntax node", 13)? {
+            let node = match Self::byte_tag(reader, "type syntax node", 14)? {
                 0 => RirTypeSyntaxNode::Named(self.type_symbol(reader)?),
                 1 => RirTypeSyntaxNode::Qualified {
                     path: self.type_path(reader)?,
@@ -2829,6 +2834,10 @@ impl<
                         result: self.type_child(reader)?,
                     }
                 }
+                14 => RirTypeSyntaxNode::Float {
+                    negative: reader.boolean("float type argument sign")?,
+                    text: self.type_symbol(reader)?,
+                },
                 _ => unreachable!(),
             };
             let reference = self
@@ -3976,7 +3985,8 @@ mod tests {
                 const_ptr: ptr const i32,\
                 mut_ptr: ptr mut i32,\
                 callback: fn(i32, borrow Name, inout [u8; 4]) -> bool,\
-                call: Result([Widget; fact(N)], lib.Option(Str(8)))\
+                call: Result([Widget; fact(N)], lib.Option(Str(8))),\
+                float_call: Mk(-1.5, 2.0)\
             ) {}\
             fn make_struct() -> type {\
                 struct {\
@@ -4415,7 +4425,7 @@ mod tests {
             .iter()
             .map(std::mem::discriminant)
             .collect::<ahash::AHashSet<_>>();
-        assert_eq!(variants.len(), 14, "fixture must cover every type node");
+        assert_eq!(variants.len(), 15, "fixture must cover every type node");
 
         let packed = pack(&source, &symbols, root);
         let (decoded, metadata) = packed
@@ -4545,12 +4555,12 @@ mod tests {
         assert_eq!(header.types, 2);
 
         let mut bad_tag = packed.as_bytes().to_vec();
-        bad_tag[header.types_offset] = 14;
+        bad_tag[header.types_offset] = 15;
         assert_eq!(
             decode_error(PackedValidatedRir(Arc::from(bad_tag))),
             PackedRirDecodeError::InvalidTag {
                 family: "type syntax node",
-                tag: 14,
+                tag: 15,
             }
         );
 

@@ -76,7 +76,7 @@ fn type_charge(ty: &ast::TypeExpr) -> u64 {
         TypeExpr::TypeCall { args, .. } => owned_slice_charge(args, type_charge),
         TypeExpr::QualifiedTypeCall { segments, args, .. } => owned_slice_charge(segments, |_| 0)
             .saturating_add(owned_slice_charge(args, type_charge)),
-        TypeExpr::StrFixed { .. } | TypeExpr::IntArg { .. } => 0,
+        TypeExpr::StrFixed { .. } | TypeExpr::IntArg { .. } | TypeExpr::FloatArg { .. } => 0,
     }
 }
 

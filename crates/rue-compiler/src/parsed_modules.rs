@@ -2201,7 +2201,8 @@ impl<'a> ParsedBodyProjectionCollector<'a> {
             | TypeExpr::Unit(_)
             | TypeExpr::Never(_)
             | TypeExpr::StrFixed { .. }
-            | TypeExpr::IntArg { .. } => {}
+            | TypeExpr::IntArg { .. }
+            | TypeExpr::FloatArg { .. } => {}
             TypeExpr::Array {
                 element, length, ..
             } => {

@@ -5152,6 +5152,7 @@ where
         let Some((_, definition)) = self.function_token_for_symbol(head.key) else {
             return Ok(None);
         };
+        let mut canonical_values: Vec<(Spur, ConstValue)> = Vec::new();
         // Type constructors are calls too.  Their type arguments used to
         // bypass the ordinary call-bound check because the structured type
         // resolver went straight to the durable reduction seam.  Reuse the
@@ -5206,7 +5207,16 @@ where
             // deferred signature type (`-> K(a)`, RUE-2550), used to resolve
             // here and fail only at the specialized signature downstream.
             let callee_types = type_arguments.iter().copied().collect();
-            let callee_values = value_arguments.iter().cloned().collect();
+            let mut callee_values = value_arguments.iter().cloned().collect();
+            // A float argument binds by its value at the parameter's width,
+            // as at a call expression, so `Mk(0.1)` and its exact f32 value
+            // `Mk(0.10000000149011612)` name one instance (RUE-2403, RUE-2642).
+            OrdinaryBodyEngine::new(self).canonicalize_comptime_call_values(
+                &function,
+                &callee_types,
+                &mut callee_values,
+                span,
+            );
             // Diagnostics name the constructor as the source wrote it
             // (`lib.K`), never by its internal symbol.
             let display = self.intern_name_at(constructor, span)?;
@@ -5217,7 +5227,24 @@ where
                 &callee_values,
                 span,
             )?;
+            canonical_values = value_arguments
+                .iter()
+                .map(|(name, value)| {
+                    (
+                        *name,
+                        callee_values
+                            .get(name)
+                            .cloned()
+                            .unwrap_or_else(|| value.clone()),
+                    )
+                })
+                .collect();
         }
+        let value_arguments: &[(Spur, ConstValue)] = if canonical_values.is_empty() {
+            value_arguments
+        } else {
+            &canonical_values
+        };
         let mut durable_types = Vec::with_capacity(type_arguments.len());
         for &(name, value) in type_arguments {
             // An argument naming an anonymous nominal this body produces

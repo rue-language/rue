@@ -5588,7 +5588,8 @@ impl<'a> ConstraintGenerator<'a> {
             | RirTypeSyntaxNode::AnonymousEnum { .. }
             | RirTypeSyntaxNode::TypeCall { .. }
             | RirTypeSyntaxNode::ValueCall { .. }
-            | RirTypeSyntaxNode::Integer(_) => None,
+            | RirTypeSyntaxNode::Integer(_)
+            | RirTypeSyntaxNode::Float { .. } => None,
         }
     }
 

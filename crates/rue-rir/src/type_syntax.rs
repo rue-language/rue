@@ -125,6 +125,12 @@ pub enum RirTypeSyntaxNode {
         arguments: RirTypeSyntaxRange,
     },
     Integer(i128),
+    /// A float literal argument of a type call, `Mk(3.0)` or `Mk(-1.5)`
+    /// (RUE-2642): its spelling, and whether it is negated.
+    Float {
+        negative: bool,
+        text: RirTypeSyntaxSymbol,
+    },
 }
 
 /// Immutable dense type-syntax owner.
@@ -203,7 +209,8 @@ impl<S> RirTypeSyntaxArena<S> {
             | RirTypeSyntaxNode::Qualified { .. }
             | RirTypeSyntaxNode::Unit
             | RirTypeSyntaxNode::Never
-            | RirTypeSyntaxNode::Integer(_) => {}
+            | RirTypeSyntaxNode::Integer(_)
+            | RirTypeSyntaxNode::Float { .. } => {}
             RirTypeSyntaxNode::Array { element, length } => {
                 visit(*element);
                 visit(*length);
@@ -424,6 +431,15 @@ impl<S> RirTypeSyntaxArena<S> {
                 output.push(')');
             }
             RirTypeSyntaxNode::Integer(value) => output.push_str(&value.to_string()),
+            RirTypeSyntaxNode::Float { negative, text } => {
+                let Some(text) = self.symbol(*text) else {
+                    return false;
+                };
+                if *negative {
+                    output.push('-');
+                }
+                output.push_str(resolve(text));
+            }
         }
         true
     }
@@ -579,6 +595,7 @@ impl<S> RirTypeSyntaxArena<S> {
 
             match node {
                 RirTypeSyntaxNode::Named(symbol) => check_symbol(*symbol)?,
+                RirTypeSyntaxNode::Float { text, .. } => check_symbol(*text)?,
                 RirTypeSyntaxNode::Qualified { path } => check_path(*path)?,
                 RirTypeSyntaxNode::Unit
                 | RirTypeSyntaxNode::Never
@@ -937,6 +954,10 @@ impl<S: Clone + Eq + Hash> RirTypeSyntaxBuilder<S> {
                 RirTypeSyntaxNode::TypeCall { path, arguments }
             }
             TypeExpr::IntArg { value, .. } => RirTypeSyntaxNode::Integer(*value),
+            TypeExpr::FloatArg { negative, text, .. } => RirTypeSyntaxNode::Float {
+                negative: *negative,
+                text: self.symbol(resolve(*text))?,
+            },
         };
         self.push_node(node)
     }
@@ -1186,6 +1207,10 @@ impl<S: Clone + Eq + Hash> RirTypeSyntaxBuilder<S> {
                         }
                     }
                     RirTypeSyntaxNode::Integer(value) => RirTypeSyntaxNode::Integer(*value),
+                    RirTypeSyntaxNode::Float { negative, text } => RirTypeSyntaxNode::Float {
+                        negative: *negative,
+                        text: map_symbol(*text).map_err(RirTypeSyntaxAppendError::Malformed)?,
+                    },
                     RirTypeSyntaxNode::AnonymousStruct { fields, methods } => {
                         let field_words =
                             source.words(*fields).ok_or(RirTypeSyntaxValidationError {

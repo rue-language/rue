@@ -2387,23 +2387,7 @@ pub(crate) fn bind_durable_comptime_argument(
             }
         });
     }
-    // A float bound at a float parameter is keyed by its value at that width,
-    // not by its spelling: `3`, `3.0` and `0.30e1` bind one text, so they
-    // reduce to one instance (RUE-2403).
-    let width = match &expected {
-        DurableType::F32 => Some(rue_air::Type::F32),
-        DurableType::F64 => Some(rue_air::Type::F64),
-        _ => None,
-    };
-    let canonical = match (&value, width) {
-        (crate::durable_semantics::DurableConstValue::Float(text), Some(width)) => {
-            rue_air::canonical_float_value_text(text, width)
-        }
-        _ => None,
-    };
-    let value = canonical.map_or(value, |text| {
-        crate::durable_semantics::DurableConstValue::Float(Arc::from(text))
-    });
+    let value = durable_value_at_parameter_type(value, &expected);
     let parameter_name: Arc<str> = Arc::from(parameter_name);
     binding
         .value_arguments
@@ -2413,6 +2397,29 @@ pub(crate) fn bind_durable_comptime_argument(
         EvaluatedSemanticConst::Value(TypedSemanticConst::typed(value, expected)),
     ));
     Ok(())
+}
+
+/// The value a comptime argument binds at its parameter type `expected`. A
+/// float bound at a float parameter is keyed by its value at that width, not
+/// by its spelling: `3`, `3.0` and `0.30e1` bind one text, so they reduce to
+/// one instance (RUE-2403). Every other value binds unchanged.
+pub(crate) fn durable_value_at_parameter_type(
+    value: crate::durable_semantics::DurableConstValue,
+    expected: &DurableType,
+) -> crate::durable_semantics::DurableConstValue {
+    let width = match expected {
+        DurableType::F32 => rue_air::Type::F32,
+        DurableType::F64 => rue_air::Type::F64,
+        _ => return value,
+    };
+    match &value {
+        crate::durable_semantics::DurableConstValue::Float(text) => {
+            rue_air::canonical_float_value_text(text, width).map_or(value, |text| {
+                crate::durable_semantics::DurableConstValue::Float(Arc::from(text))
+            })
+        }
+        _ => value,
+    }
 }
 
 #[cfg(test)]

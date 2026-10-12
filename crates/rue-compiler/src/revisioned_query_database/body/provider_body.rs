@@ -2088,6 +2088,9 @@ impl rue_air::SemanticTypeSyntaxProvider<ModuleId, ModuleId, StableDefinitionKey
                         value,
                     ))
                 }),
+            rue_air::SemanticValueSyntax::Float { .. } => {
+                Self::provider_failure("array length must be an integer")
+            }
             rue_air::SemanticValueSyntax::Name(name) => {
                 if let Some(value) = self.value_substitutions.get(name) {
                     return crate::durable_comptime::durable_named_array_length_const(value)
@@ -2280,6 +2283,9 @@ impl rue_air::SemanticTypeSyntaxProvider<ModuleId, ModuleId, StableDefinitionKey
             rue_air::SemanticValueSyntax::Name(capacity) => capacity
                 .parse::<u64>()
                 .map_err(|_| Self::provider_failure_value("Str capacity must be an integer"))?,
+            rue_air::SemanticValueSyntax::Float { .. } => {
+                return Self::provider_failure("Str capacity must be an integer");
+            }
         };
         self.dependencies.insert(
             crate::semantic_query_nucleus::SemanticDeclarationDependency {
@@ -2352,6 +2358,14 @@ impl rue_air::SemanticTypeSyntaxProvider<ModuleId, ModuleId, StableDefinitionKey
         use crate::durable_semantics::DurableConstValue as V;
         let syntax = match syntax {
             rue_air::SemanticValueSyntax::Integer(value) => return Ok(V::Integer(value)),
+            rue_air::SemanticValueSyntax::Float { negative, text } => {
+                return rue_air::float_argument_value_text(negative, text)
+                    .map(|value| V::Float(Arc::from(value)))
+                    .map_or_else(
+                        || Self::provider_failure("float argument is not a decimal literal"),
+                        Ok,
+                    );
+            }
             rue_air::SemanticValueSyntax::Name(syntax) => syntax,
         };
         if syntax == "true" || syntax == "false" {
@@ -2515,7 +2529,10 @@ impl rue_air::SemanticTypeSyntaxProvider<ModuleId, ModuleId, StableDefinitionKey
         // A value parameter whose declared type reads an earlier comptime
         // parameter (`comptime a: [i32; N]`) has only the deferred
         // placeholder in the signature; its type is resolved here under this
-        // call's arguments (RUE-2550).
+        // call's arguments (RUE-2550). A float binds by its value at its
+        // parameter's width, so the call is keyed as the expression form's
+        // is (RUE-2403, RUE-2642).
+        let mut canonical_values = Vec::with_capacity(value_arguments.len());
         for (name, value) in value_arguments {
             let Some((index, (_, parameter))) = head
                 .parameters
@@ -2546,6 +2563,10 @@ impl rue_air::SemanticTypeSyntaxProvider<ModuleId, ModuleId, StableDefinitionKey
             {
                 return Self::provider_domain_failure(failure);
             }
+            canonical_values.push((
+                name.clone(),
+                crate::durable_comptime::durable_value_at_parameter_type(value.clone(), &expected),
+            ));
         }
         let query = K::ComptimeCall(ComptimeCallQueryKey {
             declaration: DeclarationSemanticQueryKey {
@@ -2553,7 +2574,7 @@ impl rue_air::SemanticTypeSyntaxProvider<ModuleId, ModuleId, StableDefinitionKey
                 configuration: self.configuration.clone(),
             },
             type_arguments: type_arguments.to_vec().into(),
-            value_arguments: value_arguments.to_vec().into(),
+            value_arguments: canonical_values.into(),
             lent_anonymous_nominals: Arc::from([]),
             declared_anonymous_nominals: Arc::from([]),
         });

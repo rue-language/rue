@@ -768,6 +768,15 @@ pub enum TypeExpr {
     /// argument lists; astgen canonicalizes it into the call's type string
     /// (the same decimal spelling `TypeExpr::StrFixed` produces for `Str(8)`).
     IntArg { value: i128, span: Span },
+    /// A float literal in type-call ARGUMENT position, optionally negated:
+    /// `Mk(3.0)`, `Mk(-1.5)` (RUE-2642). `text` is the literal's spelling;
+    /// it binds the constructor's float parameter exactly as the same
+    /// literal does in expression position.
+    FloatArg {
+        negative: bool,
+        text: Spur,
+        span: Span,
+    },
 }
 
 /// The length of an array type `[T; N]`.
@@ -855,6 +864,7 @@ impl TypeExpr {
             TypeExpr::QualifiedTypeCall { span, .. } => *span,
             TypeExpr::StrFixed { span, .. } => *span,
             TypeExpr::IntArg { span, .. } => *span,
+            TypeExpr::FloatArg { span, .. } => *span,
         }
     }
 }
@@ -965,6 +975,14 @@ impl fmt::Display for TypeExpr {
                 write!(f, "sym:{}({})", name.name.into_usize(), length)
             }
             TypeExpr::IntArg { value, .. } => write!(f, "{}", value),
+            TypeExpr::FloatArg { negative, text, .. } => {
+                write!(
+                    f,
+                    "{}float:{}",
+                    if *negative { "-" } else { "" },
+                    text.into_usize()
+                )
+            }
         }
     }
 }
@@ -2159,7 +2177,9 @@ fn rebind_type(ty: &mut TypeExpr, file_id: FileId) {
             rebind_ident(name, file_id);
             rebind_span(span, file_id);
         }
-        TypeExpr::IntArg { span, .. } => rebind_span(span, file_id),
+        TypeExpr::IntArg { span, .. } | TypeExpr::FloatArg { span, .. } => {
+            rebind_span(span, file_id)
+        }
     }
 }
 

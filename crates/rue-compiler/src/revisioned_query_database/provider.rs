@@ -4020,6 +4020,11 @@ impl<'p, 'o, 'db>
                     ))
                 })
             }
+            rue_air::SemanticValueSyntax::Float { .. } => {
+                Err(rue_air::SemanticProviderError::Failure(
+                    ProviderTypeFactsFailure::Deferred("float array length"),
+                ))
+            }
             rue_air::SemanticValueSyntax::Name(name) => {
                 if let Ok(value) = name.parse::<u64>() {
                     return Ok(Some(value));
@@ -4189,6 +4194,15 @@ impl<'p, 'o, 'db>
         let syntax = match syntax {
             rue_air::SemanticValueSyntax::Integer(value) => {
                 return Ok(crate::DurableConstValue::Integer(value));
+            }
+            rue_air::SemanticValueSyntax::Float { negative, text } => {
+                return rue_air::float_argument_value_text(negative, text)
+                    .map(|value| crate::DurableConstValue::Float(Arc::from(value)))
+                    .ok_or(rue_air::SemanticProviderError::Failure(
+                        ProviderTypeFactsFailure::Deferred(
+                            "float argument is not a decimal literal",
+                        ),
+                    ));
             }
             rue_air::SemanticValueSyntax::Name(syntax) => syntax,
         };

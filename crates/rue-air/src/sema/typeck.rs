@@ -497,6 +497,14 @@ impl<H: TypeSyntaxHost>
                 ArrayLen::Literal(value)
             }
             crate::SemanticValueSyntax::Name(name) => ArrayLen::Named(name.to_owned()),
+            crate::SemanticValueSyntax::Float { .. } => {
+                return provider_failure(Err(CompileError::new(
+                    ErrorKind::InvalidArrayLength {
+                        reason: "array length must be an integer, got a float".to_owned(),
+                    },
+                    self.state.span,
+                )));
+            }
         };
         provider_failure(self.resolve_array_length_fact(*scope, &length)).map(Some)
     }
@@ -645,6 +653,16 @@ impl<H: TypeSyntaxHost>
     ) -> SemaProviderResult<ConstValue> {
         if let crate::SemanticValueSyntax::Integer(value) = syntax {
             return Ok(ConstValue::Integer(value));
+        }
+        if let crate::SemanticValueSyntax::Float { negative, text } = syntax {
+            let Some(value) = crate::float_argument_value_text(negative, text) else {
+                return provider_failure(Err(CompileError::new(
+                    ErrorKind::UnknownType(format!("{constructor}(...)")),
+                    self.state.span,
+                )));
+            };
+            let symbol = self.host.type_syntax_symbol(&value);
+            return Ok(ConstValue::Float(rue_rir::SymbolHandle::new(symbol)));
         }
         // A runtime binding in scope shadows a same-named `const` and is not
         // compile-time known: the argument of a comptime parameter, the same

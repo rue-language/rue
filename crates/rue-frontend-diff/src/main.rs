@@ -389,6 +389,7 @@ impl Shapes<'_> {
                 "_".into(),
             ),
             TypeExpr::IntArg { .. } => leaf("int"),
+            TypeExpr::FloatArg { .. } => leaf("float"),
         }
     }
 

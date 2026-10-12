@@ -188,7 +188,7 @@ fn_type_params = fn_type_param { "," fn_type_param } [ "," ] ;
 fn_type_param  = [ "inout" | "borrow" ] type ;
 qualified_ident = IDENT { "." IDENT } ;
 type_call_args = type_call_arg { "," type_call_arg } [ "," ] ;
-type_call_arg  = type | [ "-" ] INTEGER ;  (* a type argument for a `comptime T: type` parameter, or an integer value argument for a comptime value parameter such as `comptime N: i32` *)
+type_call_arg  = type | [ "-" ] ( INTEGER | FLOAT ) ;  (* a type argument for a `comptime T: type` parameter, or an integer or float value argument for a comptime value parameter such as `comptime N: i32` or `comptime v: f32` *)
 array_length   = INTEGER | IDENT | length_call ;
 length_call    = IDENT "(" [ array_length { "," array_length } [ "," ] ] ")" ;  (* comptime-evaluable call, e.g. fact(4) *)
 anon_struct_type = transfer_directives "struct" "{" [ anon_struct_fields ] "}" ;
@@ -359,8 +359,9 @@ Notes:
   denotes the type produced by a comptime `-> type` constructor (RUE-241).
   Each argument is bound by the corresponding parameter's declared kind: a
   `comptime T: type` parameter takes a type argument, and a comptime value
-  parameter (`comptime N: i32`) takes an integer literal, a comptime
-  parameter name, or a constant name (RUE-552). Nested applications compose.
+  parameter (`comptime N: i32`) takes an integer or float literal, optionally
+  negated (`Buffer(2)`, `Mk(-1.5)`), a comptime parameter name, or a constant
+  name (RUE-552, RUE-2642). Nested applications compose.
   A local or module-qualified application may head a struct literal, as in
   `Pair(i32) { first: 1, second: 2 }` or
   `std.tuple.Pair(i32) { first: 1, second: 2 }`.

@@ -207,8 +207,9 @@ pub use semantic_type_resolution::{
     SemanticTypeConstructorHead, SemanticTypeConstructorParameter, SemanticTypeFact,
     SemanticTypeFactKind, SemanticTypeSyntaxError, SemanticTypeSyntaxFailure,
     SemanticTypeSyntaxProvider, SemanticValueSyntax, SemanticVisibilityDomain,
-    SemanticVisibilityDomainCache, resolve_semantic_module_path, resolve_semantic_module_path_from,
-    resolve_structured_semantic_type_syntax, resolve_structured_semantic_type_syntax_with,
+    SemanticVisibilityDomainCache, float_argument_value_text, resolve_semantic_module_path,
+    resolve_semantic_module_path_from, resolve_structured_semantic_type_syntax,
+    resolve_structured_semantic_type_syntax_with,
 };
 pub use specialize::{comptime_call_cycle_diagnostic, comptime_depth_exceeded_diagnostic};
 pub use types::{

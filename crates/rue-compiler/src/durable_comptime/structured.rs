@@ -534,7 +534,10 @@ pub(super) mod structured_type_adapter_tests {
                     rue_air::SemanticValueSyntax::Integer(value) => {
                         Ok(DurableConstValue::Integer(value))
                     }
-                    rue_air::SemanticValueSyntax::Name(_) => Ok(DurableConstValue::Integer(0)),
+                    rue_air::SemanticValueSyntax::Name(_)
+                    | rue_air::SemanticValueSyntax::Float { .. } => {
+                        Ok(DurableConstValue::Integer(0))
+                    }
                 };
             }
             unreachable!("fixture constructor has no value argument")

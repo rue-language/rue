@@ -3982,6 +3982,20 @@ fn main() -> i32 {
 exit_code = 42
 
 [[case]]
+name = "float_value_args_in_type_position"
+spec = ["4.14:23"]
+description = "A float literal, plain or negated, is a value argument in type position and names the type the expression form does (RUE-2642)"
+source = """
+fn Mk(comptime v: f32) -> type { struct { x: i32 } }
+fn take(m: Mk(-1.5)) -> i32 { m.x }
+fn main() -> i32 {
+    let a: Mk(2.5) = Mk(2.5) { x: 40 };
+    a.x + take(Mk(-1.5) { x: 2 })
+}
+"""
+exit_code = 42
+
+[[case]]
 name = "value_parameterized_ctor_forwards_enclosing_comptime_value"
 spec = ["4.14:23"]
 description = "A field type applies a value-parameterized constructor to the enclosing comptime value parameter: Buffer(M) inside Wrap(M) (RUE-552)"

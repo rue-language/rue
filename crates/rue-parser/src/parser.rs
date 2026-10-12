@@ -1381,8 +1381,8 @@ mod tests {
         // must parse identically in a type-position intrinsic argument.
         // `TypeExpr::StrFixed` has no dedicated surface spelling here —
         // `Str(8)` parses as a `TypeCall` whose canonicalization AstGen owns —
-        // and `TypeExpr::IntArg` only occurs inside a call argument list
-        // (covered by the `Buffer(2)` row).
+        // and `TypeExpr::IntArg`/`TypeExpr::FloatArg` only occur inside a call
+        // argument list (covered by the `Buffer(2)` and `Mk(-1.5)` rows).
         let rows: &[(&str, fn(&TypeExpr) -> bool)] = &[
             ("i32", |t| matches!(t, TypeExpr::Named(_))),
             ("Point", |t| matches!(t, TypeExpr::Named(_))),
@@ -1410,6 +1410,10 @@ mod tests {
             ("Buffer(2)", |t| {
                 matches!(t, TypeExpr::TypeCall { args, .. }
                     if matches!(args[0], TypeExpr::IntArg { value: 2, .. }))
+            }),
+            ("Mk(-1.5)", |t| {
+                matches!(t, TypeExpr::TypeCall { args, .. }
+                    if matches!(args[0], TypeExpr::FloatArg { negative: true, .. }))
             }),
             ("lib.pair.Pair(i32)", |t| {
                 matches!(t, TypeExpr::QualifiedTypeCall { .. })

@@ -663,7 +663,7 @@ impl Validator<'_> {
             TypeExpr::StrFixed { .. } => {}
             // Integer type-call argument (RUE-552): a scalar literal, nothing
             // nested to validate.
-            TypeExpr::IntArg { .. } => {}
+            TypeExpr::IntArg { .. } | TypeExpr::FloatArg { .. } => {}
         }
     }
 }

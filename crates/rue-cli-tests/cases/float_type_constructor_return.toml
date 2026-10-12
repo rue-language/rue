@@ -1,8 +1,8 @@
 # RUE-2409: a return type computed from a float comptime parameter,
 # `fn make(comptime v: f32) -> Mk(v)`, was E1200 "unsupported declared type
 # f32". It resolves now, as an integer-valued constructor's does. A float
-# literal written directly in a type annotation (`let a: Mk(3.0)`) is not yet
-# type grammar; that is RUE-2642.
+# literal written directly in a type annotation (`let a: Mk(3.0)`) is
+# `float_type_constructor_arguments.toml` (RUE-2642).
 
 [section]
 id = "cli.float_type_constructor_return"

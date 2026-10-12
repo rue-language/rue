@@ -428,6 +428,27 @@ pub type SemanticProviderResult<T, E, F> = Result<T, SemanticProviderError<E, F>
 pub enum SemanticValueSyntax<'a> {
     Integer(i128),
     Name(&'a str),
+    /// A float literal argument, `Mk(3.0)` (RUE-2642): its spelling, and
+    /// whether it is negated. It binds as the same literal does in an
+    /// expression, by [`float_argument_value_text`].
+    Float {
+        negative: bool,
+        text: &'a str,
+    },
+}
+
+/// The value text a float type-call argument binds: the literal's exact
+/// canonical decimal, negated when written with `-`, which is the value the
+/// same literal has in expression position (RUE-2642). `None` for a spelling
+/// that is not a decimal literal.
+#[must_use]
+pub fn float_argument_value_text(negative: bool, text: &str) -> Option<String> {
+    let magnitude = crate::canonical_decimal_literal(text)?;
+    Some(if negative {
+        format!("-{magnitude}")
+    } else {
+        magnitude
+    })
 }
 
 pub trait SemanticTypeSyntaxProvider<S, M, A, K, N, T, V>:
@@ -1190,6 +1211,12 @@ fn structured_value_syntax<'a, Sym>(
 ) -> Option<SemanticValueSyntax<'a>> {
     match arena.node(reference)? {
         rue_rir::RirTypeSyntaxNode::Integer(value) => Some(SemanticValueSyntax::Integer(*value)),
+        rue_rir::RirTypeSyntaxNode::Float { negative, text } => {
+            arena.symbol(*text).map(|text| SemanticValueSyntax::Float {
+                negative: *negative,
+                text: resolve_symbol(text),
+            })
+        }
         rue_rir::RirTypeSyntaxNode::Named(symbol) => arena
             .symbol(*symbol)
             .map(|symbol| SemanticValueSyntax::Name(resolve_symbol(symbol))),
@@ -1815,7 +1842,8 @@ where
                             R::AnonymousStruct { .. }
                             | R::AnonymousEnum { .. }
                             | R::ValueCall { .. }
-                            | R::Integer(_) => return Err(node_unknown()),
+                            | R::Integer(_)
+                            | R::Float { .. } => return Err(node_unknown()),
                         }
                     }
                     StructuredTypeWork::BeginCall {
@@ -1856,7 +1884,8 @@ where
                         let parameter = frame.state.head.parameters[index].clone();
                         let argument = frame.arguments[index];
                         if parameter.is_type {
-                            if matches!(arena.node(argument), Some(R::Integer(_))) {
+                            if matches!(arena.node(argument), Some(R::Integer(_) | R::Float { .. }))
+                            {
                                 return Err(E::Semantic(F::ValueWhereTypeExpected {
                                     constructor: frame.state.constructor.clone(),
                                     site: frame.state.head.site.clone(),
@@ -2429,6 +2458,9 @@ mod tests {
                     .copied()
                     .map(|value| u64::try_from(value).ok())
                     .ok_or(SemanticProviderError::Failure("unknown length")),
+                SemanticValueSyntax::Float { .. } => {
+                    Err(SemanticProviderError::Failure("unknown length"))
+                }
             }
         }
 
@@ -2546,6 +2578,9 @@ mod tests {
                 SemanticValueSyntax::Name(syntax) => syntax
                     .parse()
                     .map_err(|_| SemanticProviderError::Failure("unknown value")),
+                SemanticValueSyntax::Float { .. } => {
+                    Err(SemanticProviderError::Failure("unknown value"))
+                }
             }
         }
 

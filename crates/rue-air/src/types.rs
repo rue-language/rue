@@ -2422,6 +2422,7 @@ mod tests {
         TypeCall(Vec<String>, Vec<StructuredType>),
         ValueCall(String, Vec<StructuredType>),
         Integer(i128),
+        Float(bool, String),
     }
 
     /// The parser-structured type RIR carries for `f`'s single parameter.
@@ -2542,6 +2543,12 @@ mod tests {
                     .collect(),
             ),
             Node::Integer(value) => StructuredType::Integer(*value),
+            Node::Float { negative, text } => StructuredType::Float(
+                *negative,
+                interner
+                    .resolve(arena.symbol(*text).expect("valid float text"))
+                    .to_owned(),
+            ),
             Node::AnonymousStruct { .. } | Node::AnonymousEnum { .. } => {
                 panic!("anonymous types are not accepted in declared annotation position")
             }

@@ -1,0 +1,113 @@
+# RUE-2642: a float literal was not a type-call argument in type position:
+# `let a: Mk(3.0) = ...` was E0100 "expected type, found float", though
+# `const T = Mk(3.0);` and `Mk(3)` at an integer parameter both worked. A float
+# argument, plain or negated, now binds the constructor's float parameter by
+# its value at the parameter's width, exactly as the expression form does
+# (RUE-2403), so two spellings of one value name one type.
+
+[section]
+id = "cli.float_type_constructor_arguments"
+name = "Float literal arguments of type constructors in type position (RUE-2642)"
+description = "A float literal is a value argument of a type-constructor call written where a type is expected."
+
+[[case]]
+name = "float_argument_in_let_annotation"
+description = "RUE-2642's repro: `let a: Mk(3.0) = Mk(3.0) { .. }`."
+differential_opt = true
+files = [{ path = "main.rue", source = """
+fn Mk(comptime v: f32) -> type { struct { x: i32 } }
+fn main() -> i32 { let a: Mk(3.0) = Mk(3.0) { x: 5 }; a.x }
+""" }]
+args = ["main.rue", "-o", "prog"]
+stdout = ""
+exit_code = 5
+
+[[case]]
+name = "negated_float_argument_in_parameter_and_return_types"
+description = "`Mk(-1.5)` in a parameter type and a return type, at an f64 parameter."
+differential_opt = true
+files = [{ path = "main.rue", source = """
+fn Mk(comptime v: f64) -> type { struct { x: i32 } }
+fn make() -> Mk(-1.5) { Mk(-1.5) { x: 3 } }
+fn take(m: Mk(-1.5)) -> i32 { m.x }
+fn main() -> i32 { take(make()) }
+""" }]
+args = ["main.rue", "-o", "prog"]
+stdout = ""
+exit_code = 3
+
+[[case]]
+name = "float_argument_in_struct_field_type"
+description = "A struct field typed `Mk(2.5)` holds a value built as `Mk(2.50)`."
+differential_opt = true
+files = [{ path = "main.rue", source = """
+fn Mk(comptime v: f32) -> type { struct { x: i32 } }
+struct H { m: Mk(2.5) }
+fn main() -> i32 { let h = H { m: Mk(2.50) { x: 4 } }; h.m.x }
+""" }]
+args = ["main.rue", "-o", "prog"]
+stdout = ""
+exit_code = 4
+
+[[case]]
+name = "float_arguments_match_by_value_at_the_parameter_width"
+description = "`0.1` and `0.10000000149011612` are one f32 value, so they name one type in an annotation, a parameter and a return type."
+differential_opt = true
+files = [{ path = "main.rue", source = """
+fn Mk(comptime v: f32) -> type { struct { x: i32 } }
+fn make() -> Mk(0.1) { Mk(0.10000000149011612) { x: 1 } }
+fn take(m: Mk(0.10000000149011612)) -> i32 { m.x }
+fn main() -> i32 {
+    let a: Mk(0.10000000149011612) = Mk(0.1) { x: 2 };
+    let b: Mk(0.1) = make();
+    a.x + b.x + take(Mk(0.1) { x: 3 })
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+stdout = ""
+exit_code = 6
+
+[[case]]
+name = "float_argument_reaches_the_constructor_body"
+description = "The constructor body reads the float argument bound from type position."
+differential_opt = true
+files = [{ path = "main.rue", source = """
+fn Mk(comptime v: f32) -> type { struct { x: i32, fn get(self) -> f32 { v } } }
+fn main() -> i32 { let a: Mk(1.25) = Mk(1.25) { x: 1 }; @dbg(a.get()); a.x }
+""" }]
+args = ["main.rue", "-o", "prog"]
+stdout = "1.25\n"
+exit_code = 1
+
+[[case]]
+name = "float_arguments_of_different_values_are_distinct_types"
+description = "`Mk(3.0)` and `Mk(4.0)` are distinct types."
+files = [{ path = "main.rue", source = """
+fn Mk(comptime v: f32) -> type { struct { x: i32 } }
+fn main() -> i32 { let a: Mk(3.0) = Mk(4.0) { x: 5 }; a.x }
+""" }]
+args = ["main.rue"]
+compile_fail = true
+error_contains = ["E0206", "expected Mk(3.0), found Mk(4.0)"]
+
+[[case]]
+name = "float_argument_at_a_type_parameter_is_rejected"
+description = "A float argument where the constructor takes a type is the same E1200 an integer gets."
+files = [{ path = "main.rue", source = """
+fn Mk(comptime T: type) -> type { struct { x: i32 } }
+fn main() -> i32 { let a: Mk(3.0) = Mk(i32) { x: 5 }; a.x }
+""" }]
+args = ["main.rue"]
+compile_fail = true
+error_contains = ["E1200", "argument '3.0' of type constructor 'Mk' must be a type"]
+
+[[case]]
+name = "float_argument_at_an_integer_parameter_is_rejected"
+description = "A float argument at an integer parameter is the same E0206 the expression form gives."
+files = [{ path = "main.rue", source = """
+fn Mk(comptime v: i32) -> type { struct { x: i32 } }
+fn main() -> i32 { let a: Mk(3.0) = Mk(3) { x: 5 }; a.x }
+""" }]
+args = ["main.rue"]
+compile_fail = true
+error_contains = ["E0206", "expected i32"]

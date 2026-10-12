@@ -211,17 +211,26 @@ impl Parser {
             let mut args = Vec::new();
             if !self.at(TokenKind::RParen) {
                 loop {
-                    if self.at(TokenKind::Minus) || matches!(self.kind(), TokenKind::Int(_)) {
+                    if self.at(TokenKind::Minus)
+                        || matches!(self.kind(), TokenKind::Int(_) | TokenKind::Float(_))
+                    {
                         let arg_start = self.start();
                         let neg = self.eat(TokenKind::Minus);
-                        if let TokenKind::Int(value) = self.bump().kind {
-                            args.push(TypeExpr::IntArg {
+                        match self.bump().kind {
+                            TokenKind::Int(value) => args.push(TypeExpr::IntArg {
                                 value: if neg { -(value as i128) } else { value as i128 },
                                 span: self.span_from(arg_start),
-                            });
-                        } else {
-                            self.error("expected integer type argument");
-                            return Err(());
+                            }),
+                            // A float literal argument (RUE-2642): `Mk(3.0)`.
+                            TokenKind::Float(text) => args.push(TypeExpr::FloatArg {
+                                negative: neg,
+                                text,
+                                span: self.span_from(arg_start),
+                            }),
+                            _ => {
+                                self.error("expected integer or float type argument");
+                                return Err(());
+                            }
                         }
                     } else {
                         args.push(self.ty()?);
