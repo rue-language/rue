@@ -156,9 +156,11 @@ LABEL_SECTION_EXCEPTIONS: Dict[Tuple[str, str], str] = {
     # function body; it is cited with §5.8, the section of the call forms
     # that check against the signature it establishes.
     ("Fn", "5.8"): "filed with the call forms it gives a signature to",
-    # 03-metatheory.md is held for review; its one drifted pair is fixed
-    # there and this entry removed in the same change (RUE-2516).
-    ("Strict-Bottom", "5.7"): "03-metatheory.md, pending review",
+    # (Strict-Bottom)'s bar is in §5.3, but the calculus also groups it with
+    # §5.7's bottom rules and cites it as `(Strict-Bottom) (§5.7)`; whether
+    # 03-metatheory.md's `§5.7` should move is a ruling held for review
+    # (RUE-2516).
+    ("Strict-Bottom", "5.7"): "grouped with §5.7's bottom rules; ruling pending",
 }
 
 CALCULUS_HEADING = re.compile(r"^(?P<hashes>#{2,4})\s+(?P<number>\d+(?:\.\d+)*)\.?\s+(?P<title>.+?)\s*$")
