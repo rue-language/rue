@@ -89,9 +89,20 @@ fn query_semantics(source: &str) -> rue_compiler::MultiErrorResult<rue_compiler:
     Ok(session)
 }
 
+/// Interpreter steps for each run of the CFG-boundary oracle check. The
+/// oracle's default budget takes over a minute to exhaust in an unoptimized
+/// build, so a non-terminating input (`while i < 2 { i >= i + 1; }`) hit the
+/// harness's per-input timeout and was reported as a hang (RUE-2635). At this
+/// budget both runs finish in about a second and report the accepted
+/// step-budget resource limit; fuzz inputs that terminate stay far below it.
+const CFG_ORACLE_STEP_BUDGET: u64 = 500_000;
+
 fn assert_cfg_boundary_agreement(session: rue_compiler::CompilerSession) {
-    match rue_oracle::run_session_with_cfg_differential(session, &rue_error::PreviewFeatures::new())
-    {
+    match rue_oracle::run_session_with_cfg_differential_and_step_budget(
+        session,
+        &rue_error::PreviewFeatures::new(),
+        CFG_ORACLE_STEP_BUDGET,
+    ) {
         Ok(_) => {}
         Err(rue_oracle::RunSourceError::Unsupported(unsupported)) => {
             assert_cfg_unsupported_policy(&unsupported);
@@ -1530,6 +1541,25 @@ pub fn get_target(name: &str) -> Option<Box<dyn FuzzTarget>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// RUE-2635's fuzz reproducer never terminates: `i >= i + 1` compares
+    /// rather than assigns. The sema target must reach the oracle's step
+    /// budget, an accepted resource limit, well inside the harness's
+    /// per-input timeout instead of hanging.
+    #[test]
+    fn sema_target_bounds_a_non_terminating_input() {
+        let source = "struct S { v: i64 }\n\ndrop fn S(self) {\n    @dbg(self.v);\n}\n\nfn make(v: i64) -> S { S { v: v } }\n\nfn main() -> i32 {\n    let mut i: i64 = 0;\n    while i < 2 { i>= i + 1; make(i) }\n    @dbg(0);\n    0\n}\n";
+        let quiet = "fn main() -> i32 {\n    let mut i: i64 = 0;\n    while i < 2 { i >= i + 1; }\n    0\n}\n";
+        for input in [source, quiet] {
+            let started = std::time::Instant::now();
+            SemaTarget.fuzz(input.as_bytes());
+            assert!(
+                started.elapsed() < crate::harness::DEFAULT_PER_INPUT_TIMEOUT,
+                "a non-terminating input took {:?}",
+                started.elapsed()
+            );
+        }
+    }
 
     #[test]
     fn test_lexer_target_valid() {

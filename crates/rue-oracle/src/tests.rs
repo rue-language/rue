@@ -542,8 +542,9 @@ fn cfg_boundary_differential_catches_a_planted_transformation_fault() {
         &mut session,
         rue_compiler::unstable::DifferentialOracleFault::CfgTransformation,
     ));
-    let error = run_session_cfg_differential_inner(&mut session, &PreviewFeatures::new())
-        .expect_err("the planted post-CFG fault must disagree");
+    let error =
+        run_session_cfg_differential_inner(&mut session, &PreviewFeatures::new(), STEP_BUDGET)
+            .expect_err("the planted post-CFG fault must disagree");
     assert!(
         matches!(error, RunSourceError::CfgTransformationDisagreement { .. }),
         "unexpected fault result: {error:?}"

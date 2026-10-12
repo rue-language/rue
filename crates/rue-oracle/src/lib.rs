@@ -671,7 +671,7 @@ pub fn run_source_with_cfg_differential_with_configuration(
         .update(&snapshot)
         .into_result()
         .map_err(RunSourceError::Compile)?;
-    run_session_cfg_differential_inner(&mut session, preview_features)
+    run_session_cfg_differential_inner(&mut session, preview_features, STEP_BUDGET)
 }
 
 /// Stable-language convenience form of [`run_source_with_cfg_differential`].
@@ -702,12 +702,27 @@ pub fn run_session_with_cfg_differential(
     mut session: CompilerSession,
     preview_features: &PreviewFeatures,
 ) -> Result<Outcome, RunSourceError> {
-    run_session_cfg_differential_inner(&mut session, preview_features)
+    run_session_cfg_differential_inner(&mut session, preview_features, STEP_BUDGET)
+}
+
+/// [`run_session_with_cfg_differential`] under a caller-chosen interpreter
+/// step budget for each of the two runs. A fuzz target bounds its wall time
+/// per input, and the default budget runs for over a minute in an
+/// unoptimized build, so a non-terminating input must exhaust a smaller
+/// budget and report [`ResourceLimitKind::InterpreterSteps`] before the
+/// target's timeout fires (RUE-2635).
+pub fn run_session_with_cfg_differential_and_step_budget(
+    mut session: CompilerSession,
+    preview_features: &PreviewFeatures,
+    step_budget: u64,
+) -> Result<Outcome, RunSourceError> {
+    run_session_cfg_differential_inner(&mut session, preview_features, step_budget)
 }
 
 fn run_session_cfg_differential_inner(
     session: &mut CompilerSession,
     preview_features: &PreviewFeatures,
+    step_budget: u64,
 ) -> Result<Outcome, RunSourceError> {
     let options = CompileOptions {
         preview_features: preview_features.clone(),
@@ -716,11 +731,11 @@ fn run_session_cfg_differential_inner(
     let pre_state =
         query_cfg_state_from_session_at_stage(session, &options, CfgStage::PreOptimization)
             .map_err(RunSourceError::Compile)?;
-    let pre = run_state(pre_state);
+    let pre = run_state_with_budget(pre_state, step_budget);
     let post_state =
         query_cfg_state_from_session_at_stage(session, &options, CfgStage::PostOptimization)
             .map_err(RunSourceError::Compile)?;
-    let post = run_state(post_state);
+    let post = run_state_with_budget(post_state, step_budget);
     if pre == post {
         return pre.map_err(RunSourceError::Unsupported);
     }
