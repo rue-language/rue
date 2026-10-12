@@ -6036,6 +6036,20 @@ where
             return (display.clone(), display);
         }
         match (expected.kind(), found.kind()) {
+            // Every module value displays as `<module>`, so a mismatch of two
+            // distinct modules names each one's import path (RUE-2418).
+            (TypeKind::Module(expected_id), TypeKind::Module(found_id)) => {
+                return (
+                    format!(
+                        "<module \"{}\">",
+                        self.type_syntax_module_display_name(expected_id)
+                    ),
+                    format!(
+                        "<module \"{}\">",
+                        self.type_syntax_module_display_name(found_id)
+                    ),
+                );
+            }
             (TypeKind::Array(expected_id), TypeKind::Array(found_id)) => {
                 let (expected_element, expected_length) = self.type_pool.array_def(expected_id);
                 let (found_element, found_length) = self.type_pool.array_def(found_id);

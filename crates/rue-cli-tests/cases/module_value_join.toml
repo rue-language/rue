@@ -129,4 +129,23 @@ pub fn f(x: usize) -> usize { x + 1 }
 """ },
 ]
 compile_fail = true
-error_contains = ["E0206", "found <module>"]
+# The two sides name their modules (RUE-2418).
+error_contains = ["E0206", 'expected <module "x.rue">, found <module "y.rue">']
+
+[[case]]
+name = "const_and_inline_import_of_one_file_join"
+description = "A const-bound import and an inline `@import` of the same file are one module value in a join (RUE-2418)."
+files = [
+    { path = "main.rue", source = """
+const a = @import("x.rue");
+fn main() -> i32 {
+    let c = true;
+    let m = if c { a } else { @import("x.rue") };
+    @intCast(m.f(42))
+}
+""" },
+    { path = "x.rue", source = """
+pub fn f(x: usize) -> usize { x }
+""" },
+]
+exit_code = 42
