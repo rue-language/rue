@@ -1,0 +1,8 @@
+load("//crates:defs.bzl", "rue_crate")
+
+rue_crate(
+    name = "rue-rust-lexer",
+    deps = [
+        "//third-party:unicode-ident",
+    ],
+)

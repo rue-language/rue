@@ -184,6 +184,7 @@ Long-form Buck commands remain useful when working on build targets:
 | `crates/rue-{spec,ui-tests,cli-tests}` | behavioral test harnesses |
 | `crates/rue-{oracle,oracle-diff}` | independent evaluator and differential tests |
 | `crates/rue-fuzz` | mutation/property fuzzing |
+| `crates/rue-rust-{lexer,syntax,syntax-check}` | experimental parallel, incremental Rust frontend (not part of the compiler pipeline) |
 | `docs/spec/src` | authoritative language specification |
 | `docs/designs` | architecture decision records |
 | `website` | public website, tutorial, and field journal |
