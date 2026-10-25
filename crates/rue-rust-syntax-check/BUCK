@@ -1,0 +1,14 @@
+load("//crates:defs.bzl", "rue_binary")
+
+# A corpus driver for the experimental Rust frontend: it has no unit tests of
+# its own; the crates it drives carry them.
+rue_binary(
+    name = "rue-rust-syntax-check",
+    deps = [
+        "//crates/rue-rust-lexer:rue-rust-lexer",
+        "//crates/rue-rust-syntax:rue-rust-syntax",
+        "//third-party:rayon",
+        "//third-party:syn",
+    ],
+    tests = False,
+)

@@ -4797,6 +4797,12 @@ rue_rust_library(
     visibility = [],
 )
 
+rue_alias(
+    name = "unicode-ident",
+    actual = ":unicode-ident-1.0.22",
+    visibility = ["PUBLIC"],
+)
+
 rue_rust_library(
     name = "unicode-ident-1.0.22",
     srcs = [
@@ -5531,7 +5537,6 @@ rue_alias(
 
 rue_rust_library(
     name = "zmij-0.1.7",
-
     srcs = [
         "vendor/zmij-0.1.7/src/lib.rs",
         "vendor/zmij-0.1.7/src/tests.rs",

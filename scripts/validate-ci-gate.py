@@ -44,7 +44,7 @@ AFFECTED_TARGETS_SCRIPT = Path(__file__).with_name("affected-targets")
 # platform outside this list, so a lane removed from ci.yml without updating the
 # constant would silently keep crediting cases nothing runs.
 PLATFORM_LANES = {
-    "x86-64-linux": ("linux-premerge", "runs-on: ubuntu-latest"),
+    "x86-64-linux": ("linux-premerge", "runs-on: ubuntu-24.04"),
     "aarch64-linux": ("native-platforms", "os: ubuntu-24.04-arm"),
     "aarch64-macos": ("native-platforms", "os: macos-15"),
 }
@@ -457,7 +457,7 @@ def validate(
         )
     )
     for required in (
-        "runs-on: ubuntu-latest",
+        "runs-on: ubuntu-24.04",
         "Run complete target-independent premerge suite",
         "RUE_TEST_TIER: premerge",
         "./test.sh",
@@ -485,7 +485,7 @@ def validate(
     # premerge's work, so the contract follows it rather than relaxing.
     staleness = jobs.get("performance-staleness", "")
     for required in (
-        "runs-on: ubuntu-latest",
+        "runs-on: ubuntu-24.04",
         "scripts/validate-performance-stall.py",
         "//crates/rue-bench:rue-bench",
         "fetch-depth: 0",  # RUE-1258/RUE-2343: it counts trunk merges
@@ -625,7 +625,7 @@ def validate(
             )
 
     for sanitizer in ("valgrind", "asan"):
-        if "runs-on: ubuntu-latest" not in jobs.get(sanitizer, ""):
+        if "runs-on: ubuntu-24.04" not in jobs.get(sanitizer, ""):
             errors.append(f"{sanitizer} is no longer consolidated into CI")
     valgrind = jobs.get("valgrind", "")
     if "inputs.large_program" not in valgrind:
