@@ -86,7 +86,7 @@ class GateValidatorTests(unittest.TestCase):
         self.assertIn("jobs the workflow does not define: asan", errors)
 
     def test_actions_compatible_underscore_job_is_not_invisible(self):
-        changed = SOURCE.read_text() + "\n  unaggregated_job:\n    runs-on: ubuntu-latest\n"
+        changed = SOURCE.read_text() + "\n  unaggregated_job:\n    runs-on: ubuntu-24.04\n"
         self.assertIn("unaggregated jobs: unaggregated_job", "\n".join(self.validate_text(changed)))
 
     def test_omitting_dependency_from_gate_fails(self):
@@ -169,7 +169,7 @@ class GateValidatorTests(unittest.TestCase):
 
     def test_staleness_gate_contract_follows_its_job(self):
         source = SOURCE.read_text()
-        anchor = "  performance-staleness:\n    runs-on: ubuntu-latest\n"
+        anchor = "  performance-staleness:\n    runs-on: ubuntu-24.04\n"
         for splice, message in (
             (anchor + "    continue-on-error: true\n", "must not use continue-on-error"),
             (anchor + "    needs:\n      - affected-targets\n", "must not depend on another CI job"),
