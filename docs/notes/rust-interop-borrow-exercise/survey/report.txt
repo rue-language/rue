@@ -1,0 +1,125 @@
+== Functions (stable, non-deprecated; inherent methods + free fns) ==
+raw: n=4296 {'C0': '2730 (63.5%)', 'C1': '891 (20.7%)', 'C2': '472 (11.0%)', 'C3': '147 (3.4%)', 'C4': '56 (1.3%)'}
+  of C0-C2, using 'static: 32
+   core 3235 {'C0': '2368 (73%)', 'C1': '456 (14%)', 'C2': '290 (9%)', 'C3': '86 (3%)', 'C4': '35 (1%)'}
+   alloc 435 {'C0': '137 (31%)', 'C1': '175 (40%)', 'C2': '91 (21%)', 'C3': '23 (5%)', 'C4': '9 (2%)'}
+   std 626 {'C0': '225 (36%)', 'C1': '260 (42%)', 'C2': '91 (15%)', 'C3': '38 (6%)', 'C4': '12 (2%)'}
+distinct: n=2235 {'C0': '957 (42.8%)', 'C1': '692 (31.0%)', 'C2': '413 (18.5%)', 'C3': '129 (5.8%)', 'C4': '44 (2.0%)'}
+  of C0-C2, using 'static: 29
+   core 1242 {'C0': '639 (51%)', 'C1': '261 (21%)', 'C2': '233 (19%)', 'C3': '86 (7%)', 'C4': '23 (2%)'}
+   alloc 424 {'C0': '132 (31%)', 'C1': '171 (40%)', 'C2': '89 (21%)', 'C3': '23 (5%)', 'C4': '9 (2%)'}
+   std 569 {'C0': '186 (33%)', 'C1': '260 (46%)', 'C2': '91 (16%)', 'C3': '20 (4%)', 'C4': '12 (2%)'}
+
+== Feature flags among distinct C0-C2 (what else Rue needs to declare them) ==
+2062 {'raw-ptr': 135, 'fn-sugar': 126, 'assoc-proj': 29, 'static': 29, 'impl-trait': 21, 'hrtb': 13, 'dyn': 6, 'fn-ptr': 1}
+  with type params: 388
+  unsafe: 176
+
+== C4 (needs a named lifetime; Self type lifetime-free) ==
+44 {'unbounded output lifetime': 18, 'output tied to one of several inputs': 17, 'output tied to a non-self input': 12, 'lifetime in a bound/where-clause': 10, 'one lifetime shared by several inputs': 9}
+  unsafe among C4: 13
+  U *const T: fn as_ref_unchecked<'a>(self) -> &'a T  -- 'a appears only in output; output borrows but no &self and 0 input lifetimes
+  U *const T: fn as_ref<'a>(self) -> Option<&'a T>  -- 'a appears only in output; output borrows but no &self and 0 input lifetimes
+  U *mut T: fn as_mut_unchecked<'a>(self) -> &'a mut T  -- 'a appears only in output; output borrows but no &self and 0 input lifetimes
+  U *mut T: fn as_ref<'a>(self) -> Option<&'a T>  -- 'a appears only in output; output borrows but no &self and 0 input lifetimes
+  U *mut T: fn as_mut<'a>(self) -> Option<&'a mut T>  -- 'a appears only in output; output borrows but no &self and 0 input lifetimes
+  U *mut T: fn as_ref_unchecked<'a>(self) -> &'a T  -- 'a appears only in output; output borrows but no &self and 0 input lifetimes
+  U Atomic<*mut T>: fn from_ptr<'a>(ptr: *mut *mut T) -> &'a AtomicPtr<T>  -- 'a appears only in output; output borrows but no &self and 0 input lifetimes
+  U Atomic<i128>: fn from_ptr<'a>(ptr: *mut i128) -> &'a AtomicI128  -- 'a appears only in output; output borrows but no &self and 0 input lifetimes
+    BTreeSet<T, A>: fn symmetric_difference<'a>(&'a self, other: &'a BTreeSet<T, A>) -> SymmetricDifference<'a, T>  -- 'a shared by 2 inputs
+    BTreeSet<T, A>: fn difference<'a>(&'a self, other: &'a BTreeSet<T, A>) -> Difference<'a, T, A>  -- 'a shared by 2 inputs
+    BTreeSet<T, A>: fn union<'a>(&'a self, other: &'a BTreeSet<T, A>) -> Union<'a, T>  -- 'a shared by 2 inputs
+    BTreeSet<T, A>: fn intersection<'a>(&'a self, other: &'a BTreeSet<T, A>) -> Intersection<'a, T, A>  -- 'a shared by 2 inputs
+    Box<T, A>: fn leak<'a>(b: Self) -> &'a mut T  -- 'a appears only in output; bound mentions 'a (outlives); output borrows but no &self and 0 input lifetimes
+    Builder: fn spawn_scoped<'scope, 'env, F, T>(self, scope: &'scope Scope<'scope, 'env>, f: F) -> Result<ScopedJoinHandle<'scope, T>>  -- 'scope shared by 2 inputs; bound mentions 'scope (outlives); output borrows but no &self and 3 input lifetimes
+  U CStr: fn from_ptr<'a>(ptr: *const c_char) -> &'a CStr  -- 'a appears only in output; output borrows but no &self and 0 input lifetimes
+    Condvar: fn wait_timeout_while<'a, T, F>(&self, guard: MutexGuard<'a, T>, dur: Duration, condition: F) -> LockResult<(MutexGuard<'a, T>, WaitTimeoutResult)>  -- output uses 'a, elision (self) picks another
+    Condvar: fn wait<'a, T>(&self, guard: MutexGuard<'a, T>) -> LockResult<MutexGuard<'a, T>>  -- output uses 'a, elision (self) picks another
+    Condvar: fn wait_while<'a, T, F>(&self, guard: MutexGuard<'a, T>, condition: F) -> LockResult<MutexGuard<'a, T>>  -- output uses 'a, elision (self) picks another
+    Condvar: fn wait_timeout<'a, T>(&self, guard: MutexGuard<'a, T>, dur: Duration) -> LockResult<(MutexGuard<'a, T>, WaitTimeoutResult)>  -- output uses 'a, elision (self) picks another
+    HashSet<T, S, A>: fn symmetric_difference<'a>(&'a self, other: &'a HashSet<T, S, A>) -> SymmetricDifference<'a, T, S, A>  -- 'a shared by 2 inputs
+    HashSet<T, S, A>: fn intersection<'a>(&'a self, other: &'a HashSet<T, S, A>) -> Intersection<'a, T, S, A>  -- 'a shared by 2 inputs
+    HashSet<T, S, A>: fn difference<'a>(&'a self, other: &'a HashSet<T, S, A>) -> Difference<'a, T, S, A>  -- 'a shared by 2 inputs
+    HashSet<T, S, A>: fn union<'a>(&'a self, other: &'a HashSet<T, S, A>) -> Union<'a, T, S, A>  -- 'a shared by 2 inputs
+  U NonNull<T>: fn as_ref<'a>(&self) -> &'a T  -- 'a appears only in output; output uses 'a, elision (self) picks another
+  U NonNull<T>: fn as_mut<'a>(&mut self) -> &'a mut T  -- 'a appears only in output; output uses 'a, elision (self) picks another
+    OsString: fn leak<'a>(self) -> &'a mut OsStr  -- 'a appears only in output; output borrows but no &self and 0 input lifetimes
+    PathBuf: fn leak<'a>(self) -> &'a mut Path  -- 'a appears only in output; output borrows but no &self and 0 input lifetimes
+    String: fn leak<'a>(self) -> &'a mut str  -- 'a appears only in output; output borrows but no &self and 0 input lifetimes
+    Vec<T, A>: fn leak<'a>(self) -> &'a mut [T]  -- 'a appears only in output; bound mentions 'a (outlives); output borrows but no &self and 0 input lifetimes
+    VecDeque<T, A>: fn binary_search_by<'a, F>(&'a self, f: F) -> Result<usize, usize>  -- bound mentions 'a (fn-sugar)
+    VecDeque<T, A>: fn binary_search_by_key<'a, B, F>(&'a self, b: &B, f: F) -> Result<usize, usize>  -- bound mentions 'a (fn-sugar)
+    [T]: fn is_sorted_by<'a, F>(&'a self, compare: F) -> bool  -- bound mentions 'a (fn-sugar)
+    [T]: fn split_off_first_mut<'a>(self: &mut &'a mut Self) -> Option<&'a mut T>  -- output uses 'a, elision (self) picks another
+    [T]: fn split_off_mut<'a, R>(self: &mut &'a mut Self, range: R) -> Option<&'a mut Self>  -- output uses 'a, elision (self) picks another
+    [T]: fn binary_search_by_key<'a, B, F>(&'a self, b: &B, f: F) -> Result<usize, usize>  -- bound mentions 'a (fn-sugar)
+    [T]: fn is_sorted_by_key<'a, F, K>(&'a self, f: F) -> bool  -- bound mentions 'a (fn-sugar)
+    [T]: fn split_off_last<'a>(self: &mut &'a Self) -> Option<&'a T>  -- output uses 'a, elision (self) picks another
+    [T]: fn split_off_first<'a>(self: &mut &'a Self) -> Option<&'a T>  -- output uses 'a, elision (self) picks another
+    [T]: fn split_off<'a, R>(self: &mut &'a Self, range: R) -> Option<&'a Self>  -- output uses 'a, elision (self) picks another
+    [T]: fn binary_search_by<'a, F>(&'a self, f: F) -> Result<usize, usize>  -- bound mentions 'a (fn-sugar)
+    [T]: fn split_off_last_mut<'a>(self: &mut &'a mut Self) -> Option<&'a mut T>  -- output uses 'a, elision (self) picks another
+  U core::slice::raw::from_raw_parts: fn from_raw_parts<'a, T>(data: *const T, len: usize) -> &'a [T]  -- 'a appears only in output; output borrows but no &self and 0 input lifetimes
+  U core::slice::raw::from_raw_parts_mut: fn from_raw_parts_mut<'a, T>(data: *mut T, len: usize) -> &'a mut [T]  -- 'a appears only in output; output borrows but no &self and 0 input lifetimes
+    std::thread::scoped::scope: fn scope<'env, F, T>(f: F) -> T  -- bound mentions 'env (fn-sugar)
+
+== C3 owners (types with lifetime params that own inherent methods) ==
+43 [('Formatter', 17), ('DebugMap', 8), ('Entry', 7), ('OccupiedEntry', 7), ('Pin', 6), ('Location', 5), ('DebugList', 5), ('DebugSet', 5), ('DebugTuple', 4), ('Ref', 4), ('DebugStruct', 4), ('VacantEntry', 4), ('IoSliceMut', 3), ('RefMut', 3), ('IoSlice', 3), ('PanicHookInfo', 3), ('ScopedJoinHandle', 3), ('Utf8Chunk', 2), ('Context', 2), ('PanicInfo', 2), ('IterMut', 2), ('CharIndices', 2), ('Iter', 2), ('Cow', 2), ('Drain', 2), ('BorrowedSocket', 2), ('BorrowedHandle', 2), ('PrefixComponent', 2), ('BorrowedFd', 2), ('RChunksExact', 1), ('Chars', 1), ('PanicMessage', 1), ('ChunksExactMut', 1), ('ChunksExact', 1), ('VaList', 1), ('RChunksExactMut', 1), ('Arguments', 1), ('PeekMut', 1), ('RwLockWriteGuard', 1), ('Scope', 1), ('Component', 1), ('Prefix', 1), ('Components', 1)]
+
+== Types ==
+public stable structs/enums/unions: 406; with lifetime params: 146 (36.0%)
+{'iterator/cursor': 101, 'fmt': 10, 'borrowed handle/context': 10, 'guard/lock': 8, 'other': 7, 'entry/peek': 7, 'scoped threads': 2, 'cow': 1}
+    borrowed handle/context core::ffi::va_list::VaList ["'a"]
+    borrowed handle/context core::io::io_slice::IoSlice ["'a"]
+    borrowed handle/context core::io::io_slice::IoSliceMut ["'a"]
+    borrowed handle/context core::panic::location::Location ["'a"]
+    borrowed handle/context core::panic::panic_info::PanicInfo ["'a"]
+    borrowed handle/context core::task::wake::Context ["'a"]
+    borrowed handle/context std::os::fd::owned::BorrowedFd ["'fd"]
+    borrowed handle/context std::os::windows::io::handle::BorrowedHandle ["'handle"]
+    borrowed handle/context std::os::windows::io::socket::BorrowedSocket ["'socket"]
+    borrowed handle/context std::panic::PanicHookInfo ["'a"]
+    cow alloc::borrow::Cow ["'a"]
+    entry/peek alloc::collections::binary_heap::PeekMut ["'a"]
+    entry/peek alloc::collections::btree::map::entry::Entry ["'a"]
+    entry/peek alloc::collections::btree::map::entry::OccupiedEntry ["'a"]
+    entry/peek alloc::collections::btree::map::entry::VacantEntry ["'a"]
+    entry/peek std::collections::hash::map::Entry ["'a"]
+    entry/peek std::collections::hash::map::OccupiedEntry ["'a"]
+    entry/peek std::collections::hash::map::VacantEntry ["'a"]
+    fmt core::ffi::c_str::Display ["'a"]
+    fmt core::fmt::Arguments ["'a"]
+    fmt core::fmt::Formatter ["'a"]
+    fmt core::fmt::builders::DebugList ["'a", "'b"]
+    fmt core::fmt::builders::DebugMap ["'a", "'b"]
+    fmt core::fmt::builders::DebugSet ["'a", "'b"]
+    fmt core::fmt::builders::DebugStruct ["'a", "'b"]
+    fmt core::fmt::builders::DebugTuple ["'a", "'b"]
+    fmt std::ffi::os_str::Display ["'a"]
+    fmt std::path::Display ["'a"]
+    guard/lock core::cell::Ref ["'b"]
+    guard/lock core::cell::RefMut ["'b"]
+    guard/lock std::io::stdio::StderrLock ["'a"]
+    guard/lock std::io::stdio::StdinLock ["'a"]
+    guard/lock std::io::stdio::StdoutLock ["'a"]
+    guard/lock std::sync::poison::mutex::MutexGuard ["'a"]
+    guard/lock std::sync::poison::rwlock::RwLockReadGuard ["'rwlock"]
+    guard/lock std::sync::poison::rwlock::RwLockWriteGuard ["'rwlock"]
+    other core::panic::panic_info::PanicMessage ["'a"]
+    other core::slice::iter::ChunkByMut ["'a"]
+    other core::str::lossy::Utf8Chunk ["'a"]
+    other std::os::windows::ffi::EncodeWide ["'a"]
+    other std::path::Component ["'a"]
+    other std::path::Prefix ["'a"]
+    other std::path::PrefixComponent ["'a"]
+    scoped threads std::thread::scoped::Scope ["'scope", "'env"]
+    scoped threads std::thread::scoped::ScopedJoinHandle ["'scope"]
+
+== Traits: implementable by a lifetime-free Rue type without naming a lifetime? ==
+stable non-auto traits: 133; implementable: 133; not: 0
+
+== Trait impls in std by category ==
+9578 {'I0-no-lifetimes': 8529, 'I2-self-type-has-lifetime': 860, 'I3-trait-args-need-name': 130, 'I3-impl-for-&Self-needs-name': 50, 'I1-header-elision-ok': 9}
+  I3-impl-for-&Self-needs-name [('IntoIterator', 29), ('TryFrom', 17), ('AsyncFnOnce', 2), ('From', 1), ('ToSocketAddrs', 1)]
+  I3-trait-args-need-name [('Sum', 35), ('Product', 34), ('Extend', 13), ('FromIterator', 8), ('From', 7), ('FnOnce', 4), ('Fn', 4), ('FnMut', 4), ('SpecExtendFront', 4), ('SpecExtend', 4), ('FusedIterator', 2), ('ExactSizeIterator', 2), ('Iterator', 2), ('DoubleEndedIterator', 2), ('SpecNextChunk', 1), ('MaybeSizedType', 1), ('TrustedLen', 1), ('Type', 1), ('SpecExtendStr', 1)]
+  I1-header-elision-ok [('PinSafePointer', 2), ('Type', 1), ('MaybeSizedType', 1), ('Error', 1), ('DoubleEndedIterator', 1), ('Write', 1), ('Read', 1), ('PartialEq', 1)]

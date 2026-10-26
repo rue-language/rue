@@ -1,0 +1,43 @@
+stable non-deprecated types by lifetime-parameter count: {1: 140, 2: 6}
+inherent methods on lifetime-carrying types: 147
+  V1-plain-elision: 57 (39%)
+       IoSlice<'a> :: fn advance(&mut self, n: usize)
+       IoSlice<'a> :: fn advance_slices(bufs: &mut &mut [IoSlice<'a>], n: usize)
+       Formatter<'a> :: fn pad_integral(&mut self, is_nonnegative: bool, prefix: &str, buf: &str) -> Result
+       Formatter<'a> :: fn pad(&mut self, s: &str) -> Result
+       Formatter<'a> :: fn write_str(&mut self, data: &str) -> Result
+       Formatter<'a> :: fn write_fmt(&mut self, fmt: Arguments<'_>) -> Result
+  V2-by-value-self-inherits: 26 (18%)
+       Pin<&'a T> :: fn map_unchecked<U, F>(self, func: F) -> Pin<&'a U>
+       Pin<&'a T> :: fn get_ref(self) -> &'a T
+       Pin<&'a mut T> :: fn into_ref(self) -> Pin<&'a T>
+       Pin<&'a mut T> :: fn get_mut(self) -> &'a mut T
+       Pin<&'a mut T> :: fn get_unchecked_mut(self) -> &'a mut T
+       Pin<&'a mut T> :: fn map_unchecked_mut<U, F>(self, func: F) -> Pin<&'a mut U>
+  V3-ref-self-returns-type-lifetime: 14 (10%)
+       Iter<'a, T> :: fn as_slice(&self) -> &'a [T]
+       RChunksExact<'a, T> :: fn remainder(&self) -> &'a [T]
+       Chars<'a> :: fn as_str(&self) -> &'a str
+       ChunksExact<'a, T> :: fn remainder(&self) -> &'a [T]
+       CharIndices<'a> :: fn as_str(&self) -> &'a str
+       Context<'a> :: fn waker(&self) -> &'a Waker
+  V4-method-lifetime-params: 5 (3%)
+       Formatter<'a> :: fn debug_struct<'b>(&'b mut self, name: &str) -> DebugStruct<'b, 'a>
+       Formatter<'a> :: fn debug_tuple<'b>(&'b mut self, name: &str) -> DebugTuple<'b, 'a>
+       Formatter<'a> :: fn debug_list<'b>(&'b mut self) -> DebugList<'b, 'a>
+       Formatter<'a> :: fn debug_set<'b>(&'b mut self) -> DebugSet<'b, 'a>
+       Formatter<'a> :: fn debug_map<'b>(&'b mut self) -> DebugMap<'b, 'a>
+  V4-multi-lifetime-type: 35 (24%)
+       DebugSet<'a, 'b> :: fn entry(&mut self, entry: &dyn Debug) -> &mut Self
+       DebugSet<'a, 'b> :: fn entry_with(&mut self, entry_fmt: impl FnOnce(&mut Formatter<'_>) -> Result) -> &mut Self
+       DebugSet<'a, 'b> :: fn entries<D, I>(&mut self, entries: I) -> &mut Self
+       DebugSet<'a, 'b> :: fn finish_non_exhaustive(&mut self) -> Result
+       DebugSet<'a, 'b> :: fn finish(&mut self) -> Result
+       DebugMap<'a, 'b> :: fn entry(&mut self, key: &dyn Debug, value: &dyn Debug) -> &mut Self
+  V4-no-receiver: 10 (7%)
+       Ref<'b, T> :: fn clone(orig: &Ref<'b, T>) -> Ref<'b, T>
+       Ref<'b, T> :: fn map<U, F>(orig: Ref<'b, T>, f: F) -> Ref<'b, U>
+       Ref<'b, T> :: fn filter_map<U, F>(orig: Ref<'b, T>, f: F) -> Result<Ref<'b, U>, Self>
+       Ref<'b, T> :: fn map_split<U, V, F>(orig: Ref<'b, T>, f: F) -> (Ref<'b, U>, Ref<'b, V>)
+       IoSlice<'a> :: fn new(buf: &'a [u8]) -> IoSlice<'a>
+       RefMut<'b, T> :: fn map<U, F>(orig: RefMut<'b, T>, f: F) -> RefMut<'b, U>
