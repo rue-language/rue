@@ -346,7 +346,7 @@ def matrix(targets: list[str]) -> dict:
         name = corpus_name(target)
         rows.append(
             {
-                "os": "ubuntu-latest",
+                "os": "ubuntu-24.04",
                 "cache_name": "linux-x64",
                 "target": target,
                 "name": name,
