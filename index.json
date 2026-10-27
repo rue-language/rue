@@ -47617,6 +47617,14 @@
       "platform": "aarch64-macos",
       "report": "e7b9c07a9cf2d6d224f568caace9db5705de3510b294be51b74339a724e628e3",
       "suite_revision": 6
+    },
+    {
+      "commit": "c07cbdf7480ab230f7a8c57fbb70bcf9e41e527e",
+      "epoch": 6,
+      "finished_at": "2026-10-27T12:42:18Z",
+      "platform": "aarch64-macos",
+      "report": "a4c0a8cfcad508063a321fcaef5eb04cabb2b2ad72db548accdbb514c5a66fd1",
+      "suite_revision": 6
     }
   ],
   "schema_version": 1
