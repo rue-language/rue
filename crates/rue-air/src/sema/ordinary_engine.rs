@@ -3550,6 +3550,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             accessor_trailing_yield: None,
             accessor_call_insts: AHashMap::new(),
             accessor_place_refs: AHashMap::new(),
+            join_receiver: None,
             inline_resolved_types: Vec::new(),
             place_aliases: AHashMap::new(),
             try_operand: false,

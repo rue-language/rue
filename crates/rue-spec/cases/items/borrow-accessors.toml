@@ -3500,6 +3500,253 @@ fn main() -> i32 {
 compile_fail = true
 error_contains = ["E0259", "after an exclusive use"]
 
+# A join of accessor results is the receiver of a `borrow self` or `inout self`
+# method (RUE-2374): the method acts on the place the taken arm yields, so it
+# changes that arm's storage and leaves the other arm's alone (6.6:9a, 6.6:12a).
+
+[[case]]
+name = "joined_exclusive_accessor_results_are_an_inout_self_receiver"
+spec = ["6.4:25", "6.6:9a", "6.6:10", "6.6:12a"]
+description = "An inout self method called on an if over two exclusive accessor results mutates whichever arm was taken."
+source = """
+struct P {
+    c: i64,
+
+    fn set(inout self, v: i64) { self.c = v; }
+}
+struct Acc {
+    p: P,
+    q: P,
+
+    fn pmut(inout self) -> inout P { yield self.p; }
+    fn qmut(inout self) -> inout P { yield self.q; }
+}
+fn run(c: bool) -> i64 {
+    let mut a = Acc { p: P { c: 1 }, q: P { c: 2 } };
+    (if c { a.pmut() } else { a.qmut() }).set(9);
+    a.p.c * 10 + a.q.c
+}
+fn main() -> i32 {
+    @dbg(run(true));
+    @dbg(run(false));
+    0
+}
+"""
+expected_stdout = "92\n19\n"
+exit_code = 0
+
+[[case]]
+name = "joined_exclusive_accessor_results_through_match_nested_and_diverging_arms"
+spec = ["6.6:9a", "6.6:10", "6.6:12a"]
+description = "A match arm, a nested if, and an element accessor each make the inout self call on their own result; a diverging arm makes none."
+source = """
+struct P {
+    c: i64,
+
+    fn bump(inout self) -> i64 {
+        self.c = self.c + 100;
+        self.c
+    }
+}
+struct Acc {
+    cells: [P; 3],
+
+    fn at(inout self, i: u64) -> inout P { yield self.cells[i]; }
+}
+fn run(n: i32, deep: bool) -> i64 {
+    let mut a = Acc { cells: [P { c: 0 }, P { c: 1 }, P { c: 2 }] };
+    let got = (match n {
+        0 => a.at(0),
+        1 => if deep { a.at(1) } else { a.at(2) },
+        _ => @panic("no cell"),
+    }).bump();
+    got * 1000 + a.cells[0].c + a.cells[1].c + a.cells[2].c
+}
+fn main() -> i32 {
+    @dbg(run(0, false));
+    @dbg(run(1, true));
+    @dbg(run(1, false));
+    0
+}
+"""
+expected_stdout = "100103\n101103\n102103\n"
+exit_code = 0
+
+[[case]]
+name = "joined_accessor_results_are_a_borrow_self_receiver"
+spec = ["6.4:25", "6.6:9a", "6.6:10", "6.6:12a"]
+description = "A borrow self method reads the place the taken arm yields, whether that arm's accessor result is shared or exclusive."
+source = """
+struct P {
+    c: i64,
+
+    fn get(borrow self) -> i64 { self.c }
+}
+struct Acc {
+    p: P,
+    q: P,
+
+    fn pref(borrow self) -> borrow P { yield self.p; }
+    fn qref(borrow self) -> borrow P { yield self.q; }
+    fn qmut(inout self) -> inout P { yield self.q; }
+}
+fn main() -> i32 {
+    let mut a = Acc { p: P { c: 1 }, q: P { c: 2 } };
+    let n = 2;
+    @dbg((if n == 1 { a.pref() } else { a.qref() }).get());
+    @dbg((match n { 1 => a.qmut(), _ => a.pref() }).get());
+    0
+}
+"""
+expected_stdout = "2\n1\n"
+exit_code = 0
+
+[[case]]
+name = "joined_accessor_results_on_different_roots_are_not_a_receiver"
+spec = ["6.4:27", "6.6:9a"]
+description = "A join whose arms' accessor results borrow different roots is not a place, so it cannot be an inout self receiver (E0425)."
+source = """
+struct P {
+    c: i64,
+
+    fn set(inout self) { self.c = 9; }
+}
+struct Acc {
+    p: P,
+
+    fn pmut(inout self) -> inout P { yield self.p; }
+}
+fn main() -> i32 {
+    let mut a = Acc { p: P { c: 1 } };
+    let mut b = Acc { p: P { c: 2 } };
+    let c = a.p.c == 1;
+    (if c { a.pmut() } else { b.pmut() }).set();
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0425", "borrows `b`", "borrows the same root"]
+
+[[case]]
+name = "join_of_accessor_result_and_value_is_not_a_receiver"
+spec = ["6.4:27", "6.6:9a"]
+description = "An arm yielding a plain local is a value, not a place, so the join cannot be an inout self receiver (E0425)."
+source = """
+struct P {
+    c: i64,
+
+    fn set(inout self) { self.c = 9; }
+}
+struct Acc {
+    p: P,
+
+    fn pmut(inout self) -> inout P { yield self.p; }
+}
+fn main() -> i32 {
+    let mut a = Acc { p: P { c: 1 } };
+    let mut other = P { c: 2 };
+    let c = a.p.c == 1;
+    (if c { a.pmut() } else { other }).set();
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0425", "this arm yields a value, not an accessor result"]
+
+[[case]]
+name = "joined_shared_accessor_result_is_not_an_inout_self_receiver"
+spec = ["6.6:9a", "6.6:10"]
+description = "An inout self method on a join with a shared accessor arm mutates through a shared loan (E0259)."
+source = """
+struct P {
+    c: i64,
+
+    fn set(inout self) { self.c = 9; }
+}
+struct Acc {
+    p: P,
+    q: P,
+
+    fn pmut(inout self) -> inout P { yield self.p; }
+    fn qref(borrow self) -> borrow P { yield self.q; }
+}
+fn main() -> i32 {
+    let mut a = Acc { p: P { c: 1 }, q: P { c: 2 } };
+    let c = a.p.c == 1;
+    (if c { a.pmut() } else { a.qref() }).set();
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0259", "accessor result"]
+
+[[case]]
+name = "joined_accessor_receiver_call_arguments_hold_string_literals"
+spec = ["6.6:9a", "6.6:12a"]
+description = "String literals and a @panic message in the arguments of a call made in each arm are emitted once and printed by the taken arm."
+source = """
+struct P {
+    c: i64,
+
+    fn tag(inout self, s: str, v: i64) {
+        self.c = v;
+        @dbg(s);
+    }
+}
+struct Acc {
+    p: P,
+    q: P,
+
+    fn pmut(inout self) -> inout P { yield self.p; }
+    fn qmut(inout self) -> inout P { yield self.q; }
+}
+fn run(c: bool, n: i64) -> i64 {
+    let mut a = Acc { p: P { c: 1 }, q: P { c: 2 } };
+    (if c { a.pmut() } else { a.qmut() }).tag("abc", {
+        @dbg("hi");
+        if n > 100 { @panic("boom") } else { n }
+    });
+    a.p.c * 10 + a.q.c
+}
+fn main() -> i32 {
+    @dbg(run(true, 9));
+    @dbg(run(false, 9));
+    @dbg("abc");
+    0
+}
+"""
+expected_stdout = "hi\nabc\n92\nhi\nabc\n19\nabc\n"
+exit_code = 0
+
+[[case]]
+name = "joined_accessor_receiver_match_binding_cannot_rename_an_argument"
+spec = ["6.6:9a"]
+description = "A match arm binding that would change what a name in the call's arguments refers to is rejected (E0425)."
+source = """
+struct P {
+    c: i64,
+
+    fn set(inout self, v: i64) { self.c = v; }
+}
+struct Acc {
+    p: P,
+    q: P,
+
+    fn pmut(inout self) -> inout P { yield self.p; }
+    fn qmut(inout self) -> inout P { yield self.q; }
+}
+enum O { S(i64), N }
+fn main() -> i32 {
+    let mut a = Acc { p: P { c: 1 }, q: P { c: 2 } };
+    let x = 5;
+    let o = O.S(4);
+    (match o { O.S(x) => a.pmut(), O.N => a.qmut() }).set(x);
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0425", "this arm binds `x`"]
+
 # The yielded place is the receiver's own storage (6.6:12), so reading it
 # observes exactly the value stored there — at the element's own width, not at
 # the width of the machine word the element shares with its neighbours
